@@ -24,7 +24,7 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-21 fisiere totale:
+23 fisiere totale:
 
   TERMUX / LINUX (Bash)
   ─────────────────────
@@ -40,22 +40,29 @@ CUPRINS
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
   av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
   av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
-  hdr10plus_parser.sh           — Installer hdr10plus_tool (Termux, compilare Rust)
-  dovi_parser.sh                — Installer dovi_tool (Termux, compilare Rust)
   example_profile.conf          — Exemplu profil .conf documentat cu toate campurile
+
+  TOOLS (src/tools/) — Instalere & Updatare dependinte externe
+  ─────────────────────────────────────────────────────────────
+  tools/hdr10plus_parser.sh     — Installer hdr10plus_tool (Termux, compilare Rust)
+  tools/dovi_parser.sh          — Installer dovi_tool (Termux, compilare Rust)
+  tools/exiftool_update.sh      — Smart updater ExifTool (pkg sau build manual din sursa)
 
   WINDOWS (PowerShell)
   ────────────────────
   av_encode.ps1          — Script PowerShell all-in-one (encode + audio + check media + extractor DJI)
   av_check.ps1           — Analiza completa video + audio, export CSV (standalone)
-  hdr10plus_parser.ps1   — Installer hdr10plus_tool (Windows, descarca release)
-  dovi_parser.ps1        — Installer dovi_tool (Windows, descarca release)
+  tools/hdr10plus_parser.ps1    — Installer hdr10plus_tool (Windows, descarca release)
+  tools/dovi_parser.ps1         — Installer dovi_tool (Windows, descarca release)
+  tools/exiftool_update.ps1     — Smart updater ExifTool (descarca .exe de pe exiftool.org)
 
 Nota: Scriptul Windows (ps1) este complet independent de cele bash.
       Contine toata logica intern, nu depinde de av_common.sh.
       Extractorul DJI este integrat in ps1 (nu e fisier separat ca in Termux).
       av_encode.bat a fost eliminat din v24 — PowerShell acoperă complet
       functionalitatea, cu arrays native, error handling real si features complete.
+      Scripturile din src/tools/ sunt standalone — se ruleaza manual, nu sunt
+      apelate din encodere. Pot fi rulate oricand pentru instalare/actualizare.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -70,9 +77,10 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
     Minim necesar: ffmpeg cu libx265, libx264, libsvtav1/libaom-av1
   - ffprobe (inclus cu FFmpeg)
   - ExifTool (optional — necesar doar pentru av_extractor_dji.sh)
+    Instaleaza/actualizeaza cu: ./tools/exiftool_update.sh
   - Python3 (optional — necesar doar pentru av_extractor_gps.sh)
   - hdr10plus_tool (optional — necesar pentru HDR10+ metadata preserve)
-    Instaleaza cu: ./hdr10plus_parser.sh
+    Instaleaza cu: ./tools/hdr10plus_parser.sh
 
   WINDOWS
   ───────

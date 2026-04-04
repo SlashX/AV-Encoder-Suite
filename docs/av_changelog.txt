@@ -3,9 +3,31 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v31.1 | 46 bug-uri fixate | 95+ features
-  20 fisiere | ~9400 linii cod | ~1500 linii documentatie
+  TOTAL: v33.1 | 46 bug-uri fixate | 95+ features
+  23 fisiere | ~9400 linii cod | ~1500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.1 — Reorganizare structura + ExifTool Smart Updater
+═══════════════════════════════════════════════════════════════
+
+  [ADD] src/tools/ — folder nou pentru scripturi externe (instalere/updatere)
+  [ADD] tools/exiftool_update.sh — Smart updater ExifTool pentru Termux
+        Verifica versiunea curenta vs exiftool.org
+        Daca pkg Termux are versiunea noua → pkg upgrade
+        Daca pkg e in urma → build manual din sursa (tar.gz)
+        Compatible cu pkg upgrade — nu blocheaza actualizarile viitoare
+  [ADD] tools/exiftool_update.ps1 — Smart updater ExifTool pentru Windows
+        Verifica versiunea curenta vs exiftool.org
+        Descarca automat ultimul .exe daca e versiune noua
+  [MOVE] hdr10plus_parser.sh/.ps1 → tools/hdr10plus_parser.sh/.ps1
+  [MOVE] dovi_parser.sh/.ps1 → tools/dovi_parser.sh/.ps1
+  [UPDATE] README.md — structura actualizata cu tools/, sectiune Optional Tools
+  [UPDATE] av_info.txt — structura proiect actualizata (23 fisiere)
+
+
+
 
 
 ═══════════════════════════════════════════════════════════════

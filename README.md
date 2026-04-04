@@ -49,11 +49,14 @@ AV-Encoder-Suite/
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
 │   ├── av_extractor_dji.sh     # DJI GPS/telemetry extractor (Termux)
 │   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML (Termux)
-│   ├── hdr10plus_parser.sh     # hdr10plus_tool installer (Termux, Rust)
-│   ├── hdr10plus_parser.ps1    # hdr10plus_tool installer (Windows)
-│   ├── dovi_parser.sh          # dovi_tool installer (Termux, Rust)
-│   ├── dovi_parser.ps1         # dovi_tool installer (Windows)
-│   └── example_profile.conf    # Documented profile example (all fields)
+│   ├── example_profile.conf    # Documented profile example (all fields)
+│   └── tools/
+│       ├── hdr10plus_parser.sh     # hdr10plus_tool installer (Termux, Rust)
+│       ├── hdr10plus_parser.ps1    # hdr10plus_tool installer (Windows)
+│       ├── dovi_parser.sh          # dovi_tool installer (Termux, Rust)
+│       ├── dovi_parser.ps1         # dovi_tool installer (Windows)
+│       ├── exiftool_update.sh      # ExifTool smart updater (Termux)
+│       └── exiftool_update.ps1     # ExifTool smart updater (Windows)
 ├── docs/
 │   ├── av_info.txt             # Full setup & usage documentation
 │   └── av_changelog.txt        # Version history
@@ -97,7 +100,7 @@ pkg install python -y     # optional
 
 ```bash
 # Set execute permissions
-chmod +x src/*.sh
+chmod +x src/*.sh src/tools/*.sh
 
 # Launch interactive menu
 cd src
@@ -182,24 +185,33 @@ cd src
 
 ---
 
-## Optional Tools Installation
+## Optional Tools — `src/tools/`
 
 ### hdr10plus_tool (HDR10+ metadata)
 ```bash
 # Termux (compiles from Rust source)
-./hdr10plus_parser.sh
+./tools/hdr10plus_parser.sh
 
 # Windows (downloads release binary)
-.\hdr10plus_parser.ps1
+.\tools\hdr10plus_parser.ps1
 ```
 
 ### dovi_tool (Dolby Vision)
 ```bash
 # Termux
-./dovi_parser.sh
+./tools/dovi_parser.sh
 
 # Windows
-.\dovi_parser.ps1
+.\tools\dovi_parser.ps1
+```
+
+### ExifTool updater
+```bash
+# Termux (smart: pkg or manual build)
+./tools/exiftool_update.sh
+
+# Windows (downloads latest .exe)
+.\tools\exiftool_update.ps1
 ```
 
 ---
@@ -208,7 +220,7 @@ cd src
 
 | Problem | Solution |
 |---------|----------|
-| `Permission denied` on `.sh` | `chmod +x src/*.sh` |
+| `Permission denied` on `.sh` | `chmod +x src/*.sh src/tools/*.sh` |
 | `command not found: ffmpeg` | `pkg install ffmpeg -y` (Termux) or add to PATH (Windows) |
 | PS1 script blocked | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
 | `termux-wake-lock` not working | Install Termux:API app from F-Droid |
