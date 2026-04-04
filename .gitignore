@@ -1,0 +1,33 @@
+# Fisiere temporare ffmpeg
+*.log
+*.tmp
+*_vidstab.trf
+*_pass1.log
+*_pass1.log.mbtree
+ffmpeg2pass-*.log
+ffmpeg2pass-*.log.mbtree
+
+# Output video
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.dnxhd
+*.dnxhr
+
+# Profile salvate local
+Profiles/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# PowerShell
+*.ps1xml
