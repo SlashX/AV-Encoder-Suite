@@ -31,3 +31,6 @@ desktop.ini
 
 # PowerShell
 *.ps1xml
+
+# Claude Code
+CLAUDE.md
