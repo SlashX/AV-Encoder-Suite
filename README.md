@@ -224,6 +224,14 @@ cd src
 
 ---
 
+## Support
+
+If you find this project useful, consider a small donation — it helps keep the development going!
+
+[💙 Donate via PayPal](https://paypal.me/TiberiuDobrescu)
+
+---
+
 ## Changelog
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
