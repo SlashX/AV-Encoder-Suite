@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.1
 
 ---
 
@@ -248,4 +248,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v33** — 46 bugs fixed | 95+ features | ~9400 lines of code
+Current: **v33.1** — 46 bugs fixed | 95+ features | ~9400 lines of code

@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + DJI GPS Extractor
-  Documentatie Setup & Utilizare — v33
+  Documentatie Setup & Utilizare — v33.1
 ═══════════════════════════════════════════════════════════════
 
 
@@ -94,12 +94,16 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
 
   Dependinte per script:
     av_encoder_x265/x264/av1.sh  → ffmpeg + ffprobe
+    av_encoder_dnxhr/prores/apv  → ffmpeg + ffprobe
     av_encoder_audio.sh          → ffmpeg + ffprobe
     av_check.sh                  → ffprobe
     av_extractor_dji.sh (opt 1-4)→ exiftool
     av_extractor_dji.sh (opt 5)  → ffmpeg
     av_extractor_gps.sh          → python3
+    hdr10plus_parser.sh          → cargo (Rust) pentru compilare
+    dovi_parser.sh               → cargo (Rust) pentru compilare
     av_encode.ps1                → ffmpeg + ffprobe (+ exiftool/python3 optional)
+    av_check.ps1                 → ffprobe
 
 
 ═══════════════════════════════════════════════════════════════
@@ -290,7 +294,7 @@ PASUL 4: Permite executia scripturilor PowerShell
      subtitrari, capitole, attachments, canale audio
   3. Calculeaza estimare dimensiune output pentru x265/x264/AV1
   4. Genereaza recomandare encoder (ex: "libx265 — DV singurul suportat")
-  5. Afiseaza totul in terminal + exporta CSV cu 24 campuri
+  5. Afiseaza totul in terminal + exporta CSV cu 30 campuri
 
   FLUXUL AUDIO-ONLY ENCODE (av_encoder_audio):
   ──────────────────────────────────────────────
@@ -1064,7 +1068,7 @@ PASUL 4: Permite executia scripturilor PowerShell
     Termux (6 optiuni):
       1) Encode video + audio
       2) Encode doar audio (video copy)
-      3) Verifica fisiere media (analiza + CSV 28 campuri)
+      3) Verifica fisiere media (analiza + CSV 30 campuri)
       4) Export date GPS/DJI din video (necesita ExifTool)
       5) Import GPS extern — GPX/FIT (necesita python3)
       6) Iesire
@@ -1108,11 +1112,15 @@ PASUL 4: Permite executia scripturilor PowerShell
   Stergere din folder Scripts:
     rm -f /storage/emulated/0/Media/Scripts/*.sh
 
-  Backup complet (toate 9 scripturile):
+  Backup complet (toate 15 scripturile bash):
     mkdir -p /storage/emulated/0/Media/Scripts/
     cp av_launcher.sh av_common.sh \
        av_encoder_x265.sh av_encoder_x264.sh \
-       av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_extractor_dji.sh \
+       av_encoder_av1.sh av_encoder_dnxhr.sh \
+       av_encoder_apv.sh av_encoder_prores.sh \
+       av_encoder_audio.sh av_check.sh \
+       av_extractor_dji.sh av_extractor_gps.sh \
+       hdr10plus_parser.sh dovi_parser.sh \
        /storage/emulated/0/Media/Scripts/
     chmod +x /storage/emulated/0/Media/Scripts/*.sh
 
