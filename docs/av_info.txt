@@ -24,7 +24,7 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-23 fisiere totale:
+28 fisiere totale:
 
   TERMUX / LINUX (Bash)
   ─────────────────────
@@ -41,6 +41,17 @@ CUPRINS
   av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
   av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
   example_profile.conf          — Exemplu profil .conf documentat cu toate campurile
+
+  PROFILES (src/profiles/) — Profile pre-definite pentru camere specifice
+  ────────────────────────────────────────────────────────────────────────
+  profiles/dji_action6/DJI_Action6_Airsoft_Indoor.conf   — CRF 22, medium, indoor
+  profiles/dji_action6/DJI_Action6_Airsoft_Outdoor.conf  — CRF 20, medium, outdoor
+  profiles/dji_action6/DJI_Action6_Moto_Outdoor.conf     — CRF 20, medium, moto
+  profiles/dji_action6/DJI_Action6_Moto_Cinematic.conf   — CRF 18, slow, D-Log M + LUT
+  profiles/dji_action6/DJI_Action6_DLogM_Outdoor.conf    — CRF 19, medium, D-Log M + LUT
+
+  Nota: Profilele D-Log M necesita LUT-ul dji_dlog_m_to_rec709.cube in folderul Luts/.
+        La incarcare, scriptul verifica daca LUT-ul exista si afiseaza warning daca lipseste.
 
   TOOLS (src/tools/) — Instalere & Updatare dependinte externe
   ─────────────────────────────────────────────────────────────

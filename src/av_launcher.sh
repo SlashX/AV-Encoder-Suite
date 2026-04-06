@@ -102,19 +102,31 @@ esac
 # ── Profil salvat (save/load) ─────────────────────────────────────────
 PROFILE_DIR="$INPUT_DIR/../Profiles"
 mkdir -p "$PROFILE_DIR" 2>/dev/null
+
+# Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
 shopt -s nullglob
-PROFILES=("$PROFILE_DIR"/*.conf)
+USER_PROFILES=("$PROFILE_DIR"/*.conf)
+BUILTIN_PROFILES=("$SCRIPT_DIR"/profiles/*/*.conf)
+PROFILES=("${USER_PROFILES[@]}" "${BUILTIN_PROFILES[@]}")
 shopt -u nullglob
+
+# Folder Luts pentru verificare LUT
+LUTS_DIR="/storage/emulated/0/Media/Luts"
 
 if [ ${#PROFILES[@]} -gt 0 ]; then
     echo ""
     echo "╔══════════════════════════════════════╗"
-    echo "║  Profile salvate disponibile          ║"
+    echo "║  Profile disponibile                  ║"
     echo "╠══════════════════════════════════════╣"
     local_idx=1
     for p in "${PROFILES[@]}"; do
         pname=$(basename "$p" .conf)
-        echo "║  $local_idx) $pname"
+        # Marcheaza profilele pre-definite cu [DJI] etc.
+        if [[ "$p" == *"/profiles/dji_action6/"* ]]; then
+            echo "║  $local_idx) [DJI] $pname"
+        else
+            echo "║  $local_idx) $pname"
+        fi
         local_idx=$((local_idx + 1))
     done
     echo "║  N) Configurare noua (meniu normal)  ║"
@@ -124,6 +136,35 @@ if [ ${#PROFILES[@]} -gt 0 ]; then
         LOAD_FILE="${PROFILES[$((prof_load-1))]}"
         echo "  Incarc profil: $(basename "$LOAD_FILE" .conf)"
         source "$LOAD_FILE"
+
+        # Verifica LUT daca profilul necesita unul
+        if [[ -n "${LUT_PATH:-}" ]]; then
+            LUT_FULL_PATH="$LUTS_DIR/$LUT_PATH"
+            if [[ ! -f "$LUT_FULL_PATH" ]]; then
+                echo ""
+                echo "  ╔══════════════════════════════════════════════════════════╗"
+                echo "  ║  ⚠ ATENTIE: LUT-ul nu a fost gasit!                       ║"
+                echo "  ╠══════════════════════════════════════════════════════════╣"
+                echo "  ║  Fisier: $LUT_PATH"
+                echo "  ║  Locatie asteptata: $LUTS_DIR/"
+                echo "  ║                                                          ║"
+                echo "  ║  Descarca LUT-ul de pe dji.com si pune-l in:             ║"
+                echo "  ║  $LUTS_DIR/"
+                echo "  ╚══════════════════════════════════════════════════════════╝"
+                echo ""
+                read -p "  Continui fara LUT? (d/N): " continue_no_lut
+                if [[ "${continue_no_lut,,}" != "d" ]]; then
+                    echo "  Profil anulat — instaleaza LUT-ul si incearca din nou."
+                    exit 0
+                fi
+                # Dezactiveaza LUT daca utilizatorul continua fara el
+                LUT_PATH=""
+                FORCE_LOG_DETECTION="0"
+            else
+                echo "  LUT gasit: $LUT_PATH"
+            fi
+        fi
+
         # Salt direct la lansare — toate variabilele sunt setate din .conf
         echo ""
         echo "  Encoder      : $ENCODER_NAME"
@@ -131,6 +172,9 @@ if [ ${#PROFILES[@]} -gt 0 ]; then
         echo "  Audio        : $AUDIO_CODEC_ARG"
         echo "  Filtru video : ${VIDEO_FILTER_PRESET:-fara}"
         echo "  Normalizare  : ${AUDIO_NORMALIZE:-0}"
+        if [[ -n "${LUT_PATH:-}" ]]; then
+            echo "  LOG/LUT      : ${LOG_PROFILE:-auto} + $LUT_PATH"
+        fi
         echo ""
         read -p "Lanseaza cu aceste setari? (D/n): " confirm_prof
         if [[ "${confirm_prof,,}" == "n" ]]; then

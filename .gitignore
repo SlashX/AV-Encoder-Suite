@@ -15,8 +15,10 @@ ffmpeg2pass-*.log.mbtree
 *.dnxhd
 *.dnxhr
 
-# Profile salvate local
+# Profile salvate local (user profiles in Profiles/)
 Profiles/
+# Exclude src/profiles/ (built-in profiles, shipped with project)
+!src/profiles/
 
 # Windows
 Thumbs.db

@@ -1704,17 +1704,33 @@ if ($mainChoice -eq "3") {
 # ── Profil salvat (load) ─────────────────────────────────────────────
 $profileDir = Join-Path $InputDir "Profiles"
 if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
-$profiles = Get-ChildItem -Path $profileDir -Filter "*.conf" -ErrorAction SilentlyContinue
+
+# Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
+$userProfiles = @(Get-ChildItem -Path $profileDir -Filter "*.conf" -ErrorAction SilentlyContinue)
+$builtinProfilesDir = Join-Path $PSScriptRoot "profiles"
+$builtinProfiles = @()
+if (Test-Path $builtinProfilesDir) {
+    $builtinProfiles = @(Get-ChildItem -Path $builtinProfilesDir -Filter "*.conf" -Recurse -ErrorAction SilentlyContinue)
+}
+$profiles = @($userProfiles) + @($builtinProfiles)
 $profLoaded = $false
+
+# Folder Luts pentru verificare LUT (Windows: relativ la InputDir)
+$LutsDir = Join-Path $InputDir "Luts"
 
 if ($profiles.Count -gt 0) {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║  Profile salvate disponibile          ║" -ForegroundColor Cyan
+    Write-Host "║  Profile disponibile                  ║" -ForegroundColor Cyan
     Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
     $pIdx = 1
     foreach ($pf in $profiles) {
-        Write-Host "║  $pIdx) $($pf.BaseName)" -ForegroundColor White
+        # Marcheaza profilele pre-definite cu [DJI] etc.
+        if ($pf.DirectoryName -match "profiles[/\\]dji_action6") {
+            Write-Host "║  $pIdx) [DJI] $($pf.BaseName)" -ForegroundColor White
+        } else {
+            Write-Host "║  $pIdx) $($pf.BaseName)" -ForegroundColor White
+        }
         $pIdx++
     }
     Write-Host "║  N) Configurare noua (meniu normal)  ║" -ForegroundColor White
@@ -1727,6 +1743,37 @@ if ($profiles.Count -gt 0) {
         Get-Content $loadFile | ForEach-Object {
             if ($_ -match '^([A-Za-z_]\w*)=(.*)$') {
                 Set-Variable -Name $Matches[1] -Value $Matches[2] -Scope Script
+            }
+        }
+
+        # Map ENCODER_NAME to ENCODER (bash profiles use ENCODER_NAME, ps1 uses ENCODER)
+        if ($ENCODER_NAME -and -not $ENCODER) { $script:ENCODER = $ENCODER_NAME }
+
+        # Verifica LUT daca profilul necesita unul
+        if ($LUT_PATH) {
+            $LutFullPath = Join-Path $LutsDir $LUT_PATH
+            if (-not (Test-Path $LutFullPath)) {
+                Write-Host ""
+                Write-Host "  ╔══════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+                Write-Host "  ║  ⚠ ATENTIE: LUT-ul nu a fost gasit!                       ║" -ForegroundColor Yellow
+                Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Yellow
+                Write-Host "  ║  Fisier: $LUT_PATH" -ForegroundColor White
+                Write-Host "  ║  Locatie asteptata: $LutsDir\" -ForegroundColor White
+                Write-Host "  ║                                                          ║" -ForegroundColor Yellow
+                Write-Host "  ║  Descarca LUT-ul de pe dji.com si pune-l in:             ║" -ForegroundColor White
+                Write-Host "  ║  $LutsDir\" -ForegroundColor White
+                Write-Host "  ╚══════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+                Write-Host ""
+                $continueNoLut = Read-Host "  Continui fara LUT? (d/N)"
+                if ($continueNoLut -ine "d") {
+                    Write-Host "  Profil anulat — instaleaza LUT-ul si incearca din nou." -ForegroundColor Red
+                    Read-Host "Apasa Enter"; exit
+                }
+                # Dezactiveaza LUT daca utilizatorul continua fara el
+                $script:LUT_PATH = ""
+                $script:FORCE_LOG_DETECTION = "0"
+            } else {
+                Write-Host "  LUT gasit: $LUT_PATH" -ForegroundColor Green
             }
         }
         # Map loaded vars to ps1 variables
@@ -1778,6 +1825,10 @@ if ($profiles.Count -gt 0) {
         Write-Host "  Audio        : $audioCodec $audioBitrate" -ForegroundColor White
         Write-Host "  Filtru video : $(if ($vfPreset) { $vfPreset } elseif ($vfIsVidstab) { 'vidstab' } else { 'fara' })" -ForegroundColor White
         Write-Host "  Normalizare  : $audioNormalize" -ForegroundColor White
+        if ($LUT_PATH) {
+            $logLabel = if ($LOG_PROFILE) { $LOG_PROFILE } else { "auto" }
+            Write-Host "  LOG/LUT      : $logLabel + $LUT_PATH" -ForegroundColor Cyan
+        }
         if ($forceLogDetection) { Write-Host "  Force LOG    : ACTIV" -ForegroundColor Yellow }
         if ($interactiveMode) { Write-Host "  Interactiv   : ACTIV" -ForegroundColor Green }
         $profConfirm = Read-Host "Lanseaza cu aceste setari? (D/n)"

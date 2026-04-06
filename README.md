@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.1
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.2
 
 ---
 
@@ -50,6 +50,13 @@ AV-Encoder-Suite/
 │   ├── av_extractor_dji.sh     # DJI GPS/telemetry extractor (Termux)
 │   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML (Termux)
 │   ├── example_profile.conf    # Documented profile example (all fields)
+│   ├── profiles/
+│   │   └── dji_action6/        # DJI Osmo Action 6 preset profiles
+│   │       ├── DJI_Action6_Airsoft_Indoor.conf
+│   │       ├── DJI_Action6_Airsoft_Outdoor.conf
+│   │       ├── DJI_Action6_Moto_Outdoor.conf
+│   │       ├── DJI_Action6_Moto_Cinematic.conf   # D-Log M + LUT
+│   │       └── DJI_Action6_DLogM_Outdoor.conf    # D-Log M + LUT
 │   └── tools/
 │       ├── hdr10plus_parser.sh     # hdr10plus_tool installer (Termux, Rust)
 │       ├── hdr10plus_parser.ps1    # hdr10plus_tool installer (Windows)
@@ -166,7 +173,9 @@ cd src
 
 ### Profile System
 - Save full configuration to `.conf` file (encoder, CRF, preset, audio, filters, loudnorm, etc.)
-- Profiles stored in `Profiles/` folder — auto-detected at next launch
+- User profiles stored in `Profiles/` folder — auto-detected at next launch
+- **Built-in profiles** for DJI Osmo Action 6 (airsoft, moto, cinematic, D-Log M)
+- D-Log M profiles include automatic LUT validation — warns if `.cube` file missing
 - Cross-platform format: `KEY=VALUE` (bash `source` / PS1 `Get-Content`)
 
 ### Video Filters
@@ -248,4 +257,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v33.1** — 46 bugs fixed | 95+ features | ~9400 lines of code
+Current: **v33.2** — 46 bugs fixed | 100+ features | ~9600 lines of code

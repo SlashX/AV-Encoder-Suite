@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(bash -n \"D:/Pers/Dev/AV-Encoder-Suite/src/av_launcher.sh\")",
+      "Bash(pwsh:*)",
+      "Bash(powershell.exe:*)"
+    ]
+  }
+}

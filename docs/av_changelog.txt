@@ -3,9 +3,34 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.1 | 46 bug-uri fixate | 95+ features
-  23 fisiere | ~9400 linii cod | ~1500 linii documentatie
+  TOTAL: v33.2 | 46 bug-uri fixate | 100+ features
+  28 fisiere | ~9600 linii cod | ~1600 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.2 — DJI Action 6 Preset Profiles + LUT validation
+═══════════════════════════════════════════════════════════════
+
+  ADD src/profiles/dji_action6/ — 5 profile pre-definite DJI Osmo Action 6
+        DJI_Action6_Airsoft_Indoor.conf  — CRF 22, medium, indoor
+        DJI_Action6_Airsoft_Outdoor.conf — CRF 20, medium, outdoor
+        DJI_Action6_Moto_Outdoor.conf    — CRF 20, medium, moto
+        DJI_Action6_Moto_Cinematic.conf  — CRF 18, slow, D-Log M + LUT
+        DJI_Action6_DLogM_Outdoor.conf   — CRF 19, medium, D-Log M + LUT
+  ADD Profile pre-definite in lista "Load Profile" (bash + PS1)
+        Profilele built-in sunt marcate cu [DJI] in lista
+        User profiles + built-in profiles combinate automat
+  ADD Validare LUT la incarcarea profilelor
+        Daca profilul include LUT_PATH si fisierul .cube nu exista
+        in Luts/, afiseaza warning cu instructiuni de descarcare
+        Optiune de a continua fara LUT sau de a anula
+  ADD Campuri noi in format .conf: LOG_PROFILE, LUT_PATH
+        LOG_PROFILE: apple_log / samsung_log / dlog_m
+        LUT_PATH: nume fisier .cube din Luts/
+  UPDATE example_profile.conf — documentatie campuri LOG_PROFILE, LUT_PATH
+  UPDATE av_launcher.sh — suport profile built-in + validare LUT
+  UPDATE av_encode.ps1 — suport profile built-in + validare LUT
 
 
 ═══════════════════════════════════════════════════════════════
