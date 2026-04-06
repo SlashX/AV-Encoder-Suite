@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.2
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.3
 
 ---
 
@@ -166,10 +166,11 @@ cd src
 | DTS, TrueHD, FLAC, PCM, Opus | all | — |
 
 ### Batch Processing
+- **Preserve folder structure** — recursive scan with subfolder recreation in output
 - **Dry-run mode** — preview full batch without encoding (seconds, not hours)
 - **Resume interrupted batch** — `batch_progress.log` tracks completed files; restart skips already-done
 - **Skip existing** — files >1MB in output are skipped automatically
-- **Batch summary** — per-file compression %, encode time, fastest/slowest report
+- **Batch summary** — per-file compression %, encode time, fastest/slowest report, folder count
 
 ### Profile System
 - Save full configuration to `.conf` file (encoder, CRF, preset, audio, filters, loudnorm, etc.)
@@ -257,4 +258,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v33.2** — 46 bugs fixed | 100+ features | ~9600 lines of code
+Current: **v33.3** — 46 bugs fixed | 102+ features | ~9700 lines of code

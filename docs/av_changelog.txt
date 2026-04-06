@@ -3,9 +3,29 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.2 | 46 bug-uri fixate | 100+ features
-  28 fisiere | ~9600 linii cod | ~1600 linii documentatie
+  TOTAL: v33.3 | 46 bug-uri fixate | 102+ features
+  28 fisiere | ~9700 linii cod | ~1650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.3 — Pastrare structura foldere la batch encode
+═══════════════════════════════════════════════════════════════
+
+  ADD Optiune noua la inceputul batch-ului: "Pastrezi structura de foldere?"
+        Dialog: d = scanare recursiva, n = flat (comportament anterior)
+  ADD Scanare recursiva subfoldere din input
+        Termux: find -type f cu extensii video
+        Windows: Get-ChildItem -Recurse
+  ADD Recreare automata structura subfoldere in output
+        mkdir -p (bash) / New-Item -ItemType Directory (PS1)
+        Exemplu: input/Folder1/clip.mp4 → output/Folder1/clip_x265.mp4
+  ADD Afisare numar foldere gasite la scanare
+        "Gasite: X fisiere in Y foldere"
+  ADD Structura foldere in batch summary final
+        "Structura foldere: PASTRATA (N foldere)"
+  UPDATE av_common.sh — run_encode_loop() cu PRESERVE_FOLDER_STRUCTURE
+  UPDATE av_encode.ps1 — $preserveFolderStructure + output path relativ
 
 
 ═══════════════════════════════════════════════════════════════

@@ -1329,6 +1329,16 @@ print_batch_summary() {
     log "  Cel mai rapid : ${BATCH_NAMES[$fi_idx]} ($((${BATCH_TIMES[$fi_idx]}/60))m)"
     log "  Cel mai lent  : ${BATCH_NAMES[$si_idx]} ($((${BATCH_TIMES[$si_idx]}/60))m)"
     log "  Material total: $((td/3600))h $((td%3600/60))m procesat"
+    # Afiseaza structura de foldere daca a fost pastrata
+    if [[ "${PRESERVE_FOLDER_STRUCTURE:-0}" == "1" ]]; then
+        log "  ──────────────────────────────────────────────────"
+        log "  Structura foldere: PASTRATA"
+        local output_dirs
+        output_dirs=$(find "$OUTPUT_DIR" -type d 2>/dev/null | sort)
+        local dir_count
+        dir_count=$(echo "$output_dirs" | wc -l)
+        log "  Foldere output create: $dir_count"
+    fi
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1526,11 +1536,37 @@ run_encode_loop() {
     log "Normalizare    : ${AUDIO_NORMALIZE:-0}"
     log "======================================="
 
-    shopt -s nullglob nocaseglob
-    FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
-    shopt -u nocaseglob nullglob
+    # ── Pastrare structura foldere ────────────────────────────────────
+    echo ""
+    echo "Pastrezi structura de foldere din input? (d/n) [implicit: n]"
+    echo "  d = Scanare recursiva, output pastreaza structura subfoldere"
+    echo "  n = Toate fisierele in acelasi folder output"
+    read -p "Alege: " folder_struct_choice
+    PRESERVE_FOLDER_STRUCTURE=0
+    if [[ "${folder_struct_choice,,}" == "d" ]]; then
+        PRESERVE_FOLDER_STRUCTURE=1
+        log "Structura foldere: PASTRATA (recursiv)"
+        echo "  Scanez recursiv..."
+        # Scanare recursiva cu find
+        mapfile -t FILES < <(find "$INPUT_DIR" -type f \( \
+            -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o \
+            -iname "*.m2ts" -o -iname "*.mts" -o -iname "*.vob" -o \
+            -iname "*.mxf" -o -iname "*.apv" \) 2>/dev/null | sort)
+    else
+        log "Structura foldere: FLAT (toate in output/)"
+        shopt -s nullglob nocaseglob
+        FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
+        shopt -u nocaseglob nullglob
+    fi
     TOTAL=${#FILES[@]}
     [ "$TOTAL" -eq 0 ] && { log "Nu am gasit fisiere video!"; termux-wake-unlock; exit 1; }
+
+    # Afiseaza subfoldere gasite (doar daca recursiv)
+    if [[ "$PRESERVE_FOLDER_STRUCTURE" == "1" ]]; then
+        local subfolder_count
+        subfolder_count=$(printf '%s\n' "${FILES[@]}" | xargs -I{} dirname {} | sort -u | wc -l)
+        echo "  Gasite: $TOTAL fisiere in $subfolder_count foldere"
+    fi
 
     # Batch Queue — editare ordine/excludere (optional)
     show_batch_queue
@@ -1550,9 +1586,27 @@ run_encode_loop() {
         COUNT=$((COUNT + 1))
         filename=$(basename "$file"); name="${filename%.*}"
         ext_lower="${filename##*.}"; ext_lower="${ext_lower,,}"
-        output="$OUTPUT_DIR/${name}${enc_suffix}.$CONTAINER"
+
+        # Calculeaza output path (cu sau fara structura foldere)
+        if [[ "$PRESERVE_FOLDER_STRUCTURE" == "1" ]]; then
+            # Calculeaza calea relativa fata de INPUT_DIR
+            local file_dir rel_path output_subdir
+            file_dir=$(dirname "$file")
+            rel_path="${file_dir#$INPUT_DIR}"
+            rel_path="${rel_path#/}"  # Elimina slash initial daca exista
+            if [[ -n "$rel_path" ]]; then
+                output_subdir="$OUTPUT_DIR/$rel_path"
+                mkdir -p "$output_subdir" 2>/dev/null
+                output="$output_subdir/${name}${enc_suffix}.$CONTAINER"
+            else
+                output="$OUTPUT_DIR/${name}${enc_suffix}.$CONTAINER"
+            fi
+        else
+            output="$OUTPUT_DIR/${name}${enc_suffix}.$CONTAINER"
+        fi
+
         log ""; log "── Fisier $COUNT/$TOTAL: $filename"
-        log "  Output: ${name}${enc_suffix}.$CONTAINER"
+        log "  Output: ${output#$OUTPUT_DIR/}"
         hint_source_format "$ext_lower"
 
         if [ -f "$output" ]; then

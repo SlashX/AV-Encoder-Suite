@@ -1032,6 +1032,32 @@ PASUL 4: Permite executia scripturilor PowerShell
     - Test rapid: encodeaza doar un fisier pentru a verifica setarile
   Disponibil pe Termux (SH) si Windows (PS1).
 
+  PASTRARE STRUCTURA FOLDERE (v33.3)
+  ──────────────────────────────────
+  La inceputul batch-ului (dupa dry-run), intrebare noua:
+    "Pastrezi structura de foldere din input? (d/n)"
+
+  Daca n (implicit) — comportament anterior:
+    - Toate fisierele din Input → acelasi folder Output
+    - Scanare doar in radacina Input (fara subfoldere)
+
+  Daca d — structura pastrată:
+    - Scanare recursiva a tuturor subfolderelor din Input
+    - Structura subfoldere recreata in Output
+    - mkdir -p (bash) / New-Item -ItemType Directory (PS1)
+
+  Exemplu:
+    Input/Airsoft_20260405/clip1.mp4 → Output/Airsoft_20260405/clip1_x265.mp4
+    Input/Moto_20260406/clip2.mp4   → Output/Moto_20260406/clip2_x265.mp4
+
+  La scanare afiseaza:
+    "Gasite: 25 fisiere in 4 foldere"
+
+  La batch summary final:
+    "Structura foldere: PASTRATA (4 foldere)"
+
+  Disponibil pe Termux (SH) si Windows (PS1).
+
 
 ═══════════════════════════════════════════════════════════════
 9. DIFERENTE INTRE PLATFORME

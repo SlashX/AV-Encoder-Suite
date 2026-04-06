@@ -2497,6 +2497,26 @@ $launchMode = Read-Host "Alege [implicit: 1]"
 $dryRun = ($launchMode -eq "2")
 if ($dryRun) { Write-Host "  MOD DRY-RUN: se afiseaza ce ar face fara sa encodeze." -ForegroundColor Yellow }
 
+# ── Pastrare structura foldere ────────────────────────────────────────
+Write-Host ""
+Write-Host "Pastrezi structura de foldere din input? (d/n) [implicit: n]" -ForegroundColor Cyan
+Write-Host "  d = Scanare recursiva, output pastreaza structura subfoldere" -ForegroundColor DarkGray
+Write-Host "  n = Toate fisierele in acelasi folder output" -ForegroundColor DarkGray
+$folderStructChoice = Read-Host "Alege"
+$preserveFolderStructure = ($folderStructChoice -ieq "d")
+if ($preserveFolderStructure) {
+    Write-Host "  Structura foldere: PASTRATA (recursiv)" -ForegroundColor Green
+    "Structura foldere: PASTRATA" | Out-File $LogFile -Append -Encoding UTF8
+    # Re-scan cu -Recurse
+    $inputFiles = @(Get-ChildItem -Path $InputDir -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File -Recurse)
+    $fileCount = $inputFiles.Count
+    $subfolderCount = ($inputFiles | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique).Count
+    Write-Host "  Gasite: $fileCount fisiere in $subfolderCount foldere" -ForegroundColor Yellow
+} else {
+    Write-Host "  Structura foldere: FLAT (toate in output/)" -ForegroundColor Yellow
+    "Structura foldere: FLAT" | Out-File $LogFile -Append -Encoding UTF8
+}
+
 # ── Batch Queue — editare ordine si excludere fisiere ────────────────
 Write-Host ""
 Write-Host "Editezi batch queue (ordine/excludere)? 1-Nu [impl]  2-Da" -ForegroundColor Cyan
@@ -2576,9 +2596,27 @@ $origContainer = $container; $origContainerFlags = $containerFlags
 foreach ($f in $inputFiles) {
     # Reset container per fisier (switch mkv din iteratia anterioara nu contamineaza)
     $container = $origContainer; $containerFlags = $origContainerFlags
-    $outFile = Join-Path $OutputDir ($f.BaseName + $outSuffix + "." + $container)
+
+    # Calculeaza output path (cu sau fara structura foldere)
+    if ($preserveFolderStructure) {
+        # Calculeaza calea relativa fata de InputDir
+        $relPath = $f.DirectoryName.Substring($InputDir.Length).TrimStart('\', '/')
+        if ($relPath) {
+            $outputSubdir = Join-Path $OutputDir $relPath
+            if (-not (Test-Path $outputSubdir)) {
+                New-Item -ItemType Directory -Force -Path $outputSubdir | Out-Null
+            }
+            $outFile = Join-Path $outputSubdir ($f.BaseName + $outSuffix + "." + $container)
+        } else {
+            $outFile = Join-Path $OutputDir ($f.BaseName + $outSuffix + "." + $container)
+        }
+    } else {
+        $outFile = Join-Path $OutputDir ($f.BaseName + $outSuffix + "." + $container)
+    }
+
     Write-Host "`n══════════════════════════════════════════" -ForegroundColor Cyan
-    Write-Host "Procesam: $($f.Name) → $($f.BaseName)$outSuffix.$container" -ForegroundColor Yellow
+    $outRelPath = $outFile.Substring($OutputDir.Length).TrimStart('\', '/')
+    Write-Host "Procesam: $($f.Name) → $outRelPath" -ForegroundColor Yellow
     # Hint format sursa DVD/Blu-ray
     $extLower = $f.Extension.ToLower().TrimStart('.')
     if ($extLower -eq "vob") {
@@ -3446,6 +3484,13 @@ if ($batchNames.Count -gt 1) {
         "  $($batchNames[$i]): ${origMb}MB→${newMb}MB ($($batchRatios[$i])%) $([int]($tm/60))m" | Out-File $LogFile -Append -Encoding UTF8
     }
     Write-Host "  Cel mai rapid: $($batchNames[$fastIdx]) | Cel mai lent: $($batchNames[$slowIdx])" -ForegroundColor Yellow
+    # Afiseaza structura de foldere daca a fost pastrata
+    if ($preserveFolderStructure) {
+        $outputDirs = @(Get-ChildItem -Path $OutputDir -Directory -Recurse -ErrorAction SilentlyContinue)
+        $dirCount = $outputDirs.Count + 1  # +1 pentru folderul root
+        Write-Host "  Structura foldere: PASTRATA ($dirCount foldere)" -ForegroundColor Cyan
+        "Structura foldere: $dirCount foldere create" | Out-File $LogFile -Append -Encoding UTF8
+    }
 }
 
 Write-Host "  Log: $LogFile" -ForegroundColor White
