@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.3
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v33.4
 
 ---
 
@@ -49,8 +49,8 @@ AV-Encoder-Suite/
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
 │   ├── av_extractor_dji.sh     # DJI GPS/telemetry extractor (Termux)
 │   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML (Termux)
-│   ├── example_profile.conf    # Documented profile example (all fields)
 │   ├── profiles/
+│   │   ├── example_profile.conf    # Documented profile example (all fields)
 │   │   └── dji_action6/        # DJI Osmo Action 6 preset profiles
 │   │       ├── DJI_Action6_Airsoft_Indoor.conf
 │   │       ├── DJI_Action6_Airsoft_Outdoor.conf
@@ -258,4 +258,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v33.3** — 46 bugs fixed | 102+ features | ~9700 lines of code
+Current: **v33.4** — 46 bugs fixed | 102+ features | ~9700 lines of code

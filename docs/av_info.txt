@@ -40,10 +40,9 @@ CUPRINS
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
   av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
   av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
-  example_profile.conf          — Exemplu profil .conf documentat cu toate campurile
-
   PROFILES (src/profiles/) — Profile pre-definite pentru camere specifice
   ────────────────────────────────────────────────────────────────────────
+  profiles/example_profile.conf                          — Exemplu profil .conf documentat cu toate campurile
   profiles/dji_action6/DJI_Action6_Airsoft_Indoor.conf   — CRF 22, medium, indoor
   profiles/dji_action6/DJI_Action6_Airsoft_Outdoor.conf  — CRF 20, medium, outdoor
   profiles/dji_action6/DJI_Action6_Moto_Outdoor.conf     — CRF 20, medium, moto
@@ -111,8 +110,8 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
     av_extractor_dji.sh (opt 1-4)→ exiftool
     av_extractor_dji.sh (opt 5)  → ffmpeg
     av_extractor_gps.sh          → python3
-    hdr10plus_parser.sh          → cargo (Rust) pentru compilare
-    dovi_parser.sh               → cargo (Rust) pentru compilare
+    tools/hdr10plus_parser.sh    → cargo (Rust) pentru compilare
+    tools/dovi_parser.sh         → cargo (Rust) pentru compilare
     av_encode.ps1                → ffmpeg + ffprobe (+ exiftool/python3 optional)
     av_check.ps1                 → ffprobe
 
@@ -1148,18 +1147,22 @@ PASUL 4: Permite executia scripturilor PowerShell
 
   Stergere din folder Scripts:
     rm -f /storage/emulated/0/Media/Scripts/*.sh
+    rm -f /storage/emulated/0/Media/Scripts/tools/*.sh
 
-  Backup complet (toate 15 scripturile bash):
-    mkdir -p /storage/emulated/0/Media/Scripts/
+  Backup complet (toate scripturile bash):
+    mkdir -p /storage/emulated/0/Media/Scripts/tools/
     cp av_launcher.sh av_common.sh \
        av_encoder_x265.sh av_encoder_x264.sh \
        av_encoder_av1.sh av_encoder_dnxhr.sh \
        av_encoder_apv.sh av_encoder_prores.sh \
        av_encoder_audio.sh av_check.sh \
        av_extractor_dji.sh av_extractor_gps.sh \
-       hdr10plus_parser.sh dovi_parser.sh \
        /storage/emulated/0/Media/Scripts/
+    cp hdr10plus_parser.sh dovi_parser.sh \
+       exiftool_update.sh \
+       /storage/emulated/0/Media/Scripts/tools/
     chmod +x /storage/emulated/0/Media/Scripts/*.sh
+    chmod +x /storage/emulated/0/Media/Scripts/tools/*.sh
 
   Rulare din folder Android:
     cd /storage/emulated/0/Media/Scripts/ && ./av_launcher.sh

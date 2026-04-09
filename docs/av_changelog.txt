@@ -3,9 +3,36 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.3 | 46 bug-uri fixate | 102+ features
+  TOTAL: v33.4 | 47 bug-uri fixate | 102+ features
   28 fisiere | ~9700 linii cod | ~1650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.4 — Centralizare rute + warning dovi_tool + reorganizare docs
+═══════════════════════════════════════════════════════════════
+
+  ADD Warning dovi_tool lipsa in dialogul HDR10+ (bash + PS1)
+        Cand dovi_tool nu e instalat, afiseaza atentionare cu calea de instalare
+        Consistent cu warning-ul existent pentru hdr10plus_tool
+  UPDATE Centralizare rute foldere la inceputul scripturilor
+        LUTS_DIR mutat sus in av_common.sh, av_launcher.sh, av_encode.ps1
+        Grupat cu INPUT_DIR / OUTPUT_DIR — editare usoara la schimbare structura
+  UPDATE av_common.sh — find_lut_for_brand() si find_creative_luts() folosesc $LUTS_DIR
+        Eliminat path-uri hardcodate din interiorul functiilor
+  UPDATE Centralizare TOOLS_DIR si PROFILES_DIR la inceputul scripturilor
+        av_common.sh: TOOLS_DIR + PROFILES_DIR (cai absolute /storage/emulated/0/Media/Scripts/)
+        av_launcher.sh: TOOLS_DIR + PROFILES_DIR (cai absolute, grupate cu celelalte)
+        av_encode.ps1: $ToolsDir + $ProfilesDir (Join-Path $PSScriptRoot)
+        Toate referintele la tools/ si profiles/ folosesc variabile — schimbare folder = o singura editare
+  FIX generate_dv_rpu_from_hdr10plus() — $? suprascris de rm inainte de verificare (bash + PS1)
+        Salvare exit code in $gen_rc / $genRc inainte de rm -f / Remove-Item
+  FIX Ruta hdr10plus_parser in dialogul HDR10+ (bash + PS1)
+        ./hdr10plus_parser.sh → ./tools/hdr10plus_parser.sh
+        .\hdr10plus_parser.ps1 → .\tools\hdr10plus_parser.ps1
+  MOVE example_profile.conf → profiles/example_profile.conf
+  UPDATE av_info.txt — structura actualizata, backup command cu tools/ subfolder
+  UPDATE README.md, CLAUDE.md — structura foldere actualizata
 
 
 ═══════════════════════════════════════════════════════════════

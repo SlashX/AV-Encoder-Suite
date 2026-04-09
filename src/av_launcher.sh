@@ -7,6 +7,9 @@ TERMUX_DIR="$HOME"
 ANDROID_DIR="/storage/emulated/0/Media/Scripts"
 INPUT_DIR="/storage/emulated/0/Media/InputVideos"
 OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
+LUTS_DIR="/storage/emulated/0/Media/Luts"
+TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
+PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
 
 echo "╔══════════════════════════════════════╗"
 echo "║         AV ENCODER LAUNCHER       ║"
@@ -106,12 +109,11 @@ mkdir -p "$PROFILE_DIR" 2>/dev/null
 # Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
 shopt -s nullglob
 USER_PROFILES=("$PROFILE_DIR"/*.conf)
-BUILTIN_PROFILES=("$SCRIPT_DIR"/profiles/*/*.conf)
+BUILTIN_PROFILES=("$PROFILES_DIR"/*/*.conf)
 PROFILES=("${USER_PROFILES[@]}" "${BUILTIN_PROFILES[@]}")
 shopt -u nullglob
 
-# Folder Luts pentru verificare LUT
-LUTS_DIR="/storage/emulated/0/Media/Luts"
+# Folder Luts pentru verificare LUT (definit sus)
 
 if [ ${#PROFILES[@]} -gt 0 ]; then
     echo ""
@@ -122,7 +124,7 @@ if [ ${#PROFILES[@]} -gt 0 ]; then
     for p in "${PROFILES[@]}"; do
         pname=$(basename "$p" .conf)
         # Marcheaza profilele pre-definite cu [DJI] etc.
-        if [[ "$p" == *"/profiles/dji_action6/"* ]]; then
+        if [[ "$p" == *"$PROFILES_DIR/dji_action6/"* ]]; then
             echo "║  $local_idx) [DJI] $pname"
         else
             echo "║  $local_idx) $pname"

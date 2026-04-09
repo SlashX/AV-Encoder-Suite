@@ -15,8 +15,11 @@ if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Read-Host; exit
 }
 
-$InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutputDir = Join-Path $InputDir "output"
+$InputDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$OutputDir   = Join-Path $InputDir "output"
+$LutsDir     = Join-Path $InputDir "Luts"
+$ToolsDir    = Join-Path $PSScriptRoot "tools"
+$ProfilesDir = Join-Path $PSScriptRoot "profiles"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
@@ -403,6 +406,11 @@ function Show-Hdr10PlusDialog {
             Write-Host "  ║  4) Triple-layer DV+HDR10+HDR10+             ║" -ForegroundColor White
             Write-Host "  ║     → DV Profile 8.1 + HDR10 + HDR10+       ║" -ForegroundColor DarkGray
             $maxOpt = 4
+        } else {
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
+            Write-Host "  ║  dovi_tool NU este instalat.                 ║" -ForegroundColor Yellow
+            Write-Host "  ║  Fara el, Triple-layer DV nu este disponibil.║" -ForegroundColor Yellow
+            Write-Host "  ║  Instaleaza cu: .\$(Split-Path $ToolsDir -Leaf)\dovi_parser.ps1      ║" -ForegroundColor DarkGray
         }
         Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
         $ch = Read-Host "  Alege 1-$maxOpt [implicit: 2]"
@@ -416,7 +424,7 @@ function Show-Hdr10PlusDialog {
     } else {
         Write-Host "  ║  hdr10plus_tool NU este instalat.            ║" -ForegroundColor Yellow
         Write-Host "  ║  Fara el, metadata dinamica se pierde.       ║" -ForegroundColor Yellow
-        Write-Host "  ║  Instaleaza cu: .\hdr10plus_parser.ps1       ║" -ForegroundColor DarkGray
+        Write-Host "  ║  Instaleaza cu: .\$(Split-Path $ToolsDir -Leaf)\hdr10plus_parser.ps1  ║" -ForegroundColor DarkGray
         Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
         Write-Host "  ║  1) Re-encode HDR10 static (pierde +)        ║" -ForegroundColor White
         Write-Host "  ║  2) Stream copy video (pastreaza tot, rapid) ║" -ForegroundColor White
@@ -478,8 +486,9 @@ function Generate-DvRpuFromHdr10Plus {
 '@ | Out-File $configFile -Encoding ASCII
     Write-Host "  DV: Generez RPU din HDR10+ metadata..." -ForegroundColor Cyan
     & dovi_tool generate -j "$configFile" --hdr10plus-json "$hdr10plusJson" -o "$rpuFile" 2>$null
+    $genRc = $LASTEXITCODE
     Remove-Item $configFile -Force -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $rpuFile) -and (Get-Item $rpuFile).Length -gt 0) {
+    if ($genRc -eq 0 -and (Test-Path $rpuFile) -and (Get-Item $rpuFile).Length -gt 0) {
         Write-Host "  DV: RPU generat cu succes (Profile 8.1)" -ForegroundColor Green
         return $rpuFile
     } else {
@@ -1707,16 +1716,14 @@ if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $p
 
 # Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
 $userProfiles = @(Get-ChildItem -Path $profileDir -Filter "*.conf" -ErrorAction SilentlyContinue)
-$builtinProfilesDir = Join-Path $PSScriptRoot "profiles"
 $builtinProfiles = @()
-if (Test-Path $builtinProfilesDir) {
-    $builtinProfiles = @(Get-ChildItem -Path $builtinProfilesDir -Filter "*.conf" -Recurse -ErrorAction SilentlyContinue)
+if (Test-Path $ProfilesDir) {
+    $builtinProfiles = @(Get-ChildItem -Path $ProfilesDir -Filter "*.conf" -Recurse -ErrorAction SilentlyContinue)
 }
 $profiles = @($userProfiles) + @($builtinProfiles)
 $profLoaded = $false
 
-# Folder Luts pentru verificare LUT (Windows: relativ la InputDir)
-$LutsDir = Join-Path $InputDir "Luts"
+# Folder Luts pentru verificare LUT (definit sus)
 
 if ($profiles.Count -gt 0) {
     Write-Host ""
@@ -1726,7 +1733,7 @@ if ($profiles.Count -gt 0) {
     $pIdx = 1
     foreach ($pf in $profiles) {
         # Marcheaza profilele pre-definite cu [DJI] etc.
-        if ($pf.DirectoryName -match "profiles[/\\]dji_action6") {
+        if ($pf.DirectoryName.StartsWith((Join-Path $ProfilesDir "dji_action6"))) {
             Write-Host "║  $pIdx) [DJI] $($pf.BaseName)" -ForegroundColor White
         } else {
             Write-Host "║  $pIdx) $($pf.BaseName)" -ForegroundColor White

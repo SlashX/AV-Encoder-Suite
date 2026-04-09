@@ -12,6 +12,9 @@
 
 INPUT_DIR="/storage/emulated/0/Media/InputVideos"
 OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
+LUTS_DIR="/storage/emulated/0/Media/Luts"
+TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
+PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
 
 # ── Logging ───────────────────────────────────────────────────────────
 log() {
@@ -630,6 +633,11 @@ handle_hdr10plus_dialog() {
             echo "  ║  4) Triple-layer DV+HDR10+HDR10+             ║"
             echo "  ║     → DV Profile 8.1 + HDR10 + HDR10+       ║"
             echo "  ║     necesita: hdr10plus_tool + dovi_tool     ║"
+        else
+            echo "  ╠══════════════════════════════════════════════╣"
+            echo "  ║  dovi_tool NU este instalat.                 ║"
+            echo "  ║  Fara el, Triple-layer DV nu este disponibil.║"
+            echo "  ║  Instaleaza cu: $TOOLS_DIR/dovi_parser.sh       ║"
         fi
         echo "  ╚══════════════════════════════════════════════╝"
         local max_opt=3
@@ -676,7 +684,7 @@ handle_hdr10plus_dialog() {
     else
         echo "  ║  hdr10plus_tool NU este instalat.            ║"
         echo "  ║  Fara el, metadata dinamica se pierde.       ║"
-        echo "  ║  Instaleaza cu: ./hdr10plus_parser.sh        ║"
+        echo "  ║  Instaleaza cu: $TOOLS_DIR/hdr10plus_parser.sh   ║"
         echo "  ╠══════════════════════════════════════════════╣"
         echo "  ║  1) Re-encode HDR10 static (pierde +)        ║"
         echo "  ║  2) Stream copy video (pastreaza tot, rapid) ║"
@@ -740,10 +748,11 @@ DVCONF
     dovi_tool generate -j "$config_file" \
         --hdr10plus-json "$hdr10plus_json" \
         -o "$rpu_file" 2>/dev/null
+    local gen_rc=$?
 
     rm -f "$config_file"
 
-    if [ $? -eq 0 ] && [ -s "$rpu_file" ]; then
+    if [ $gen_rc -eq 0 ] && [ -s "$rpu_file" ]; then
         echo "  DV: RPU generat cu succes (Profile 8.1)" | tee -a "${LOG_FILE:-/dev/null}" >&2
         echo "$rpu_file"
         return 0
@@ -877,7 +886,7 @@ handle_source_dialog() {
 # ══════════════════════════════════════════════════════════════════════
 
 # Cauta fisiere .cube pentru brand-ul detectat.
-# Locatie unica: /storage/emulated/0/Media/Luts/
+# Locatie: $LUTS_DIR (definit sus)
 # Seteaza: LUT_FILES (array), LUT_SEARCH_DIR (unde a gasit)
 find_lut_for_brand() {
     LUT_FILES=()
@@ -891,7 +900,7 @@ find_lut_for_brand() {
         *)       prefix="" ;;
     esac
 
-    local luts_dir="/storage/emulated/0/Media/Luts"
+    local luts_dir="$LUTS_DIR"
     [[ ! -d "$luts_dir" ]] && return 1
 
     local found=()
@@ -913,12 +922,12 @@ find_lut_for_brand() {
     return 1
 }
 
-# Cauta fisiere .cube creative in /storage/emulated/0/Media/Luts/Creative/
+# Cauta fisiere .cube creative in $LUTS_DIR/Creative/
 # Seteaza: CREATIVE_LUT_FILES (array), CREATIVE_LUT_DIR
 find_creative_luts() {
     CREATIVE_LUT_FILES=()
     CREATIVE_LUT_DIR=""
-    local creative_dir="/storage/emulated/0/Media/Luts/Creative"
+    local creative_dir="$LUTS_DIR/Creative"
     [[ ! -d "$creative_dir" ]] && return 1
 
     local found=()
