@@ -20,7 +20,7 @@ $OutputDir       = Join-Path $InputDir "output"
 $LutsDir         = Join-Path $InputDir "Luts"
 $ToolsDir        = Join-Path $PSScriptRoot "tools"
 $ProfilesDir     = Join-Path $PSScriptRoot "profiles"
-$UserProfilesDir = Join-Path $InputDir "Profiles"
+$UserProfilesDir = Join-Path $InputDir "UserProfiles"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
@@ -1714,7 +1714,7 @@ if ($mainChoice -eq "3") {
 # ── Profil salvat (load) ─────────────────────────────────────────────
 if (-not (Test-Path $UserProfilesDir)) { New-Item -ItemType Directory -Force -Path $UserProfilesDir | Out-Null }
 
-# Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
+# Colecteaza profile: user (UserProfiles/) + pre-definite (profiles/*/)
 $userProfiles = @(Get-ChildItem -Path $UserProfilesDir -Filter "*.conf" -ErrorAction SilentlyContinue)
 $builtinProfiles = @()
 if (Test-Path $ProfilesDir) {

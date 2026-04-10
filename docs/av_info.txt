@@ -1259,8 +1259,8 @@ PROFIL SALVAT (.CONF) — v23
 ═══════════════════════════════════════════════════════════════
 
   Salvare/incarcare configuratie completa in .conf.
-  Locatie Termux: /storage/emulated/0/Media/Profiles/
-  Locatie Windows: folderul Profiles\ langa script
+  Locatie Termux: /storage/emulated/0/Media/UserProfiles/
+  Locatie Windows: folderul UserProfiles\ langa script
   Contine: encoder, container, CRF, preset, audio, filtre, loudnorm,
   ProRes profile, Force LOG detection, Interactive Mode.
   La urmatoarea rulare, scriptul afiseaza profilele disponibile.

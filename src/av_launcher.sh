@@ -10,7 +10,7 @@ OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 LUTS_DIR="/storage/emulated/0/Media/Luts"
 TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
 PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
-USER_PROFILES_DIR="/storage/emulated/0/Media/Profiles"
+USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
 
 echo "╔══════════════════════════════════════╗"
 echo "║         AV ENCODER LAUNCHER       ║"
@@ -106,7 +106,7 @@ esac
 # ── Profil salvat (save/load) ─────────────────────────────────────────
 mkdir -p "$USER_PROFILES_DIR" 2>/dev/null
 
-# Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
+# Colecteaza profile: user (UserProfiles/) + pre-definite (profiles/*/)
 shopt -s nullglob
 USER_PROFILES=("$USER_PROFILES_DIR"/*.conf)
 BUILTIN_PROFILES=("$PROFILES_DIR"/*/*.conf)

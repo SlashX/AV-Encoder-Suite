@@ -3,9 +3,20 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.5 | 47 bug-uri fixate | 102+ features
+  TOTAL: v33.6 | 48 bug-uri fixate | 102+ features
   28 fisiere | ~9700 linii cod | ~1650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.6 — Redenumire Profiles → UserProfiles
+═══════════════════════════════════════════════════════════════
+
+  FIX Redenumit folderul Profiles → UserProfiles (bash + PS1)
+        Pe Windows, profiles/ (built-in) si Profiles/ (user) era acelasi folder (case-insensitive)
+        UserProfiles/ elimina conflictul — separat clar de profiles/ pe toate platformele
+  UPDATE Comentarii actualizate in av_launcher.sh si av_encode.ps1
+  UPDATE av_info.txt, README.md, CLAUDE.md, .gitignore — UserProfiles/
 
 
 ═══════════════════════════════════════════════════════════════
@@ -13,8 +24,8 @@
 ═══════════════════════════════════════════════════════════════
 
   UPDATE Centralizare USER_PROFILES_DIR la inceputul scripturilor
-        av_common.sh + av_launcher.sh: USER_PROFILES_DIR="/storage/emulated/0/Media/Profiles"
-        av_encode.ps1: $UserProfilesDir = Join-Path $InputDir "Profiles"
+        av_common.sh + av_launcher.sh: USER_PROFILES_DIR (cale absoluta)
+        av_encode.ps1: $UserProfilesDir (Join-Path $InputDir)
         Inlocuit PROFILE_DIR / $profileDir — toate referintele folosesc variabila centralizata
 
 

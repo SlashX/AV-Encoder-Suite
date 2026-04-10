@@ -15,8 +15,8 @@ ffmpeg2pass-*.log.mbtree
 *.dnxhd
 *.dnxhr
 
-# Profile salvate local (user profiles in Profiles/)
-Profiles/
+# Profile salvate local (user profiles in UserProfiles/)
+UserProfiles/
 # Exclude src/profiles/ (built-in profiles, shipped with project)
 !src/profiles/
 
