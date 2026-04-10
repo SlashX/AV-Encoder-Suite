@@ -3,9 +3,19 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.4 | 47 bug-uri fixate | 102+ features
+  TOTAL: v33.5 | 47 bug-uri fixate | 102+ features
   28 fisiere | ~9700 linii cod | ~1650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v33.5 — Centralizare USER_PROFILES_DIR
+═══════════════════════════════════════════════════════════════
+
+  UPDATE Centralizare USER_PROFILES_DIR la inceputul scripturilor
+        av_common.sh + av_launcher.sh: USER_PROFILES_DIR="/storage/emulated/0/Media/Profiles"
+        av_encode.ps1: $UserProfilesDir = Join-Path $InputDir "Profiles"
+        Inlocuit PROFILE_DIR / $profileDir — toate referintele folosesc variabila centralizata
 
 
 ═══════════════════════════════════════════════════════════════

@@ -15,6 +15,7 @@ OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 LUTS_DIR="/storage/emulated/0/Media/Luts"
 TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
 PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
+USER_PROFILES_DIR="/storage/emulated/0/Media/Profiles"
 
 # ── Logging ───────────────────────────────────────────────────────────
 log() {

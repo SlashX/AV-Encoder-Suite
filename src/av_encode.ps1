@@ -15,11 +15,12 @@ if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Read-Host; exit
 }
 
-$InputDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutputDir   = Join-Path $InputDir "output"
-$LutsDir     = Join-Path $InputDir "Luts"
-$ToolsDir    = Join-Path $PSScriptRoot "tools"
-$ProfilesDir = Join-Path $PSScriptRoot "profiles"
+$InputDir        = Split-Path -Parent $MyInvocation.MyCommand.Path
+$OutputDir       = Join-Path $InputDir "output"
+$LutsDir         = Join-Path $InputDir "Luts"
+$ToolsDir        = Join-Path $PSScriptRoot "tools"
+$ProfilesDir     = Join-Path $PSScriptRoot "profiles"
+$UserProfilesDir = Join-Path $InputDir "Profiles"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
@@ -1711,11 +1712,10 @@ if ($mainChoice -eq "3") {
 }
 
 # ── Profil salvat (load) ─────────────────────────────────────────────
-$profileDir = Join-Path $InputDir "Profiles"
-if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
+if (-not (Test-Path $UserProfilesDir)) { New-Item -ItemType Directory -Force -Path $UserProfilesDir | Out-Null }
 
 # Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
-$userProfiles = @(Get-ChildItem -Path $profileDir -Filter "*.conf" -ErrorAction SilentlyContinue)
+$userProfiles = @(Get-ChildItem -Path $UserProfilesDir -Filter "*.conf" -ErrorAction SilentlyContinue)
 $builtinProfiles = @()
 if (Test-Path $ProfilesDir) {
     $builtinProfiles = @(Get-ChildItem -Path $ProfilesDir -Filter "*.conf" -Recurse -ErrorAction SilentlyContinue)
@@ -2444,7 +2444,7 @@ $saveProf = Read-Host "Salvezi configuratia ca profil? (d/N)"
 if ($saveProf -ieq "d") {
     $profName = Read-Host "  Nume profil (ex: drone_4k, film_hdr)"
     if ($profName) {
-        $profFile = Join-Path $profileDir "$profName.conf"
+        $profFile = Join-Path $UserProfilesDir "$profName.conf"
         $encShort = if ($useX264) { "libx264" } elseif ($useAV1) { "av1" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores" } elseif ($useHWEnc) { "hwenc" } else { "libx265" }
         $vfSave = if ($vfIsVidstab) { "vidstab" } elseif ($vfPreset) { $vfPreset } else { "" }
         @(

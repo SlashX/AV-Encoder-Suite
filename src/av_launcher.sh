@@ -10,6 +10,7 @@ OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 LUTS_DIR="/storage/emulated/0/Media/Luts"
 TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
 PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
+USER_PROFILES_DIR="/storage/emulated/0/Media/Profiles"
 
 echo "╔══════════════════════════════════════╗"
 echo "║         AV ENCODER LAUNCHER       ║"
@@ -103,12 +104,11 @@ case "$main_choice" in
 esac
 
 # ── Profil salvat (save/load) ─────────────────────────────────────────
-PROFILE_DIR="$INPUT_DIR/../Profiles"
-mkdir -p "$PROFILE_DIR" 2>/dev/null
+mkdir -p "$USER_PROFILES_DIR" 2>/dev/null
 
 # Colecteaza profile: user (Profiles/) + pre-definite (src/profiles/*/)
 shopt -s nullglob
-USER_PROFILES=("$PROFILE_DIR"/*.conf)
+USER_PROFILES=("$USER_PROFILES_DIR"/*.conf)
 BUILTIN_PROFILES=("$PROFILES_DIR"/*/*.conf)
 PROFILES=("${USER_PROFILES[@]}" "${BUILTIN_PROFILES[@]}")
 shopt -u nullglob
@@ -945,11 +945,10 @@ esac
 echo ""
 read -p "Salvezi configuratia ca profil? (d/N): " save_prof
 if [[ "${save_prof,,}" == "d" ]]; then
-    PROFILE_DIR="$INPUT_DIR/../Profiles"
-    mkdir -p "$PROFILE_DIR" 2>/dev/null
+    mkdir -p "$USER_PROFILES_DIR" 2>/dev/null
     read -p "  Nume profil (ex: drone_4k, film_hdr): " prof_name
     if [[ -n "$prof_name" ]]; then
-        PROF_FILE="$PROFILE_DIR/${prof_name}.conf"
+        PROF_FILE="$USER_PROFILES_DIR/${prof_name}.conf"
         cat > "$PROF_FILE" <<PROFEOF
 # AV Encoder Suite — Profil salvat: $prof_name
 # Generat: $(date '+%Y-%m-%d %H:%M:%S')
