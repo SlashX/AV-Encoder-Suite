@@ -158,7 +158,7 @@ function Get-DJITracks {
 }
 
 function Get-DJIMapFlags {
-    param([string]$file, [bool]$keepDbgi, $djiInfo, [string]$cont)
+    param([string]$file, [bool]$keepDjmd, [bool]$keepDbgi, [bool]$keepTmcd, $djiInfo, [string]$cont)
     if (-not $djiInfo.isDji) {
         return @("-map","0:v","-map","0:a","-map","0:s?","-map","0:t?",
                  "-map_metadata","0","-map_chapters","0")
@@ -172,11 +172,12 @@ function Get-DJIMapFlags {
     $tags = & ffprobe -v error -show_entries stream=codec_tag_string `
         -of csv=p=0 "$file" 2>$null
     foreach ($tag in $tags) {
-        if     ($tag -imatch "djmd" -and $cont -eq "mkv")                     { $maps.AddRange([string[]]@("-map","0:$idx")) }
+        if     ($tag -imatch "djmd" -and $keepDjmd -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
         elseif ($tag -imatch "djmd" -and $cont -ne "mkv")                     { Write-Host "  NOTA: djmd (GPS) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
         elseif ($tag -imatch "dbgi" -and $keepDbgi -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
-        elseif ($tag -imatch "dbgi" -and $keepDbgi -and $cont -ne "mkv")      { Write-Host "  NOTA: dbgi (debug) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
-        elseif ($tag -imatch "tmcd")                                          { $maps.AddRange([string[]]@("-map","0:$idx")) }
+        elseif ($tag -imatch "dbgi" -and $cont -ne "mkv")                     { Write-Host "  NOTA: dbgi (debug) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
+        elseif ($tag -imatch "tmcd" -and $keepTmcd -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
+        elseif ($tag -imatch "tmcd" -and $cont -ne "mkv")                     { Write-Host "  NOTA: tmcd (timecode) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
         $idx++
     }
     $maps.AddRange([string[]]@("-map_metadata","0","-map_chapters","0"))
@@ -1214,42 +1215,8 @@ for fp in files:
     Read-Host "Apasa Enter"; exit
 }
 
-# ── Export GPS/DJI via ExifTool ──────────────────────────────────────
+# ── Export GPS/DJI ───────────────────────────────────────────────────
 if ($mainChoice -eq "4") {
-    # Verificare ExifTool
-    $exifCmd = $null
-    if (Get-Command "exiftool" -ErrorAction SilentlyContinue) {
-        $exifCmd = "exiftool"
-    } elseif (Test-Path (Join-Path $PSScriptRoot "exiftool.exe")) {
-        $exifCmd = Join-Path $PSScriptRoot "exiftool.exe"
-    } else {
-        Write-Host "[EROARE] ExifTool nu a fost gasit." -ForegroundColor Red
-        Write-Host "Descarca exiftool.exe de pe https://exiftool.org/" -ForegroundColor Yellow
-        Write-Host "si pune-l in acelasi folder cu acest script sau in PATH." -ForegroundColor Yellow
-        Read-Host; exit
-    }
-    Write-Host "[OK] ExifTool gasit." -ForegroundColor Green
-
-    # Generare template GPX
-    $gpxFmt = Join-Path $OutputDir "gpx.fmt"
-    @'
-#[HEAD]<?xml version="1.0" encoding="utf-8"?>
-#[HEAD]<gpx version="1.0" creator="ExifTool $[ExifToolVersion]" xmlns="http://www.topografix.com/GPX/1/0">
-#[HEAD]<trk><name>$filename</name><trkseg>
-#[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#"><ele>$gpsaltitude#</ele><time>$gpsdatetime</time></trkpt>
-#[TAIL]</trkseg></trk></gpx>
-'@ | Out-File $gpxFmt -Encoding ASCII
-
-    # Generare template SRT
-    $srtFmt = Join-Path $OutputDir "srt.fmt"
-    @'
-#[BODY]${self:SampleIndex}
-#[BODY]${gpsdatetime} --> ${gpsdatetime}
-#[BODY]Viteza: ${gpsspeed#} m/s | Alt: ${gpsaltitude#}m
-#[BODY]Coord: ${gpslatitude#}, ${gpslongitude#}
-#[BODY]
-'@ | Out-File $srtFmt -Encoding ASCII
-
     Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  DJI GPS/TELEMETRIE EXTRACTOR                ║" -ForegroundColor Cyan
     Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
@@ -1258,13 +1225,69 @@ if ($mainChoice -eq "4") {
     Write-Host "║  3) Subtitrare (fisier .SRT pentru VLC)      ║" -ForegroundColor White
     Write-Host "║  4) Totul (GPX + CSV + SRT)                  ║" -ForegroundColor White
     Write-Host "║  5) Raw streams (djmd, dbgi, tmcd, cover)    ║" -ForegroundColor White
-    Write-Host "║  6) Anulare                                  ║" -ForegroundColor White
+    Write-Host "║  6) Elimina metadata DJI (remux rapid)       ║" -ForegroundColor White
+    Write-Host "║  7) Anulare                                  ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-    $djiChoice = Read-Host "Alege 1-6 [implicit: 1]"
+    $djiChoice = Read-Host "Alege 1-7 [implicit: 1]"
     if (-not $djiChoice) { $djiChoice = "1" }
+    if ($djiChoice -eq "7") { exit }
+
+    # Sub-dialog strip metadata (optiunea 6)
+    $stripMode = ""
     if ($djiChoice -eq "6") {
-        Remove-Item $gpxFmt,$srtFmt -Force -ErrorAction SilentlyContinue
-        exit
+        Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
+        Write-Host "║  ELIMINA METADATA DJI (REMUX FARA RE-ENCODE) ║" -ForegroundColor Yellow
+        Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
+        Write-Host "║  1) Elimina doar debug (dbgi ~295 MB) [impl]  ║" -ForegroundColor White
+        Write-Host "║  2) Elimina GPS + debug (djmd + dbgi)         ║" -ForegroundColor White
+        Write-Host "║  3) Elimina tot (djmd + dbgi + tmcd + cover)  ║" -ForegroundColor White
+        Write-Host "║  4) Anulare                                   ║" -ForegroundColor White
+        Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+        $stripMode = Read-Host "Alege 1-4 [implicit: 1]"
+        if (-not $stripMode) { $stripMode = "1" }
+        if ($stripMode -eq "4") { exit }
+    }
+
+    # Verificare dependente: optiunile 1-4 necesita ExifTool, 5-6 necesita ffmpeg
+    $exifCmd = $null
+    $gpxFmt = $null; $srtFmt = $null
+    if ($djiChoice -in @("5","6")) {
+        if (-not (Get-Command "ffmpeg" -ErrorAction SilentlyContinue)) {
+            Write-Host "[EROARE] ffmpeg nu este instalat (necesar pentru aceasta optiune)." -ForegroundColor Red
+            Read-Host; exit
+        }
+    } else {
+        if (Get-Command "exiftool" -ErrorAction SilentlyContinue) {
+            $exifCmd = "exiftool"
+        } elseif (Test-Path (Join-Path $PSScriptRoot "exiftool.exe")) {
+            $exifCmd = Join-Path $PSScriptRoot "exiftool.exe"
+        } else {
+            Write-Host "[EROARE] ExifTool nu a fost gasit." -ForegroundColor Red
+            Write-Host "Descarca exiftool.exe de pe https://exiftool.org/" -ForegroundColor Yellow
+            Write-Host "si pune-l in acelasi folder cu acest script sau in PATH." -ForegroundColor Yellow
+            Read-Host; exit
+        }
+        Write-Host "[OK] ExifTool gasit." -ForegroundColor Green
+
+        # Generare template GPX
+        $gpxFmt = Join-Path $OutputDir "gpx.fmt"
+        @'
+#[HEAD]<?xml version="1.0" encoding="utf-8"?>
+#[HEAD]<gpx version="1.0" creator="ExifTool $[ExifToolVersion]" xmlns="http://www.topografix.com/GPX/1/0">
+#[HEAD]<trk><name>$filename</name><trkseg>
+#[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#"><ele>$gpsaltitude#</ele><time>$gpsdatetime</time></trkpt>
+#[TAIL]</trkseg></trk></gpx>
+'@ | Out-File $gpxFmt -Encoding ASCII
+
+        # Generare template SRT
+        $srtFmt = Join-Path $OutputDir "srt.fmt"
+        @'
+#[BODY]${self:SampleIndex}
+#[BODY]${gpsdatetime} --> ${gpsdatetime}
+#[BODY]Viteza: ${gpsspeed#} m/s | Alt: ${gpsaltitude#}m
+#[BODY]Coord: ${gpslatitude#}, ${gpslongitude#}
+#[BODY]
+'@ | Out-File $srtFmt -Encoding ASCII
     }
 
     Write-Host "`n--- Incep extractia ---" -ForegroundColor Green
@@ -1359,10 +1382,51 @@ if ($mainChoice -eq "4") {
                 $rawIdx++
             }
         }
+
+        # STRIP METADATA — optiunea 6: remux fara re-encode, exclude track-uri selectate
+        if ($djiChoice -eq "6") {
+            $ext = $f.Extension
+            # Detecteaza track-uri DJI
+            $tagsRaw = & ffprobe -v error -show_entries stream=codec_tag_string,codec_name `
+                -of csv=p=0 $f.FullName 2>$null
+            $hasDjmd = [bool]($tagsRaw | Where-Object { $_ -imatch "djmd" })
+            $hasDbgi = [bool]($tagsRaw | Where-Object { $_ -imatch "dbgi" })
+
+            if (-not $hasDjmd -and -not $hasDbgi) {
+                Write-Host "  [SKIP] Nu e fisier DJI (nu s-au gasit track-uri djmd/dbgi)" -ForegroundColor DarkGray
+            } else {
+                # Construieste map flags cu negative mapping
+                $stripMaps = [System.Collections.Generic.List[string]]@("-map","0")
+                $stripIdx = 0
+                $tagLines = & ffprobe -v error -show_entries stream=codec_tag_string `
+                    -of csv=p=0 $f.FullName 2>$null
+                foreach ($tag in $tagLines) {
+                    switch ($stripMode) {
+                        "1" { if ($tag -imatch "dbgi") { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
+                        "2" { if ($tag -imatch "djmd|dbgi") { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
+                        "3" { if ($tag -imatch "djmd|dbgi|tmcd|mjpeg|jpeg") { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
+                    }
+                    $stripIdx++
+                }
+
+                $outClean = Join-Path $OutputDir "$($f.BaseName)_clean$ext"
+                & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
+                $stripRc = $LASTEXITCODE
+                if ($stripRc -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
+                    $srcSize = Format-Bytes $f.Length
+                    $outSize = Format-Bytes (Get-Item $outClean).Length
+                    Write-Host "  [OK] $($f.BaseName)_clean$ext ($srcSize → $outSize)" -ForegroundColor Green
+                } else {
+                    Write-Host "  [EROARE] Remux esuat pentru $($f.Name)" -ForegroundColor Red
+                    Remove-Item $outClean -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
 
     # Curatenie
-    Remove-Item $gpxFmt,$srtFmt -Force -ErrorAction SilentlyContinue
+    if ($gpxFmt) { Remove-Item $gpxFmt -Force -ErrorAction SilentlyContinue }
+    if ($srtFmt) { Remove-Item $srtFmt -Force -ErrorAction SilentlyContinue }
 
     Write-Host "`n==========================================" -ForegroundColor Cyan
     Write-Host "FINALIZAT — $djiDone fisiere procesate" -ForegroundColor Green
@@ -2656,7 +2720,7 @@ foreach ($f in $inputFiles) {
     }
 
     $dji = Get-DJITracks $f.FullName
-    $keepDbgi = $false
+    $keepDjmd = $true; $keepDbgi = $false; $keepTmcd = $true
     if ($dji.isDji) {
         Write-Host ""
         Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
@@ -2681,28 +2745,48 @@ foreach ($f in $inputFiles) {
                 $containerFlags = @()
                 $outFile = Join-Path $OutputDir ($f.BaseName + $outSuffix + ".mkv")
                 Write-Host "  Container schimbat la mkv (track-uri DJI pastrate)" -ForegroundColor Green
-                if ($dji.hasDbgi) {
-                    Write-Host "  Pastrezi dbgi (debug, ~295 MB)? 1-Da  2-Nu [impl]" -ForegroundColor White
-                    $dbgiChoice = Read-Host "  Alege [implicit: 2]"
-                    $keepDbgi = ($dbgiChoice -eq "1")
-                }
-            }
-        } else {
-            if ($dji.hasDbgi) {
-                Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-                Write-Host "  ║  Pastrezi track-ul dbgi (debug, ~295 MB)?   ║" -ForegroundColor White
-                Write-Host "  ║  1-Da   2-Nu [recomandat]                   ║" -ForegroundColor White
-                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-                $dbgiChoice = Read-Host "  Alege [implicit: 2]"
-                $keepDbgi = ($dbgiChoice -eq "1")
             } else {
-                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+                $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false
             }
         }
-        "DJI: djmd=$($dji.hasDjmd) dbgi=$keepDbgi container=$container" | Out-File $LogFile -Append -Encoding UTF8
+        # MKV: dialog selectie track-uri DJI in output
+        if ($container -eq "mkv") {
+            if ($dji.hasDbgi) {
+                Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
+                Write-Host "  ║  Track-uri DJI in output:                    ║" -ForegroundColor White
+                Write-Host "  ║  1) Pastreaza tot                             ║" -ForegroundColor White
+                Write-Host "  ║  2) Fara debug (dbgi ~295 MB) [recomandat]    ║" -ForegroundColor White
+                Write-Host "  ║  3) Fara GPS/locatie (elimina djmd + dbgi)    ║" -ForegroundColor White
+                Write-Host "  ║  4) Elimina tot (fara track-uri DJI)          ║" -ForegroundColor White
+                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+                $djiTrackChoice = Read-Host "  Alege 1-4 [implicit: 2]"
+                if (-not $djiTrackChoice) { $djiTrackChoice = "2" }
+                switch ($djiTrackChoice) {
+                    "1" { $keepDjmd = $true;  $keepDbgi = $true;  $keepTmcd = $true  }
+                    "3" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $true  }
+                    "4" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false }
+                    default { $keepDjmd = $true;  $keepDbgi = $false; $keepTmcd = $true  }
+                }
+            } else {
+                Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
+                Write-Host "  ║  Track-uri DJI in output:                    ║" -ForegroundColor White
+                Write-Host "  ║  1) Pastreaza tot [implicit]                  ║" -ForegroundColor White
+                Write-Host "  ║  2) Fara GPS/locatie (elimina djmd)           ║" -ForegroundColor White
+                Write-Host "  ║  3) Elimina tot (fara track-uri DJI)          ║" -ForegroundColor White
+                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+                $djiTrackChoice = Read-Host "  Alege 1-3 [implicit: 1]"
+                if (-not $djiTrackChoice) { $djiTrackChoice = "1" }
+                switch ($djiTrackChoice) {
+                    "2" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $true  }
+                    "3" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false }
+                    default { $keepDjmd = $true;  $keepDbgi = $false; $keepTmcd = $true  }
+                }
+            }
+        }
+        "DJI: djmd=$keepDjmd dbgi=$keepDbgi tmcd=$keepTmcd container=$container" | Out-File $LogFile -Append -Encoding UTF8
     }
 
-    $mapFlags  = Get-DJIMapFlags $f.FullName $keepDbgi $dji $container
+    $mapFlags  = Get-DJIMapFlags $f.FullName $keepDjmd $keepDbgi $keepTmcd $dji $container
     $si        = Get-SourceInfo $f.FullName
     $width     = Get-FFprobeValue $f.FullName "v:0" "width"
     $durRaw    = & ffprobe -v error -show_entries format=duration `

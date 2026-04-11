@@ -182,12 +182,12 @@ detect_dji_tracks() {
     echo "${has_djmd}|${has_dbgi}|${has_tc}|${has_cover}"
 }
 
-# Seteaza: MAP_FLAGS, IS_DJI, KEEP_DBGI; poate modifica CONTAINER/output
+# Seteaza: MAP_FLAGS, IS_DJI, KEEP_DJMD, KEEP_DBGI, KEEP_TMCD; poate modifica CONTAINER/output
 handle_dji_full() {
     local file="$1" out_suffix="$2"
     local dji_info
     dji_info=$(detect_dji_tracks "$file")
-    IS_DJI=0; KEEP_DBGI=0
+    IS_DJI=0; KEEP_DJMD=0; KEEP_DBGI=0; KEEP_TMCD=0
 
     if [ "$(echo "$dji_info" | cut -d'|' -f1)" -eq 1 ] || \
        [ "$(echo "$dji_info" | cut -d'|' -f2)" -eq 1 ]; then IS_DJI=1; fi
@@ -200,16 +200,20 @@ handle_dji_full() {
         else
             local dji_result switch_mkv
             dji_result=$(_dji_dialog "$file" "$dji_info" "$CONTAINER")
+            KEEP_DJMD=$(echo "$dji_result" | grep -o 'KEEP_DJMD=[0-9]' | cut -d= -f2)
+            [ -z "$KEEP_DJMD" ] && KEEP_DJMD=1
             KEEP_DBGI=$(echo "$dji_result" | grep -o 'KEEP_DBGI=[0-9]' | cut -d= -f2)
             [ -z "$KEEP_DBGI" ] && KEEP_DBGI=0
+            KEEP_TMCD=$(echo "$dji_result" | grep -o 'KEEP_TMCD=[0-9]' | cut -d= -f2)
+            [ -z "$KEEP_TMCD" ] && KEEP_TMCD=1
             switch_mkv=$(echo "$dji_result" | grep -o 'SWITCH_MKV=[0-9]' | cut -d= -f2)
             if [ "${switch_mkv:-0}" -eq 1 ]; then
                 CONTAINER="mkv"; CONTAINER_FLAGS=""
                 output="$OUTPUT_DIR/${name}${out_suffix}.mkv"
                 log "  Container schimbat la mkv (track-uri DJI pastrate)"
             fi
-            log "  Pastreaza dbgi: $([ "$KEEP_DBGI" -eq 1 ] && echo 'da' || echo 'nu')"
-            MAP_FLAGS=$(build_map_flags "$file" "$KEEP_DBGI" "$dji_info")
+            log "  DJI tracks — djmd:$([ "$KEEP_DJMD" -eq 1 ] && echo 'da' || echo 'nu') dbgi:$([ "$KEEP_DBGI" -eq 1 ] && echo 'da' || echo 'nu') tmcd:$([ "$KEEP_TMCD" -eq 1 ] && echo 'da' || echo 'nu')"
+            MAP_FLAGS=$(build_map_flags "$file" "$KEEP_DJMD" "$KEEP_DBGI" "$KEEP_TMCD" "$dji_info")
         fi
     else
         MAP_FLAGS="-map 0:v -map 0:a -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"
@@ -226,7 +230,7 @@ _dji_dialog() {
     has_cover=$(echo "$dji_info" | cut -d'|' -f4)
     local is_dji=0
     [ "$has_djmd" -eq 1 ] || [ "$has_dbgi" -eq 1 ] && is_dji=1
-    if [ "$is_dji" -eq 0 ]; then echo "KEEP_DBGI=0|IS_DJI=0|SWITCH_MKV=0"; return; fi
+    if [ "$is_dji" -eq 0 ]; then echo "KEEP_DJMD=0|KEEP_DBGI=0|KEEP_TMCD=0|IS_DJI=0|SWITCH_MKV=0"; return; fi
     {
         echo ""; echo "  ╔══════════════════════════════════════════════╗"
         echo "  ║  FISIER DJI DETECTAT                         ║"
@@ -236,7 +240,7 @@ _dji_dialog() {
         [ "$has_dbgi"  -eq 1 ] && echo "  ║  ⚠️  dbgi — date debug DJI (~295 MB)          ║"
         [ "$has_cover" -eq 1 ] && echo "  ║  ℹ️  Cover JPEG — nu se copiaza (re-encode)   ║"
     } >/dev/tty
-    local keep_dbgi=0 switch_mkv=0
+    local keep_djmd=1 keep_dbgi=0 keep_tmcd=1 switch_mkv=0
     if [[ "$container" != "mkv" ]]; then
         {
             echo "  ╠══════════════════════════════════════════════╣"
@@ -251,31 +255,49 @@ _dji_dialog() {
         local cont_ch; read -p "  Alege 1 sau 2 [implicit: 2]: " cont_ch </dev/tty
         if [[ "${cont_ch:-2}" == "1" ]]; then
             switch_mkv=1
-            if [ "$has_dbgi" -eq 1 ]; then
-                { echo "  Pastrezi track-ul dbgi (debug, ~295 MB)?"; echo "  1) Da   2) Nu [recomandat]"; } >/dev/tty
-                local dbgi_ch; read -p "  Alege [implicit: 2]: " dbgi_ch </dev/tty
-                [[ "${dbgi_ch:-2}" == "1" ]] && keep_dbgi=1
-            fi
-        fi
-    else
-        if [ "$has_dbgi" -eq 1 ]; then
-            {
-                echo "  ╠══════════════════════════════════════════════╣"
-                echo "  ║  Pastrezi track-ul dbgi (debug, ~295 MB)?    ║"
-                echo "  ║  1) Da — pastreaza tot   2) Nu [recomandat]  ║"
-                echo "  ╚══════════════════════════════════════════════╝"
-            } >/dev/tty
-            local dbgi_choice; read -p "  Alege 1 sau 2 [implicit: 2]: " dbgi_choice </dev/tty
-            [[ "${dbgi_choice:-2}" == "1" ]] && keep_dbgi=1
         else
-            echo "  ╚══════════════════════════════════════════════╝" >/dev/tty
+            echo "KEEP_DJMD=0|KEEP_DBGI=0|KEEP_TMCD=0|IS_DJI=1|SWITCH_MKV=0"; return
         fi
     fi
-    echo "KEEP_DBGI=${keep_dbgi}|IS_DJI=1|SWITCH_MKV=${switch_mkv}"
+    # MKV: dialog selectie track-uri DJI in output
+    if [ "$has_dbgi" -eq 1 ]; then
+        {
+            echo "  ╠══════════════════════════════════════════════╣"
+            echo "  ║  Track-uri DJI in output:                    ║"
+            echo "  ║  1) Pastreaza tot                             ║"
+            echo "  ║  2) Fara debug (dbgi ~295 MB) [recomandat]    ║"
+            echo "  ║  3) Fara GPS/locatie (elimina djmd + dbgi)    ║"
+            echo "  ║  4) Elimina tot (fara track-uri DJI)          ║"
+            echo "  ╚══════════════════════════════════════════════╝"
+        } >/dev/tty
+        local dji_ch; read -p "  Alege 1-4 [implicit: 2]: " dji_ch </dev/tty
+        case "${dji_ch:-2}" in
+            1) keep_djmd=1; keep_dbgi=1; keep_tmcd=1 ;;
+            3) keep_djmd=0; keep_dbgi=0; keep_tmcd=1 ;;
+            4) keep_djmd=0; keep_dbgi=0; keep_tmcd=0 ;;
+            *) keep_djmd=1; keep_dbgi=0; keep_tmcd=1 ;;
+        esac
+    else
+        {
+            echo "  ╠══════════════════════════════════════════════╣"
+            echo "  ║  Track-uri DJI in output:                    ║"
+            echo "  ║  1) Pastreaza tot [implicit]                  ║"
+            echo "  ║  2) Fara GPS/locatie (elimina djmd)           ║"
+            echo "  ║  3) Elimina tot (fara track-uri DJI)          ║"
+            echo "  ╚══════════════════════════════════════════════╝"
+        } >/dev/tty
+        local dji_ch; read -p "  Alege 1-3 [implicit: 1]: " dji_ch </dev/tty
+        case "${dji_ch:-1}" in
+            2) keep_djmd=0; keep_dbgi=0; keep_tmcd=1 ;;
+            3) keep_djmd=0; keep_dbgi=0; keep_tmcd=0 ;;
+            *) keep_djmd=1; keep_dbgi=0; keep_tmcd=1 ;;
+        esac
+    fi
+    echo "KEEP_DJMD=${keep_djmd}|KEEP_DBGI=${keep_dbgi}|KEEP_TMCD=${keep_tmcd}|IS_DJI=1|SWITCH_MKV=${switch_mkv}"
 }
 
 build_map_flags() {
-    local file="$1" keep_dbgi="$2" dji_info="$3"
+    local file="$1" keep_djmd="$2" keep_dbgi="$3" keep_tmcd="$4" dji_info="$5"
     local has_djmd has_dbgi has_tc
     has_djmd=$(echo "$dji_info" | cut -d'|' -f1)
     has_dbgi=$(echo "$dji_info"  | cut -d'|' -f2)
@@ -289,9 +311,9 @@ build_map_flags() {
     if [[ "$CONTAINER" == "mkv" ]]; then
         local idx=0
         while IFS= read -r tag; do
-            echo "$tag" | grep -qi "djmd" && maps="$maps -map 0:$idx"
+            echo "$tag" | grep -qi "djmd" && [ "$keep_djmd" -eq 1 ] && maps="$maps -map 0:$idx"
             echo "$tag" | grep -qi "dbgi" && [ "$keep_dbgi" -eq 1 ] && maps="$maps -map 0:$idx"
-            echo "$tag" | grep -qi "tmcd" && maps="$maps -map 0:$idx"
+            echo "$tag" | grep -qi "tmcd" && [ "$keep_tmcd" -eq 1 ] && maps="$maps -map 0:$idx"
             idx=$((idx + 1))
         done < <(ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null)
     fi

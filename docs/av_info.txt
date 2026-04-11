@@ -108,7 +108,7 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
     av_encoder_audio.sh          → ffmpeg + ffprobe
     av_check.sh                  → ffprobe
     av_extractor_dji.sh (opt 1-4)→ exiftool
-    av_extractor_dji.sh (opt 5)  → ffmpeg
+    av_extractor_dji.sh (opt 5-6)→ ffmpeg
     av_extractor_gps.sh          → python3
     tools/hdr10plus_parser.sh    → cargo (Rust) pentru compilare
     tools/dovi_parser.sh         → cargo (Rust) pentru compilare
@@ -326,7 +326,7 @@ PASUL 4: Permite executia scripturilor PowerShell
   GPS/telemetrie din fisierele video DJI (inregistrate cu telecomanda GPS
   Bluetooth sau cu aplicatia DJI Mimo conectata la telefon).
 
-  Meniu cu 6 optiuni de export:
+  Meniu cu 7 optiuni:
     1) Standard — GPX + KML (Google Earth) + CSV esential
        (Lat, Lon, Alt, Speed, Track, DateTime)
     2) Full Data — GPX + KML + CSV cu absolut toate metadatele (setari camera,
@@ -341,8 +341,15 @@ PASUL 4: Permite executia scripturilor PowerShell
        cover → _cover.jpg (thumbnail JPEG al inregistrarii)
        Aceasta optiune foloseste ffmpeg (nu ExifTool) si este utila
        ca backup al datelor originale inainte de editare video.
+    6) Elimina metadata DJI (remux rapid) — sterge track-uri DJI din sursa
+       fara re-encode (ffmpeg -c copy). Sub-dialog:
+         1) Elimina doar debug (dbgi ~295 MB) [implicit]
+         2) Elimina GPS + debug (djmd + dbgi)
+         3) Elimina tot (djmd + dbgi + tmcd + cover)
+       Output: _clean.ext in folderul output. Fisierul original ramane intact.
+    7) Anulare
 
-  Optiunile 1-4 necesita ExifTool. Optiunea 5 necesita ffmpeg.
+  Optiunile 1-4 necesita ExifTool. Optiunile 5-6 necesita ffmpeg.
   Fisierele .fmt (template-uri ExifTool) se genereaza automat si se sterg
   dupa procesare. Nu trebuie descarcate separat.
 
@@ -813,14 +820,21 @@ PASUL 4: Permite executia scripturilor PowerShell
   Doar mkv poate pastra aceste track-uri.
 
   Daca container = mp4 sau mov:
-    1) Schimba la MKV — pastreaza toate track-urile DJI.
-       Daca dbgi e prezent, intreaba suplimentar daca il pastrezi (~295 MB).
+    1) Schimba la MKV — pastreaza track-urile DJI (trece la dialogul MKV).
     2) Continua mp4/mov fara track-uri DJI (doar video + audio).
        Metadatele GPS/telemetrie raman in fisierul original.
 
-  Daca container = mkv:
-    Intreaba doar daca pastrezi dbgi (debug, ~295 MB).
-    Toate celelalte track-uri (djmd, tmcd) se pastreaza automat.
+  Daca container = mkv (sau dupa switch la MKV):
+    Dialog selectie track-uri DJI in output:
+    Cu dbgi prezent (4 optiuni, implicit = 2):
+      1) Pastreaza tot (djmd + dbgi + tmcd)
+      2) Fara debug (dbgi ~295 MB) [recomandat]
+      3) Fara GPS/locatie (elimina djmd + dbgi, pastreaza tmcd)
+      4) Elimina tot (fara track-uri DJI)
+    Fara dbgi (3 optiuni, implicit = 1):
+      1) Pastreaza tot (djmd + tmcd)
+      2) Fara GPS/locatie (elimina djmd, pastreaza tmcd)
+      3) Elimina tot (fara track-uri DJI)
 
   Cover JPEG (thumbnail DJI) nu se copiaza niciodata — este al doilea
   stream video si ar cauza re-encode MJPEG→libx265 (codec conflict).

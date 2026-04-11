@@ -34,20 +34,21 @@ echo "║  2) Full Data (GPX + KML + CSV TOATE metadate) ║"
 echo "║  3) Subtitrare (fisier .SRT pentru VLC)        ║"
 echo "║  4) Totul (GPX + KML + CSV + SRT)              ║"
 echo "║  5) Raw streams (djmd, dbgi, tmcd, cover)      ║"
-echo "║  6) Anulare                                    ║"
+echo "║  6) Elimina metadata DJI (remux rapid)         ║"
+echo "║  7) Anulare                                    ║"
 echo "╚══════════════════════════════════════════════╝"
-read -p "Alege 1-6 [implicit: 1]: " choice
+read -p "Alege 1-7 [implicit: 1]: " choice
 choice="${choice:-1}"
 
-if [ "$choice" == "6" ]; then
+if [ "$choice" == "7" ]; then
     echo "Anulat."; exit 0
 fi
 
 # ── Verificare dependente ────────────────────────────────────────────
-# Optiunile 1-4 necesita exiftool, optiunea 5 necesita ffmpeg
-if [ "$choice" == "5" ]; then
+# Optiunile 1-4 necesita exiftool, optiunile 5-6 necesita ffmpeg
+if [ "$choice" == "5" ] || [ "$choice" == "6" ]; then
     if ! command -v ffmpeg &>/dev/null; then
-        echo "EROARE: ffmpeg nu este instalat (necesar pentru extractia raw streams)."
+        echo "EROARE: ffmpeg nu este instalat (necesar pentru aceasta optiune)."
         exit 1
     fi
 else
@@ -91,6 +92,23 @@ cat <<'KMLEOF' > "$KML_FMT"
 #[BODY]$gpslongitude#,$gpslatitude#,$gpsaltitude#
 #[TAIL]</coordinates></LineString></Placemark></Document></kml>
 KMLEOF
+
+# ── Sub-dialog strip metadata (optiunea 6) ──────────────────────────
+STRIP_MODE=""
+if [ "$choice" == "6" ]; then
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  ELIMINA METADATA DJI (REMUX FARA RE-ENCODE) ║"
+    echo "╠══════════════════════════════════════════════╣"
+    echo "║  1) Elimina doar debug (dbgi ~295 MB) [impl]  ║"
+    echo "║  2) Elimina GPS + debug (djmd + dbgi)         ║"
+    echo "║  3) Elimina tot (djmd + dbgi + tmcd + cover)  ║"
+    echo "║  4) Anulare                                   ║"
+    echo "╚══════════════════════════════════════════════╝"
+    read -p "Alege 1-4 [implicit: 1]: " STRIP_MODE
+    STRIP_MODE="${STRIP_MODE:-1}"
+    if [ "$STRIP_MODE" == "4" ]; then echo "Anulat."; exit 0; fi
+fi
 
 # ── Procesare ────────────────────────────────────────────────────────
 echo ""
@@ -212,6 +230,48 @@ for file in "${FILES[@]}"; do
         # Daca nu s-a extras nimic, nu e fisier DJI
         if [ ! -f "$OUTPUT_DIR/${name}_djmd.bin" ] && [ ! -f "$OUTPUT_DIR/${name}_dbgi.bin" ]; then
             echo "  [SKIP] Nu e fisier DJI (nu s-au gasit stream-uri djmd/dbgi)"
+        fi
+    fi
+
+    # STRIP METADATA — optiunea 6: remux fara re-encode, exclude track-uri selectate
+    if [ "$choice" == "6" ]; then
+        ext="${filename##*.}"
+        # Detecteaza track-uri DJI
+        has_djmd=0; has_dbgi=0; has_tc=0
+        tracks_raw=$(ffprobe -v error \
+            -show_entries stream=codec_tag_string,codec_name \
+            -of csv=p=0 "$file" 2>/dev/null)
+        echo "$tracks_raw" | grep -qi "djmd" && has_djmd=1
+        echo "$tracks_raw" | grep -qi "dbgi" && has_dbgi=1
+        echo "$tracks_raw" | grep -qi "tmcd" && has_tc=1
+
+        if [ "$has_djmd" -eq 0 ] && [ "$has_dbgi" -eq 0 ]; then
+            echo "  [SKIP] Nu e fisier DJI (nu s-au gasit track-uri djmd/dbgi)"
+        else
+            # Construieste map flags cu negative mapping
+            maps="-map 0"
+            local_idx=0
+            while IFS= read -r tag; do
+                case "$STRIP_MODE" in
+                    1) echo "$tag" | grep -qi "dbgi" && maps="$maps -map -0:$local_idx" ;;
+                    2) echo "$tag" | grep -qi "djmd\|dbgi" && maps="$maps -map -0:$local_idx" ;;
+                    3) echo "$tag" | grep -qi "djmd\|dbgi\|tmcd\|mjpeg\|jpeg" && maps="$maps -map -0:$local_idx" ;;
+                esac
+                local_idx=$((local_idx + 1))
+            done < <(ffprobe -v error -show_entries stream=codec_tag_string \
+                -of csv=p=0 "$file" 2>/dev/null)
+
+            out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
+            ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+            strip_rc=$?
+            if [ $strip_rc -eq 0 ] && [ -s "$out_clean" ]; then
+                src_size=$(du -h "$file" | cut -f1)
+                out_size=$(du -h "$out_clean" | cut -f1)
+                echo "  [OK] ${name}_clean.${ext} ($src_size → $out_size)"
+            else
+                echo "  [EROARE] Remux esuat pentru $filename"
+                rm -f "$out_clean"
+            fi
         fi
     fi
 

@@ -3,9 +3,27 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v33.6 | 48 bug-uri fixate | 102+ features
-  28 fisiere | ~9700 linii cod | ~1650 linii documentatie
+  TOTAL: v34 | 48 bug-uri fixate | 105+ features
+  28 fisiere | ~9900 linii cod | ~1650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v34 — Control track-uri DJI + Strip metadata (remux)
+═══════════════════════════════════════════════════════════════
+
+  ADD Dialog selectie track-uri DJI la encode MKV (bash + PS1)
+        4 optiuni cand exista dbgi: pastreaza tot / fara debug / fara GPS / elimina tot
+        3 optiuni fara dbgi: pastreaza tot / fara GPS / elimina tot
+        Inlocuieste intrebarea separata dbgi — un singur dialog unificat
+  ADD Optiune noua in Extractor DJI: "Elimina metadata DJI (remux rapid)"
+        Sub-dialog: elimina debug / elimina GPS+debug / elimina tot / anulare
+        Remux cu ffmpeg -c copy (fara re-encode) — output _clean.ext
+        Disponibil in av_extractor_dji.sh (optiunea 6) si av_encode.ps1
+  UPDATE build_map_flags() — noua semnatura cu keep_djmd, keep_dbgi, keep_tmcd
+  UPDATE Get-DJIMapFlags — noua semnatura cu keepDjmd, keepDbgi, keepTmcd
+  UPDATE Extractor DJI: dependency check restructurat (ExifTool pt 1-4, ffmpeg pt 5-6)
+  UPDATE handle_dji_full() — parseaza KEEP_DJMD, KEEP_DBGI, KEEP_TMCD
 
 
 ═══════════════════════════════════════════════════════════════
@@ -16,7 +34,7 @@
         Pe Windows, profiles/ (built-in) si Profiles/ (user) era acelasi folder (case-insensitive)
         UserProfiles/ elimina conflictul — separat clar de profiles/ pe toate platformele
   UPDATE Comentarii actualizate in av_launcher.sh si av_encode.ps1
-  UPDATE av_info.txt, README.md, CLAUDE.md, .gitignore — UserProfiles/
+  UPDATE av_info.txt, README.md, .gitignore — UserProfiles/
 
 
 ═══════════════════════════════════════════════════════════════
@@ -53,7 +71,7 @@
         .\hdr10plus_parser.ps1 → .\tools\hdr10plus_parser.ps1
   MOVE example_profile.conf → profiles/example_profile.conf
   UPDATE av_info.txt — structura actualizata, backup command cu tools/ subfolder
-  UPDATE README.md, CLAUDE.md — structura foldere actualizata
+  UPDATE README.md — structura foldere actualizata
 
 
 ═══════════════════════════════════════════════════════════════
