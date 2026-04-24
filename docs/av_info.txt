@@ -989,17 +989,43 @@ PASUL 4: Permite executia scripturilor PowerShell
   Subtitrari: omise automat (-sn) — WebM suporta doar WebVTT.
 
 
-  HARDWARE ENCODE GPU (v33, PS1 only)
-  ─────────────────────────────────────
-  Meniu encoder optiunea 6. Auto-detecteaza encodere GPU in ffmpeg.
+  HARDWARE ENCODE GPU (v35 overhaul, PS1 only)
+  ─────────────────────────────────────────────
+  Meniu encoder optiunea 6. Detectie dubla: ffmpeg binary + GPU fizic (WMI).
+
   NVIDIA NVENC: hevc_nvenc, h264_nvenc, av1_nvenc
-  Intel QSV: hevc_qsv, h264_qsv, av1_qsv
-  AMD AMF: hevc_amf, h264_amf
+  Intel QSV:    hevc_qsv,   h264_qsv,   av1_qsv
+  AMD AMF:      hevc_amf,   h264_amf,   av1_amf (nou in v35)
+
   Foloseste QP (Quality Parameter) in loc de CRF — recomandat 18-28.
   Preset-uri: NVENC p1-p7, QSV veryfast-veryslow, AMF speed/balanced/quality.
-  10-bit automat (p010le) pe NVENC/QSV daca sursa e 10-bit.
+  10-bit automat (p010le) pe NVENC/QSV si AV1 AMF daca sursa e 10-bit.
   Avantaj: encode 10-20x mai rapid decat software pe GPU dedicat.
   Dezavantaj: calitate usor inferioara la acelasi bitrate vs software.
+
+  Cerinte AV1 HW encode (generatii specifice):
+    NVIDIA: RTX 40 series (Ada) sau mai nou (RTX 50, L4, L40)
+    Intel:  Arc A/B series, Core Ultra (Meteor/Arrow/Lunar Lake)
+    AMD:    RDNA3+ (RX 7000/8000/9000, W7000, iGPU 740M/760M/780M/860M/880M/890M)
+
+  BANNER GPU la startul fluxului encode:
+    Afiseaza toate GPU-urile fizice detectate (filtrand RDP/VM/virtual)
+    Listeaza HW encode disponibil per-codec H.264/H.265/AV1
+    Daca nu e detectat niciun GPU fizic: mesaj "HW indisponibil, doar SW"
+
+  FILTRARE MENIU HW:
+    Apar doar optiuni compatibile cu hardware-ul curent.
+    Optiunile indisponibile apar in lista gri cu motiv clar:
+    "Intel QSV AV1 (necesita Arc/Core Ultra)"
+    "AMD AMF AV1  (necesita RDNA3+ RX 7000)"
+    "AMD AMF *    (GPU AMD absent)"
+
+  PROFILE .conf — validare HW la load:
+    HW_ENC_CODEC salvat in profil se verifica impotriva GPU-ului real.
+    Daca GPU nu suporta → fallback automat la SW echivalent:
+      hevc_* → libx265    h264_* → libx264    av1_*  → libsvtav1
+    Bypass: seteaza HW_FORCE=1 in profil (util pt GPU-uri noi
+    ne-detectate de regex-ul intern — ex: viitoare generatii nesuportate).
 
   LUT-URI CREATIVE (v33)
   ──────────────────────

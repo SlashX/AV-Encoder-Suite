@@ -136,6 +136,55 @@ function Get-DVProfile {
     } else { "Dolby Vision (profil nedetectat)" }
 }
 
+# v35: Detectie capabilitati GPU (NVIDIA/Intel/AMD) + suport AV1 per-generatie
+# Filtreaza adaptoare virtuale (RDP/VM/DisplayLink) — doar GPU-uri fizice reale
+function Get-GPUCapabilities {
+    $virtualRx = "Basic Display|Remote Display|Virtual|VMware|VirtualBox|Hyper-V|Citrix|DisplayLink|Parsec|Oracle"
+    $allAdapters = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+    $gpus = @($allAdapters | Where-Object { $_.Name -and ($_.Name -notmatch $virtualRx) })
+    $isVM = ($allAdapters | Where-Object { $_.Name -match $virtualRx }).Count -gt 0 -and $gpus.Count -eq 0
+
+    # Regex AV1 encode per-vendor (generatii care suporta hardware AV1 encode)
+    $nvAv1Rx    = "RTX\s*40\d{2}|RTX\s*50\d{2}|RTX\s*4000\s*Ada|RTX\s*5000\s*Ada|L40|L4\b"
+    $intelAv1Rx = "Arc\s*[AB]\d{3}|Core\s*Ultra|Meteor\s*Lake|Arrow\s*Lake|Lunar\s*Lake|Panther\s*Lake"
+    $amdAv1Rx   = "RX\s*7\d{3}|RX\s*8\d{3}|RX\s*9\d{3}|W7\d{3}|740M|760M|780M|860M|880M|890M|Radeon\s*AI\s*PRO"
+
+    $gpuList = @()
+    $hasNvidia = $false; $hasIntel = $false; $hasAmd = $false
+    $nvAv1 = $false; $intelAv1 = $false; $amdAv1 = $false
+    foreach ($g in $gpus) {
+        $n = $g.Name
+        if ($n -match "NVIDIA|GeForce|RTX|GTX|Quadro|Tesla") {
+            $hasNvidia = $true
+            $av1 = ($n -match $nvAv1Rx)
+            if ($av1) { $nvAv1 = $true }
+            $gpuList += @{ vendor="NVIDIA"; name=$n; av1=$av1 }
+        } elseif ($n -match "Intel") {
+            $hasIntel = $true
+            $av1 = ($n -match $intelAv1Rx)
+            if ($av1) { $intelAv1 = $true }
+            $gpuList += @{ vendor="Intel"; name=$n; av1=$av1 }
+        } elseif ($n -match "AMD|Radeon|ATI") {
+            $hasAmd = $true
+            $av1 = ($n -match $amdAv1Rx)
+            if ($av1) { $amdAv1 = $true }
+            $gpuList += @{ vendor="AMD"; name=$n; av1=$av1 }
+        }
+    }
+
+    return @{
+        gpus        = $gpuList
+        hasNvidia   = $hasNvidia
+        hasIntel    = $hasIntel
+        hasAmd      = $hasAmd
+        isVM        = $isVM
+        # H.264/H.265: orice GPU modern al vendor-ului e compatibil
+        h264Support = @{ nvidia=$hasNvidia; intel=$hasIntel; amd=$hasAmd }
+        h265Support = @{ nvidia=$hasNvidia; intel=$hasIntel; amd=$hasAmd }
+        av1Support  = @{ nvidia=$nvAv1;     intel=$intelAv1; amd=$amdAv1 }
+    }
+}
+
 # FIX: Get-DJITracks — HAS_TC detectat din codec_tag_string/codec_name (nu codec_type)
 function Get-DJITracks {
     param([string]$file)
@@ -1775,6 +1824,48 @@ if ($mainChoice -eq "3") {
     Read-Host "Apasa Enter"; exit
 }
 
+# v35: Detectie GPU o singura data la startul fluxului de encode
+$gpuCaps = Get-GPUCapabilities
+Write-Host ""
+Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║  GPU DETECTAT                                ║" -ForegroundColor Cyan
+Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+if ($gpuCaps.gpus.Count -eq 0) {
+    if ($gpuCaps.isVM) {
+        Write-Host "║  Mediu virtual (VM/RDP) — fara GPU fizic     ║" -ForegroundColor Yellow
+    } else {
+        Write-Host "║  Niciun GPU fizic detectat                   ║" -ForegroundColor Yellow
+    }
+    Write-Host "║  HW Encode: indisponibil (doar SW)           ║" -ForegroundColor Yellow
+} else {
+    foreach ($g in $gpuCaps.gpus) {
+        $nm = $g.name
+        if ($nm.Length -gt 44) { $nm = $nm.Substring(0, 44) }
+        Write-Host ("║  {0,-44}  ║" -f $nm) -ForegroundColor White
+    }
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║  HW Encode disponibil:                       ║" -ForegroundColor Cyan
+    $h264List = @()
+    if ($gpuCaps.h264Support.nvidia) { $h264List += "NVENC" }
+    if ($gpuCaps.h264Support.intel)  { $h264List += "QSV" }
+    if ($gpuCaps.h264Support.amd)    { $h264List += "AMF" }
+    $h265List = @()
+    if ($gpuCaps.h265Support.nvidia) { $h265List += "NVENC" }
+    if ($gpuCaps.h265Support.intel)  { $h265List += "QSV" }
+    if ($gpuCaps.h265Support.amd)    { $h265List += "AMF" }
+    $av1List = @()
+    if ($gpuCaps.av1Support.nvidia) { $av1List += "NVENC" }
+    if ($gpuCaps.av1Support.intel)  { $av1List += "QSV" }
+    if ($gpuCaps.av1Support.amd)    { $av1List += "AMF" }
+    $h264Str = if ($h264List.Count) { $h264List -join ", " } else { "-" }
+    $h265Str = if ($h265List.Count) { $h265List -join ", " } else { "-" }
+    $av1Str  = if ($av1List.Count)  { $av1List  -join ", " } else { "- (GPU nu suporta)" }
+    Write-Host ("║  H.264: {0,-37}  ║" -f $h264Str) -ForegroundColor White
+    Write-Host ("║  H.265: {0,-37}  ║" -f $h265Str) -ForegroundColor White
+    Write-Host ("║  AV1  : {0,-37}  ║" -f $av1Str)  -ForegroundColor White
+}
+Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
 # ── Profil salvat (load) ─────────────────────────────────────────────
 if (-not (Test-Path $UserProfilesDir)) { New-Item -ItemType Directory -Force -Path $UserProfilesDir | Out-Null }
 
@@ -1885,6 +1976,36 @@ if ($profiles.Count -gt 0) {
         $hwEncPreset = if ($HW_ENC_PRESET) { $HW_ENC_PRESET } else { "" }
         $hwEncQP     = if ($HW_ENC_QP)     { $HW_ENC_QP }     else { "23" }
         $hwEncName   = $hwEncCodec
+        $hwForce     = ($HW_FORCE -eq "1")
+
+        # v35: Validare HW encoder din profil vs capabilitate GPU reala
+        if ($useHWEnc -and $hwEncCodec) {
+            $profVendor = switch -Regex ($hwEncCodec) { "nvenc" { "nvidia" } "qsv" { "intel" } "amf" { "amd" } default { "" } }
+            $profCodec  = switch -Regex ($hwEncCodec) { "^hevc" { "h265Support" } "^h264" { "h264Support" } "^av1"  { "av1Support"  } default { "" } }
+            $gpuOk = $false
+            if ($profVendor -and $profCodec) { $gpuOk = [bool]$gpuCaps.$profCodec[$profVendor] }
+            if (-not $gpuOk) {
+                Write-Host ""
+                Write-Host "  ⚠ Profil cere HW encoder '$hwEncCodec' — GPU-ul curent nu-l suporta." -ForegroundColor Yellow
+                if ($hwForce) {
+                    Write-Host "  HW_FORCE=1 — bypass validare, incerc oricum (encode-ul poate esua)." -ForegroundColor Yellow
+                } else {
+                    # Fallback la SW echivalent
+                    $fallback = switch -Regex ($hwEncCodec) {
+                        "^hevc" { "libx265" }
+                        "^h264" { "libx264" }
+                        "^av1"  { "libsvtav1" }
+                        default { "libx265" }
+                    }
+                    Write-Host "  Fallback la software: $fallback (seteaza HW_FORCE=1 in profil pt bypass)" -ForegroundColor Yellow
+                    $useHWEnc = $false
+                    $hwEncCodec = ""; $hwEncName = ""; $hwEncPreset = ""
+                    if ($fallback -eq "libx264")    { $useX264 = $true }
+                    elseif ($fallback -eq "libsvtav1") { $useAV1 = $true; $av1Impl = "libsvtav1" }
+                    # libx265 = default (niciun flag)
+                }
+            }
+        }
 
         $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
         $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
@@ -1994,26 +2115,60 @@ if ($useHWEnc) {
     # Detect available HW encoders
     $hwEncoders = & ffmpeg -encoders 2>$null | Out-String
     $hwAvail = @()
-    if ($hwEncoders -match "hevc_nvenc")  { $hwAvail += @{id="hevc_nvenc";  label="NVIDIA NVENC H.265"; codec="hevc"} }
-    if ($hwEncoders -match "h264_nvenc")  { $hwAvail += @{id="h264_nvenc";  label="NVIDIA NVENC H.264"; codec="h264"} }
-    if ($hwEncoders -match "av1_nvenc")   { $hwAvail += @{id="av1_nvenc";   label="NVIDIA NVENC AV1";   codec="av1"} }
-    if ($hwEncoders -match "hevc_qsv")    { $hwAvail += @{id="hevc_qsv";   label="Intel QSV H.265";    codec="hevc"} }
-    if ($hwEncoders -match "h264_qsv")    { $hwAvail += @{id="h264_qsv";   label="Intel QSV H.264";    codec="h264"} }
-    if ($hwEncoders -match "av1_qsv")     { $hwAvail += @{id="av1_qsv";    label="Intel QSV AV1";      codec="av1"} }
-    if ($hwEncoders -match "hevc_amf")    { $hwAvail += @{id="hevc_amf";   label="AMD AMF H.265";      codec="hevc"} }
-    if ($hwEncoders -match "h264_amf")    { $hwAvail += @{id="h264_amf";   label="AMD AMF H.264";      codec="h264"} }
+    # v35: Catalog complet + cross-check cu $gpuCaps (GPU fizic detectat)
+    $hwCatalog = @(
+        @{id="hevc_nvenc"; label="NVIDIA NVENC H.265"; vendor="nvidia"; codec="hevc"}
+        @{id="h264_nvenc"; label="NVIDIA NVENC H.264"; vendor="nvidia"; codec="h264"}
+        @{id="av1_nvenc";  label="NVIDIA NVENC AV1";   vendor="nvidia"; codec="av1" }
+        @{id="hevc_qsv";   label="Intel QSV H.265";    vendor="intel";  codec="hevc"}
+        @{id="h264_qsv";   label="Intel QSV H.264";    vendor="intel";  codec="h264"}
+        @{id="av1_qsv";    label="Intel QSV AV1";      vendor="intel";  codec="av1" }
+        @{id="hevc_amf";   label="AMD AMF H.265";      vendor="amd";    codec="hevc"}
+        @{id="h264_amf";   label="AMD AMF H.264";      vendor="amd";    codec="h264"}
+        @{id="av1_amf";    label="AMD AMF AV1";        vendor="amd";    codec="av1" }
+    )
+    $hwUnavail = @()  # pentru mesaje informative
+    foreach ($entry in $hwCatalog) {
+        $inFfmpeg  = ($hwEncoders -match $entry.id)
+        $supportKey = switch ($entry.codec) { "h264" { "h264Support" } "hevc" { "h265Support" } "av1" { "av1Support" } }
+        $gpuOk = [bool]$gpuCaps.$supportKey[$entry.vendor]
+        if ($inFfmpeg -and $gpuOk) {
+            $hwAvail += $entry
+        } elseif ($inFfmpeg -and -not $gpuOk) {
+            # ffmpeg suporta dar GPU nu — adaugi la lista "indisponibil cu motiv"
+            $reason = switch ($entry.vendor) {
+                "nvidia" { if (-not $gpuCaps.hasNvidia) { "GPU NVIDIA absent" } else { "necesita RTX 40+ (Ada)" } }
+                "intel"  { if (-not $gpuCaps.hasIntel)  { "GPU Intel absent" }  else { "necesita Arc/Core Ultra" } }
+                "amd"    { if (-not $gpuCaps.hasAmd)    { "GPU AMD absent" }    else { "necesita RDNA3+ (RX 7000)" } }
+            }
+            $hwUnavail += @{ label=$entry.label; reason=$reason }
+        }
+    }
     if ($hwAvail.Count -eq 0) {
-        Write-Host "║  NU s-au gasit encodere GPU!             ║" -ForegroundColor Red
-        Write-Host "║  Necesita: NVIDIA GPU + drivers CUDA     ║" -ForegroundColor Yellow
-        Write-Host "║           sau Intel iGPU + drivers QSV   ║" -ForegroundColor Yellow
-        Write-Host "║           sau AMD GPU + drivers AMF      ║" -ForegroundColor Yellow
-        Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "║  NU s-au gasit encodere GPU compatibile!     ║" -ForegroundColor Red
+        Write-Host "║  Necesita: NVIDIA GPU + drivers CUDA         ║" -ForegroundColor Yellow
+        Write-Host "║           sau Intel iGPU + drivers QSV       ║" -ForegroundColor Yellow
+        Write-Host "║           sau AMD GPU + drivers AMF          ║" -ForegroundColor Yellow
+        if ($hwUnavail.Count -gt 0) {
+            Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+            Write-Host "║  Indisponibil pe GPU-ul curent:              ║" -ForegroundColor DarkGray
+            foreach ($u in $hwUnavail) {
+                Write-Host ("║  - {0,-28} ({1})" -f $u.label, $u.reason) -ForegroundColor DarkGray
+            }
+        }
+        Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
         Read-Host; exit
     }
     for ($hi = 0; $hi -lt $hwAvail.Count; $hi++) {
-        Write-Host ("║  {0}) {1,-37}║" -f ($hi+1), $hwAvail[$hi].label) -ForegroundColor White
+        Write-Host ("║  {0}) {1,-37}   ║" -f ($hi+1), $hwAvail[$hi].label) -ForegroundColor White
     }
-    Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+    if ($hwUnavail.Count -gt 0) {
+        Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+        foreach ($u in $hwUnavail) {
+            Write-Host ("║  - {0,-28} ({1,-10})" -f $u.label, $u.reason) -ForegroundColor DarkGray
+        }
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
     $hwChoice = Read-Host "Alege [implicit: 1]"
     if (-not $hwChoice) { $hwChoice = "1" }
     $hwIdx = [int]$hwChoice - 1
@@ -2521,6 +2676,7 @@ if ($saveProf -ieq "d") {
             "HW_ENC_CODEC=$hwEncCodec"
             "HW_ENC_PRESET=$hwEncPreset"
             "HW_ENC_QP=$hwEncQP"
+            "HW_FORCE=0"
             "CONTAINER=$container"
             "SCALE_WIDTH=$scaleWidth"
             "TARGET_FPS=$targetFps"
@@ -3255,8 +3411,8 @@ foreach ($f in $inputFiles) {
             @("-quality",$hwEncPreset)
         }
         $hwPixFmt = "yuv420p"
-        # 10-bit for NVENC/QSV if source is 10-bit
-        if ($si.is10bit -and $hwEncCodec -match "nvenc|qsv") {
+        # 10-bit for NVENC/QSV/AV1-AMF if source is 10-bit (h264_amf/hevc_amf raman 8-bit)
+        if ($si.is10bit -and ($hwEncCodec -match "nvenc|qsv" -or $hwEncCodec -eq "av1_amf")) {
             $hwPixFmt = "p010le"
         }
         $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +

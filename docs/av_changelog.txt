@@ -3,9 +3,45 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v34 | 48 bug-uri fixate | 105+ features
-  28 fisiere | ~9900 linii cod | ~1650 linii documentatie
+  TOTAL: v35 | 49 bug-uri fixate | 115+ features
+  28 fisiere | ~10094 linii cod | ~1700 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v35 — HW Encode Overhaul: GPU Detection + AMD AV1
+═══════════════════════════════════════════════════════════════
+
+  ADD Detectie GPU fizic prin WMI (Win32_VideoController)
+        Filtreaza adaptoare virtuale: RDP, VMware, VirtualBox, Hyper-V,
+        Citrix, DisplayLink, Parsec — doar GPU-uri reale
+        Flag isVM cand nu exista GPU fizic
+  ADD Banner detectie GPU la startul fluxului de encode
+        Afiseaza toate GPU-urile fizice detectate
+        Listeaza HW encode disponibil per-codec (H.264, H.265, AV1)
+        Mesaj clar cand AV1 nu e suportat de GPU
+  ADD Detectie capabilitate AV1 encode per-vendor si per-generatie
+        NVIDIA: RTX 40+ (Ada), RTX 50 (Blackwell), L4/L40 — regex
+        Intel: Arc A/B, Core Ultra, Meteor/Arrow/Lunar Lake — regex
+        AMD: RDNA3+ (RX 7000/8000/9000, 740M/760M/780M/860M/880M/890M, W7000) — regex
+  ADD Suport AMD AMF AV1 (av1_amf) — nou encoder disponibil
+        10-bit nativ pentru surse 10-bit (p010le)
+        Preset quality/balanced/speed + QP via -rc cqp
+  ADD Filtrare dinamica meniu HW pe baza GPU-ului real detectat
+        Afiseaza doar optiuni compatibile cu hardware-ul curent
+        Lista gri cu motive clare pentru optiuni indisponibile:
+        "necesita RTX 40+ (Ada)", "necesita RDNA3+", "GPU absent"
+  ADD HW_FORCE field in profile .conf — bypass validare GPU
+        HW_FORCE=0 = validare cu fallback la SW daca GPU nu suporta
+        HW_FORCE=1 = forteaza encoder-ul (util pt GPU-uri noi ne-detectate)
+  ADD Validare profil HW la load: cross-check encoder vs GPU capability
+        Fallback automat la SW echivalent cand GPU nu suporta:
+        *_nvenc/qsv/amf HEVC → libx265
+        *_nvenc/qsv/amf H.264 → libx264
+        *_nvenc/qsv/amf AV1 → libsvtav1
+  UPDATE example_profile.conf cu documentatie completa HW encode
+        Lista toate 9 encodere HW + cerinte GPU per AV1
+        Camp HW_FORCE cu explicatie use case
 
 
 ═══════════════════════════════════════════════════════════════
