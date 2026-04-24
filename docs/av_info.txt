@@ -37,6 +37,7 @@ CUPRINS
   av_encoder_apv.sh     — Encoder APV (Samsung profesional, intra-frame, ffmpeg 8.1)
   av_encoder_prores.sh  — Encoder ProRes (Apple profesional, prores_ks, mov obligatoriu)
   av_encoder_audio.sh      — Re-encode doar audio (video stream copy, rapid)
+  av_trimconcat.sh         — Trim & Concat pipeline (v36: trim / concat / pipeline complet)
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
   av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
   av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
@@ -256,12 +257,14 @@ PASUL 4: Permite executia scripturilor PowerShell
   │   ├── av_encoder_x264.sh
   │   ├── av_encoder_av1.sh
   │   ├── av_encoder_audio.sh
+  │   ├── av_trimconcat.sh
   │   ├── av_check.sh
   │   ├── av_extractor_dji.sh
   │   ├── av_extractor_gps.sh
   │   └── (photo scripts — viitor)
   ├── InputVideos/            ← surse video + fisiere GPS (.gpx, .fit)
   ├── OutputVideos/           ← rezultate video + CSV/SRT GPS
+  ├── Temp/                   ← (v36) lazy, folosit de Trim & Concat
   ├── InputPhotos/            ← surse poze (viitor)
   └── OutputPhotos/           ← rezultate poze (viitor)
 
@@ -382,6 +385,98 @@ PASUL 4: Permite executia scripturilor PowerShell
   FIT: parser binar pur Python (fara dependinte externe). Citeste record
   messages, converteste semicircles in grade, altitude si speed in unitati
   standard. Extrage si HR, cadence, power, temp daca sunt prezente.
+
+  FLUXUL TRIM & CONCAT (v36 — av_trimconcat.sh / Invoke-*Flow):
+  ──────────────────────────────────────────────────────────────
+  Submeniu cu 3 flow-uri + back:
+    1) Trim clip (un fisier)
+    2) Concat clips (unire)
+    3) Trim + Concat + Encode (pipeline complet)
+    4) Inapoi
+
+  La intrare: scan foldere reziduale din Temp/. Daca exista subfoldere
+  trim_*/concat_*/pipeline_* (sesiuni anterioare intrerupte sau esuate),
+  se afiseaza lista cu size (MB) + age (h/z) si 3 optiuni:
+    1) Pastreaza toate — pentru recovery manual
+    2) Sterge >24h [default] — curatenie sigura (procese vii protejate)
+    3) Sterge toate — curatenie completa
+
+  FLOW 1 — TRIM UN FISIER:
+    1. Listare fisiere din InputVideos/ cu durate
+    2. Selectie fisier
+    3. Loop multi-cut: pentru fiecare segment
+       - Introducere start/end (format flexibil: 45 / 1:30 / 1:05:30)
+       - Confirmare clip rezultat
+       - Alegere precizie:
+         1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]
+         2) Re-encode (exact, frame-accurate, mai lent)
+       - Dialog re-encode: codec (x265/x264) + CRF + audio (copy/aac/eac3)
+       - Output: <nume>_trim<N>_<start>.<ext> cu collision auto-increment
+    4. Intreaba daca mai vrei alt segment din acelasi fisier
+
+  FLOW 2 — CONCAT CLIPS:
+    1. Listare fisiere + selectie cu range syntax:
+       all / 1,3,5 / 1-5 / 1-3,7,10-12
+    2. Ordine:
+       1) Nume alfabetic [default]
+       2) Data modificare
+       3) Dimensiune
+       4) Manual (introdu ordinea: 3,1,2)
+       5) Pastreaza ordinea selectiei
+    3. Afisare ordine finala cu durate + durata totala
+    4. Nume output (default: concat_YYYYMMDD_HHMMSS)
+    5. Container: mkv [default] / mp4 / mov
+    6. Compat check — ffprobe extrage codec+WxH+fps+pix_fmt pentru fiecare:
+       a) Toate identice → optiune stream copy (concat demuxer, instant, lossless)
+                         sau re-encode (compresie suplimentara)
+       b) Diferente → re-encode OBLIGATORIU via concat filter
+    7. Re-encode: codec (x265/x264) + CRF + audio (aac/eac3/copy)
+    8. Executie → cleanup temp automat daca OK, pastrat daca esuat
+
+  FLOW 3 — TRIM + CONCAT + ENCODE (PIPELINE):
+    Pas 1: Selectie fisiere (range syntax) + sort (ca la Concat)
+    Pas 2: Indicare care fisiere au nevoie de trim
+           Exemple: none / 1,3 / 1-2 / all
+           Pentru fiecare fisier selectat: loop multi-segment (start/end)
+    Pas 3: Setari encode GLOBALE (o singura data pt toate):
+           - Codec: libx265 [default] / libx264 / libsvtav1
+           - CRF [default 22]
+           - Preset: medium [default] / slow / fast
+           - Audio: aac 192k [default] / eac3 224k / copy
+    Pas 4: Nume output (default pipeline_YYYYMMDD_HHMMSS) + container (mkv/mp4/mov)
+    Pas 5: Rezumat pre-executie:
+           - Lista fisiere cu tag [FULL] sau [TRIM xN]
+           - Durata finala estimata
+           - Temp estimat (MB) — proportional cu bitrate-ul sursei
+           - Setari encode + nume output
+           - Warning HDR daca e cazul (vezi mai jos)
+           - Confirm (d/n) [default: d]
+    Pas 6: Executie in 3 pass-uri explicite:
+           [Pass 1/3] Trim stream copy — fiecare segment → subdir temp
+                      Fisierele FULL (fara trim) NU se copiaza (referinta directa)
+           [Pass 2/3] Verificare compat (codec+rez+fps+pix_fmt) pe fisierele generate
+                      Daca compat: generare concat.txt (demuxer path)
+                      Daca diferite: switch automat la concat filter (fara concat.txt)
+                      Audio copy → fallback aac 192k cand se foloseste concat filter
+           [Pass 3/3] Concat + Encode intr-un singur ffmpeg
+                      Demuxer: -f concat -safe 0 -i concat.txt (rapid, input unificat)
+                      Filter:  -i per fisier + filter_complex concat (lent dar robust)
+                      Comun: -c:v CODEC -crf CRF -preset PP -map_metadata 0
+    Pas 7: Cleanup temp daca output OK, pastrat daca esuat
+    Stats finale: size output, ratio compresie vs input, durata, nr. segmente
+
+  WARNING HDR (flow Pipeline):
+  ffprobe color_transfer pe fiecare fisier ales. Daca gaseste smpte2084 (HDR10)
+  sau arib-std-b67 (HLG), afiseaza warning inainte de confirmare:
+    "Setarile standard (x265 CRF 22) NU pastreaza metadata HDR.
+     Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR."
+
+  FOLDER TEMP:
+  Termux: /storage/emulated/0/Media/Temp
+  Windows: <folder av_encode.ps1>/Temp
+  Creat lazy la prima folosire (nu e prezent in repo).
+  Exclus din git (.gitignore).
+  Subfoldere per-rulare: trim_PID_timestamp, concat_PID_timestamp, pipeline_PID_timestamp.
 
 
 ═══════════════════════════════════════════════════════════════

@@ -11,6 +11,8 @@ LUTS_DIR="/storage/emulated/0/Media/Luts"
 TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
 PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
 USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
+# v36: Folder temporar (Trim & Concat) — creat lazy la prima folosire
+AV_TEMP_DIR="/storage/emulated/0/Media/Temp"
 
 echo "╔══════════════════════════════════════╗"
 echo "║         AV ENCODER LAUNCHER       ║"
@@ -89,16 +91,18 @@ echo "║  2) Encodeaza doar audio (video copy)║"
 echo "║  3) Verifica fisiere media           ║"
 echo "║  4) Export date GPS/DJI (din video)  ║"
 echo "║  5) Import GPS extern (GPX/FIT)     ║"
-echo "║  6) Anulare / iesire                 ║"
+echo "║  6) Trim & Concat (taiere/unire)     ║"
+echo "║  7) Anulare / iesire                 ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Introdu 1-6: " main_choice
+read -p "Introdu 1-7: " main_choice
 
 case "$main_choice" in
     2) echo "Rulez av_encoder_audio.sh..."; ./av_encoder_audio.sh; exit $? ;;
     3) echo "Rulez av_check.sh..."; ./av_check.sh; exit $? ;;
     4) echo "Rulez av_extractor_dji.sh..."; ./av_extractor_dji.sh; exit $? ;;
     5) echo "Rulez av_extractor_gps.sh..."; ./av_extractor_gps.sh; exit $? ;;
-    6) echo "Anulat."; exit 0 ;;
+    6) echo "Rulez av_trimconcat.sh..."; ./av_trimconcat.sh; exit $? ;;
+    7) echo "Anulat."; exit 0 ;;
     1) : ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

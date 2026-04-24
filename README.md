@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v35
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v36
 
 ---
 
@@ -10,6 +10,7 @@
 
 - **6 video encoders**: H.265/HEVC, H.264/AVC, AV1 (SVT-AV1/libaom), DNxHR, ProRes, APV
 - **Hardware encoding (Windows)**: NVENC, QSV, AMF for H.264/H.265/AV1 with GPU capability detection (RTX 40+, Intel Arc, AMD RDNA3+)
+- **Trim & Concat pipeline** (v36): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline with HDR warning
 - **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, LOG (Apple Log, D-Log M, Samsung Log)
 - **DJI support**: GPS/telemetry extraction (GPX, KML, CSV, SRT), DJI track control, metadata strip (remux)
 - **Audio encoding**: AAC, AC3, E-AC3 (Dolby Digital Plus), DTS, TrueHD, FLAC, PCM, Opus
@@ -45,6 +46,7 @@ AV-Encoder-Suite/
 │   ├── av_encoder_prores.sh    # ProRes encoder (Apple professional)
 │   ├── av_encoder_apv.sh       # APV encoder (Samsung, ffmpeg 8.1+)
 │   ├── av_encoder_audio.sh     # Audio-only re-encode (video stream copy)
+│   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36: trim / concat / full pipeline)
 │   ├── av_check.sh             # Media analysis + CSV export (Termux)
 │   ├── av_check.ps1            # Media analysis + CSV export (Windows)
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
@@ -136,16 +138,17 @@ cd src
 3. Analyze media files (analysis + CSV export)
 4. Export DJI GPS/telemetry data
 5. Import external GPS — GPX/FIT
-6. Check video *(standalone av_check.sh)*
+6. Trim & Concat *(v36 — trim / concat / full pipeline)*
 7. Exit
 
-### Windows — `av_encode.ps1` (6 options)
+### Windows — `av_encode.ps1` (7 options)
 1. Encode video + audio
 2. Encode audio only (video stream copy)
 3. Analyze media files (analysis + CSV 30 fields)
 4. Export DJI GPS data *(requires ExifTool)*
 5. Import external GPS — GPX/FIT/KML *(requires Python3)*
-6. Exit
+6. Trim & Concat *(v36 — trim / concat / full pipeline)*
+7. Exit
 
 ---
 
@@ -184,6 +187,15 @@ cd src
 - **4K Upscale** — Lanczos algorithm (`scale=3840:-2:flags=lanczos`)
 - **Vidstab 2-pass** — `vidstabdetect` (shakiness=5, accuracy=15) + `vidstabtransform` (smoothing=10)
 - Denoise, deinterlace, crop, resize, FPS conversion, HDR→SDR tonemap
+
+### Trim & Concat (v36)
+- **Trim** — cut a single file with stream copy (instant, ±1-2s keyframe accuracy) or re-encode (frame-accurate); multi-cut loop per file
+- **Concat** — concatenate multiple files; auto compat check (codec/resolution/fps/pix_fmt) picks demuxer (stream copy, lossless) or filter (re-encode); sort by name/date/size/manual
+- **Pipeline** — full trim → concat → encode in 3 explicit passes; select files, mark which need trimming, set encode params once (x265/x264/AV1, CRF, preset, audio)
+- **Flexible time input** — `45` / `1:30` / `1:05:30` all parsed to seconds
+- **Range selection** — `all` / `1,3,5` / `1-5` / `1-3,7,10-12`
+- **Temp management** — lazy-created `Temp/` folder with per-run subdirs; residual cleanup prompt on submenu entry (>24h default)
+- **HDR warning** — detects HDR10/HLG input and warns that standard re-encode settings don't preserve HDR metadata
 
 ---
 
@@ -259,4 +271,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v35** — 49 bugs fixed | 115+ features | ~10094 lines of code
+Current: **v36** — 49 bugs fixed | 120+ features | ~11898 lines of code

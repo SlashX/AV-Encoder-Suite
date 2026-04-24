@@ -20,6 +20,10 @@ UserProfiles/
 # Exclude src/profiles/ (built-in profiles, shipped with project)
 !src/profiles/
 
+# Temp folder (v36: Trim & Concat — creat lazy, NU se commit)
+Temp/
+src/Temp/
+
 # Windows
 Thumbs.db
 desktop.ini

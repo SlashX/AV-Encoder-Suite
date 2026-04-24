@@ -16,6 +16,64 @@ LUTS_DIR="/storage/emulated/0/Media/Luts"
 TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
 PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
 USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
+# v36: Folder temporar (Trim & Concat, feature-uri viitoare) — creat lazy la prima folosire
+AV_TEMP_DIR="/storage/emulated/0/Media/Temp"
+ensure_temp_dir() { mkdir -p "$AV_TEMP_DIR" 2>/dev/null; }
+
+# v36: Scan foldere reziduale (trim_*, concat_*, pipeline_*) in $AV_TEMP_DIR
+# Chemat la intrarea in submeniul Trim & Concat.
+tc_scan_leftover_temp() {
+    [[ ! -d "$AV_TEMP_DIR" ]] && return 0
+    local leftover=()
+    local d
+    for d in "$AV_TEMP_DIR"/trim_* "$AV_TEMP_DIR"/concat_* "$AV_TEMP_DIR"/pipeline_*; do
+        [[ -d "$d" ]] && leftover+=("$d")
+    done
+    (( ${#leftover[@]} == 0 )) && return 0
+
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  Temp — foldere reziduale detectate          ║"
+    echo "╠══════════════════════════════════════════════╣"
+    local now; now=$(date +%s)
+    for d in "${leftover[@]}"; do
+        local mt; mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+        local age_h=$(( (now - mt) / 3600 ))
+        local sz; sz=$(du -sm "$d" 2>/dev/null | cut -f1); [[ -z "$sz" ]] && sz=0
+        local age_str="${age_h}h"
+        (( age_h >= 24 )) && age_str="$((age_h/24))z"
+        printf "║  %-30s %4sMB  %s\n" "$(basename "$d" | cut -c1-30)" "$sz" "$age_str"
+    done
+    echo "╚══════════════════════════════════════════════╝"
+    echo "  1) Pastreaza toate"
+    echo "  2) Sterge pe cele > 24h [default]"
+    echo "  3) Sterge toate"
+    read -p "Alege 1-3: " tc_ch
+    [[ -z "$tc_ch" ]] && tc_ch=2
+    case "$tc_ch" in
+        2) for d in "${leftover[@]}"; do
+               local mt; mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+               if (( (now - mt) >= 86400 )); then
+                   rm -rf "$d" && echo "  sters: $(basename "$d")"
+               fi
+           done ;;
+        3) for d in "${leftover[@]}"; do rm -rf "$d"; done
+           echo "  toate sterse" ;;
+        *) : ;;
+    esac
+}
+
+# v36: Detecteaza HDR10 (smpte2084) / HLG (arib-std-b67) pe un set de fisiere.
+# Return 0 daca cel putin unul e HDR, 1 altfel.
+tc_check_hdr_files() {
+    local f ct
+    for f in "$@"; do
+        ct=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer \
+            -of default=nw=1:nk=1 "$f" 2>/dev/null)
+        if [[ "$ct" == "smpte2084" || "$ct" == "arib-std-b67" ]]; then return 0; fi
+    done
+    return 1
+}
 
 # ── Logging ───────────────────────────────────────────────────────────
 log() {
@@ -1767,4 +1825,848 @@ run_encode_loop() {
         --content "Procesate: $TOTAL_DONE | Erori: $TOTAL_ERRORS | Salvat: $(( TOTAL_SAVED/1024/1024 )) MB" \
         --icon video 2>/dev/null
     echo "Dezactivez wake lock..."; termux-wake-unlock
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# TRIM & CONCAT (v36+) — Helpers + Flows
+# ══════════════════════════════════════════════════════════════════════
+
+# Parsare timp flexibil: "45" → 00:00:45, "1:30" → 00:01:30, "1:05:30" → 01:05:30
+# Acceptă și formatul complet HH:MM:SS. Returnează secundele ca integer.
+# Eșec: returnează "" (gol).
+parse_time_flexible() {
+    local t="$1"
+    [[ -z "$t" ]] && { echo ""; return; }
+    # Strip whitespace
+    t="${t// /}"
+    local h=0 m=0 s=0
+    if [[ "$t" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+        h="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[2]}"; s="${BASH_REMATCH[3]}"
+    elif [[ "$t" =~ ^([0-9]+):([0-9]+)$ ]]; then
+        m="${BASH_REMATCH[1]}"; s="${BASH_REMATCH[2]}"
+    elif [[ "$t" =~ ^([0-9]+)$ ]]; then
+        s="${BASH_REMATCH[1]}"
+    else
+        echo ""; return
+    fi
+    # Validare intervale
+    if (( m > 59 || s > 59 )); then echo ""; return; fi
+    echo $(( h*3600 + m*60 + s ))
+}
+
+# Formatare secunde → HH:MM:SS
+format_seconds() {
+    local s=$1
+    printf "%02d:%02d:%02d" $((s/3600)) $((s%3600/60)) $((s%60))
+}
+
+# Durată video în secunde (integer)
+get_duration_seconds() {
+    local file="$1"
+    local d
+    d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null)
+    d=${d%.*}; [[ ! "$d" =~ ^[0-9]+$ ]] && d=0
+    echo "$d"
+}
+
+# Expandare range syntax: "1-3,7,10-12" → "1 2 3 7 10 11 12"
+# "all" → toate indecșii până la MAX. Returnează lista pe stdout, spațiu-separat.
+expand_range_selection() {
+    local input="$1" max="$2"
+    input="${input// /}"
+    if [[ "${input,,}" == "all" ]]; then
+        seq 1 "$max"
+        return
+    fi
+    local out=()
+    IFS=',' read -ra parts <<< "$input"
+    for p in "${parts[@]}"; do
+        if [[ "$p" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}"
+            (( a > b )) && { local tmp=$a; a=$b; b=$tmp; }
+            for ((i=a; i<=b && i<=max; i++)); do out+=("$i"); done
+        elif [[ "$p" =~ ^[0-9]+$ ]]; then
+            (( p >= 1 && p <= max )) && out+=("$p")
+        fi
+    done
+    # Dedupe păstrând ordinea
+    local seen=() uniq=()
+    for x in "${out[@]}"; do
+        local dup=0
+        for y in "${seen[@]}"; do [[ "$y" == "$x" ]] && dup=1 && break; done
+        (( dup == 0 )) && { seen+=("$x"); uniq+=("$x"); }
+    done
+    echo "${uniq[@]}"
+}
+
+# Generator sub-folder temp unic: $AV_TEMP_DIR/trim_<PID>_<timestamp>
+# Creează folderul, setează global TRIM_TEMP_SUBDIR
+create_temp_subdir() {
+    local prefix="${1:-trim}"
+    ensure_temp_dir
+    local sub="${AV_TEMP_DIR}/${prefix}_$$_$(date +%s)"
+    mkdir -p "$sub"
+    TRIM_TEMP_SUBDIR="$sub"
+    echo "$sub"
+}
+
+# Cleanup sub-folder temp DOAR dacă output-ul final există și are size > 0
+cleanup_temp_subdir() {
+    local subdir="$1" output="$2"
+    if [[ -f "$output" && -s "$output" ]]; then
+        rm -rf "$subdir"
+        echo "  Temp cleanup: $subdir sters."
+    else
+        echo ""
+        echo "  ⚠ EROARE: output final eșuat sau gol."
+        echo "  Fișierele temporare păstrate în: $subdir"
+    fi
+}
+
+# Listare fișiere video din INPUT_DIR. Setează global TC_FILES=() + TC_COUNT.
+scan_input_videos() {
+    shopt -s nullglob nocaseglob
+    TC_FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,mxf,webm,avi})
+    shopt -u nocaseglob nullglob
+    TC_COUNT=${#TC_FILES[@]}
+}
+
+# Prompt pt timp cu validare: re-întreabă până când input-ul e valid
+# Arg: $1=prompt, $2=default_seconds, $3=max_duration_seconds
+# Output: secundele pe stdout
+prompt_time_validated() {
+    local prompt="$1" default_s="$2" max_s="$3"
+    local def_fmt; def_fmt=$(format_seconds "$default_s")
+    while true; do
+        read -p "$prompt [default: $def_fmt]: " raw
+        [[ -z "$raw" ]] && { echo "$default_s"; return; }
+        local parsed; parsed=$(parse_time_flexible "$raw")
+        if [[ -z "$parsed" ]]; then
+            echo "  Format invalid. Exemple: 45 / 1:30 / 1:05:30 / 01:05:30" >&2
+            continue
+        fi
+        if (( parsed > max_s )); then
+            echo "  Timp > durata (${max_s}s). Clamp la durata maximă." >&2
+            echo "$max_s"; return
+        fi
+        if (( parsed < 0 )); then parsed=0; fi
+        echo "$parsed"; return
+    done
+}
+
+# Verificare coliziune output + oferă overwrite/auto-suffix/rename
+# Arg: $1=output_path
+# Output: calea finală pe stdout (posibil modificată)
+resolve_output_collision() {
+    local target="$1"
+    if [[ ! -e "$target" ]]; then echo "$target"; return; fi
+    echo "" >&2
+    echo "  ⚠ Fisierul exista deja: $(basename "$target")" >&2
+    echo "  1) Suprascrie" >&2
+    echo "  2) Auto-suffix (_1, _2, ...)" >&2
+    echo "  3) Rename manual" >&2
+    read -p "  Alege [default: 2]: " ch >&2
+    case "$ch" in
+        1) echo "$target" ;;
+        3)
+            read -p "  Nume nou (fara extensie): " nn >&2
+            local dir="$(dirname "$target")" ext="${target##*.}"
+            echo "${dir}/${nn}.${ext}"
+            ;;
+        *)
+            local dir="$(dirname "$target")" base="$(basename "$target")"
+            local name="${base%.*}" ext="${base##*.}" n=1
+            while [[ -e "${dir}/${name}_${n}.${ext}" ]]; do n=$((n+1)); done
+            echo "${dir}/${name}_${n}.${ext}"
+            ;;
+    esac
+}
+
+# ── Flow 1: Trim un singur fișier ─────────────────────────────────────
+trimconcat_flow_trim() {
+    scan_input_videos
+    if (( TC_COUNT == 0 )); then
+        echo "Nu exista fisiere video in $INPUT_DIR"; return 1
+    fi
+    echo ""
+    echo "╔══════════════════════════════════════╗"
+    echo "║  TRIM — Selectare fisier             ║"
+    echo "╠══════════════════════════════════════╣"
+    for ((i=0; i<TC_COUNT; i++)); do
+        local f="${TC_FILES[$i]}" dur
+        dur=$(get_duration_seconds "$f")
+        printf "║  %2d) %-28s %s\n" "$((i+1))" "$(basename "$f" | cut -c1-28)" "$(format_seconds "$dur")"
+    done
+    echo "╚══════════════════════════════════════╝"
+    read -p "Alege 1-$TC_COUNT: " fidx
+    if ! [[ "$fidx" =~ ^[0-9]+$ ]] || (( fidx < 1 || fidx > TC_COUNT )); then
+        echo "Selectie invalida."; return 1
+    fi
+    local src="${TC_FILES[$((fidx-1))]}"
+    local src_base; src_base=$(basename "$src")
+    local src_name="${src_base%.*}" src_ext="${src_base##*.}"
+    local total_s; total_s=$(get_duration_seconds "$src")
+
+    mkdir -p "$OUTPUT_DIR" 2>/dev/null
+    termux-wake-lock 2>/dev/null
+
+    local cut_idx=1
+    while true; do
+        echo ""
+        echo "╔══════════════════════════════════════╗"
+        echo "║  TRIM #$cut_idx — $src_base"
+        echo "║  Durată totală: $(format_seconds "$total_s")"
+        echo "╚══════════════════════════════════════╝"
+
+        local start_s end_s
+        while true; do
+            start_s=$(prompt_time_validated "Start" 0 "$total_s")
+            end_s=$(prompt_time_validated "End  " "$total_s" "$total_s")
+            if (( start_s >= end_s )); then
+                echo "  EROARE: start >= end. Reintrodu."; continue
+            fi
+            break
+        done
+        local clip_s=$(( end_s - start_s ))
+        echo ""
+        echo "  Clip rezultat: $(format_seconds "$clip_s") (din $(format_seconds "$start_s") la $(format_seconds "$end_s"))"
+        read -p "  Confirma? (d/n) [default: d]: " conf
+        if [[ "${conf,,}" == "n" ]]; then echo "  Anulat."; continue; fi
+
+        # Dialog stream copy vs re-encode
+        echo ""
+        echo "  Precizie trim:"
+        echo "    1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]"
+        echo "    2) Re-encode (exact, frame-accurate, mai lent)"
+        read -p "  Alege 1-2 [default: 1]: " mode
+        local out_suffix="_trim${cut_idx}_$(format_seconds "$start_s" | tr ':' '-')"
+        local out_path="${OUTPUT_DIR}/${src_name}${out_suffix}.${src_ext}"
+        out_path=$(resolve_output_collision "$out_path")
+
+        if [[ "$mode" == "2" ]]; then
+            # Re-encode minimalist
+            echo ""
+            echo "  Re-encode: 1-libx265 [default]  2-libx264"
+            read -p "  Codec: " ec
+            local codec="libx265"; [[ "$ec" == "2" ]] && codec="libx264"
+            read -p "  CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+            echo "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k"
+            read -p "  Alege: " ac
+            local aopt=(-c:a copy)
+            [[ "$ac" == "2" ]] && aopt=(-c:a aac -b:a 192k)
+            [[ "$ac" == "3" ]] && aopt=(-c:a eac3 -b:a 224k)
+            echo "  Encoding... $(format_seconds "$clip_s")"
+            ffmpeg -y -ss "$start_s" -to "$end_s" -i "$src" \
+                -map 0 -map_metadata 0 -c:v "$codec" -crf "$crf" -preset medium \
+                "${aopt[@]}" -c:s copy \
+                -avoid_negative_ts make_zero \
+                "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+        else
+            echo ""
+            echo "  NOTĂ: Stream copy taie la cel mai apropiat keyframe."
+            echo "  Tăietura poate diferi cu 1-2 secunde față de timpul exact."
+            echo "  Stream copy... (instant)"
+            ffmpeg -y -ss "$start_s" -to "$end_s" -i "$src" \
+                -map 0 -map_metadata 0 -c copy \
+                -avoid_negative_ts make_zero -copyts \
+                "$out_path" 2>&1 | tail -5
+        fi
+
+        if [[ -f "$out_path" && -s "$out_path" ]]; then
+            local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+            echo ""
+            echo "  ✓ Output: $out_path"
+            echo "  ✓ Size: $(( osize/1024/1024 )) MB"
+        else
+            echo "  ✗ EROARE: output-ul nu a fost creat."
+        fi
+
+        echo ""
+        read -p "Vrei sa tai alta sectiune din acelasi fisier? (d/n) [default: n]: " again
+        if [[ "${again,,}" != "d" ]]; then break; fi
+        cut_idx=$((cut_idx+1))
+    done
+
+    termux-wake-unlock 2>/dev/null
+    echo ""
+    echo "  Trim terminat. $((cut_idx)) clip-uri generate."
+}
+
+# Probe rapid fișier: codec + rez + fps + pix_fmt pt compat check
+# Arg: $1=file. Output: "codec|WxH|fps|pix_fmt" pe stdout
+probe_video_signature() {
+    local f="$1"
+    ffprobe -v error -select_streams v:0 \
+        -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt \
+        -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null | \
+        paste -sd'|' -
+}
+
+# Verifică dacă toate fișierele au signature identică. Return 0=compat, 1=diferit
+check_concat_compat() {
+    local files=("$@")
+    local first=""
+    for f in "${files[@]}"; do
+        local sig; sig=$(probe_video_signature "$f")
+        if [[ -z "$first" ]]; then first="$sig"
+        elif [[ "$sig" != "$first" ]]; then return 1; fi
+    done
+    return 0
+}
+
+# ── Flow 2: Concat fișiere ────────────────────────────────────────────
+trimconcat_flow_concat() {
+    scan_input_videos
+    if (( TC_COUNT == 0 )); then
+        echo "Nu exista fisiere video in $INPUT_DIR"; return 1
+    fi
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  CONCAT — Listare fisiere                    ║"
+    echo "╠══════════════════════════════════════════════╣"
+    for ((i=0; i<TC_COUNT; i++)); do
+        local f="${TC_FILES[$i]}" dur
+        dur=$(get_duration_seconds "$f")
+        printf "║  %2d) %-32s %s\n" "$((i+1))" "$(basename "$f" | cut -c1-32)" "$(format_seconds "$dur")"
+    done
+    echo "╚══════════════════════════════════════════════╝"
+    echo "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12"
+    read -p "Selecteaza: " sel_raw
+    local indices; indices=($(expand_range_selection "$sel_raw" "$TC_COUNT"))
+    if (( ${#indices[@]} == 0 )); then
+        echo "Selectie invalida."; return 1
+    fi
+
+    # Sort options
+    echo ""
+    echo "Ordine fisiere:"
+    echo "  1) Nume (alfabetic) [default]"
+    echo "  2) Data modificare"
+    echo "  3) Dimensiune"
+    echo "  4) Manual (introdu ordinea)"
+    echo "  5) Pastreaza ordinea selectiei"
+    read -p "Alege 1-5 [default: 1]: " sort_mode
+    [[ -z "$sort_mode" ]] && sort_mode=1
+
+    # Build selected array
+    local selected=()
+    for idx in "${indices[@]}"; do selected+=("${TC_FILES[$((idx-1))]}"); done
+
+    case "$sort_mode" in
+        1) # name
+            local IFS=$'\n'
+            selected=($(for f in "${selected[@]}"; do echo "$f"; done | sort))
+            unset IFS
+            ;;
+        2) # date
+            local IFS=$'\n'
+            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(stat -c %Y "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+            unset IFS
+            ;;
+        3) # size
+            local IFS=$'\n'
+            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(stat -c %s "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+            unset IFS
+            ;;
+        4) # manual — afiseaza si cere ordinea
+            echo ""
+            for ((i=0; i<${#selected[@]}; i++)); do
+                echo "  $((i+1))) $(basename "${selected[$i]}")"
+            done
+            read -p "Ordinea noua (ex: 3,1,2): " new_order
+            local reordered=()
+            IFS=',' read -ra parts <<< "$new_order"
+            for p in "${parts[@]}"; do
+                p="${p// /}"
+                if [[ "$p" =~ ^[0-9]+$ ]] && (( p >= 1 && p <= ${#selected[@]} )); then
+                    reordered+=("${selected[$((p-1))]}")
+                fi
+            done
+            if (( ${#reordered[@]} == 0 )); then
+                echo "Ordine invalida, pastrez ordinea initiala."
+            else
+                selected=("${reordered[@]}")
+            fi
+            ;;
+        5) : ;; # nimic — păstrează ordinea selectiei
+    esac
+
+    # Show final order
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  Ordine concat:                              ║"
+    local total_s=0
+    for ((i=0; i<${#selected[@]}; i++)); do
+        local d; d=$(get_duration_seconds "${selected[$i]}")
+        total_s=$((total_s + d))
+        printf "║  %2d. %-32s %s\n" "$((i+1))" "$(basename "${selected[$i]}" | cut -c1-32)" "$(format_seconds "$d")"
+    done
+    echo "║  Durata totala: $(format_seconds "$total_s")"
+    echo "╚══════════════════════════════════════════════╝"
+
+    # Output filename
+    local ts; ts=$(date +%Y%m%d_%H%M%S)
+    read -p "Nume fisier output (fara extensie) [default: concat_${ts}]: " out_name
+    [[ -z "$out_name" ]] && out_name="concat_${ts}"
+
+    # Container
+    echo ""
+    echo "Container output:"
+    echo "  1) mkv [default — flexibil, orice codec]"
+    echo "  2) mp4"
+    echo "  3) mov"
+    read -p "Alege 1-3 [default: 1]: " cont_ch
+    local container="mkv"
+    [[ "$cont_ch" == "2" ]] && container="mp4"
+    [[ "$cont_ch" == "3" ]] && container="mov"
+
+    mkdir -p "$OUTPUT_DIR" 2>/dev/null
+    local out_path="${OUTPUT_DIR}/${out_name}.${container}"
+    out_path=$(resolve_output_collision "$out_path")
+
+    # Compat check
+    echo ""
+    echo "  Verific compatibilitate codec/rez/fps/pix_fmt..."
+    local use_filter=0
+    if check_concat_compat "${selected[@]}"; then
+        echo "  ✓ Fisierele sunt identice — pot folosi stream copy."
+        echo ""
+        echo "  1) Stream copy (concat demuxer, instant, lossless) [default]"
+        echo "  2) Re-encode (compresie suplimentara)"
+        read -p "  Alege 1-2: " cmode
+        [[ "$cmode" == "2" ]] && use_filter=1
+    else
+        echo "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)."
+        echo "  Re-encode OBLIGATORIU via concat filter."
+        use_filter=1
+    fi
+
+    # Create temp subdir pt concat.txt
+    local subdir; subdir=$(create_temp_subdir "concat")
+    termux-wake-lock 2>/dev/null
+
+    if (( use_filter == 0 )); then
+        # Stream copy concat demuxer
+        local concat_txt="${subdir}/concat.txt"
+        : > "$concat_txt"
+        for f in "${selected[@]}"; do
+            # Escape apostrofuri în path: ' → '\''
+            local esc="${f//\'/\'\\\'\'}"
+            echo "file '${esc}'" >> "$concat_txt"
+        done
+        echo "  Concat stream copy..."
+        ffmpeg -y -f concat -safe 0 -i "$concat_txt" \
+            -map 0 -map_metadata 0 -c copy \
+            -avoid_negative_ts make_zero \
+            "$out_path" 2>&1 | tail -10
+    else
+        # Re-encode via concat filter
+        echo ""
+        echo "  Re-encode: 1-libx265 [default]  2-libx264"
+        read -p "  Codec: " ec
+        local codec="libx265"; [[ "$ec" == "2" ]] && codec="libx264"
+        read -p "  CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+        echo "  Audio: 1-aac 192k [default]  2-eac3 224k  3-copy"
+        read -p "  Alege: " ac
+        local aopt=(-c:a aac -b:a 192k)
+        [[ "$ac" == "2" ]] && aopt=(-c:a eac3 -b:a 224k)
+        [[ "$ac" == "3" ]] && aopt=(-c:a copy)
+
+        # Build -i pentru fiecare fișier + filter_complex
+        local ff_in=() fc_map=""
+        for ((i=0; i<${#selected[@]}; i++)); do
+            ff_in+=(-i "${selected[$i]}")
+            fc_map+="[${i}:v:0][${i}:a:0?]"
+        done
+        local n=${#selected[@]}
+        local fc="${fc_map}concat=n=${n}:v=1:a=1[outv][outa]"
+
+        echo "  Concat re-encode ($codec CRF $crf)... durata totala $(format_seconds "$total_s")"
+        ffmpeg -y "${ff_in[@]}" \
+            -filter_complex "$fc" \
+            -map "[outv]" -map "[outa]" \
+            -c:v "$codec" -crf "$crf" -preset medium \
+            "${aopt[@]}" \
+            -map_metadata 0 \
+            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+    fi
+
+    termux-wake-unlock 2>/dev/null
+
+    # Cleanup
+    cleanup_temp_subdir "$subdir" "$out_path"
+
+    if [[ -f "$out_path" && -s "$out_path" ]]; then
+        local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+        echo ""
+        echo "  ✓ Output: $out_path"
+        echo "  ✓ Size: $(( osize/1024/1024 )) MB"
+        echo "  ✓ Fisiere concatenate: ${#selected[@]}"
+        echo "  ✓ Durata totala: $(format_seconds "$total_s")"
+    fi
+}
+
+# ── Flow 3: Pipeline (Trim → Concat → Encode) ────────────────────────
+trimconcat_flow_pipeline() {
+    scan_input_videos
+    if (( TC_COUNT == 0 )); then
+        echo "Nu exista fisiere video in $INPUT_DIR"; return 1
+    fi
+
+    # Pas 1: selectie fisiere incluse in pipeline
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  PIPELINE — Selectare fisiere                ║"
+    echo "╠══════════════════════════════════════════════╣"
+    for ((i=0; i<TC_COUNT; i++)); do
+        local f="${TC_FILES[$i]}" dur
+        dur=$(get_duration_seconds "$f")
+        printf "║  %2d) %-32s %s\n" "$((i+1))" "$(basename "$f" | cut -c1-32)" "$(format_seconds "$dur")"
+    done
+    echo "╚══════════════════════════════════════════════╝"
+    echo "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12"
+    read -p "Selecteaza fisierele incluse: " sel_raw
+    local indices; indices=($(expand_range_selection "$sel_raw" "$TC_COUNT"))
+    if (( ${#indices[@]} == 0 )); then
+        echo "Selectie invalida."; return 1
+    fi
+
+    # Array initial de fisiere selectate (in ordinea data de sort)
+    local chosen=()
+    for idx in "${indices[@]}"; do chosen+=("${TC_FILES[$((idx-1))]}"); done
+
+    # Sort
+    echo ""
+    echo "Ordine fisiere:"
+    echo "  1) Nume (alfabetic) [default]"
+    echo "  2) Data modificare"
+    echo "  3) Dimensiune"
+    echo "  4) Manual (introdu ordinea)"
+    echo "  5) Pastreaza ordinea selectiei"
+    read -p "Alege 1-5 [default: 1]: " sort_mode
+    [[ -z "$sort_mode" ]] && sort_mode=1
+    case "$sort_mode" in
+        1) local IFS=$'\n'
+           chosen=($(for f in "${chosen[@]}"; do echo "$f"; done | sort))
+           unset IFS ;;
+        2) local IFS=$'\n'
+           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(stat -c %Y "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+           unset IFS ;;
+        3) local IFS=$'\n'
+           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(stat -c %s "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+           unset IFS ;;
+        4) echo ""
+           for ((i=0; i<${#chosen[@]}; i++)); do
+               echo "  $((i+1))) $(basename "${chosen[$i]}")"
+           done
+           read -p "Ordinea noua (ex: 3,1,2): " new_order
+           local reordered=()
+           IFS=',' read -ra parts <<< "$new_order"
+           for p in "${parts[@]}"; do
+               p="${p// /}"
+               if [[ "$p" =~ ^[0-9]+$ ]] && (( p >= 1 && p <= ${#chosen[@]} )); then
+                   reordered+=("${chosen[$((p-1))]}")
+               fi
+           done
+           if (( ${#reordered[@]} == 0 )); then
+               echo "Ordine invalida, pastrez ordinea initiala."
+           else
+               chosen=("${reordered[@]}")
+           fi ;;
+        5) : ;;
+    esac
+
+    # Pas 2: care din fisierele alese au nevoie de trim?
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  PIPELINE — Care fisiere au nevoie de TRIM?  ║"
+    echo "╠══════════════════════════════════════════════╣"
+    for ((i=0; i<${#chosen[@]}; i++)); do
+        local f="${chosen[$i]}" dur
+        dur=$(get_duration_seconds "$f")
+        printf "║  %2d) %-32s %s\n" "$((i+1))" "$(basename "$f" | cut -c1-32)" "$(format_seconds "$dur")"
+    done
+    echo "╚══════════════════════════════════════════════╝"
+    echo "Exemple: none / 1,3 / 1-2 / all"
+    read -p "Indici: " trim_sel
+    [[ -z "$trim_sel" ]] && trim_sel="none"
+
+    local trim_indices=()
+    if [[ "${trim_sel,,}" != "none" ]]; then
+        trim_indices=($(expand_range_selection "$trim_sel" "${#chosen[@]}"))
+    fi
+
+    # Pentru fiecare fisier cu trim: colectez segmente (start_s,end_s)
+    # segments[i] = "start1:end1,start2:end2,..." sau "" daca full file
+    local segments=()
+    for ((i=0; i<${#chosen[@]}; i++)); do segments+=(""); done
+
+    for idx in "${trim_indices[@]}"; do
+        local i=$((idx-1))
+        local src="${chosen[$i]}" base; base=$(basename "$src")
+        local total_s; total_s=$(get_duration_seconds "$src")
+        local segs=""
+        local cut_idx=1
+        echo ""
+        echo "╔══════════════════════════════════════════════╗"
+        echo "║  TRIM — $base"
+        echo "║  Durata totala: $(format_seconds "$total_s")"
+        echo "╚══════════════════════════════════════════════╝"
+        while true; do
+            echo ""
+            echo "  Segment #$cut_idx"
+            local start_s end_s
+            while true; do
+                start_s=$(prompt_time_validated "Start" 0 "$total_s")
+                end_s=$(prompt_time_validated "End  " "$total_s" "$total_s")
+                if (( start_s >= end_s )); then
+                    echo "  EROARE: start >= end. Reintrodu."; continue
+                fi
+                break
+            done
+            local clip_s=$(( end_s - start_s ))
+            echo "  Segment: $(format_seconds "$clip_s") (din $(format_seconds "$start_s") la $(format_seconds "$end_s"))"
+            if [[ -z "$segs" ]]; then segs="${start_s}:${end_s}"; else segs="${segs},${start_s}:${end_s}"; fi
+            echo ""
+            read -p "  Mai adaugi un segment din acest fisier? (d/n) [default: n]: " again
+            if [[ "${again,,}" != "d" ]]; then break; fi
+            cut_idx=$((cut_idx+1))
+        done
+        segments[$i]="$segs"
+    done
+
+    # Pas 3: setari encode (o singura data)
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  PIPELINE — Setari encode (global)           ║"
+    echo "╚══════════════════════════════════════════════╝"
+    echo "Codec:"
+    echo "  1) libx265 (HEVC) [default]"
+    echo "  2) libx264 (H.264)"
+    echo "  3) libsvtav1 (AV1)"
+    read -p "Alege 1-3: " cc
+    local codec="libx265"
+    [[ "$cc" == "2" ]] && codec="libx264"
+    [[ "$cc" == "3" ]] && codec="libsvtav1"
+    read -p "CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+    echo "Preset:"
+    echo "  1) medium [default]"
+    echo "  2) slow (calitate mai buna)"
+    echo "  3) fast"
+    read -p "Alege 1-3: " pp
+    local preset="medium"
+    [[ "$pp" == "2" ]] && preset="slow"
+    [[ "$pp" == "3" ]] && preset="fast"
+    echo "Audio:"
+    echo "  1) aac 192k [default]"
+    echo "  2) eac3 224k"
+    echo "  3) copy"
+    read -p "Alege 1-3: " ac
+    local aopt=(-c:a aac -b:a 192k)
+    [[ "$ac" == "2" ]] && aopt=(-c:a eac3 -b:a 224k)
+    [[ "$ac" == "3" ]] && aopt=(-c:a copy)
+
+    # Pas 4: output name + container
+    local ts; ts=$(date +%Y%m%d_%H%M%S)
+    echo ""
+    read -p "Nume fisier output (fara extensie) [default: pipeline_${ts}]: " out_name
+    [[ -z "$out_name" ]] && out_name="pipeline_${ts}"
+    echo "Container output:"
+    echo "  1) mkv [default]"
+    echo "  2) mp4"
+    echo "  3) mov"
+    read -p "Alege 1-3: " cont_ch
+    local container="mkv"
+    [[ "$cont_ch" == "2" ]] && container="mp4"
+    [[ "$cont_ch" == "3" ]] && container="mov"
+
+    mkdir -p "$OUTPUT_DIR" 2>/dev/null
+    local out_path="${OUTPUT_DIR}/${out_name}.${container}"
+    out_path=$(resolve_output_collision "$out_path")
+
+    # Estimare temp size: suma segmentelor (bitrate-proportional)
+    local est_temp_mb=0
+    local pipeline_total_s=0
+    for ((i=0; i<${#chosen[@]}; i++)); do
+        local f="${chosen[$i]}" segs="${segments[$i]}"
+        local fsize; fsize=$(stat -c%s "$f" 2>/dev/null || echo 0)
+        local fdur; fdur=$(get_duration_seconds "$f")
+        if [[ -z "$segs" ]]; then
+            est_temp_mb=$(( est_temp_mb + fsize/1024/1024 ))
+            pipeline_total_s=$(( pipeline_total_s + fdur ))
+        else
+            IFS=',' read -ra parts <<< "$segs"
+            for seg in "${parts[@]}"; do
+                local ss="${seg%:*}" ee="${seg#*:}"
+                local sdur=$(( ee - ss ))
+                pipeline_total_s=$(( pipeline_total_s + sdur ))
+                if (( fdur > 0 )); then
+                    est_temp_mb=$(( est_temp_mb + (fsize/1024/1024) * sdur / fdur ))
+                fi
+            done
+        fi
+    done
+
+    # Pas 5: pre-execution summary
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  PIPELINE — Rezumat pre-executie             ║"
+    echo "╠══════════════════════════════════════════════╣"
+    for ((i=0; i<${#chosen[@]}; i++)); do
+        local f="${chosen[$i]}" segs="${segments[$i]}"
+        local nm; nm=$(basename "$f" | cut -c1-30)
+        if [[ -z "$segs" ]]; then
+            printf "║  %2d. %-30s [FULL]\n" "$((i+1))" "$nm"
+        else
+            local nseg=0
+            IFS=',' read -ra parts <<< "$segs"
+            nseg=${#parts[@]}
+            printf "║  %2d. %-30s [TRIM x%d]\n" "$((i+1))" "$nm" "$nseg"
+        fi
+    done
+    echo "║"
+    echo "║  Durata finala estimata: $(format_seconds "$pipeline_total_s")"
+    echo "║  Temp estimat: ~${est_temp_mb} MB"
+    echo "║  Encode: $codec CRF $crf ($preset)"
+    echo "║  Output: $(basename "$out_path")"
+    echo "╚══════════════════════════════════════════════╝"
+
+    # HDR warning
+    if tc_check_hdr_files "${chosen[@]}"; then
+        echo ""
+        echo "  ⚠ INPUT HDR DETECTAT (smpte2084 / HLG)"
+        echo "    Setarile standard ($codec CRF $crf) NU pastreaza metadata HDR."
+        echo "    Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR."
+    fi
+
+    read -p "Continua? (d/n) [default: d]: " go
+    if [[ "${go,,}" == "n" ]]; then echo "Anulat."; return 0; fi
+
+    # Pas 6: executie
+    local subdir; subdir=$(create_temp_subdir "pipeline")
+    termux-wake-lock 2>/dev/null
+
+    # Pass 1/3: trim fiecare fisier ce are segmente → $subdir/NN_segM.ext
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  [Pass 1/3] Trim stream copy"
+    echo "═══════════════════════════════════════════════"
+    local trimmed_files=()
+    for ((i=0; i<${#chosen[@]}; i++)); do
+        local f="${chosen[$i]}" segs="${segments[$i]}"
+        local ext="${f##*.}"
+        if [[ -z "$segs" ]]; then
+            # Full file — nu trimuim, folosim sursa direct
+            trimmed_files+=("$f")
+            echo "  [$((i+1))/${#chosen[@]}] $(basename "$f") — FULL (fara trim)"
+        else
+            IFS=',' read -ra parts <<< "$segs"
+            local si=1
+            for seg in "${parts[@]}"; do
+                local ss="${seg%:*}" ee="${seg#*:}"
+                local seg_out=$(printf "%s/%02d_seg%d.%s" "$subdir" "$((i+1))" "$si" "$ext")
+                echo "  [$((i+1))/${#chosen[@]}] $(basename "$f") seg$si: $(format_seconds "$ss") → $(format_seconds "$ee")"
+                ffmpeg -y -ss "$ss" -to "$ee" -i "$f" \
+                    -map 0 -map_metadata 0 -c copy \
+                    -avoid_negative_ts make_zero -copyts \
+                    "$seg_out" 2>&1 | tail -3
+                if [[ -f "$seg_out" && -s "$seg_out" ]]; then
+                    trimmed_files+=("$seg_out")
+                else
+                    echo "  ✗ EROARE trim: $seg_out"
+                    cleanup_temp_subdir "$subdir" ""
+                    termux-wake-unlock 2>/dev/null
+                    return 1
+                fi
+                si=$((si+1))
+            done
+        fi
+    done
+
+    if (( ${#trimmed_files[@]} == 0 )); then
+        echo "Nu s-au generat fisiere pentru concat."
+        cleanup_temp_subdir "$subdir" ""
+        termux-wake-unlock 2>/dev/null
+        return 1
+    fi
+
+    # Pass 2/3: verific compat signature + pregatire concat
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  [Pass 2/3] Verificare compat + pregatire concat"
+    echo "═══════════════════════════════════════════════"
+    local use_filter=0
+    if ! check_concat_compat "${trimmed_files[@]}"; then
+        use_filter=1
+        echo "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter"
+        if [[ "${aopt[0]}" == "-c:a" && "${aopt[1]}" == "copy" ]]; then
+            echo "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k."
+            aopt=(-c:a aac -b:a 192k)
+        fi
+    else
+        local concat_txt="${subdir}/concat.txt"
+        : > "$concat_txt"
+        for f in "${trimmed_files[@]}"; do
+            local esc="${f//\'/\'\\\'\'}"
+            echo "file '${esc}'" >> "$concat_txt"
+        done
+        echo "  ${#trimmed_files[@]} intrari in $concat_txt"
+    fi
+
+    # Pass 3/3: concat + re-encode
+    echo ""
+    echo "═══════════════════════════════════════════════"
+    echo "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)"
+    echo "═══════════════════════════════════════════════"
+    echo "  Durata totala: $(format_seconds "$pipeline_total_s")"
+    if (( use_filter == 1 )); then
+        local ff_in=() fc_map=""
+        for ((i=0; i<${#trimmed_files[@]}; i++)); do
+            ff_in+=(-i "${trimmed_files[$i]}")
+            fc_map+="[${i}:v:0][${i}:a:0?]"
+        done
+        local n=${#trimmed_files[@]}
+        local fc="${fc_map}concat=n=${n}:v=1:a=1[outv][outa]"
+        ffmpeg -y "${ff_in[@]}" \
+            -filter_complex "$fc" \
+            -map "[outv]" -map "[outa]" \
+            -c:v "$codec" -crf "$crf" -preset "$preset" \
+            "${aopt[@]}" \
+            -map_metadata 0 \
+            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+    else
+        ffmpeg -y -f concat -safe 0 -i "$concat_txt" \
+            -map 0 -map_metadata 0 \
+            -c:v "$codec" -crf "$crf" -preset "$preset" \
+            "${aopt[@]}" \
+            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+    fi
+
+    termux-wake-unlock 2>/dev/null
+
+    # Cleanup
+    cleanup_temp_subdir "$subdir" "$out_path"
+
+    # Stats finale
+    if [[ -f "$out_path" && -s "$out_path" ]]; then
+        local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+        local tot_in=0
+        for ((i=0; i<${#chosen[@]}; i++)); do
+            local fs; fs=$(stat -c%s "${chosen[$i]}" 2>/dev/null || echo 0)
+            tot_in=$(( tot_in + fs ))
+        done
+        local ratio=0
+        (( tot_in > 0 )) && ratio=$(( osize * 100 / tot_in ))
+        echo ""
+        echo "╔══════════════════════════════════════════════╗"
+        echo "║  PIPELINE — Terminat                         ║"
+        echo "╠══════════════════════════════════════════════╣"
+        echo "║  ✓ Output: $(basename "$out_path")"
+        echo "║  ✓ Size: $(( osize/1024/1024 )) MB (input: $(( tot_in/1024/1024 )) MB, ${ratio}%)"
+        echo "║  ✓ Durata: $(format_seconds "$pipeline_total_s")"
+        echo "║  ✓ Fisiere sursa: ${#chosen[@]}, segmente: ${#trimmed_files[@]}"
+        echo "╚══════════════════════════════════════════════╝"
+    else
+        echo "  ✗ EROARE: output final lipsa sau 0 bytes."
+    fi
 }

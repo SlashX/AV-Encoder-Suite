@@ -21,6 +21,842 @@ $LutsDir         = Join-Path $InputDir "Luts"
 $ToolsDir        = Join-Path $PSScriptRoot "tools"
 $ProfilesDir     = Join-Path $PSScriptRoot "profiles"
 $UserProfilesDir = Join-Path $InputDir "UserProfiles"
+# v36: Folder temporar (Trim & Concat) — creat lazy la prima folosire
+$AV_TEMP_DIR     = Join-Path $InputDir "Temp"
+function Ensure-TempDir {
+    if (-not (Test-Path $AV_TEMP_DIR)) {
+        New-Item -ItemType Directory -Force -Path $AV_TEMP_DIR | Out-Null
+    }
+}
+
+# ── Trim & Concat helpers (v36) ───────────────────────────────────────
+function ConvertFrom-FlexibleTime {
+    param([string]$t)
+    if ([string]::IsNullOrWhiteSpace($t)) { return $null }
+    $t = $t.Trim() -replace '\s',''
+    $h = 0; $m = 0; $s = 0
+    if ($t -match '^(\d+):(\d+):(\d+)$') {
+        $h = [int]$Matches[1]; $m = [int]$Matches[2]; $s = [int]$Matches[3]
+    } elseif ($t -match '^(\d+):(\d+)$') {
+        $m = [int]$Matches[1]; $s = [int]$Matches[2]
+    } elseif ($t -match '^(\d+)$') {
+        $s = [int]$Matches[1]
+    } else { return $null }
+    if ($m -gt 59 -or $s -gt 59) { return $null }
+    return ($h * 3600 + $m * 60 + $s)
+}
+
+function Format-Seconds {
+    param([int]$s)
+    "{0:D2}:{1:D2}:{2:D2}" -f [int][math]::Floor($s/3600), [int][math]::Floor(($s%3600)/60), [int]($s%60)
+}
+
+function Get-DurationSeconds {
+    param([string]$file)
+    $d = (& ffprobe -v error -show_entries format=duration -of csv=p=0 $file 2>$null) -as [double]
+    if (-not $d) { return 0 }
+    return [int][math]::Floor($d)
+}
+
+function Expand-RangeSelection {
+    param([string]$raw, [int]$max)
+    $raw = $raw -replace '\s',''
+    if ($raw.ToLower() -eq 'all') { return 1..$max }
+    $out = [System.Collections.ArrayList]@()
+    foreach ($part in ($raw -split ',')) {
+        if ($part -match '^(\d+)-(\d+)$') {
+            $a = [int]$Matches[1]; $b = [int]$Matches[2]
+            if ($a -gt $b) { $t = $a; $a = $b; $b = $t }
+            for ($i = $a; $i -le $b -and $i -le $max; $i++) {
+                if ($i -ge 1) { [void]$out.Add($i) }
+            }
+        } elseif ($part -match '^\d+$') {
+            $n = [int]$part
+            if ($n -ge 1 -and $n -le $max) { [void]$out.Add($n) }
+        }
+    }
+    return ($out | Select-Object -Unique)
+}
+
+function Read-ValidatedTime {
+    param([string]$prompt, [int]$defaultSeconds, [int]$maxSeconds)
+    $defFmt = Format-Seconds $defaultSeconds
+    while ($true) {
+        $raw = Read-Host "$prompt [default: $defFmt]"
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $defaultSeconds }
+        $parsed = ConvertFrom-FlexibleTime $raw
+        if ($null -eq $parsed) {
+            Write-Host "  Format invalid. Exemple: 45 / 1:30 / 1:05:30 / 01:05:30" -ForegroundColor Yellow
+            continue
+        }
+        if ($parsed -gt $maxSeconds) {
+            Write-Host "  Timp > durata (${maxSeconds}s). Clamp la durata maxima." -ForegroundColor Yellow
+            return $maxSeconds
+        }
+        if ($parsed -lt 0) { return 0 }
+        return $parsed
+    }
+}
+
+function Resolve-OutputCollision {
+    param([string]$target)
+    if (-not (Test-Path $target)) { return $target }
+    Write-Host ""
+    Write-Host "  ⚠ Fisierul exista deja: $(Split-Path -Leaf $target)" -ForegroundColor Yellow
+    Write-Host "  1) Suprascrie"
+    Write-Host "  2) Auto-suffix (_1, _2, ...)"
+    Write-Host "  3) Rename manual"
+    $ch = Read-Host "  Alege [default: 2]"
+    $dir = Split-Path -Parent $target
+    $base = Split-Path -Leaf $target
+    $ext = [System.IO.Path]::GetExtension($base)
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($base)
+    switch ($ch) {
+        "1" { return $target }
+        "3" {
+            $nn = Read-Host "  Nume nou (fara extensie)"
+            return (Join-Path $dir "$nn$ext")
+        }
+        default {
+            $n = 1
+            while (Test-Path (Join-Path $dir "${name}_${n}${ext}")) { $n++ }
+            return (Join-Path $dir "${name}_${n}${ext}")
+        }
+    }
+}
+
+function Get-TcInputVideos {
+    $exts = @("mp4","mov","mkv","m2ts","mts","mxf","webm","avi")
+    $files = @()
+    foreach ($e in $exts) {
+        $files += Get-ChildItem -Path $InputDir -Filter "*.$e" -File -ErrorAction SilentlyContinue
+    }
+    return $files | Sort-Object Name
+}
+
+function New-TempSubdir {
+    param([string]$prefix = "trim")
+    Ensure-TempDir
+    $guid = [guid]::NewGuid().ToString("N").Substring(0,8)
+    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+    $sub = Join-Path $AV_TEMP_DIR "${prefix}_${ts}_${guid}"
+    New-Item -ItemType Directory -Force -Path $sub | Out-Null
+    return $sub
+}
+
+function Invoke-TcTempCleanupPrompt {
+    if (-not (Test-Path $AV_TEMP_DIR)) { return }
+    $leftover = @(Get-ChildItem -Path $AV_TEMP_DIR -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^(trim|concat|pipeline)_' })
+    if ($leftover.Count -eq 0) { return }
+
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  Temp — foldere reziduale detectate          ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    $now = Get-Date
+    foreach ($d in $leftover) {
+        $ageH = [int]($now - $d.LastWriteTime).TotalHours
+        $sz = 0
+        Get-ChildItem -Path $d.FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $sz += $_.Length }
+        $szMB = [int]($sz / 1MB)
+        $ageStr = if ($ageH -ge 24) { "{0}z" -f [int]($ageH/24) } else { "${ageH}h" }
+        $nm = if ($d.Name.Length -gt 30) { $d.Name.Substring(0,30) } else { $d.Name }
+        Write-Host ("║  {0,-30} {1,4}MB  {2}" -f $nm, $szMB, $ageStr) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "  1) Pastreaza toate"
+    Write-Host "  2) Sterge pe cele > 24h [default]"
+    Write-Host "  3) Sterge toate"
+    $ch = Read-Host "Alege 1-3"
+    if (-not $ch) { $ch = "2" }
+    switch ($ch) {
+        "2" {
+            foreach ($d in $leftover) {
+                if (($now - $d.LastWriteTime).TotalHours -ge 24) {
+                    Remove-Item -Recurse -Force $d.FullName -ErrorAction SilentlyContinue
+                    Write-Host "  sters: $($d.Name)" -ForegroundColor Gray
+                }
+            }
+        }
+        "3" {
+            foreach ($d in $leftover) {
+                Remove-Item -Recurse -Force $d.FullName -ErrorAction SilentlyContinue
+            }
+            Write-Host "  toate sterse" -ForegroundColor Gray
+        }
+        default { }
+    }
+}
+
+function Test-TcInputHDR {
+    param([string[]]$files)
+    foreach ($f in $files) {
+        $ct = & ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer `
+            -of default=nw=1:nk=1 $f 2>$null
+        if ($ct -match 'smpte2084|arib-std-b67') { return $true }
+    }
+    return $false
+}
+
+function Remove-TempSubdirSafe {
+    param([string]$subdir, [string]$output)
+    $ok = $false
+    if ($output -and (Test-Path -LiteralPath $output)) {
+        if ((Get-Item -LiteralPath $output).Length -gt 0) { $ok = $true }
+    }
+    if ($ok) {
+        Remove-Item -Recurse -Force -LiteralPath $subdir -ErrorAction SilentlyContinue
+        Write-Host "  Temp cleanup: sters." -ForegroundColor DarkGray
+    } else {
+        Write-Host ""
+        Write-Host "  ⚠ EROARE: output final esuat sau gol." -ForegroundColor Red
+        Write-Host "  Fisierele temporare pastrate in: $subdir" -ForegroundColor Yellow
+    }
+}
+
+# v36: Scriere concat.txt cu UTF-8 fara BOM (ffmpeg concat demuxer nu tolereaza BOM)
+function Write-ConcatTxtUtf8NoBom {
+    param([string]$path, [string[]]$lines)
+    $enc = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllLines($path, $lines, $enc)
+}
+
+# ── v36: Flow Trim (opțiunea 1) ───────────────────────────────────────
+function Invoke-TrimFlow {
+    $files = @(Get-TcInputVideos)
+    if ($files.Count -eq 0) {
+        Write-Host "Nu exista fisiere video in $InputDir" -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  TRIM — Selectare fisier                     ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $f = $files[$i]
+        $dur = Get-DurationSeconds $f.FullName
+        $nm = if ($f.Name.Length -gt 32) { $f.Name.Substring(0,32) } else { $f.Name }
+        Write-Host ("║  {0,2}) {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $dur)) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    $sel = Read-Host "Alege 1-$($files.Count)"
+    if (-not ($sel -match '^\d+$') -or [int]$sel -lt 1 -or [int]$sel -gt $files.Count) {
+        Write-Host "Selectie invalida." -ForegroundColor Red; return
+    }
+    $src = $files[[int]$sel - 1]
+    $srcName = [System.IO.Path]::GetFileNameWithoutExtension($src.Name)
+    $srcExt = $src.Extension.TrimStart('.')
+    $totalS = Get-DurationSeconds $src.FullName
+
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+
+    $cutIdx = 1
+    while ($true) {
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║  TRIM #$cutIdx — $($src.Name)" -ForegroundColor Cyan
+        Write-Host "║  Durata totala: $(Format-Seconds $totalS)" -ForegroundColor Cyan
+        Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+        $startS = 0; $endS = $totalS
+        while ($true) {
+            $startS = Read-ValidatedTime "Start" 0 $totalS
+            $endS   = Read-ValidatedTime "End  " $totalS $totalS
+            if ($startS -ge $endS) {
+                Write-Host "  EROARE: start >= end. Reintrodu." -ForegroundColor Red
+                continue
+            }
+            break
+        }
+        $clipS = $endS - $startS
+        Write-Host ""
+        Write-Host "  Clip rezultat: $(Format-Seconds $clipS) (din $(Format-Seconds $startS) la $(Format-Seconds $endS))" -ForegroundColor Green
+        $conf = Read-Host "  Confirma? (d/n) [default: d]"
+        if ($conf -ieq "n") { Write-Host "  Anulat." -ForegroundColor Yellow; continue }
+
+        Write-Host ""
+        Write-Host "  Precizie trim:" -ForegroundColor Cyan
+        Write-Host "    1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]"
+        Write-Host "    2) Re-encode (exact, frame-accurate, mai lent)"
+        $mode = Read-Host "  Alege 1-2 [default: 1]"
+
+        $suffix = "_trim${cutIdx}_$((Format-Seconds $startS) -replace ':','-')"
+        $outPath = Join-Path $OutputDir "${srcName}${suffix}.${srcExt}"
+        $outPath = Resolve-OutputCollision $outPath
+
+        if ($mode -eq "2") {
+            Write-Host ""
+            Write-Host "  Re-encode: 1-libx265 [default]  2-libx264" -ForegroundColor Cyan
+            $ec = Read-Host "  Codec"
+            $codec = if ($ec -eq "2") { "libx264" } else { "libx265" }
+            $crf = Read-Host "  CRF [default: 22]"
+            if (-not $crf) { $crf = "22" }
+            Write-Host "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k" -ForegroundColor Cyan
+            $ac = Read-Host "  Alege"
+            $aArgs = @("-c:a","copy")
+            if ($ac -eq "2") { $aArgs = @("-c:a","aac","-b:a","192k") }
+            if ($ac -eq "3") { $aArgs = @("-c:a","eac3","-b:a","224k") }
+            Write-Host "  Encoding... $(Format-Seconds $clipS)" -ForegroundColor Green
+            & ffmpeg -y -ss $startS -to $endS -i $src.FullName `
+                -map 0 -map_metadata 0 -c:v $codec -crf $crf -preset medium `
+                @aArgs -c:s copy `
+                -avoid_negative_ts make_zero `
+                $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" }
+        } else {
+            Write-Host ""
+            Write-Host "  NOTA: Stream copy taie la cel mai apropiat keyframe." -ForegroundColor Yellow
+            Write-Host "  Taietura poate diferi cu 1-2 secunde fata de timpul exact." -ForegroundColor Yellow
+            Write-Host "  Stream copy... (instant)" -ForegroundColor Green
+            & ffmpeg -y -ss $startS -to $endS -i $src.FullName `
+                -map 0 -map_metadata 0 -c copy `
+                -avoid_negative_ts make_zero -copyts `
+                $outPath 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+
+        if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
+            $osize = (Get-Item $outPath).Length
+            Write-Host ""
+            Write-Host "  ✓ Output: $outPath" -ForegroundColor Green
+            Write-Host "  ✓ Size: $(Format-Bytes $osize)" -ForegroundColor Green
+        } else {
+            Write-Host "  ✗ EROARE: output-ul nu a fost creat." -ForegroundColor Red
+        }
+
+        Write-Host ""
+        $again = Read-Host "Vrei sa tai alta sectiune din acelasi fisier? (d/n) [default: n]"
+        if ($again -ine "d") { break }
+        $cutIdx++
+    }
+    Write-Host ""
+    Write-Host "  Trim terminat. $cutIdx clip-uri generate." -ForegroundColor Cyan
+}
+
+# ── v36: Video signature pt compat concat ────────────────────────────
+function Get-VideoSignature {
+    param([string]$file)
+    $out = & ffprobe -v error -select_streams v:0 `
+        -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt `
+        -of default=noprint_wrappers=1:nokey=1 $file 2>$null
+    return ($out -join "|")
+}
+
+function Test-ConcatCompatibility {
+    param([string[]]$files)
+    $first = $null
+    foreach ($f in $files) {
+        $sig = Get-VideoSignature $f
+        if ($null -eq $first) { $first = $sig }
+        elseif ($sig -ne $first) { return $false }
+    }
+    return $true
+}
+
+# ── v36: Flow Concat (opțiunea 2) ─────────────────────────────────────
+function Invoke-ConcatFlow {
+    $files = @(Get-TcInputVideos)
+    if ($files.Count -eq 0) {
+        Write-Host "Nu exista fisiere video in $InputDir" -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  CONCAT — Listare fisiere                    ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $f = $files[$i]
+        $dur = Get-DurationSeconds $f.FullName
+        $nm = if ($f.Name.Length -gt 32) { $f.Name.Substring(0,32) } else { $f.Name }
+        Write-Host ("║  {0,2}) {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $dur)) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12" -ForegroundColor DarkGray
+    $selRaw = Read-Host "Selecteaza"
+    $indices = @(Expand-RangeSelection $selRaw $files.Count)
+    if ($indices.Count -eq 0) { Write-Host "Selectie invalida." -ForegroundColor Red; return }
+
+    Write-Host ""
+    Write-Host "Ordine fisiere:" -ForegroundColor Cyan
+    Write-Host "  1) Nume (alfabetic) [default]"
+    Write-Host "  2) Data modificare"
+    Write-Host "  3) Dimensiune"
+    Write-Host "  4) Manual (introdu ordinea)"
+    Write-Host "  5) Pastreaza ordinea selectiei"
+    $sortMode = Read-Host "Alege 1-5 [default: 1]"
+    if (-not $sortMode) { $sortMode = "1" }
+
+    $selected = @()
+    foreach ($idx in $indices) { $selected += $files[$idx - 1] }
+
+    switch ($sortMode) {
+        "1" { $selected = $selected | Sort-Object Name }
+        "2" { $selected = $selected | Sort-Object LastWriteTime }
+        "3" { $selected = $selected | Sort-Object Length }
+        "4" {
+            Write-Host ""
+            for ($i = 0; $i -lt $selected.Count; $i++) {
+                Write-Host "  $($i+1)) $($selected[$i].Name)" -ForegroundColor White
+            }
+            $newOrder = Read-Host "Ordinea noua (ex: 3,1,2)"
+            $reordered = @()
+            foreach ($p in ($newOrder -split ',')) {
+                $p = $p.Trim()
+                if ($p -match '^\d+$') {
+                    $n = [int]$p
+                    if ($n -ge 1 -and $n -le $selected.Count) { $reordered += $selected[$n - 1] }
+                }
+            }
+            if ($reordered.Count -eq 0) {
+                Write-Host "Ordine invalida, pastrez ordinea initiala." -ForegroundColor Yellow
+            } else { $selected = $reordered }
+        }
+        "5" { }
+    }
+
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  Ordine concat:                              ║" -ForegroundColor Cyan
+    $totalS = 0
+    for ($i = 0; $i -lt $selected.Count; $i++) {
+        $d = Get-DurationSeconds $selected[$i].FullName
+        $totalS += $d
+        $nm = if ($selected[$i].Name.Length -gt 32) { $selected[$i].Name.Substring(0,32) } else { $selected[$i].Name }
+        Write-Host ("║  {0,2}. {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $d)) -ForegroundColor White
+    }
+    Write-Host "║  Durata totala: $(Format-Seconds $totalS)" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+    $outName = Read-Host "Nume fisier output (fara extensie) [default: concat_${ts}]"
+    if (-not $outName) { $outName = "concat_${ts}" }
+
+    Write-Host ""
+    Write-Host "Container output:" -ForegroundColor Cyan
+    Write-Host "  1) mkv [default — flexibil, orice codec]"
+    Write-Host "  2) mp4"
+    Write-Host "  3) mov"
+    $contCh = Read-Host "Alege 1-3 [default: 1]"
+    $container = switch ($contCh) { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
+
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+    $outPath = Join-Path $OutputDir "${outName}.${container}"
+    $outPath = Resolve-OutputCollision $outPath
+
+    Write-Host ""
+    Write-Host "  Verific compatibilitate codec/rez/fps/pix_fmt..." -ForegroundColor Cyan
+    $useFilter = $false
+    if (Test-ConcatCompatibility ($selected | ForEach-Object { $_.FullName })) {
+        Write-Host "  ✓ Fisierele sunt identice — pot folosi stream copy." -ForegroundColor Green
+        Write-Host ""
+        Write-Host "  1) Stream copy (concat demuxer, instant, lossless) [default]"
+        Write-Host "  2) Re-encode (compresie suplimentara)"
+        $cmode = Read-Host "  Alege 1-2"
+        if ($cmode -eq "2") { $useFilter = $true }
+    } else {
+        Write-Host "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)." -ForegroundColor Yellow
+        Write-Host "  Re-encode OBLIGATORIU via concat filter." -ForegroundColor Yellow
+        $useFilter = $true
+    }
+
+    $subdir = New-TempSubdir "concat"
+
+    if (-not $useFilter) {
+        $concatTxt = Join-Path $subdir "concat.txt"
+        $lines = foreach ($s in $selected) {
+            # Escape apostrofuri: ' → '\''
+            $esc = $s.FullName -replace "'","'\''"
+            "file '$esc'"
+        }
+        Write-ConcatTxtUtf8NoBom $concatTxt $lines
+        Write-Host "  Concat stream copy..." -ForegroundColor Green
+        & ffmpeg -y -f concat -safe 0 -i $concatTxt `
+            -map 0 -map_metadata 0 -c copy `
+            -avoid_negative_ts make_zero `
+            $outPath 2>&1 | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    } else {
+        Write-Host ""
+        Write-Host "  Re-encode: 1-libx265 [default]  2-libx264" -ForegroundColor Cyan
+        $ec = Read-Host "  Codec"
+        $codec = if ($ec -eq "2") { "libx264" } else { "libx265" }
+        $crf = Read-Host "  CRF [default: 22]"
+        if (-not $crf) { $crf = "22" }
+        Write-Host "  Audio: 1-aac 192k [default]  2-eac3 224k  3-copy" -ForegroundColor Cyan
+        $ac = Read-Host "  Alege"
+        $aArgs = @("-c:a","aac","-b:a","192k")
+        if ($ac -eq "2") { $aArgs = @("-c:a","eac3","-b:a","224k") }
+        if ($ac -eq "3") { $aArgs = @("-c:a","copy") }
+
+        $ffIn = @()
+        $fcMap = ""
+        for ($i = 0; $i -lt $selected.Count; $i++) {
+            $ffIn += @("-i", $selected[$i].FullName)
+            $fcMap += "[${i}:v:0][${i}:a:0?]"
+        }
+        $n = $selected.Count
+        $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
+
+        Write-Host "  Concat re-encode ($codec CRF $crf)... durata totala $(Format-Seconds $totalS)" -ForegroundColor Green
+        & ffmpeg -y @ffIn `
+            -filter_complex $fc `
+            -map "[outv]" -map "[outa]" `
+            -c:v $codec -crf $crf -preset medium `
+            @aArgs `
+            -map_metadata 0 `
+            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" }
+    }
+
+    Remove-TempSubdirSafe $subdir $outPath
+
+    if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
+        $osize = (Get-Item $outPath).Length
+        Write-Host ""
+        Write-Host "  ✓ Output: $outPath" -ForegroundColor Green
+        Write-Host "  ✓ Size: $(Format-Bytes $osize)" -ForegroundColor Green
+        Write-Host "  ✓ Fisiere concatenate: $($selected.Count)" -ForegroundColor Green
+        Write-Host "  ✓ Durata totala: $(Format-Seconds $totalS)" -ForegroundColor Green
+    }
+}
+
+# ── v36: Flow Pipeline (opțiunea 3): Trim → Concat → Encode ──────────
+function Invoke-PipelineFlow {
+    $files = @(Get-TcInputVideos)
+    if ($files.Count -eq 0) {
+        Write-Host "Nu exista fisiere video in $InputDir" -ForegroundColor Yellow
+        return
+    }
+
+    # Pas 1: selectie fisiere
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  PIPELINE — Selectare fisiere                ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $f = $files[$i]
+        $dur = Get-DurationSeconds $f.FullName
+        $nm = if ($f.Name.Length -gt 32) { $f.Name.Substring(0,32) } else { $f.Name }
+        Write-Host ("║  {0,2}) {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $dur)) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12" -ForegroundColor DarkGray
+    $selRaw = Read-Host "Selecteaza fisierele incluse"
+    $indices = @(Expand-RangeSelection $selRaw $files.Count)
+    if ($indices.Count -eq 0) { Write-Host "Selectie invalida." -ForegroundColor Red; return }
+
+    $chosen = @()
+    foreach ($idx in $indices) { $chosen += $files[$idx - 1] }
+
+    # Sort
+    Write-Host ""
+    Write-Host "Ordine fisiere:" -ForegroundColor Cyan
+    Write-Host "  1) Nume (alfabetic) [default]"
+    Write-Host "  2) Data modificare"
+    Write-Host "  3) Dimensiune"
+    Write-Host "  4) Manual (introdu ordinea)"
+    Write-Host "  5) Pastreaza ordinea selectiei"
+    $sortMode = Read-Host "Alege 1-5 [default: 1]"
+    if (-not $sortMode) { $sortMode = "1" }
+    switch ($sortMode) {
+        "1" { $chosen = $chosen | Sort-Object Name }
+        "2" { $chosen = $chosen | Sort-Object LastWriteTime }
+        "3" { $chosen = $chosen | Sort-Object Length }
+        "4" {
+            Write-Host ""
+            for ($i = 0; $i -lt $chosen.Count; $i++) {
+                Write-Host "  $($i+1)) $($chosen[$i].Name)" -ForegroundColor White
+            }
+            $newOrder = Read-Host "Ordinea noua (ex: 3,1,2)"
+            $reordered = @()
+            foreach ($p in ($newOrder -split ',')) {
+                $p = $p.Trim()
+                if ($p -match '^\d+$') {
+                    $n = [int]$p
+                    if ($n -ge 1 -and $n -le $chosen.Count) { $reordered += $chosen[$n - 1] }
+                }
+            }
+            if ($reordered.Count -eq 0) {
+                Write-Host "Ordine invalida, pastrez ordinea initiala." -ForegroundColor Yellow
+            } else { $chosen = $reordered }
+        }
+        "5" { }
+    }
+    # Re-normalizare la array (Sort-Object poate returna scalar la 1 element)
+    $chosen = @($chosen)
+
+    # Pas 2: care au nevoie de trim?
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  PIPELINE — Care fisiere au nevoie de TRIM?  ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $chosen.Count; $i++) {
+        $f = $chosen[$i]
+        $dur = Get-DurationSeconds $f.FullName
+        $nm = if ($f.Name.Length -gt 32) { $f.Name.Substring(0,32) } else { $f.Name }
+        Write-Host ("║  {0,2}) {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $dur)) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "Exemple: none / 1,3 / 1-2 / all" -ForegroundColor DarkGray
+    $trimSel = Read-Host "Indici"
+    if (-not $trimSel) { $trimSel = "none" }
+
+    $trimIndices = @()
+    if ($trimSel.ToLower() -ne "none") {
+        $trimIndices = @(Expand-RangeSelection $trimSel $chosen.Count)
+    }
+
+    # segments[i] = array de @{Start=...; End=...}  (goala = full file)
+    $segments = @()
+    for ($i = 0; $i -lt $chosen.Count; $i++) { $segments += ,@() }
+
+    foreach ($idx in $trimIndices) {
+        $i = $idx - 1
+        $src = $chosen[$i]
+        $totalS = Get-DurationSeconds $src.FullName
+        $segs = @()
+        $cutIdx = 1
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║  TRIM — $($src.Name)" -ForegroundColor Cyan
+        Write-Host "║  Durata totala: $(Format-Seconds $totalS)" -ForegroundColor Cyan
+        Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+        while ($true) {
+            Write-Host ""
+            Write-Host "  Segment #$cutIdx" -ForegroundColor Cyan
+            $startS = 0; $endS = $totalS
+            while ($true) {
+                $startS = Read-ValidatedTime "Start" 0 $totalS
+                $endS   = Read-ValidatedTime "End  " $totalS $totalS
+                if ($startS -ge $endS) {
+                    Write-Host "  EROARE: start >= end. Reintrodu." -ForegroundColor Red
+                    continue
+                }
+                break
+            }
+            $clipS = $endS - $startS
+            Write-Host "  Segment: $(Format-Seconds $clipS) (din $(Format-Seconds $startS) la $(Format-Seconds $endS))" -ForegroundColor Green
+            $segs += @{ Start = $startS; End = $endS }
+            Write-Host ""
+            $again = Read-Host "  Mai adaugi un segment din acest fisier? (d/n) [default: n]"
+            if ($again -ine "d") { break }
+            $cutIdx++
+        }
+        $segments[$i] = $segs
+    }
+
+    # Pas 3: setari encode
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  PIPELINE — Setari encode (global)           ║" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "Codec:" -ForegroundColor Cyan
+    Write-Host "  1) libx265 (HEVC) [default]"
+    Write-Host "  2) libx264 (H.264)"
+    Write-Host "  3) libsvtav1 (AV1)"
+    $cc = Read-Host "Alege 1-3"
+    $codec = switch ($cc) { "2" {"libx264"} "3" {"libsvtav1"} default {"libx265"} }
+    $crf = Read-Host "CRF [default: 22]"
+    if (-not $crf) { $crf = "22" }
+    Write-Host "Preset:" -ForegroundColor Cyan
+    Write-Host "  1) medium [default]"
+    Write-Host "  2) slow (calitate mai buna)"
+    Write-Host "  3) fast"
+    $pp = Read-Host "Alege 1-3"
+    $preset = switch ($pp) { "2" {"slow"} "3" {"fast"} default {"medium"} }
+    Write-Host "Audio:" -ForegroundColor Cyan
+    Write-Host "  1) aac 192k [default]"
+    Write-Host "  2) eac3 224k"
+    Write-Host "  3) copy"
+    $ac = Read-Host "Alege 1-3"
+    $aArgs = @("-c:a","aac","-b:a","192k")
+    if ($ac -eq "2") { $aArgs = @("-c:a","eac3","-b:a","224k") }
+    if ($ac -eq "3") { $aArgs = @("-c:a","copy") }
+
+    # Pas 4: output
+    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+    Write-Host ""
+    $outName = Read-Host "Nume fisier output (fara extensie) [default: pipeline_${ts}]"
+    if (-not $outName) { $outName = "pipeline_${ts}" }
+    Write-Host "Container output:" -ForegroundColor Cyan
+    Write-Host "  1) mkv [default]"
+    Write-Host "  2) mp4"
+    Write-Host "  3) mov"
+    $contCh = Read-Host "Alege 1-3"
+    $container = switch ($contCh) { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
+
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+    $outPath = Join-Path $OutputDir "${outName}.${container}"
+    $outPath = Resolve-OutputCollision $outPath
+
+    # Estimare temp + durata
+    $estTempMB = 0
+    $pipelineTotalS = 0
+    for ($i = 0; $i -lt $chosen.Count; $i++) {
+        $f = $chosen[$i]
+        $segs = $segments[$i]
+        $fsize = $f.Length
+        $fdur = Get-DurationSeconds $f.FullName
+        if ($segs.Count -eq 0) {
+            $estTempMB += [int]($fsize / 1MB)
+            $pipelineTotalS += $fdur
+        } else {
+            foreach ($s in $segs) {
+                $sdur = $s.End - $s.Start
+                $pipelineTotalS += $sdur
+                if ($fdur -gt 0) {
+                    $estTempMB += [int](($fsize / 1MB) * $sdur / $fdur)
+                }
+            }
+        }
+    }
+
+    # Pas 5: rezumat
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  PIPELINE — Rezumat pre-executie             ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $chosen.Count; $i++) {
+        $f = $chosen[$i]
+        $segs = $segments[$i]
+        $nm = if ($f.Name.Length -gt 30) { $f.Name.Substring(0,30) } else { $f.Name }
+        if ($segs.Count -eq 0) {
+            Write-Host ("║  {0,2}. {1,-30} [FULL]" -f ($i+1), $nm) -ForegroundColor White
+        } else {
+            Write-Host ("║  {0,2}. {1,-30} [TRIM x{2}]" -f ($i+1), $nm, $segs.Count) -ForegroundColor White
+        }
+    }
+    Write-Host "║" -ForegroundColor Cyan
+    Write-Host "║  Durata finala estimata: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Cyan
+    Write-Host "║  Temp estimat: ~${estTempMB} MB" -ForegroundColor Cyan
+    Write-Host "║  Encode: $codec CRF $crf ($preset)" -ForegroundColor Cyan
+    Write-Host "║  Output: $(Split-Path $outPath -Leaf)" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+    # HDR warning
+    if (Test-TcInputHDR ($chosen | ForEach-Object { $_.FullName })) {
+        Write-Host ""
+        Write-Host "  ⚠ INPUT HDR DETECTAT (smpte2084 / HLG)" -ForegroundColor Yellow
+        Write-Host "    Setarile standard ($codec CRF $crf) NU pastreaza metadata HDR." -ForegroundColor Yellow
+        Write-Host "    Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR." -ForegroundColor Yellow
+    }
+
+    $go = Read-Host "Continua? (d/n) [default: d]"
+    if ($go -ieq "n") { Write-Host "Anulat." -ForegroundColor Yellow; return }
+
+    # Pas 6: executie
+    $subdir = New-TempSubdir "pipeline"
+
+    # Pass 1/3
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  [Pass 1/3] Trim stream copy" -ForegroundColor Cyan
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    $trimmedFiles = @()
+    for ($i = 0; $i -lt $chosen.Count; $i++) {
+        $f = $chosen[$i]
+        $segs = $segments[$i]
+        $ext = $f.Extension.TrimStart('.')
+        if ($segs.Count -eq 0) {
+            $trimmedFiles += $f.FullName
+            Write-Host "  [$($i+1)/$($chosen.Count)] $($f.Name) — FULL (fara trim)" -ForegroundColor Gray
+        } else {
+            $si = 1
+            foreach ($s in $segs) {
+                $segOut = Join-Path $subdir ("{0:D2}_seg{1}.{2}" -f ($i+1), $si, $ext)
+                Write-Host "  [$($i+1)/$($chosen.Count)] $($f.Name) seg${si}: $(Format-Seconds $s.Start) → $(Format-Seconds $s.End)" -ForegroundColor White
+                & ffmpeg -y -ss $s.Start -to $s.End -i $f.FullName `
+                    -map 0 -map_metadata 0 -c copy `
+                    -avoid_negative_ts make_zero -copyts `
+                    $segOut 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+                if ((Test-Path $segOut) -and ((Get-Item $segOut).Length -gt 0)) {
+                    $trimmedFiles += $segOut
+                } else {
+                    Write-Host "  ✗ EROARE trim: $segOut" -ForegroundColor Red
+                    Remove-TempSubdirSafe $subdir ""
+                    return
+                }
+                $si++
+            }
+        }
+    }
+
+    if ($trimmedFiles.Count -eq 0) {
+        Write-Host "Nu s-au generat fisiere pentru concat." -ForegroundColor Red
+        Remove-TempSubdirSafe $subdir ""
+        return
+    }
+
+    # Pass 2/3 — verific compat signature si generez concat.txt DACA compat
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  [Pass 2/3] Verificare compat + pregatire concat" -ForegroundColor Cyan
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    $useFilter = -not (Test-ConcatCompatibility $trimmedFiles)
+    if ($useFilter) {
+        Write-Host "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter" -ForegroundColor Yellow
+        if ($aArgs.Count -ge 2 -and $aArgs[0] -eq "-c:a" -and $aArgs[1] -eq "copy") {
+            Write-Host "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k." -ForegroundColor Yellow
+            $aArgs = @("-c:a","aac","-b:a","192k")
+        }
+    } else {
+        $concatTxt = Join-Path $subdir "concat.txt"
+        $lines = foreach ($tf in $trimmedFiles) {
+            $esc = $tf -replace "'","'\''"
+            "file '$esc'"
+        }
+        Write-ConcatTxtUtf8NoBom $concatTxt $lines
+        Write-Host "  $($trimmedFiles.Count) intrari in $concatTxt" -ForegroundColor Gray
+    }
+
+    # Pass 3/3
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)" -ForegroundColor Cyan
+    Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "  Durata totala: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Green
+    if ($useFilter) {
+        $ffIn = @()
+        $fcMap = ""
+        for ($i = 0; $i -lt $trimmedFiles.Count; $i++) {
+            $ffIn += @("-i", $trimmedFiles[$i])
+            $fcMap += "[${i}:v:0][${i}:a:0?]"
+        }
+        $n = $trimmedFiles.Count
+        $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
+        & ffmpeg -y @ffIn `
+            -filter_complex $fc `
+            -map "[outv]" -map "[outa]" `
+            -c:v $codec -crf $crf -preset $preset `
+            @aArgs `
+            -map_metadata 0 `
+            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" }
+    } else {
+        & ffmpeg -y -f concat -safe 0 -i $concatTxt `
+            -map 0 -map_metadata 0 `
+            -c:v $codec -crf $crf -preset $preset `
+            @aArgs `
+            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" }
+    }
+
+    Remove-TempSubdirSafe $subdir $outPath
+
+    # Stats finale
+    if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
+        $osize = (Get-Item $outPath).Length
+        $totIn = 0
+        foreach ($c in $chosen) { $totIn += $c.Length }
+        $ratio = if ($totIn -gt 0) { [int]($osize * 100 / $totIn) } else { 0 }
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║  PIPELINE — Terminat                         ║" -ForegroundColor Cyan
+        Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+        Write-Host "║  ✓ Output: $(Split-Path $outPath -Leaf)" -ForegroundColor Green
+        Write-Host "║  ✓ Size: $(Format-Bytes $osize) (input: $(Format-Bytes $totIn), ${ratio}%)" -ForegroundColor Green
+        Write-Host "║  ✓ Durata: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Green
+        Write-Host "║  ✓ Fisiere sursa: $($chosen.Count), segmente: $($trimmedFiles.Count)" -ForegroundColor Green
+        Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    } else {
+        Write-Host "  ✗ EROARE: output final lipsa sau 0 bytes." -ForegroundColor Red
+    }
+}
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
@@ -1021,9 +1857,9 @@ if ($fileCount -eq 0) { Write-Host "Nu am gasit fisiere." -ForegroundColor Red; 
 # Daca utilizatorul alege Verifica sau Iesire, nu mai parcurge intrebarile
 # ══════════════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Export GPS/DJI  5-Import GPS extern  6-Iesire" -ForegroundColor Cyan
+Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Export GPS/DJI  5-Import GPS extern  6-Trim & Concat  7-Iesire" -ForegroundColor Cyan
 $mainChoice = Read-Host "Selecteaza"
-if ($mainChoice -eq "6") { exit }
+if ($mainChoice -eq "7") { exit }
 
 # ── Import GPS extern (GPX/FIT/KML → CSV/SRT) ─────────────────────
 if ($mainChoice -eq "5") {
@@ -1821,6 +2657,32 @@ if ($mainChoice -eq "3") {
         Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     }
 
+    Read-Host "Apasa Enter"; exit
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# TRIM & CONCAT (v36) — Submeniu + Flows
+# ══════════════════════════════════════════════════════════════════════
+if ($mainChoice -eq "6") {
+    # v36: curatenie temp rezidual la intrare
+    Invoke-TcTempCleanupPrompt
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  TRIM & CONCAT                       ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║  1) Trim clip (un fisier)            ║" -ForegroundColor White
+    Write-Host "║  2) Concat clips (unire)             ║" -ForegroundColor White
+    Write-Host "║  3) Trim + Concat + Encode           ║" -ForegroundColor White
+    Write-Host "║  4) Inapoi                           ║" -ForegroundColor White
+    Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+    $tcChoice = Read-Host "Alege 1-4"
+    switch ($tcChoice) {
+        "1" { Invoke-TrimFlow }
+        "2" { Invoke-ConcatFlow }
+        "3" { Invoke-PipelineFlow }
+        "4" { Write-Host "Inapoi." -ForegroundColor Gray }
+        default { Write-Host "Optiune invalida." -ForegroundColor Red }
+    }
     Read-Host "Apasa Enter"; exit
 }
 
