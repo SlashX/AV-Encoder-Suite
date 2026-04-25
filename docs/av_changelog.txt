@@ -3,9 +3,60 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v36 | 49 bug-uri fixate | 120+ features
-  27 fisiere | ~11898 linii cod | ~1750 linii documentatie
+  TOTAL: v37 | 49 bug-uri fixate | 130+ features
+  27 fisiere | ~12731 linii cod | ~1800 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v37 — Pipeline expansion (smart copy / audio-only / chapters /
+        batch trim / previews / HDR-aware / progress bar)
+═══════════════════════════════════════════════════════════════
+
+  ADD Helper progress bar real (run_ffmpeg_with_progress / Invoke-FfmpegWithProgress)
+        FFmpeg `-progress` file watched paralel: FPS, ETA, % din durata totala
+        stderr capturat in fisier temporar; pe exit code != 0 afiseaza tail -10
+        Aplicat pe: Trim re-encode, Concat (copy + filter), Pipeline Pass 3 (toate variantele)
+  ADD Smart stream copy in Pipeline
+        In Pass 2, daca target codec (libx265/libx264/libsvtav1) match source codec → opt-in
+        Pass 3: full `-c copy` cu concat demuxer — instant, lossless, fara re-encode
+        Detectie ffprobe codec_name pe primul trimmed_files
+  ADD Audio-only encoding mode in Pipeline
+        Pas 3 (encode settings): "Mod encode: 1) Video+Audio 2) Audio-only (video copy)"
+        Pass 3 demuxer: -c:v copy + audio re-encode (instant pe video)
+        Fallback automat la full re-encode daca concat filter e necesar (codec mismatch)
+  ADD Chapter markers automate in Pipeline (FFMETADATA1)
+        Pas 4: prompt opt-in "Capitole automate (1 capitol per segment)?" [default: D]
+        Generare chapters.txt in temp subdir cu TIMEBASE=1/1000, title=Segment N
+        Injectie prin -i chapters.txt -map_chapters <idx> in toate ramurile Pass 3
+        Tracking parallel seg_durations[] in Pass 1 pentru calcul timeline
+  ADD Batch trim — flow nou in submeniu Trim & Concat (optiunea 4)
+        Multi-select fisiere (range expand: all / 1,3,5 / 1-5 / 1-3,7,10-12)
+        N cuturi comune (start:end) aplicate la TOATE fisierele
+        Mod: stream copy (default, instant) sau re-encode (codec/CRF/audio)
+        Skip automat fisiere mai scurte decat end_s, sumar OK/FAIL/SKIP
+        bash: trimconcat_flow_batch_trim() | PS: Invoke-BatchTrimFlow
+  ADD Preview thumbnails (3-frame tile)
+        Helper generate_preview_thumbnails / New-PreviewThumbnails
+        ffmpeg cu 3x -ss + filter_complex hstack=3, scale 320p, 1 PNG/fisier
+        Output: AV_TEMP_DIR/preview_<ts>/<basename>_preview.png
+        Frame-uri la 5% / 50% / 95% din durata; skip daca durata < 3s
+        Opt-in in Concat (dupa sortare) si Pipeline (dupa rezumat pre-execuție)
+  ADD HDR-aware Pipeline (B+: HDR10 auto + HDR10+ opt-in + transparent fallback)
+        Helper detect_pipeline_hdr_mode / Get-PipelineHdrMode (sdr/hdr10/hdr10plus/hlg/dv/mixed)
+        Pre-Pass 3 (doar pentru re-encode, nu smart_copy/audio_only):
+          hdr10/hlg + libx265 → auto inject -pix_fmt yuv420p10le + -color_primaries bt2020 +
+            -color_trc <smpte2084|arib-std-b67> + -colorspace bt2020nc +
+            -x265-params "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=...:colormatrix=bt2020nc"
+          hdr10plus → opt-in dialog: extragere via hdr10plus_tool din primul trimmed_files,
+            adaugare dhdr10-info=<json> in x265-params; fallback transparent la HDR10 daca tool lipseste
+          dv → fallback HDR10 + warning ca DV RPU nu se pastreaza la re-encode
+          mixed (sdr+hdr in input) → no inject + warning
+          codec ≠ libx265 → no inject + warning
+  ADD Submeniu Trim & Concat extins (5 optiuni: trim / concat / pipeline / batch trim / inapoi)
+  UPDATE HDR pre-execution warning simplificat in Pipeline (info, nu mai obstructional)
+        Mesaj nou: "ℹ HDR detectat — modul HDR va fi auto-detectat înainte de Pass 3"
+        Detectia detaliata + auto-injectare se intampla just-in-time in Pass 3
 
 
 ═══════════════════════════════════════════════════════════════

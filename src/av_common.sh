@@ -20,13 +20,13 @@ USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
 AV_TEMP_DIR="/storage/emulated/0/Media/Temp"
 ensure_temp_dir() { mkdir -p "$AV_TEMP_DIR" 2>/dev/null; }
 
-# v36: Scan foldere reziduale (trim_*, concat_*, pipeline_*) in $AV_TEMP_DIR
+# v36/v37: Scan foldere reziduale (trim_*, concat_*, pipeline_*, preview_*) in $AV_TEMP_DIR
 # Chemat la intrarea in submeniul Trim & Concat.
 tc_scan_leftover_temp() {
     [[ ! -d "$AV_TEMP_DIR" ]] && return 0
     local leftover=()
     local d
-    for d in "$AV_TEMP_DIR"/trim_* "$AV_TEMP_DIR"/concat_* "$AV_TEMP_DIR"/pipeline_*; do
+    for d in "$AV_TEMP_DIR"/trim_* "$AV_TEMP_DIR"/concat_* "$AV_TEMP_DIR"/pipeline_* "$AV_TEMP_DIR"/preview_*; do
         [[ -d "$d" ]] && leftover+=("$d")
     done
     (( ${#leftover[@]} == 0 )) && return 0
@@ -73,6 +73,32 @@ tc_check_hdr_files() {
         if [[ "$ct" == "smpte2084" || "$ct" == "arib-std-b67" ]]; then return 0; fi
     done
     return 1
+}
+
+# v37: Detecteaza modul HDR pentru un set de fisiere.
+# Return: "sdr" | "hdr10" | "hdr10plus" | "hlg" | "dv" | "mixed"
+detect_pipeline_hdr_mode() {
+    local has_hdr10=0 has_hlg=0 has_dv=0 has_sdr=0 has_hdr10plus=0
+    local f ct sd
+    for f in "$@"; do
+        ct=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer \
+            -of default=nw=1:nk=1 "$f" 2>/dev/null)
+        sd=$(ffprobe -v error -select_streams v:0 -read_intervals "%+#1" \
+            -show_entries frame=side_data_list -of default=nw=1 "$f" 2>/dev/null)
+        case "$ct" in
+            smpte2084) has_hdr10=1 ;;
+            arib-std-b67) has_hlg=1 ;;
+            *) has_sdr=1 ;;
+        esac
+        echo "$sd" | grep -qi "dolby vision\|dovi" && has_dv=1
+        echo "$sd" | grep -qi "hdr dynamic metadata\|hdr10+" && has_hdr10plus=1
+    done
+    if (( has_dv == 1 )); then echo "dv"; return; fi
+    if (( has_sdr == 1 )) && (( has_hdr10 == 1 || has_hlg == 1 )); then echo "mixed"; return; fi
+    if (( has_hdr10plus == 1 )); then echo "hdr10plus"; return; fi
+    if (( has_hdr10 == 1 )); then echo "hdr10"; return; fi
+    if (( has_hlg == 1 )); then echo "hlg"; return; fi
+    echo "sdr"
 }
 
 # ── Logging ───────────────────────────────────────────────────────────
@@ -581,6 +607,63 @@ _show_progress() {
             "$pct" "$rfps" $((eta/3600)) $(((eta%3600)/60)) $((eta%60))
     done
     rm -f "$prog_file"; PROGRESS_FILE=""; echo ""
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# v37: Reusable helper — rulează ffmpeg cu progress bar + label custom.
+# Folosit de Trim/Concat/Pipeline. Acceptă durata totală explicit
+# (necesar când sursa nu e un singur fișier, ex: pipeline concat).
+# Args:
+#   $1 = label (ex "Pass 3/3", "Trim seg1")
+#   $2 = total_duration_seconds (0 = "se initializează" permanent)
+#   $@ = ffmpeg args (fără -progress / -nostats — sunt adăugate automat)
+# Return: exit code ffmpeg
+# ──────────────────────────────────────────────────────────────────────
+run_ffmpeg_with_progress() {
+    local label="$1"; shift
+    local total_s="$1"; shift
+    local pf ef; pf=$(mktemp); ef=$(mktemp)
+    local prev_pf="${PROGRESS_FILE:-}"
+    PROGRESS_FILE="$pf"
+    ffmpeg -progress "$pf" -nostats "$@" 2>"$ef" &
+    local pid=$!
+    _show_progress_labeled "$pid" "$pf" "$total_s" "$label"
+    wait "$pid"
+    local rc=$?
+    if (( rc != 0 )); then
+        echo "  ⚠ ffmpeg exit code $rc — ultimele linii stderr:"
+        tail -10 "$ef" 2>/dev/null | sed 's/^/    /'
+    fi
+    rm -f "$pf" "$ef"
+    PROGRESS_FILE="$prev_pf"
+    return $rc
+}
+
+# Watcher paralel pentru run_ffmpeg_with_progress (durata explicită, nu ffprobe)
+_show_progress_labeled() {
+    local pid=$1 prog_file=$2 total_s=$3 label=$4
+    local st_p; st_p=$(date +%s)
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        local otms; otms=$(grep "^out_time_ms=" "$prog_file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
+        if ! [[ "$otms" =~ ^[0-9]+$ ]] || [ "$otms" -le 0 ]; then
+            printf "\r  %s: se initializeaza...                              " "$label"
+            continue
+        fi
+        local ot=$((otms / 1000000)); [ "$ot" -lt 0 ] && ot=0
+        local el=$(( $(date +%s) - st_p )); [ "$el" -le 0 ] && el=1
+        local pct=0
+        (( total_s > 0 )) && pct=$(( ot * 100 / total_s ))
+        [ "$pct" -gt 100 ] && pct=100
+        local rfps; rfps=$(grep "^fps=" "$prog_file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
+        if [[ "$rfps" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($rfps > 0)}"; then :
+        else [ "$ot" -gt 0 ] && rfps="$(awk "BEGIN{printf \"%.1fx\", $ot / $el}")" || rfps="0.0x"; fi
+        local eta=0
+        [ "$ot" -gt 0 ] && [ "$total_s" -gt "$ot" ] && eta=$(( el * (total_s - ot) / ot ))
+        printf "\r  %s: %3d%% | FPS: %s | ETA: %02d:%02d:%02d       " \
+            "$label" "$pct" "$rfps" $((eta/3600)) $(((eta%3600)/60)) $((eta%60))
+    done
+    echo ""
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2056,11 +2139,12 @@ trimconcat_flow_trim() {
             [[ "$ac" == "2" ]] && aopt=(-c:a aac -b:a 192k)
             [[ "$ac" == "3" ]] && aopt=(-c:a eac3 -b:a 224k)
             echo "  Encoding... $(format_seconds "$clip_s")"
-            ffmpeg -y -ss "$start_s" -to "$end_s" -i "$src" \
+            run_ffmpeg_with_progress "Trim re-encode" "$clip_s" \
+                -y -ss "$start_s" -to "$end_s" -i "$src" \
                 -map 0 -map_metadata 0 -c:v "$codec" -crf "$crf" -preset medium \
                 "${aopt[@]}" -c:s copy \
                 -avoid_negative_ts make_zero \
-                "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+                "$out_path"
         else
             echo ""
             echo "  NOTĂ: Stream copy taie la cel mai apropiat keyframe."
@@ -2090,6 +2174,183 @@ trimconcat_flow_trim() {
     termux-wake-unlock 2>/dev/null
     echo ""
     echo "  Trim terminat. $((cut_idx)) clip-uri generate."
+}
+
+# ── Flow Batch Trim: aceleași cuturi pe N fisiere ────────────────────
+trimconcat_flow_batch_trim() {
+    scan_input_videos
+    if (( TC_COUNT == 0 )); then
+        echo "Nu exista fisiere video in $INPUT_DIR"; return 1
+    fi
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  BATCH TRIM — Selectare fisiere              ║"
+    echo "╠══════════════════════════════════════════════╣"
+    for ((i=0; i<TC_COUNT; i++)); do
+        local f="${TC_FILES[$i]}" dur
+        dur=$(get_duration_seconds "$f")
+        printf "║  %2d) %-32s %s\n" "$((i+1))" "$(basename "$f" | cut -c1-32)" "$(format_seconds "$dur")"
+    done
+    echo "╚══════════════════════════════════════════════╝"
+    echo "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12"
+    read -p "Selecteaza fisiere: " sel_raw
+    local indices; indices=($(expand_range_selection "$sel_raw" "$TC_COUNT"))
+    if (( ${#indices[@]} == 0 )); then
+        echo "Selectie invalida."; return 1
+    fi
+
+    local selected=()
+    local min_dur=999999999
+    for idx in "${indices[@]}"; do
+        local f="${TC_FILES[$((idx-1))]}"
+        selected+=("$f")
+        local d; d=$(get_duration_seconds "$f")
+        (( d < min_dur )) && min_dur=$d
+    done
+    echo ""
+    echo "  ${#selected[@]} fisiere selectate. Cea mai scurta durata: $(format_seconds "$min_dur")"
+
+    # Cuts comune: una sau mai multe perechi start:end
+    local cuts=()
+    local cut_idx=1
+    while true; do
+        echo ""
+        echo "  Segment #$cut_idx (aplicat la toate fisierele):"
+        local start_s end_s
+        while true; do
+            start_s=$(prompt_time_validated "Start" 0 "$min_dur")
+            end_s=$(prompt_time_validated "End  " "$min_dur" "$min_dur")
+            if (( start_s >= end_s )); then
+                echo "  EROARE: start >= end. Reintrodu."; continue
+            fi
+            break
+        done
+        cuts+=("${start_s}:${end_s}")
+        echo "  → $(format_seconds "$start_s") - $(format_seconds "$end_s") ($(format_seconds "$((end_s - start_s))"))"
+        echo ""
+        read -p "  Mai adaugi un segment? (d/n) [default: n]: " again
+        if [[ "${again,,}" != "d" ]]; then break; fi
+        cut_idx=$((cut_idx+1))
+    done
+
+    # Mod: stream copy / re-encode
+    echo ""
+    echo "  Precizie trim:"
+    echo "    1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]"
+    echo "    2) Re-encode (exact, frame-accurate, mai lent)"
+    read -p "  Alege 1-2 [default: 1]: " mode
+    local re_codec="libx265" re_crf=22 re_aopt=(-c:a copy)
+    if [[ "$mode" == "2" ]]; then
+        echo "  Codec: 1-libx265 [default]  2-libx264"
+        read -p "  Alege: " ec
+        [[ "$ec" == "2" ]] && re_codec="libx264"
+        read -p "  CRF [default: 22]: " crf2; [[ -n "$crf2" ]] && re_crf=$crf2
+        echo "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k"
+        read -p "  Alege: " ac
+        [[ "$ac" == "2" ]] && re_aopt=(-c:a aac -b:a 192k)
+        [[ "$ac" == "3" ]] && re_aopt=(-c:a eac3 -b:a 224k)
+    fi
+
+    mkdir -p "$OUTPUT_DIR" 2>/dev/null
+    termux-wake-lock 2>/dev/null
+
+    # Loop: pentru fiecare fisier × fiecare segment
+    local total_ops=$(( ${#selected[@]} * ${#cuts[@]} ))
+    local op=0 ok=0 fail=0 skip=0
+    for src in "${selected[@]}"; do
+        local sb; sb=$(basename "$src")
+        local sn="${sb%.*}" sext="${sb##*.}"
+        local sdur; sdur=$(get_duration_seconds "$src")
+        local ci=1
+        for cut in "${cuts[@]}"; do
+            op=$((op+1))
+            local ss="${cut%:*}" ee="${cut#*:}"
+            if (( ee > sdur )); then
+                echo "[$op/$total_ops] $sb seg$ci — SKIP (durata $(format_seconds "$sdur") < end $(format_seconds "$ee"))"
+                skip=$((skip+1))
+                ci=$((ci+1)); continue
+            fi
+            local clip_s=$(( ee - ss ))
+            local out_suffix="_btrim${ci}_$(format_seconds "$ss" | tr ':' '-')"
+            local out_path="${OUTPUT_DIR}/${sn}${out_suffix}.${sext}"
+            out_path=$(resolve_output_collision "$out_path")
+            echo ""
+            echo "[$op/$total_ops] $sb seg$ci: $(format_seconds "$ss") → $(format_seconds "$ee")"
+            local rc=0
+            if [[ "$mode" == "2" ]]; then
+                run_ffmpeg_with_progress "Batch trim ($op/$total_ops)" "$clip_s" \
+                    -y -ss "$ss" -to "$ee" -i "$src" \
+                    -map 0 -map_metadata 0 -c:v "$re_codec" -crf "$re_crf" -preset medium \
+                    "${re_aopt[@]}" -c:s copy \
+                    -avoid_negative_ts make_zero \
+                    "$out_path"
+                rc=$?
+            else
+                ffmpeg -y -ss "$ss" -to "$ee" -i "$src" \
+                    -map 0 -map_metadata 0 -c copy \
+                    -avoid_negative_ts make_zero -copyts \
+                    "$out_path" 2>&1 | tail -3
+                rc=${PIPESTATUS[0]}
+            fi
+            if [[ $rc -eq 0 && -f "$out_path" && -s "$out_path" ]]; then
+                ok=$((ok+1))
+                echo "  ✓ $(basename "$out_path")"
+            else
+                fail=$((fail+1))
+                echo "  ✗ EROARE: $(basename "$out_path")"
+            fi
+            ci=$((ci+1))
+        done
+    done
+
+    termux-wake-unlock 2>/dev/null
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  BATCH TRIM — Sumar                          ║"
+    echo "╠══════════════════════════════════════════════╣"
+    echo "║  Fisiere: ${#selected[@]} | Segmente: ${#cuts[@]} | Total: $total_ops"
+    echo "║  ✓ OK: $ok    ✗ FAIL: $fail    → SKIP: $skip"
+    echo "╚══════════════════════════════════════════════╝"
+}
+
+# ── Preview thumbnails (v37): 3-frame tile per fișier ────────────────
+# Args: array de path-uri
+# Output: PNG-uri în AV_TEMP_DIR/preview_<ts>/ — un fișier per intrare
+generate_preview_thumbnails() {
+    local files=("$@")
+    local n=${#files[@]}
+    if (( n == 0 )); then return 0; fi
+    local subdir; subdir=$(create_temp_subdir "preview")
+    echo "  Generez $n preview-uri (3-frame tile, 320p)..."
+    local ok=0 fail=0
+    for ((i=0; i<n; i++)); do
+        local f="${files[$i]}"
+        local fb; fb=$(basename "$f")
+        local fn="${fb%.*}"
+        local out="${subdir}/${fn}_preview.png"
+        local dur; dur=$(get_duration_seconds "$f")
+        if (( dur < 3 )); then
+            echo "    [$((i+1))/$n] $fb — skip (durata < 3s)"
+            continue
+        fi
+        local t1 t2 t3
+        t1=$(awk "BEGIN{printf \"%.2f\", $dur*0.05}")
+        t2=$(awk "BEGIN{printf \"%.2f\", $dur*0.5}")
+        t3=$(awk "BEGIN{printf \"%.2f\", $dur*0.95}")
+        ffmpeg -y -hide_banner -loglevel error \
+            -ss "$t1" -i "$f" -ss "$t2" -i "$f" -ss "$t3" -i "$f" \
+            -filter_complex "[0:v]scale=320:-1[a];[1:v]scale=320:-1[b];[2:v]scale=320:-1[c];[a][b][c]hstack=3" \
+            -frames:v 1 "$out" 2>/dev/null
+        if [[ -f "$out" && -s "$out" ]]; then
+            ok=$((ok+1))
+            echo "    [$((i+1))/$n] $fb → $(basename "$out")"
+        else
+            fail=$((fail+1))
+            echo "    [$((i+1))/$n] $fb — esuat"
+        fi
+    done
+    echo "  ✓ Preview-uri: $ok OK, $fail esuate"
+    echo "  Locatie: $subdir"
 }
 
 # Probe rapid fișier: codec + rez + fps + pix_fmt pt compat check
@@ -2204,6 +2465,13 @@ trimconcat_flow_concat() {
     echo "║  Durata totala: $(format_seconds "$total_s")"
     echo "╚══════════════════════════════════════════════╝"
 
+    # Preview thumbnails (opt-in)
+    echo ""
+    read -p "Generezi preview thumbnails (3-frame tile per fisier)? (d/n) [default: n]: " pv
+    if [[ "${pv,,}" == "d" ]]; then
+        generate_preview_thumbnails "${selected[@]}"
+    fi
+
     # Output filename
     local ts; ts=$(date +%Y%m%d_%H%M%S)
     read -p "Nume fisier output (fara extensie) [default: concat_${ts}]: " out_name
@@ -2255,10 +2523,11 @@ trimconcat_flow_concat() {
             echo "file '${esc}'" >> "$concat_txt"
         done
         echo "  Concat stream copy..."
-        ffmpeg -y -f concat -safe 0 -i "$concat_txt" \
+        run_ffmpeg_with_progress "Concat (copy)" "$total_s" \
+            -y -f concat -safe 0 -i "$concat_txt" \
             -map 0 -map_metadata 0 -c copy \
             -avoid_negative_ts make_zero \
-            "$out_path" 2>&1 | tail -10
+            "$out_path"
     else
         # Re-encode via concat filter
         echo ""
@@ -2282,13 +2551,14 @@ trimconcat_flow_concat() {
         local fc="${fc_map}concat=n=${n}:v=1:a=1[outv][outa]"
 
         echo "  Concat re-encode ($codec CRF $crf)... durata totala $(format_seconds "$total_s")"
-        ffmpeg -y "${ff_in[@]}" \
+        run_ffmpeg_with_progress "Concat ($codec)" "$total_s" \
+            -y "${ff_in[@]}" \
             -filter_complex "$fc" \
             -map "[outv]" -map "[outa]" \
             -c:v "$codec" -crf "$crf" -preset medium \
             "${aopt[@]}" \
             -map_metadata 0 \
-            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+            "$out_path"
     fi
 
     termux-wake-unlock 2>/dev/null
@@ -2440,23 +2710,32 @@ trimconcat_flow_pipeline() {
     echo "╔══════════════════════════════════════════════╗"
     echo "║  PIPELINE — Setari encode (global)           ║"
     echo "╚══════════════════════════════════════════════╝"
-    echo "Codec:"
-    echo "  1) libx265 (HEVC) [default]"
-    echo "  2) libx264 (H.264)"
-    echo "  3) libsvtav1 (AV1)"
-    read -p "Alege 1-3: " cc
-    local codec="libx265"
-    [[ "$cc" == "2" ]] && codec="libx264"
-    [[ "$cc" == "3" ]] && codec="libsvtav1"
-    read -p "CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
-    echo "Preset:"
-    echo "  1) medium [default]"
-    echo "  2) slow (calitate mai buna)"
-    echo "  3) fast"
-    read -p "Alege 1-3: " pp
-    local preset="medium"
-    [[ "$pp" == "2" ]] && preset="slow"
-    [[ "$pp" == "3" ]] && preset="fast"
+    echo "Mod encode:"
+    echo "  1) Video + Audio re-encode [default]"
+    echo "  2) Audio-only re-encode (video stream copy, instant)"
+    read -p "Alege 1-2: " mode_ch
+    local audio_only=0
+    [[ "$mode_ch" == "2" ]] && audio_only=1
+    local codec="libx265" crf=22 preset="medium"
+    if (( audio_only == 0 )); then
+        echo "Codec:"
+        echo "  1) libx265 (HEVC) [default]"
+        echo "  2) libx264 (H.264)"
+        echo "  3) libsvtav1 (AV1)"
+        read -p "Alege 1-3: " cc
+        [[ "$cc" == "2" ]] && codec="libx264"
+        [[ "$cc" == "3" ]] && codec="libsvtav1"
+        read -p "CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+        echo "Preset:"
+        echo "  1) medium [default]"
+        echo "  2) slow (calitate mai buna)"
+        echo "  3) fast"
+        read -p "Alege 1-3: " pp
+        [[ "$pp" == "2" ]] && preset="slow"
+        [[ "$pp" == "3" ]] && preset="fast"
+    else
+        echo "  → Video: stream copy. Defaults fallback (dacă incompat): libx265 CRF 22 medium"
+    fi
     echo "Audio:"
     echo "  1) aac 192k [default]"
     echo "  2) eac3 224k"
@@ -2480,11 +2759,18 @@ trimconcat_flow_pipeline() {
     [[ "$cont_ch" == "2" ]] && container="mp4"
     [[ "$cont_ch" == "3" ]] && container="mov"
 
+    echo "Capitole automate (1 capitol per segment, marker timeline)?"
+    echo "  1) Da [default]"
+    echo "  2) Nu"
+    read -p "Alege 1-2: " ch_ch
+    local make_chapters=1
+    [[ "$ch_ch" == "2" ]] && make_chapters=0
+
     mkdir -p "$OUTPUT_DIR" 2>/dev/null
     local out_path="${OUTPUT_DIR}/${out_name}.${container}"
     out_path=$(resolve_output_collision "$out_path")
 
-    # Estimare temp size: suma segmentelor (bitrate-proportional)
+    # Estimare temp size: doar segmentele trimuite (FULL files merg direct in concat.txt)
     local est_temp_mb=0
     local pipeline_total_s=0
     for ((i=0; i<${#chosen[@]}; i++)); do
@@ -2492,7 +2778,7 @@ trimconcat_flow_pipeline() {
         local fsize; fsize=$(stat -c%s "$f" 2>/dev/null || echo 0)
         local fdur; fdur=$(get_duration_seconds "$f")
         if [[ -z "$segs" ]]; then
-            est_temp_mb=$(( est_temp_mb + fsize/1024/1024 ))
+            # FULL file — referinta directa in concat.txt, nu ocupa temp
             pipeline_total_s=$(( pipeline_total_s + fdur ))
         else
             IFS=',' read -ra parts <<< "$segs"
@@ -2527,16 +2813,28 @@ trimconcat_flow_pipeline() {
     echo "║"
     echo "║  Durata finala estimata: $(format_seconds "$pipeline_total_s")"
     echo "║  Temp estimat: ~${est_temp_mb} MB"
-    echo "║  Encode: $codec CRF $crf ($preset)"
+    if (( audio_only == 1 )); then
+        echo "║  Encode: AUDIO-ONLY (video stream copy)"
+    else
+        echo "║  Encode: $codec CRF $crf ($preset)"
+    fi
     echo "║  Output: $(basename "$out_path")"
     echo "╚══════════════════════════════════════════════╝"
 
-    # HDR warning
+    # HDR info (v37: detecția detaliată + auto-injectare se face pre-Pass 3)
     if tc_check_hdr_files "${chosen[@]}"; then
         echo ""
-        echo "  ⚠ INPUT HDR DETECTAT (smpte2084 / HLG)"
-        echo "    Setarile standard ($codec CRF $crf) NU pastreaza metadata HDR."
-        echo "    Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR."
+        echo "  ℹ HDR detectat în input — modul HDR va fi auto-detectat înainte de Pass 3."
+        if (( audio_only == 0 )) && [[ "$codec" != "libx265" ]]; then
+            echo "    ATENTIE: codec=$codec nu suporta HDR10 — output va fi SDR-like."
+        fi
+    fi
+
+    # Preview thumbnails (opt-in)
+    echo ""
+    read -p "Generezi preview thumbnails (3-frame tile per fisier)? (d/n) [default: n]: " pv
+    if [[ "${pv,,}" == "d" ]]; then
+        generate_preview_thumbnails "${chosen[@]}"
     fi
 
     read -p "Continua? (d/n) [default: d]: " go
@@ -2552,12 +2850,14 @@ trimconcat_flow_pipeline() {
     echo "  [Pass 1/3] Trim stream copy"
     echo "═══════════════════════════════════════════════"
     local trimmed_files=()
+    local seg_durations=()
     for ((i=0; i<${#chosen[@]}; i++)); do
         local f="${chosen[$i]}" segs="${segments[$i]}"
         local ext="${f##*.}"
         if [[ -z "$segs" ]]; then
             # Full file — nu trimuim, folosim sursa direct
             trimmed_files+=("$f")
+            seg_durations+=("$(get_duration_seconds "$f")")
             echo "  [$((i+1))/${#chosen[@]}] $(basename "$f") — FULL (fara trim)"
         else
             IFS=',' read -ra parts <<< "$segs"
@@ -2572,6 +2872,11 @@ trimconcat_flow_pipeline() {
                     "$seg_out" 2>&1 | tail -3
                 if [[ -f "$seg_out" && -s "$seg_out" ]]; then
                     trimmed_files+=("$seg_out")
+                    # v37: foloseste durata REALA a segmentului trimuit (keyframe snap)
+                    # pentru capitole precise — fallback la (ee-ss) daca probe esueaza.
+                    local _real; _real=$(get_duration_seconds "$seg_out")
+                    [[ -z "$_real" || "$_real" -le 0 ]] && _real=$((ee - ss))
+                    seg_durations+=("$_real")
                 else
                     echo "  ✗ EROARE trim: $seg_out"
                     cleanup_temp_subdir "$subdir" ""
@@ -2596,14 +2901,41 @@ trimconcat_flow_pipeline() {
     echo "  [Pass 2/3] Verificare compat + pregatire concat"
     echo "═══════════════════════════════════════════════"
     local use_filter=0
+    local smart_copy=0
     if ! check_concat_compat "${trimmed_files[@]}"; then
         use_filter=1
         echo "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter"
+        if (( audio_only == 1 )); then
+            echo "  ⚠ Audio-only mode: concat filter cere video re-encode."
+            echo "  → Fallback la full re-encode ($codec CRF $crf $preset)."
+            audio_only=0
+        fi
         if [[ "${aopt[0]}" == "-c:a" && "${aopt[1]}" == "copy" ]]; then
             echo "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k."
             aopt=(-c:a aac -b:a 192k)
         fi
     else
+        # Smart stream copy detection (dacă nu e audio-only): sursa = target codec → oferă skip re-encode
+        if (( audio_only == 0 )); then
+            local src_codec; src_codec=$(ffprobe -v error -select_streams v:0 \
+                -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 \
+                "${trimmed_files[0]}" 2>/dev/null)
+            local target_codec_name=""
+            case "$codec" in
+                libx265) target_codec_name="hevc" ;;
+                libx264) target_codec_name="h264" ;;
+                libsvtav1|libaom-av1) target_codec_name="av1" ;;
+            esac
+            if [[ -n "$target_codec_name" && "$src_codec" == "$target_codec_name" ]]; then
+                echo ""
+                echo "  ⚡ SMART COPY: sursa este deja $src_codec, identic cu targetul ($codec)."
+                echo "    Stream copy direct → instant, lossless, fără re-encode."
+                read -p "  Folosesti stream copy in loc de re-encode? (D/n) [default: D]: " sc
+                if [[ "${sc,,}" != "n" ]]; then
+                    smart_copy=1
+                fi
+            fi
+        fi
         local concat_txt="${subdir}/concat.txt"
         : > "$concat_txt"
         for f in "${trimmed_files[@]}"; do
@@ -2613,13 +2945,121 @@ trimconcat_flow_pipeline() {
         echo "  ${#trimmed_files[@]} intrari in $concat_txt"
     fi
 
-    # Pass 3/3: concat + re-encode
+    # Generare chapters file (FFMETADATA1) dacă user a optat și avem >=2 segmente
+    local chapters_file=""
+    local chap_in=() chap_map=()
+    if (( make_chapters == 1 && ${#trimmed_files[@]} >= 2 )); then
+        chapters_file="${subdir}/chapters.txt"
+        echo ";FFMETADATA1" > "$chapters_file"
+        local cum_ms=0
+        for ((i=0; i<${#trimmed_files[@]}; i++)); do
+            local d_ms=$(( ${seg_durations[$i]} * 1000 ))
+            local end_ms=$(( cum_ms + d_ms ))
+            {
+                echo ""
+                echo "[CHAPTER]"
+                echo "TIMEBASE=1/1000"
+                echo "START=$cum_ms"
+                echo "END=$end_ms"
+                echo "title=Segment $((i+1))"
+            } >> "$chapters_file"
+            cum_ms=$end_ms
+        done
+        echo "  ✓ Capitole generate: ${#trimmed_files[@]} markeri în $(basename "$chapters_file")"
+    fi
+
+    # HDR-aware (v37): detectare mod HDR + injectare params x265 dacă re-encode
+    local hdr_color_args=()
+    local hdr_x265_extra=""
+    local hdr_pix_fmt=""
+    if (( smart_copy == 0 && audio_only == 0 )); then
+        local hdr_mode; hdr_mode=$(detect_pipeline_hdr_mode "${chosen[@]}")
+        case "$hdr_mode" in
+            sdr) : ;;
+            mixed)
+                echo ""
+                echo "  ⚠ HDR MIXED: input contine atat SDR cat si HDR (smpte2084/HLG)."
+                echo "    HDR metadata NU va fi pastrat. Output = SDR-like."
+                ;;
+            hdr10|hdr10plus|hlg|dv)
+                if [[ "$codec" != "libx265" ]]; then
+                    echo ""
+                    echo "  ⚠ HDR detectat ($hdr_mode), dar codec=$codec nu suporta HDR10."
+                    echo "    HDR metadata NU va fi pastrat. Pentru HDR10, foloseste libx265."
+                else
+                    local trc="smpte2084"
+                    [[ "$hdr_mode" == "hlg" ]] && trc="arib-std-b67"
+                    hdr_pix_fmt="yuv420p10le"
+                    hdr_color_args=(-color_primaries bt2020 -color_trc "$trc" -colorspace bt2020nc)
+                    hdr_x265_extra="hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                    if [[ "$hdr_mode" == "dv" ]]; then
+                        echo ""
+                        echo "  ⚠ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)."
+                    elif [[ "$hdr_mode" == "hdr10plus" ]]; then
+                        echo ""
+                        echo "  ⚡ HDR10+ detectat. Vrei sa pastrezi metadata dinamica? (necesita hdr10plus_tool)"
+                        echo "     1) Da [default]   2) Nu (doar HDR10 static)"
+                        read -p "     Alege 1-2: " hdr10p_ch
+                        if [[ "${hdr10p_ch:-1}" == "1" ]]; then
+                            if _check_hdr10plus_tool; then
+                                local hdr10p_json
+                                hdr10p_json=$(extract_hdr10plus_metadata "${trimmed_files[0]}")
+                                if [[ -n "$hdr10p_json" && -s "$hdr10p_json" ]]; then
+                                    hdr_x265_extra="${hdr_x265_extra}:dhdr10-info=${hdr10p_json}"
+                                    echo "     ✓ HDR10+ JSON extras: $hdr10p_json"
+                                else
+                                    echo "     ⚠ Extragere HDR10+ esuata. Fallback HDR10 static."
+                                fi
+                            else
+                                echo "     ⚠ hdr10plus_tool NU este instalat. Fallback HDR10 static."
+                                echo "       Instaleaza: $TOOLS_DIR/hdr10plus_parser.sh"
+                            fi
+                        fi
+                    else
+                        echo ""
+                        echo "  ⚡ AUTO HDR10: pix_fmt=$hdr_pix_fmt, transfer=$trc, color=bt2020"
+                    fi
+                fi
+                ;;
+        esac
+    fi
+
+    # Pass 3/3: concat + re-encode (sau stream copy dacă smart_copy=1, sau audio-only)
     echo ""
     echo "═══════════════════════════════════════════════"
-    echo "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)"
+    if (( smart_copy == 1 )); then
+        echo "  [Pass 3/3] Concat stream copy (smart)"
+    elif (( audio_only == 1 )); then
+        echo "  [Pass 3/3] Concat + Audio re-encode (video copy)"
+    else
+        echo "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)"
+    fi
     echo "═══════════════════════════════════════════════"
     echo "  Durata totala: $(format_seconds "$pipeline_total_s")"
-    if (( use_filter == 1 )); then
+
+    # Build HDR args pentru ffmpeg call (pix_fmt + color_* + x265-params)
+    local hdr_pix_args=()
+    [[ -n "$hdr_pix_fmt" ]] && hdr_pix_args=(-pix_fmt "$hdr_pix_fmt")
+    local hdr_x265_args=()
+    [[ -n "$hdr_x265_extra" ]] && hdr_x265_args=(-x265-params "$hdr_x265_extra")
+    if (( smart_copy == 1 )); then
+        chap_in=(); chap_map=()
+        if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
+        run_ffmpeg_with_progress "Pass 3/3 (copy)" "$pipeline_total_s" \
+            -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
+            -map 0 -map_metadata 0 "${chap_map[@]}" -c copy \
+            -avoid_negative_ts make_zero \
+            "$out_path"
+    elif (( audio_only == 1 )); then
+        chap_in=(); chap_map=()
+        if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
+        run_ffmpeg_with_progress "Pass 3/3 (audio-only)" "$pipeline_total_s" \
+            -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
+            -map 0 -map_metadata 0 "${chap_map[@]}" -c:v copy \
+            "${aopt[@]}" \
+            -avoid_negative_ts make_zero \
+            "$out_path"
+    elif (( use_filter == 1 )); then
         local ff_in=() fc_map=""
         for ((i=0; i<${#trimmed_files[@]}; i++)); do
             ff_in+=(-i "${trimmed_files[$i]}")
@@ -2627,19 +3067,27 @@ trimconcat_flow_pipeline() {
         done
         local n=${#trimmed_files[@]}
         local fc="${fc_map}concat=n=${n}:v=1:a=1[outv][outa]"
-        ffmpeg -y "${ff_in[@]}" \
+        chap_in=(); chap_map=()
+        if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters "$n"); fi
+        run_ffmpeg_with_progress "Pass 3/3 ($codec)" "$pipeline_total_s" \
+            -y "${ff_in[@]}" "${chap_in[@]}" \
             -filter_complex "$fc" \
-            -map "[outv]" -map "[outa]" \
+            -map "[outv]" -map "[outa]" "${chap_map[@]}" \
             -c:v "$codec" -crf "$crf" -preset "$preset" \
+            "${hdr_pix_args[@]}" "${hdr_color_args[@]}" "${hdr_x265_args[@]}" \
             "${aopt[@]}" \
             -map_metadata 0 \
-            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+            "$out_path"
     else
-        ffmpeg -y -f concat -safe 0 -i "$concat_txt" \
-            -map 0 -map_metadata 0 \
+        chap_in=(); chap_map=()
+        if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
+        run_ffmpeg_with_progress "Pass 3/3 ($codec)" "$pipeline_total_s" \
+            -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
+            -map 0 -map_metadata 0 "${chap_map[@]}" \
             -c:v "$codec" -crf "$crf" -preset "$preset" \
+            "${hdr_pix_args[@]}" "${hdr_color_args[@]}" "${hdr_x265_args[@]}" \
             "${aopt[@]}" \
-            "$out_path" 2>&1 | grep -E "frame=|error|Error" | tail -20
+            "$out_path"
     fi
 
     termux-wake-unlock 2>/dev/null

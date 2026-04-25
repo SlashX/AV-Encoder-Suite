@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v36
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v37
 
 ---
 
@@ -10,7 +10,7 @@
 
 - **6 video encoders**: H.265/HEVC, H.264/AVC, AV1 (SVT-AV1/libaom), DNxHR, ProRes, APV
 - **Hardware encoding (Windows)**: NVENC, QSV, AMF for H.264/H.265/AV1 with GPU capability detection (RTX 40+, Intel Arc, AMD RDNA3+)
-- **Trim & Concat pipeline** (v36): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline with HDR warning
+- **Trim & Concat pipeline** (v36/v37): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline + **batch trim** (v37: same cuts on N files), **smart stream copy**, **audio-only mode**, **chapter markers**, **preview thumbnails**, **HDR-aware** (v37: HDR10 auto + HDR10+ opt-in)
 - **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, LOG (Apple Log, D-Log M, Samsung Log)
 - **DJI support**: GPS/telemetry extraction (GPX, KML, CSV, SRT), DJI track control, metadata strip (remux)
 - **Audio encoding**: AAC, AC3, E-AC3 (Dolby Digital Plus), DTS, TrueHD, FLAC, PCM, Opus
@@ -138,7 +138,7 @@ cd src
 3. Analyze media files (analysis + CSV export)
 4. Export DJI GPS/telemetry data
 5. Import external GPS — GPX/FIT
-6. Trim & Concat *(v36 — trim / concat / full pipeline)*
+6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
 7. Exit
 
 ### Windows — `av_encode.ps1` (7 options)
@@ -147,7 +147,7 @@ cd src
 3. Analyze media files (analysis + CSV 30 fields)
 4. Export DJI GPS data *(requires ExifTool)*
 5. Import external GPS — GPX/FIT/KML *(requires Python3)*
-6. Trim & Concat *(v36 — trim / concat / full pipeline)*
+6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
 7. Exit
 
 ---
@@ -188,14 +188,20 @@ cd src
 - **Vidstab 2-pass** — `vidstabdetect` (shakiness=5, accuracy=15) + `vidstabtransform` (smoothing=10)
 - Denoise, deinterlace, crop, resize, FPS conversion, HDR→SDR tonemap
 
-### Trim & Concat (v36)
+### Trim & Concat (v36/v37)
 - **Trim** — cut a single file with stream copy (instant, ±1-2s keyframe accuracy) or re-encode (frame-accurate); multi-cut loop per file
 - **Concat** — concatenate multiple files; auto compat check (codec/resolution/fps/pix_fmt) picks demuxer (stream copy, lossless) or filter (re-encode); sort by name/date/size/manual
 - **Pipeline** — full trim → concat → encode in 3 explicit passes; select files, mark which need trimming, set encode params once (x265/x264/AV1, CRF, preset, audio)
+- **Batch trim** (v37) — apply the same cut points to N files at once (e.g., strip intro/outro from a session); skip files shorter than end time, summary OK/FAIL/SKIP
+- **Smart stream copy** (v37) — Pipeline detects when source codec already matches target codec and offers to skip re-encode entirely (instant, lossless)
+- **Audio-only encoding** (v37) — Pipeline mode that re-encodes only audio while keeping video stream copy (instant for video, useful for codec changes); transparent fallback to full re-encode when concat filter is required
+- **Chapter markers** (v37) — Pipeline can auto-generate FFMETADATA1 chapters (1 chapter per segment), injected via `-map_chapters`
+- **Preview thumbnails** (v37) — opt-in 3-frame tile (start/mid/end at 5%/50%/95%) per file, 320p hstack PNG saved in temp; available in Concat and Pipeline
+- **HDR-aware Pipeline** (v37) — auto-detects HDR mode (sdr/hdr10/hdr10plus/hlg/dv/mixed) and injects proper x265 HDR10 params (`pix_fmt yuv420p10le`, `color_primaries bt2020`, `x265-params hdr10=1:hdr10-opt=1:...`); HDR10+ opt-in with hdr10plus_tool extraction and transparent fallback to HDR10 static; DV → HDR10 baseline fallback
+- **Real-time progress bar** (v37) — `-progress` based watcher with FPS / ETA / percent for all heavy ffmpeg calls; stderr tail on non-zero exit
 - **Flexible time input** — `45` / `1:30` / `1:05:30` all parsed to seconds
 - **Range selection** — `all` / `1,3,5` / `1-5` / `1-3,7,10-12`
-- **Temp management** — lazy-created `Temp/` folder with per-run subdirs; residual cleanup prompt on submenu entry (>24h default)
-- **HDR warning** — detects HDR10/HLG input and warns that standard re-encode settings don't preserve HDR metadata
+- **Temp management** — lazy-created `Temp/` folder with per-run subdirs (`trim_*` / `concat_*` / `pipeline_*` / `preview_*`); residual cleanup prompt on submenu entry (>24h default)
 
 ---
 
@@ -271,4 +277,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v36** — 49 bugs fixed | 120+ features | ~11898 lines of code
+Current: **v37** — 49 bugs fixed | 130+ features | ~12731 lines of code

@@ -147,7 +147,7 @@ function New-TempSubdir {
 function Invoke-TcTempCleanupPrompt {
     if (-not (Test-Path $AV_TEMP_DIR)) { return }
     $leftover = @(Get-ChildItem -Path $AV_TEMP_DIR -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^(trim|concat|pipeline)_' })
+        Where-Object { $_.Name -match '^(trim|concat|pipeline|preview)_' })
     if ($leftover.Count -eq 0) { return }
 
     Write-Host ""
@@ -187,6 +187,31 @@ function Invoke-TcTempCleanupPrompt {
         }
         default { }
     }
+}
+
+function Get-PipelineHdrMode {
+    param([string[]]$Files)
+    $hasHdr10 = $false; $hasHlg = $false; $hasDv = $false
+    $hasSdr = $false; $hasHdr10Plus = $false
+    foreach ($f in $Files) {
+        $ct = & ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer `
+            -of default=nw=1:nk=1 $f 2>$null
+        $sd = & ffprobe -v error -select_streams v:0 -read_intervals "%+#1" `
+            -show_entries frame=side_data_list -of default=nw=1 $f 2>$null
+        switch -regex ($ct) {
+            'smpte2084'    { $hasHdr10 = $true }
+            'arib-std-b67' { $hasHlg = $true }
+            default        { $hasSdr = $true }
+        }
+        if ($sd -match '(?i)dolby vision|dovi') { $hasDv = $true }
+        if ($sd -match '(?i)hdr dynamic metadata|hdr10\+') { $hasHdr10Plus = $true }
+    }
+    if ($hasDv) { return "dv" }
+    if ($hasSdr -and ($hasHdr10 -or $hasHlg)) { return "mixed" }
+    if ($hasHdr10Plus) { return "hdr10plus" }
+    if ($hasHdr10) { return "hdr10" }
+    if ($hasHlg) { return "hlg" }
+    return "sdr"
 }
 
 function Test-TcInputHDR {
@@ -298,11 +323,10 @@ function Invoke-TrimFlow {
             if ($ac -eq "2") { $aArgs = @("-c:a","aac","-b:a","192k") }
             if ($ac -eq "3") { $aArgs = @("-c:a","eac3","-b:a","224k") }
             Write-Host "  Encoding... $(Format-Seconds $clipS)" -ForegroundColor Green
-            & ffmpeg -y -ss $startS -to $endS -i $src.FullName `
-                -map 0 -map_metadata 0 -c:v $codec -crf $crf -preset medium `
-                @aArgs -c:s copy `
-                -avoid_negative_ts make_zero `
-                $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" }
+            $ffArgs = @("-y","-ss",$startS,"-to",$endS,"-i",$src.FullName,
+                "-map","0","-map_metadata","0","-c:v",$codec,"-crf",$crf,"-preset","medium") +
+                $aArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
+            Invoke-FfmpegWithProgress -Label "Trim re-encode" -TotalSeconds ([int]$clipS) -Arguments $ffArgs | Out-Null
         } else {
             Write-Host ""
             Write-Host "  NOTA: Stream copy taie la cel mai apropiat keyframe." -ForegroundColor Yellow
@@ -333,6 +357,40 @@ function Invoke-TrimFlow {
 }
 
 # ── v36: Video signature pt compat concat ────────────────────────────
+function New-PreviewThumbnails {
+    param([System.IO.FileInfo[]]$Files)
+    if ($Files.Count -eq 0) { return }
+    $subdir = New-TempSubdir "preview"
+    Write-Host "  Generez $($Files.Count) preview-uri (3-frame tile, 320p)..." -ForegroundColor Cyan
+    $ok = 0; $fail = 0
+    for ($i = 0; $i -lt $Files.Count; $i++) {
+        $f = $Files[$i]
+        $fn = [System.IO.Path]::GetFileNameWithoutExtension($f.Name)
+        $out = Join-Path $subdir "${fn}_preview.png"
+        $dur = Get-DurationSeconds $f.FullName
+        if ($dur -lt 3) {
+            Write-Host "    [$($i+1)/$($Files.Count)] $($f.Name) — skip (durata < 3s)" -ForegroundColor DarkGray
+            continue
+        }
+        $t1 = "{0:F2}" -f ($dur * 0.05)
+        $t2 = "{0:F2}" -f ($dur * 0.5)
+        $t3 = "{0:F2}" -f ($dur * 0.95)
+        & ffmpeg -y -hide_banner -loglevel error `
+            -ss $t1 -i $f.FullName -ss $t2 -i $f.FullName -ss $t3 -i $f.FullName `
+            -filter_complex "[0:v]scale=320:-1[a];[1:v]scale=320:-1[b];[2:v]scale=320:-1[c];[a][b][c]hstack=3" `
+            -frames:v 1 $out 2>$null
+        if ((Test-Path $out) -and ((Get-Item $out).Length -gt 0)) {
+            $ok++
+            Write-Host "    [$($i+1)/$($Files.Count)] $($f.Name) → $(Split-Path $out -Leaf)" -ForegroundColor Gray
+        } else {
+            $fail++
+            Write-Host "    [$($i+1)/$($Files.Count)] $($f.Name) — esuat" -ForegroundColor Yellow
+        }
+    }
+    Write-Host "  ✓ Preview-uri: $ok OK, $fail esuate" -ForegroundColor Green
+    Write-Host "  Locatie: $subdir" -ForegroundColor Green
+}
+
 function Get-VideoSignature {
     param([string]$file)
     $out = & ffprobe -v error -select_streams v:0 `
@@ -350,6 +408,135 @@ function Test-ConcatCompatibility {
         elseif ($sig -ne $first) { return $false }
     }
     return $true
+}
+
+# ── v37: Flow Batch Trim (aceleași cuturi pe N fisiere) ───────────────
+function Invoke-BatchTrimFlow {
+    $files = @(Get-TcInputVideos)
+    if ($files.Count -eq 0) {
+        Write-Host "Nu exista fisiere video in $InputDir" -ForegroundColor Yellow
+        return
+    }
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  BATCH TRIM — Selectare fisiere              ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        $dur = Get-DurationSeconds $files[$i].FullName
+        $nm = if ($files[$i].Name.Length -gt 32) { $files[$i].Name.Substring(0,32) } else { $files[$i].Name }
+        Write-Host ("║  {0,2}) {1,-32} {2}" -f ($i+1), $nm, (Format-Seconds $dur)) -ForegroundColor White
+    }
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "Exemple: all / 1,3,5 / 1-5 / 1-3,7,10-12" -ForegroundColor Gray
+    $selRaw = Read-Host "Selecteaza fisiere"
+    $indices = Expand-RangeSelection $selRaw $files.Count
+    if ($indices.Count -eq 0) {
+        Write-Host "Selectie invalida." -ForegroundColor Red; return
+    }
+
+    $selected = @()
+    $minDur = [int]::MaxValue
+    foreach ($idx in $indices) {
+        $f = $files[$idx-1]
+        $selected += $f
+        $d = Get-DurationSeconds $f.FullName
+        if ($d -lt $minDur) { $minDur = $d }
+    }
+    Write-Host ""
+    Write-Host "  $($selected.Count) fisiere selectate. Cea mai scurta durata: $(Format-Seconds $minDur)" -ForegroundColor Green
+
+    # Cuts comune
+    $cuts = @()
+    $cutIdx = 1
+    while ($true) {
+        Write-Host ""
+        Write-Host "  Segment #$cutIdx (aplicat la toate fisierele):" -ForegroundColor Cyan
+        $startS = 0; $endS = $minDur
+        while ($true) {
+            $startS = Read-ValidatedTime "Start" 0 $minDur
+            $endS   = Read-ValidatedTime "End  " $minDur $minDur
+            if ($startS -ge $endS) {
+                Write-Host "  EROARE: start >= end. Reintrodu." -ForegroundColor Red; continue
+            }
+            break
+        }
+        $cuts += [pscustomobject]@{ Start = $startS; End = $endS }
+        Write-Host "  → $(Format-Seconds $startS) - $(Format-Seconds $endS) ($(Format-Seconds ($endS - $startS)))" -ForegroundColor Green
+        $again = Read-Host "  Mai adaugi un segment? (d/n) [default: n]"
+        if ($again -ine "d") { break }
+        $cutIdx++
+    }
+
+    Write-Host ""
+    Write-Host "  Precizie trim:" -ForegroundColor Cyan
+    Write-Host "    1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]"
+    Write-Host "    2) Re-encode (exact, frame-accurate, mai lent)"
+    $mode = Read-Host "  Alege 1-2 [default: 1]"
+    $reCodec = "libx265"; $reCrf = "22"; $reAArgs = @("-c:a","copy")
+    if ($mode -eq "2") {
+        Write-Host "  Codec: 1-libx265 [default]  2-libx264" -ForegroundColor Cyan
+        $ec = Read-Host "  Alege"
+        if ($ec -eq "2") { $reCodec = "libx264" }
+        $c2 = Read-Host "  CRF [default: 22]"
+        if ($c2) { $reCrf = $c2 }
+        Write-Host "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k" -ForegroundColor Cyan
+        $ac = Read-Host "  Alege"
+        if ($ac -eq "2") { $reAArgs = @("-c:a","aac","-b:a","192k") }
+        if ($ac -eq "3") { $reAArgs = @("-c:a","eac3","-b:a","224k") }
+    }
+
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+
+    $totalOps = $selected.Count * $cuts.Count
+    $op = 0; $ok = 0; $fail = 0; $skip = 0
+    foreach ($src in $selected) {
+        $sn = [System.IO.Path]::GetFileNameWithoutExtension($src.Name)
+        $sext = $src.Extension.TrimStart('.')
+        $sdur = Get-DurationSeconds $src.FullName
+        $ci = 1
+        foreach ($cut in $cuts) {
+            $op++
+            if ($cut.End -gt $sdur) {
+                Write-Host "[$op/$totalOps] $($src.Name) seg${ci} — SKIP (durata $(Format-Seconds $sdur) < end $(Format-Seconds $cut.End))" -ForegroundColor Yellow
+                $skip++; $ci++; continue
+            }
+            $clipS = $cut.End - $cut.Start
+            $suffix = "_btrim${ci}_$((Format-Seconds $cut.Start) -replace ':','-')"
+            $outPath = Join-Path $OutputDir "${sn}${suffix}.${sext}"
+            $outPath = Resolve-OutputCollision $outPath
+            Write-Host ""
+            Write-Host "[$op/$totalOps] $($src.Name) seg${ci}: $(Format-Seconds $cut.Start) → $(Format-Seconds $cut.End)" -ForegroundColor White
+            $rc = 1
+            if ($mode -eq "2") {
+                $ffArgs = @("-y","-ss",$cut.Start,"-to",$cut.End,"-i",$src.FullName,
+                    "-map","0","-map_metadata","0","-c:v",$reCodec,"-crf",$reCrf,"-preset","medium") +
+                    $reAArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
+                $rc = Invoke-FfmpegWithProgress -Label "Batch trim ($op/$totalOps)" -TotalSeconds ([int]$clipS) -Arguments $ffArgs
+            } else {
+                & ffmpeg -y -ss $cut.Start -to $cut.End -i $src.FullName `
+                    -map 0 -map_metadata 0 -c copy `
+                    -avoid_negative_ts make_zero -copyts `
+                    $outPath 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+                $rc = $LASTEXITCODE
+            }
+            if ($rc -eq 0 -and (Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
+                $ok++
+                Write-Host "  ✓ $(Split-Path $outPath -Leaf)" -ForegroundColor Green
+            } else {
+                $fail++
+                Write-Host "  ✗ EROARE: $(Split-Path $outPath -Leaf)" -ForegroundColor Red
+            }
+            $ci++
+        }
+    }
+
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  BATCH TRIM — Sumar                          ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║  Fisiere: $($selected.Count) | Segmente: $($cuts.Count) | Total: $totalOps" -ForegroundColor Cyan
+    Write-Host "║  ✓ OK: $ok    ✗ FAIL: $fail    → SKIP: $skip" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 }
 
 # ── v36: Flow Concat (opțiunea 2) ─────────────────────────────────────
@@ -426,6 +613,12 @@ function Invoke-ConcatFlow {
     Write-Host "║  Durata totala: $(Format-Seconds $totalS)" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 
+    Write-Host ""
+    $pv = Read-Host "Generezi preview thumbnails (3-frame tile per fisier)? (d/n) [default: n]"
+    if ($pv -ieq "d") {
+        New-PreviewThumbnails -Files $selected
+    }
+
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $outName = Read-Host "Nume fisier output (fara extensie) [default: concat_${ts}]"
     if (-not $outName) { $outName = "concat_${ts}" }
@@ -469,10 +662,10 @@ function Invoke-ConcatFlow {
         }
         Write-ConcatTxtUtf8NoBom $concatTxt $lines
         Write-Host "  Concat stream copy..." -ForegroundColor Green
-        & ffmpeg -y -f concat -safe 0 -i $concatTxt `
-            -map 0 -map_metadata 0 -c copy `
-            -avoid_negative_ts make_zero `
-            $outPath 2>&1 | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt,
+            "-map","0","-map_metadata","0","-c","copy",
+            "-avoid_negative_ts","make_zero",$outPath)
+        Invoke-FfmpegWithProgress -Label "Concat (copy)" -TotalSeconds ([int]$totalS) -Arguments $ffArgs | Out-Null
     } else {
         Write-Host ""
         Write-Host "  Re-encode: 1-libx265 [default]  2-libx264" -ForegroundColor Cyan
@@ -496,13 +689,12 @@ function Invoke-ConcatFlow {
         $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
 
         Write-Host "  Concat re-encode ($codec CRF $crf)... durata totala $(Format-Seconds $totalS)" -ForegroundColor Green
-        & ffmpeg -y @ffIn `
-            -filter_complex $fc `
-            -map "[outv]" -map "[outa]" `
-            -c:v $codec -crf $crf -preset medium `
-            @aArgs `
-            -map_metadata 0 `
-            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 10 | ForEach-Object { Write-Host "    $_" }
+        $ffArgs = @("-y") + $ffIn + @(
+            "-filter_complex",$fc,
+            "-map","[outv]","-map","[outa]",
+            "-c:v",$codec,"-crf",$crf,"-preset","medium") +
+            $aArgs + @("-map_metadata","0",$outPath)
+        Invoke-FfmpegWithProgress -Label "Concat ($codec)" -TotalSeconds ([int]$totalS) -Arguments $ffArgs | Out-Null
     }
 
     Remove-TempSubdirSafe $subdir $outPath
@@ -647,20 +839,30 @@ function Invoke-PipelineFlow {
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  PIPELINE — Setari encode (global)           ║" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-    Write-Host "Codec:" -ForegroundColor Cyan
-    Write-Host "  1) libx265 (HEVC) [default]"
-    Write-Host "  2) libx264 (H.264)"
-    Write-Host "  3) libsvtav1 (AV1)"
-    $cc = Read-Host "Alege 1-3"
-    $codec = switch ($cc) { "2" {"libx264"} "3" {"libsvtav1"} default {"libx265"} }
-    $crf = Read-Host "CRF [default: 22]"
-    if (-not $crf) { $crf = "22" }
-    Write-Host "Preset:" -ForegroundColor Cyan
-    Write-Host "  1) medium [default]"
-    Write-Host "  2) slow (calitate mai buna)"
-    Write-Host "  3) fast"
-    $pp = Read-Host "Alege 1-3"
-    $preset = switch ($pp) { "2" {"slow"} "3" {"fast"} default {"medium"} }
+    Write-Host "Mod encode:" -ForegroundColor Cyan
+    Write-Host "  1) Video + Audio re-encode [default]"
+    Write-Host "  2) Audio-only re-encode (video stream copy, instant)"
+    $modeCh = Read-Host "Alege 1-2"
+    $audioOnly = ($modeCh -eq "2")
+    $codec = "libx265"; $crf = "22"; $preset = "medium"
+    if (-not $audioOnly) {
+        Write-Host "Codec:" -ForegroundColor Cyan
+        Write-Host "  1) libx265 (HEVC) [default]"
+        Write-Host "  2) libx264 (H.264)"
+        Write-Host "  3) libsvtav1 (AV1)"
+        $cc = Read-Host "Alege 1-3"
+        $codec = switch ($cc) { "2" {"libx264"} "3" {"libsvtav1"} default {"libx265"} }
+        $crf = Read-Host "CRF [default: 22]"
+        if (-not $crf) { $crf = "22" }
+        Write-Host "Preset:" -ForegroundColor Cyan
+        Write-Host "  1) medium [default]"
+        Write-Host "  2) slow (calitate mai buna)"
+        Write-Host "  3) fast"
+        $pp = Read-Host "Alege 1-3"
+        $preset = switch ($pp) { "2" {"slow"} "3" {"fast"} default {"medium"} }
+    } else {
+        Write-Host "  → Video: stream copy. Defaults fallback (dacă incompat): libx265 CRF 22 medium" -ForegroundColor Gray
+    }
     Write-Host "Audio:" -ForegroundColor Cyan
     Write-Host "  1) aac 192k [default]"
     Write-Host "  2) eac3 224k"
@@ -682,6 +884,12 @@ function Invoke-PipelineFlow {
     $contCh = Read-Host "Alege 1-3"
     $container = switch ($contCh) { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
 
+    Write-Host "Capitole automate (1 capitol per segment, marker timeline)?" -ForegroundColor Cyan
+    Write-Host "  1) Da [default]"
+    Write-Host "  2) Nu"
+    $chCh = Read-Host "Alege 1-2"
+    $makeChapters = ($chCh -ne "2")
+
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
     $outPath = Join-Path $OutputDir "${outName}.${container}"
     $outPath = Resolve-OutputCollision $outPath
@@ -695,7 +903,7 @@ function Invoke-PipelineFlow {
         $fsize = $f.Length
         $fdur = Get-DurationSeconds $f.FullName
         if ($segs.Count -eq 0) {
-            $estTempMB += [int]($fsize / 1MB)
+            # FULL file — referinta directa in concat.txt, nu ocupa temp
             $pipelineTotalS += $fdur
         } else {
             foreach ($s in $segs) {
@@ -726,16 +934,27 @@ function Invoke-PipelineFlow {
     Write-Host "║" -ForegroundColor Cyan
     Write-Host "║  Durata finala estimata: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Cyan
     Write-Host "║  Temp estimat: ~${estTempMB} MB" -ForegroundColor Cyan
-    Write-Host "║  Encode: $codec CRF $crf ($preset)" -ForegroundColor Cyan
+    if ($audioOnly) {
+        Write-Host "║  Encode: AUDIO-ONLY (video stream copy)" -ForegroundColor Cyan
+    } else {
+        Write-Host "║  Encode: $codec CRF $crf ($preset)" -ForegroundColor Cyan
+    }
     Write-Host "║  Output: $(Split-Path $outPath -Leaf)" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 
-    # HDR warning
+    # HDR info (v37: detecția detaliată + auto-injectare se face pre-Pass 3)
     if (Test-TcInputHDR ($chosen | ForEach-Object { $_.FullName })) {
         Write-Host ""
-        Write-Host "  ⚠ INPUT HDR DETECTAT (smpte2084 / HLG)" -ForegroundColor Yellow
-        Write-Host "    Setarile standard ($codec CRF $crf) NU pastreaza metadata HDR." -ForegroundColor Yellow
-        Write-Host "    Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR." -ForegroundColor Yellow
+        Write-Host "  ℹ HDR detectat în input — modul HDR va fi auto-detectat înainte de Pass 3." -ForegroundColor Cyan
+        if (-not $audioOnly -and $codec -ne "libx265") {
+            Write-Host "    ATENTIE: codec=$codec nu suporta HDR10 — output va fi SDR-like." -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host ""
+    $pv = Read-Host "Generezi preview thumbnails (3-frame tile per fisier)? (d/n) [default: n]"
+    if ($pv -ieq "d") {
+        New-PreviewThumbnails -Files $chosen
     }
 
     $go = Read-Host "Continua? (d/n) [default: d]"
@@ -750,12 +969,14 @@ function Invoke-PipelineFlow {
     Write-Host "  [Pass 1/3] Trim stream copy" -ForegroundColor Cyan
     Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
     $trimmedFiles = @()
+    $segDurations = @()
     for ($i = 0; $i -lt $chosen.Count; $i++) {
         $f = $chosen[$i]
         $segs = $segments[$i]
         $ext = $f.Extension.TrimStart('.')
         if ($segs.Count -eq 0) {
             $trimmedFiles += $f.FullName
+            $segDurations += [int](Get-DurationSeconds $f.FullName)
             Write-Host "  [$($i+1)/$($chosen.Count)] $($f.Name) — FULL (fara trim)" -ForegroundColor Gray
         } else {
             $si = 1
@@ -768,6 +989,10 @@ function Invoke-PipelineFlow {
                     $segOut 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
                 if ((Test-Path $segOut) -and ((Get-Item $segOut).Length -gt 0)) {
                     $trimmedFiles += $segOut
+                    # v37: foloseste durata REALA a segmentului trimuit (keyframe snap)
+                    $realDur = [int](Get-DurationSeconds $segOut)
+                    if ($realDur -le 0) { $realDur = [int]($s.End - $s.Start) }
+                    $segDurations += $realDur
                 } else {
                     Write-Host "  ✗ EROARE trim: $segOut" -ForegroundColor Red
                     Remove-TempSubdirSafe $subdir ""
@@ -790,13 +1015,39 @@ function Invoke-PipelineFlow {
     Write-Host "  [Pass 2/3] Verificare compat + pregatire concat" -ForegroundColor Cyan
     Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
     $useFilter = -not (Test-ConcatCompatibility $trimmedFiles)
+    $smartCopy = $false
     if ($useFilter) {
         Write-Host "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter" -ForegroundColor Yellow
+        if ($audioOnly) {
+            Write-Host "  ⚠ Audio-only mode: concat filter cere video re-encode." -ForegroundColor Yellow
+            Write-Host "  → Fallback la full re-encode ($codec CRF $crf $preset)." -ForegroundColor Yellow
+            $audioOnly = $false
+        }
         if ($aArgs.Count -ge 2 -and $aArgs[0] -eq "-c:a" -and $aArgs[1] -eq "copy") {
             Write-Host "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k." -ForegroundColor Yellow
             $aArgs = @("-c:a","aac","-b:a","192k")
         }
     } else {
+        # Smart stream copy detection (dacă nu e audio-only): sursa = target codec → oferă skip re-encode
+        if (-not $audioOnly) {
+            $srcCodec = (& ffprobe -v error -select_streams v:0 `
+                -show_entries stream=codec_name `
+                -of default=noprint_wrappers=1:nokey=1 $trimmedFiles[0] 2>$null)
+            $targetCodecName = switch ($codec) {
+                "libx265"   { "hevc" }
+                "libx264"   { "h264" }
+                "libsvtav1" { "av1" }
+                "libaom-av1"{ "av1" }
+                default     { "" }
+            }
+            if ($targetCodecName -and ($srcCodec -eq $targetCodecName)) {
+                Write-Host ""
+                Write-Host "  ⚡ SMART COPY: sursa este deja $srcCodec, identic cu targetul ($codec)." -ForegroundColor Cyan
+                Write-Host "    Stream copy direct → instant, lossless, fără re-encode." -ForegroundColor Cyan
+                $sc = Read-Host "  Folosesti stream copy in loc de re-encode? (D/n) [default: D]"
+                if ($sc -ine "n") { $smartCopy = $true }
+            }
+        }
         $concatTxt = Join-Path $subdir "concat.txt"
         $lines = foreach ($tf in $trimmedFiles) {
             $esc = $tf -replace "'","'\''"
@@ -806,13 +1057,112 @@ function Invoke-PipelineFlow {
         Write-Host "  $($trimmedFiles.Count) intrari in $concatTxt" -ForegroundColor Gray
     }
 
+    # Generare chapters file (FFMETADATA1) dacă user a optat și avem >=2 segmente
+    $chaptersFile = ""
+    if ($makeChapters -and $trimmedFiles.Count -ge 2) {
+        $chaptersFile = Join-Path $subdir "chapters.txt"
+        $chLines = New-Object System.Collections.Generic.List[string]
+        $chLines.Add(";FFMETADATA1")
+        $cumMs = 0
+        for ($i = 0; $i -lt $trimmedFiles.Count; $i++) {
+            $dMs = [int]$segDurations[$i] * 1000
+            $endMs = $cumMs + $dMs
+            $chLines.Add("")
+            $chLines.Add("[CHAPTER]")
+            $chLines.Add("TIMEBASE=1/1000")
+            $chLines.Add("START=$cumMs")
+            $chLines.Add("END=$endMs")
+            $chLines.Add("title=Segment $($i+1)")
+            $cumMs = $endMs
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllLines($chaptersFile, $chLines, $utf8NoBom)
+        Write-Host "  ✓ Capitole generate: $($trimmedFiles.Count) markeri în $(Split-Path $chaptersFile -Leaf)" -ForegroundColor Green
+    }
+
+    # HDR-aware (v37): detectare mod HDR + injectare params x265 dacă re-encode
+    $hdrColorArgs = @()
+    $hdrPixArgs = @()
+    $hdrX265Args = @()
+    if (-not $smartCopy -and -not $audioOnly) {
+        $hdrMode = Get-PipelineHdrMode ($chosen | ForEach-Object { $_.FullName })
+        switch ($hdrMode) {
+            "sdr" { }
+            "mixed" {
+                Write-Host ""
+                Write-Host "  ⚠ HDR MIXED: input contine atat SDR cat si HDR." -ForegroundColor Yellow
+                Write-Host "    HDR metadata NU va fi pastrat. Output = SDR-like." -ForegroundColor Yellow
+            }
+            default {
+                if ($codec -ne "libx265") {
+                    Write-Host ""
+                    Write-Host "  ⚠ HDR detectat ($hdrMode), dar codec=$codec nu suporta HDR10." -ForegroundColor Yellow
+                    Write-Host "    HDR metadata NU va fi pastrat. Pentru HDR10, foloseste libx265." -ForegroundColor Yellow
+                } else {
+                    $trc = if ($hdrMode -eq "hlg") { "arib-std-b67" } else { "smpte2084" }
+                    $hdrPixArgs   = @("-pix_fmt","yuv420p10le")
+                    $hdrColorArgs = @("-color_primaries","bt2020","-color_trc",$trc,"-colorspace","bt2020nc")
+                    $x265Extra    = "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                    if ($hdrMode -eq "dv") {
+                        Write-Host ""
+                        Write-Host "  ⚠ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
+                    } elseif ($hdrMode -eq "hdr10plus") {
+                        Write-Host ""
+                        Write-Host "  ⚡ HDR10+ detectat. Vrei sa pastrezi metadata dinamica? (necesita hdr10plus_tool)" -ForegroundColor Cyan
+                        Write-Host "     1) Da [default]   2) Nu (doar HDR10 static)"
+                        $hdr10pCh = Read-Host "     Alege 1-2"
+                        if (-not $hdr10pCh -or $hdr10pCh -eq "1") {
+                            $toolAvail = [bool](Get-Command "hdr10plus_tool" -ErrorAction SilentlyContinue)
+                            if ($toolAvail) {
+                                $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
+                                if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
+                                    $x265Extra = "${x265Extra}:dhdr10-info=${hdr10pJson}"
+                                    Write-Host "     ✓ HDR10+ JSON extras: $hdr10pJson" -ForegroundColor Green
+                                } else {
+                                    Write-Host "     ⚠ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
+                                }
+                            } else {
+                                Write-Host "     ⚠ hdr10plus_tool NU este instalat. Fallback HDR10 static." -ForegroundColor Yellow
+                                Write-Host "       Instaleaza: $ToolsDir\hdr10plus_parser.ps1" -ForegroundColor DarkGray
+                            }
+                        }
+                    } else {
+                        Write-Host ""
+                        Write-Host "  ⚡ AUTO HDR10: pix_fmt=yuv420p10le, transfer=$trc, color=bt2020" -ForegroundColor Cyan
+                    }
+                    $hdrX265Args = @("-x265-params",$x265Extra)
+                }
+            }
+        }
+    }
+
     # Pass 3/3
     Write-Host ""
     Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
-    Write-Host "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)" -ForegroundColor Cyan
+    if ($smartCopy) {
+        Write-Host "  [Pass 3/3] Concat stream copy (smart)" -ForegroundColor Cyan
+    } elseif ($audioOnly) {
+        Write-Host "  [Pass 3/3] Concat + Audio re-encode (video copy)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  [Pass 3/3] Concat + Encode ($codec CRF $crf, $preset)" -ForegroundColor Cyan
+    }
     Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host "  Durata totala: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Green
-    if ($useFilter) {
+    if ($smartCopy) {
+        $chapIn = @(); $chapMap = @()
+        if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
+        $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
+            "-map","0","-map_metadata","0") + $chapMap + @(
+            "-c","copy","-avoid_negative_ts","make_zero",$outPath)
+        Invoke-FfmpegWithProgress -Label "Pass 3/3 (copy)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
+    } elseif ($audioOnly) {
+        $chapIn = @(); $chapMap = @()
+        if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
+        $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
+            "-map","0","-map_metadata","0") + $chapMap + @("-c:v","copy") +
+            $aArgs + @("-avoid_negative_ts","make_zero",$outPath)
+        Invoke-FfmpegWithProgress -Label "Pass 3/3 (audio-only)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
+    } elseif ($useFilter) {
         $ffIn = @()
         $fcMap = ""
         for ($i = 0; $i -lt $trimmedFiles.Count; $i++) {
@@ -821,19 +1171,24 @@ function Invoke-PipelineFlow {
         }
         $n = $trimmedFiles.Count
         $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
-        & ffmpeg -y @ffIn `
-            -filter_complex $fc `
-            -map "[outv]" -map "[outa]" `
-            -c:v $codec -crf $crf -preset $preset `
-            @aArgs `
-            -map_metadata 0 `
-            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" }
+        $chapIn = @(); $chapMap = @()
+        if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","$n") }
+        $ffArgs = @("-y") + $ffIn + $chapIn + @(
+            "-filter_complex",$fc,
+            "-map","[outv]","-map","[outa]") + $chapMap + @(
+            "-c:v",$codec,"-crf",$crf,"-preset",$preset) +
+            $hdrPixArgs + $hdrColorArgs + $hdrX265Args +
+            $aArgs + @("-map_metadata","0",$outPath)
+        Invoke-FfmpegWithProgress -Label "Pass 3/3 ($codec)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     } else {
-        & ffmpeg -y -f concat -safe 0 -i $concatTxt `
-            -map 0 -map_metadata 0 `
-            -c:v $codec -crf $crf -preset $preset `
-            @aArgs `
-            $outPath 2>&1 | Select-String -Pattern "frame=|error|Error" | Select-Object -Last 15 | ForEach-Object { Write-Host "    $_" }
+        $chapIn = @(); $chapMap = @()
+        if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
+        $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
+            "-map","0","-map_metadata","0") + $chapMap + @(
+            "-c:v",$codec,"-crf",$crf,"-preset",$preset) +
+            $hdrPixArgs + $hdrColorArgs + $hdrX265Args +
+            $aArgs + @($outPath)
+        Invoke-FfmpegWithProgress -Label "Pass 3/3 ($codec)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     }
 
     Remove-TempSubdirSafe $subdir $outPath
@@ -1788,14 +2143,15 @@ function Show-Progress {
         [System.Diagnostics.Process]$proc,
         [string]$progFile,
         [int]$durSec,
-        [datetime]$startTime
+        [datetime]$startTime,
+        [string]$Label = "Progres"
     )
     $initialized = $false
     while (-not $proc.HasExited) {
         Start-Sleep -Milliseconds 500
         if (-not (Test-Path $progFile)) {
             if (-not $initialized) {
-                Write-Host -NoNewline "`r  Se initializeaza...                                      "
+                Write-Host -NoNewline ("`r  {0}: se initializeaza...                                 " -f $Label)
             }
             continue
         }
@@ -1825,11 +2181,42 @@ function Show-Progress {
         $eta = if ($outSec -gt 0 -and $durSec -gt $outSec) {
             [int]($elapsed * ($durSec - $outSec) / $outSec)
         } else { 0 }
-        $etaStr = "{0:D2}:{1:D2}:{2:D2}" -f ([int]($eta/3600)), ([int](($eta%3600)/60)), ($eta%60)
-        Write-Host -NoNewline ("`r  Progres: {0,3}% | FPS: {1,5} | Timp ramas: {2}   " -f $pct, $fpsStr, $etaStr)
+        $etaStr = "{0:D2}:{1:D2}:{2:D2}" -f ([int]($eta/3600)), ([int](($eta%3600)/60)), [int]($eta%60)
+        Write-Host -NoNewline ("`r  {0}: {1,3}% | FPS: {2,5} | ETA: {3}   " -f $Label, $pct, $fpsStr, $etaStr)
     }
     Write-Host ""
     if (Test-Path $progFile) { Remove-Item $progFile -Force -ErrorAction SilentlyContinue }
+}
+
+# v37: Reusable helper — rulează ffmpeg cu progress bar + label custom.
+# Folosit de Trim/Concat/Pipeline cu durata totală explicită.
+# Parameters:
+#   -Label          (string) — ex "Pass 3/3", "Trim seg1"
+#   -TotalSeconds   (int)    — durata totală (0 = initializing permanent)
+#   -Arguments      (string[]) — args ffmpeg (fara -progress / -nostats)
+# Return: exit code ffmpeg
+function Invoke-FfmpegWithProgress {
+    param(
+        [string]$Label,
+        [int]$TotalSeconds,
+        [string[]]$Arguments
+    )
+    $progFile = [System.IO.Path]::GetTempFileName()
+    $errFile  = "$env:TEMP\fferr_$PID.txt"
+    $allArgs  = @("-progress", $progFile, "-nostats") + $Arguments
+    $proc = Start-Process -FilePath ffmpeg -ArgumentList $allArgs -NoNewWindow -PassThru `
+        -RedirectStandardError $errFile
+    $startTime = Get-Date
+    Show-Progress -proc $proc -progFile $progFile -durSec $TotalSeconds -startTime $startTime -Label $Label
+    $proc.WaitForExit()
+    $rc = $proc.ExitCode
+    if ($rc -ne 0 -and (Test-Path $errFile)) {
+        Write-Host "  ⚠ ffmpeg exit code $rc — ultimele linii stderr:" -ForegroundColor Yellow
+        Get-Content $errFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    }
+    if (Test-Path $progFile) { Remove-Item $progFile -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $errFile)  { Remove-Item $errFile  -Force -ErrorAction SilentlyContinue }
+    return $rc
 }
 
 # Estimare dimensiune output — functie utilitara folosita in :checkvideo
@@ -2673,14 +3060,16 @@ if ($mainChoice -eq "6") {
     Write-Host "║  1) Trim clip (un fisier)            ║" -ForegroundColor White
     Write-Host "║  2) Concat clips (unire)             ║" -ForegroundColor White
     Write-Host "║  3) Trim + Concat + Encode           ║" -ForegroundColor White
-    Write-Host "║  4) Inapoi                           ║" -ForegroundColor White
+    Write-Host "║  4) Batch trim (N fisiere, cuts comune)" -ForegroundColor White
+    Write-Host "║  5) Inapoi                           ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-    $tcChoice = Read-Host "Alege 1-4"
+    $tcChoice = Read-Host "Alege 1-5"
     switch ($tcChoice) {
         "1" { Invoke-TrimFlow }
         "2" { Invoke-ConcatFlow }
         "3" { Invoke-PipelineFlow }
-        "4" { Write-Host "Inapoi." -ForegroundColor Gray }
+        "4" { Invoke-BatchTrimFlow }
+        "5" { Write-Host "Inapoi." -ForegroundColor Gray }
         default { Write-Host "Optiune invalida." -ForegroundColor Red }
     }
     Read-Host "Apasa Enter"; exit

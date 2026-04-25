@@ -37,7 +37,7 @@ CUPRINS
   av_encoder_apv.sh     — Encoder APV (Samsung profesional, intra-frame, ffmpeg 8.1)
   av_encoder_prores.sh  — Encoder ProRes (Apple profesional, prores_ks, mov obligatoriu)
   av_encoder_audio.sh      — Re-encode doar audio (video stream copy, rapid)
-  av_trimconcat.sh         — Trim & Concat pipeline (v36: trim / concat / pipeline complet)
+  av_trimconcat.sh         — Trim & Concat pipeline (v36/v37: trim / concat / pipeline / batch trim)
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
   av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
   av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
@@ -386,16 +386,17 @@ PASUL 4: Permite executia scripturilor PowerShell
   messages, converteste semicircles in grade, altitude si speed in unitati
   standard. Extrage si HR, cadence, power, temp daca sunt prezente.
 
-  FLUXUL TRIM & CONCAT (v36 — av_trimconcat.sh / Invoke-*Flow):
+  FLUXUL TRIM & CONCAT (v36/v37 — av_trimconcat.sh / Invoke-*Flow):
   ──────────────────────────────────────────────────────────────
-  Submeniu cu 3 flow-uri + back:
+  Submeniu cu 4 flow-uri + back:
     1) Trim clip (un fisier)
     2) Concat clips (unire)
     3) Trim + Concat + Encode (pipeline complet)
-    4) Inapoi
+    4) Batch trim (v37: aceleasi cuturi pe N fisiere)
+    5) Inapoi
 
   La intrare: scan foldere reziduale din Temp/. Daca exista subfoldere
-  trim_*/concat_*/pipeline_* (sesiuni anterioare intrerupte sau esuate),
+  trim_*/concat_*/pipeline_*/preview_* (sesiuni anterioare intrerupte sau esuate),
   se afiseaza lista cu size (MB) + age (h/z) si 3 optiuni:
     1) Pastreaza toate — pentru recovery manual
     2) Sterge >24h [default] — curatenie sigura (procese vii protejate)
@@ -439,44 +440,73 @@ PASUL 4: Permite executia scripturilor PowerShell
            Exemple: none / 1,3 / 1-2 / all
            Pentru fiecare fisier selectat: loop multi-segment (start/end)
     Pas 3: Setari encode GLOBALE (o singura data pt toate):
-           - Codec: libx265 [default] / libx264 / libsvtav1
+           - Mod encode (v37): 1) Video+Audio re-encode [default]  2) Audio-only (video copy)
+           - Codec (daca nu audio-only): libx265 [default] / libx264 / libsvtav1
            - CRF [default 22]
            - Preset: medium [default] / slow / fast
            - Audio: aac 192k [default] / eac3 224k / copy
     Pas 4: Nume output (default pipeline_YYYYMMDD_HHMMSS) + container (mkv/mp4/mov)
+           - Capitole automate (v37): 1) Da [default] 2) Nu — 1 capitol per segment
     Pas 5: Rezumat pre-executie:
            - Lista fisiere cu tag [FULL] sau [TRIM xN]
            - Durata finala estimata
            - Temp estimat (MB) — proportional cu bitrate-ul sursei
-           - Setari encode + nume output
-           - Warning HDR daca e cazul (vezi mai jos)
+           - Setari encode + nume output (sau "AUDIO-ONLY" daca audio_only)
+           - Info HDR daca e cazul (auto-detectie inainte de Pass 3)
+           - Preview thumbnails (v37, opt-in): 3-frame tile 320p / fisier in preview_<ts>/
            - Confirm (d/n) [default: d]
     Pas 6: Executie in 3 pass-uri explicite:
            [Pass 1/3] Trim stream copy — fiecare segment → subdir temp
                       Fisierele FULL (fara trim) NU se copiaza (referinta directa)
+                      Tracking parallel seg_durations[] pt timeline (v37)
            [Pass 2/3] Verificare compat (codec+rez+fps+pix_fmt) pe fisierele generate
                       Daca compat: generare concat.txt (demuxer path)
-                      Daca diferite: switch automat la concat filter (fara concat.txt)
+                      Daca diferite: switch automat la concat filter
                       Audio copy → fallback aac 192k cand se foloseste concat filter
-           [Pass 3/3] Concat + Encode intr-un singur ffmpeg
-                      Demuxer: -f concat -safe 0 -i concat.txt (rapid, input unificat)
-                      Filter:  -i per fisier + filter_complex concat (lent dar robust)
-                      Comun: -c:v CODEC -crf CRF -preset PP -map_metadata 0
+                      audio_only + filter incompat → fallback la full re-encode
+                      v37: Smart stream copy detection — daca codec source == codec target,
+                      opt-in skip re-encode total (instant `-c copy`)
+           Pre-Pass 3 (v37): chapters.txt FFMETADATA1 daca opt-in
+           Pre-Pass 3 (v37): HDR mode detection (sdr/hdr10/hdr10plus/hlg/dv/mixed)
+                      hdr10/hlg + libx265 → auto inject pix_fmt yuv420p10le + color_* + x265-params
+                      hdr10plus → opt-in extragere via hdr10plus_tool, fallback HDR10 la lipsa tool
+                      dv → fallback HDR10 + warning ca DV RPU nu se pastreaza
+                      mixed → no inject + warning
+                      codec ≠ libx265 → no inject + warning
+           [Pass 3/3] Concat + Encode intr-un singur ffmpeg, cu progress bar real:
+                      smart_copy: -f concat -i concat.txt -c copy (instant, lossless)
+                      audio_only: -f concat -i concat.txt -c:v copy + audio re-encode
+                      filter:     -i per fisier + filter_complex concat (lent dar robust)
+                      demuxer:    -f concat -safe 0 -i concat.txt (rapid, input unificat)
+                      Toate primesc condiționat: -i chapters.txt + -map_chapters <idx> (v37)
+                      Re-encode primeste hdr_pix_args + hdr_color_args + hdr_x265_args (v37)
+                      Comun (re-encode): -c:v CODEC -crf CRF -preset PP -map_metadata 0
     Pas 7: Cleanup temp daca output OK, pastrat daca esuat
     Stats finale: size output, ratio compresie vs input, durata, nr. segmente
 
-  WARNING HDR (flow Pipeline):
-  ffprobe color_transfer pe fiecare fisier ales. Daca gaseste smpte2084 (HDR10)
-  sau arib-std-b67 (HLG), afiseaza warning inainte de confirmare:
-    "Setarile standard (x265 CRF 22) NU pastreaza metadata HDR.
-     Pentru HDR complet, foloseste meniul 1 (Encode) cu flow-ul HDR."
+  FLOW 4 — BATCH TRIM (v37):
+    1. Listare fisiere + multi-select (range syntax)
+    2. Calcul min_dur (limita superioara cuturi)
+    3. Loop: defineste 1-N cuturi start:end (aplicate la TOATE fisierele)
+    4. Mod: 1) Stream copy [default, instant]  2) Re-encode (codec/CRF/audio)
+    5. Loop fisiere × cuturi → output `<basename>_btrimN_<start>.<ext>`
+       Skip automat fisiere mai scurte decat end_s (cu log explicit)
+       Sumar final: OK / FAIL / SKIP
+    Util pentru: scoatere intro/outro din toate clipurile dintr-o sedinta cu un singur set de cuts.
+
+  PROGRESS BAR REAL (v37):
+  Toate apelurile ffmpeg heavy (Trim re-encode, Concat copy + filter, Pipeline Pass 3
+  toate variantele, Batch trim re-encode) folosesc -progress file watched paralel.
+  Afiseaza in terminal: "<label>: NN% | FPS: X.X | ETA: HH:MM:SS"
+  La exit code != 0: tail -10 din stderr capturat in fisier temporar (root cause vizibil).
 
   FOLDER TEMP:
   Termux: /storage/emulated/0/Media/Temp
   Windows: <folder av_encode.ps1>/Temp
   Creat lazy la prima folosire (nu e prezent in repo).
   Exclus din git (.gitignore).
-  Subfoldere per-rulare: trim_PID_timestamp, concat_PID_timestamp, pipeline_PID_timestamp.
+  Subfoldere per-rulare: trim_PID_timestamp, concat_PID_timestamp,
+                         pipeline_PID_timestamp, preview_PID_timestamp (v37).
 
 
 ═══════════════════════════════════════════════════════════════
