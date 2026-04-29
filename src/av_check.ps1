@@ -46,17 +46,20 @@ function Get-SourceInfo {
     $is10bit   = $pixFmt -match "10"
     $isHDRPlus = [bool]$hdrPlus
     $isHDR     = $transfer -eq "smpte2084" -or $isHDRPlus
+    $isHLG     = ($transfer -eq "arib-std-b67") -and (-not $isHDRPlus)
     $fmt = switch ($codec) {
         "h264" { if ($is10bit) { "H.264 10bit" } else { "H.264 8bit" } }
         "hevc" {
             if     ($isHDRPlus) { "H.265 HEVC HDR10+" }
             elseif ($isHDR)     { "H.265 HEVC HDR10"  }
+            elseif ($isHLG)     { "H.265 HEVC HLG"    }
             elseif ($is10bit)   { "H.265 HEVC 10bit SDR" }
             else                { "H.265 HEVC 8bit SDR"  }
         }
         "av1" {
             if     ($isHDRPlus) { "AV1 HDR10+"    }
             elseif ($isHDR)     { "AV1 HDR10"     }
+            elseif ($isHLG)     { "AV1 HLG"       }
             elseif ($is10bit)   { "AV1 10bit SDR" }
             else                { "AV1 8bit SDR"  }
         }
@@ -66,7 +69,7 @@ function Get-SourceInfo {
         default { if ($is10bit) { "$codec 10bit" } else { "$codec 8bit" } }
     }
     return @{ fmt=$fmt; codec=$codec; pixFmt=$pixFmt; is10bit=$is10bit;
-              isHDR=$isHDR; isHDRPlus=$isHDRPlus; transfer=$transfer }
+              isHDR=$isHDR; isHDRPlus=$isHDRPlus; isHLG=$isHLG; transfer=$transfer }
 }
 
 function Get-DVProfile {
@@ -216,6 +219,7 @@ foreach ($f in $inputFiles) {
     $tipHdr = "SDR"; $dvProf = "N/A"
     if     ($si.isHDRPlus) { $tipHdr = "HDR10+" }
     elseif ($si.isHDR)     { $tipHdr = "HDR10"  }
+    elseif ($si.isHLG)     { $tipHdr = "HLG"    }
     if ($doVi) { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
 
     $logProf = Get-LogProfile $f.FullName $dji.isDji
@@ -226,6 +230,7 @@ foreach ($f in $inputFiles) {
     if     ($tipHdr -eq "Dolby Vision")                          { $encRec = "libx265 (singurul care suporta DV)" }
     elseif ($tipHdr -eq "HDR10+")                                { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10+)" }
     elseif ($tipHdr -eq "HDR10")                                 { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10)" }
+    elseif ($tipHdr -eq "HLG")                                   { $encRec = "libx265 sau AV1/SVT (HLG nativ — transfer=arib-std-b67)" }
     elseif ($dji.isDji)                                          { $encRec = "libx265 (fisier DJI — metadata pastrate)" }
     elseif ($srcCodec -eq "av1")                                 { $encRec = "Deja AV1 — re-encode nu e recomandat" }
     elseif ($srcCodec -eq "prores")                              { $encRec = "libx265 sau AV1 (ProRes→compresie ~70-80% mai mic)" }
@@ -237,7 +242,7 @@ foreach ($f in $inputFiles) {
     $bpsX264 = if ([int]$w -ge 3840) { 12000000 } elseif ([int]$w -ge 1920) { 5000000 } else { 2500000 }
     $bpsAV1  = if ([int]$w -ge 3840) { 8000000  } elseif ([int]$w -ge 1920) { 3000000 } else { 1500000 }
     $bpsProRes = if ([int]$w -ge 3840) { 880000000 } elseif ([int]$w -ge 1920) { 220000000 } else { 110000000 }
-    if ($tipHdr -match "HDR|Dolby") { $bpsX265 = [int]($bpsX265 * 1.3); $bpsAV1 = [int]($bpsAV1 * 1.3) }
+    if ($tipHdr -match "HDR|Dolby|HLG") { $bpsX265 = [int]($bpsX265 * 1.3); $bpsAV1 = [int]($bpsAV1 * 1.3) }
     $estX265 = Get-SizeEst $bpsX265 $durSec
     $estX264 = Get-SizeEst $bpsX264 $durSec
     $estAV1  = Get-SizeEst $bpsAV1  $durSec

@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v38
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, DJI GPS extraction, batch processing and profile system — v39
 
 ---
 
@@ -12,7 +12,8 @@
 - **Hardware encoding (Windows)**: NVENC, QSV, AMF for H.264/H.265/AV1 with GPU capability detection (RTX 40+, Intel Arc, AMD RDNA3+)
 - **Hardware encoding (Termux/Android, v38)**: MediaCodec for H.264/H.265/AV1 with SoC whitelist (Snapdragon 8xx 8 Gen 1+, Exynos 21xx-24xx, Tensor G2+, Dimensity 9xxx); HDR10 supported via signaling repair (mastering display + max_cll injected post-encode); unified HDR dialog (DV/HDR10+/HDR10) with SW fallback options per file; HDR10+ dynamic and DV native preservation are SW-only
 - **Trim & Concat pipeline** (v36/v37): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline + **batch trim** (v37: same cuts on N files), **smart stream copy**, **audio-only mode**, **chapter markers**, **preview thumbnails**, **HDR-aware** (v37: HDR10 auto + HDR10+ opt-in)
-- **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, LOG (Apple Log, D-Log M, Samsung Log)
+- **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, **HLG (BT.2100 HLG, v39)**, LOG (Apple Log, D-Log M, Samsung Log)
+- **HLG end-to-end (v39)**: native HLG signaling preserved across SW (libx265/x264/AV1), HW Windows (NVENC/QSV/AMF), and MediaCodec (Termux); dialog with HLG nativ / HLG→HDR10 / HLG→SDR / Stream copy / Skip; LOG → HLG via dedicated LUT category (`Luts/hlg_<brand>_*.cube`)
 - **DJI support**: GPS/telemetry extraction (GPX, KML, CSV, SRT), DJI track control, metadata strip (remux)
 - **Audio encoding**: AAC, AC3, E-AC3 (Dolby Digital Plus), DTS, TrueHD, FLAC, PCM, Opus
 - **Video filters**: 4K upscale (Lanczos), vidstab 2-pass stabilization, denoise, deinterlace, crop, resize, FPS conversion
@@ -161,7 +162,8 @@ cd src
 - **HDR10** — 10-bit encode with static metadata
 - **HDR10+** — dynamic metadata preserved via `hdr10plus_tool`
 - **Dolby Vision** — stream copy or HDR10 fallback on re-encode
-- **LOG formats** — Apple Log, D-Log M (DJI), Samsung Log with LUT support (`.cube`) or best-effort tonemap
+- **HLG (v39)** — native BT.2100 HLG (transfer=arib-std-b67) across SW + HW + MediaCodec; per-file dialog (HLG nativ / HLG→HDR10 / HLG→SDR / Stream copy / Skip)
+- **LOG formats** — Apple Log, D-Log M (DJI), Samsung Log with LUT support (`.cube`) or best-effort tonemap; v39 adds Log → HLG conversion via `Luts/hlg_<brand>_*.cube` category
 - **SDR tonemap** — zscale linearization + Hable tonemap → Rec.709
 
 ### Audio Codecs
@@ -280,4 +282,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v38** — 49 bugs fixed | 132+ features | ~12852 lines of code
+Current: **v39** — 49 bugs fixed | 138+ features | ~13472 lines of code

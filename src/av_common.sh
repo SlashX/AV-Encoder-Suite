@@ -130,6 +130,7 @@ detect_source_info() {
         -of csv=p=0 "$file" 2>/dev/null | tr ',' ' ')
     [[ ! "$WIDTH"  =~ ^[0-9]+$ ]] && WIDTH=0
     [[ ! "$HEIGHT" =~ ^[0-9]+$ ]] && HEIGHT=0
+    IS_HLG=0
 
     HDR_PLUS=$(ffprobe -v error -read_intervals 0%+#5 -show_frames \
         -select_streams v:0 -show_entries frame_side_data=type \
@@ -229,6 +230,13 @@ detect_source_info() {
                 CAMERA_MAKE="unknown"
             fi
         fi
+    fi
+
+    # HLG detection (BT.2100 HLG, transfer=arib-std-b67)
+    # Mutually exclusive cu HDR10/HDR10+/DV/LOG (Apple Log poate raporta arib-std-b67)
+    if [[ "$HDR_TYPE" == "arib-std-b67" ]] \
+       && [[ -z "$LOG_PROFILE" ]] && [[ -z "$DOVI" ]] && [[ -z "$HDR_PLUS" ]]; then
+        IS_HLG=1
     fi
 
     # VFR detection (useful for Log sources from phones)
@@ -1045,15 +1053,47 @@ handle_source_dialog() {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# v38: MEDIACODEC HDR DIALOG — uniformizat pentru DV / HDR10+ / HDR10
+# v39: HLG DIALOG — pentru surse HLG (BT.2100 HLG, transfer=arib-std-b67)
+# Set HLG_DIALOG_MODE: hlg_native | hlg_to_hdr10 | hlg_to_sdr
+# Return: 0 = proceed | 97 = stream copy | 98 = skip
+# ══════════════════════════════════════════════════════════════════════
+handle_hlg_dialog() {
+    local file="$1" filename="$2" encoder_type="$3"
+    HLG_DIALOG_MODE=""
+
+    echo ""
+    echo "  ╔══════════════════════════════════════════════╗"
+    echo "  ║  ANALIZA SURSA — HLG (BT.2100 HLG)           ║"
+    printf "  ║  Fisier: %-37s║\n" "$filename"
+    printf "  ║  Sursa : HLG 10-bit %-25s║\n" "${WIDTH}x${HEIGHT}"
+    echo "  ╠══════════════════════════════════════════════╣"
+    echo "  ║  1) Encodeaza HLG nativ (recomandat)         ║"
+    echo "  ║  2) Converteste la HDR10 (PQ)                ║"
+    echo "  ║  3) Tonemap la SDR (Rec.709)                 ║"
+    echo "  ║  4) Stream copy video                        ║"
+    echo "  ║  5) Sari acest fisier                        ║"
+    echo "  ╚══════════════════════════════════════════════╝"
+    read -p "  Alege 1-5 [implicit: 1]: " hlg_choice
+    case "${hlg_choice:-1}" in
+        2) log "  Ales: HLG → HDR10 (PQ)"; HLG_DIALOG_MODE="hlg_to_hdr10"; return 0 ;;
+        3) log "  Ales: HLG → SDR tonemap (Rec.709)"; HLG_DIALOG_MODE="hlg_to_sdr"; return 0 ;;
+        4) log "  Ales: Stream copy video"; return 97 ;;
+        5) log "  Sarit de utilizator"; return 98 ;;
+        *) log "  Ales: HLG nativ"; HLG_DIALOG_MODE="hlg_native"; return 0 ;;
+    esac
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v38/v39: MEDIACODEC HDR DIALOG — uniformizat pentru DV / HDR10+ / HDR10 / HLG
 # Apelat DOAR cand userul a selectat MediaCodec ca encoder.
-# Param: source_type = dv|hdr10plus|hdr10 ; dv_profile (optional)
+# Param: source_type = dv|hdr10plus|hdr10|hlg ; dv_profile (optional)
 # Set MC_HDR_MODE global:
-#   sw_full     — fallback SW cu preservare completa (DV native, HDR10+ dynamic)
+#   sw_full     — fallback SW cu preservare completa (DV native, HDR10+ dynamic, HLG nativ SW)
 #   sw_degraded — fallback SW degradat (DV→HDR10 BL, HDR10+→HDR10 static)
 #   hw_repair   — MediaCodec 10-bit + signaling repair via hevc_metadata bsf
+#   hw_hlg      — v39: MediaCodec HLG nativ 10-bit (transfer=arib-std-b67, fără SEI repair)
 #   hw_sdr      — MediaCodec SDR tonemap 8-bit (proxy)
-# Override prin profile field MEDIACODEC_HDR_POLICY=sw_full|sw_degraded|hw_repair|hw_sdr|skip
+# Override prin profile field MEDIACODEC_HDR_POLICY=sw_full|sw_degraded|hw_repair|hw_hlg|hw_sdr|skip
 # Return: 0 = proceed cu MC_HDR_MODE setat | 98 = skip
 # ══════════════════════════════════════════════════════════════════════
 show_hdr_mediacodec_dialog() {
@@ -1063,7 +1103,7 @@ show_hdr_mediacodec_dialog() {
     # Profile bypass
     if [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]]; then
         case "$MEDIACODEC_HDR_POLICY" in
-            sw_full|sw_degraded|hw_repair|hw_sdr)
+            sw_full|sw_degraded|hw_repair|hw_sdr|hw_hlg)
                 MC_HDR_MODE="$MEDIACODEC_HDR_POLICY"
                 log "  MediaCodec HDR policy din profil: $MC_HDR_MODE"
                 return 0 ;;
@@ -1112,6 +1152,25 @@ show_hdr_mediacodec_dialog() {
                 4) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
                 5) log "  Sarit de utilizator"; return 98 ;;
                 *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu HDR10+ complet" ;;
+            esac
+            ;;
+        hlg)
+            echo "  ║  ⚠ Sursa este HLG (BT.2100 HLG)"
+            echo "  ║  MediaCodec poate transmite signaling HLG nativ. Optiuni:"
+            echo "  ╠══════════════════════════════════════════════════════╣"
+            echo "  ║  1) MediaCodec — HLG nativ 10-bit (recomandat)"
+            echo "  ║  2) SW libx265 — HLG nativ 10-bit"
+            echo "  ║  3) MediaCodec — HLG → HDR10 (PQ) + signaling repair"
+            echo "  ║  4) MediaCodec — HLG → SDR tonemap 8-bit"
+            echo "  ║  5) Skip fisier"
+            echo "  ╚══════════════════════════════════════════════════════╝"
+            read -p "  Alege 1-5 [implicit: 1]: " _mc_ch
+            case "${_mc_ch:-1}" in
+                2) MC_HDR_MODE="sw_full";   log "  Ales: SW libx265 HLG nativ" ;;
+                3) MC_HDR_MODE="hw_repair"; log "  Ales: MediaCodec HLG → HDR10 + signaling repair" ;;
+                4) MC_HDR_MODE="hw_sdr";    log "  Ales: MediaCodec SDR tonemap 8-bit" ;;
+                5) log "  Sarit de utilizator"; return 98 ;;
+                *) MC_HDR_MODE="hw_hlg";    log "  Ales: MediaCodec HLG nativ 10-bit" ;;
             esac
             ;;
         hdr10|*)
@@ -1244,6 +1303,32 @@ find_lut_for_brand() {
     return 1
 }
 
+# v39: Cauta LUT-uri Log → HLG (BT.2100). Nume convenite: hlg_<brand>_*.cube
+# Ex: hlg_apple_log_v1.cube, hlg_dji_dlog_m.cube
+# Seteaza: HLG_LUT_FILES (array)
+find_hlg_lut_for_brand() {
+    HLG_LUT_FILES=()
+    local brand="$1"
+    local prefix=""
+    case "$brand" in
+        apple)   prefix="hlg_apple_log_" ;;
+        samsung) prefix="hlg_samsung_log_" ;;
+        dji)     prefix="hlg_dji_dlog_m_" ;;
+        *)       prefix="hlg_" ;;
+    esac
+
+    [[ ! -d "$LUTS_DIR" ]] && return 1
+    local found=()
+    shopt -s nullglob nocaseglob
+    found=("$LUTS_DIR"/${prefix}*.cube)
+    shopt -u nocaseglob nullglob
+    if [[ ${#found[@]} -gt 0 ]]; then
+        HLG_LUT_FILES=("${found[@]}")
+        return 0
+    fi
+    return 1
+}
+
 # Cauta fisiere .cube creative in $LUTS_DIR/Creative/
 # Seteaza: CREATIVE_LUT_FILES (array), CREATIVE_LUT_DIR
 find_creative_luts() {
@@ -1295,6 +1380,9 @@ handle_log_dialog() {
     find_lut_for_brand "$CAMERA_MAKE"
     local has_lut=0
     [[ ${#LUT_FILES[@]} -gt 0 ]] && has_lut=1
+    find_hlg_lut_for_brand "$CAMERA_MAKE"
+    local has_hlg_lut=0
+    [[ ${#HLG_LUT_FILES[@]} -gt 0 ]] && has_hlg_lut=1
     find_creative_luts
     local has_creative_lut=0
     [[ ${#CREATIVE_LUT_FILES[@]} -gt 0 ]] && has_creative_lut=1
@@ -1314,7 +1402,7 @@ handle_log_dialog() {
     fi
 
     local opt_num=1
-    local opt_lut=0 opt_sdr=0 opt_hdr=0 opt_preserve=0 opt_creative=0 opt_copy=0 opt_skip=0
+    local opt_lut=0 opt_sdr=0 opt_hdr=0 opt_hlg_lut=0 opt_hlg=0 opt_preserve=0 opt_creative=0 opt_copy=0 opt_skip=0
 
     # ── Build menu based on encoder type ─────────────────────────────
     if [[ "$encoder_type" == "x264" ]]; then
@@ -1371,6 +1459,21 @@ handle_log_dialog() {
         opt_hdr=$opt_num
         printf "  ║  %d) Convert HDR10 (fara LUT) → 10-bit       ║\n" "$opt_num"
         echo "  ║     BT.2020 / PQ (HDR10 static)              ║"
+        opt_num=$((opt_num + 1))
+        if [[ "$has_hlg_lut" -eq 1 ]]; then
+            opt_hlg_lut=$opt_num
+            if [[ ${#HLG_LUT_FILES[@]} -eq 1 ]]; then
+                printf "  ║  %d) Apply LUT Log→HLG → 10-bit BT.2100      ║\n" "$opt_num"
+                printf "  ║     [✓ %-38s]║\n" "$(basename "${HLG_LUT_FILES[0]}")"
+            else
+                printf "  ║  %d) Apply LUT Log→HLG → 10-bit BT.2100      ║\n" "$opt_num"
+                printf "  ║     [%d HLG LUT-uri gasite — selectie]        ║\n" "${#HLG_LUT_FILES[@]}"
+            fi
+            opt_num=$((opt_num + 1))
+        fi
+        opt_hlg=$opt_num
+        printf "  ║  %d) Convert HLG (fara LUT) → 10-bit         ║\n" "$opt_num"
+        echo "  ║     BT.2020 / HLG (arib-std-b67)             ║"
         opt_num=$((opt_num + 1))
         opt_preserve=$opt_num
         printf "  ║  %d) Preserve Log (compresie, pastreaza prof) ║\n" "$opt_num"
@@ -1449,6 +1552,47 @@ handle_log_dialog() {
         LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
         if [[ "$encoder_type" == "x265" ]]; then
             LOG_EXTRA_X265="hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+        fi
+        return 0
+
+    elif [[ "$log_choice" -eq "$opt_hlg_lut" ]] && [[ "$opt_hlg_lut" -gt 0 ]]; then
+        # v39: Apply LUT Log → HLG
+        local selected_hlg_lut=""
+        if [[ ${#HLG_LUT_FILES[@]} -eq 1 ]]; then
+            selected_hlg_lut="${HLG_LUT_FILES[0]}"
+        else
+            echo ""
+            echo "  HLG LUT-uri disponibile:"
+            local hi=1
+            for hlf in "${HLG_LUT_FILES[@]}"; do
+                printf "  %d) %s\n" "$hi" "$(basename "$hlf")"
+                hi=$((hi + 1))
+            done
+            read -p "  Alege HLG LUT [implicit: 1]: " hlg_sel
+            hlg_sel="${hlg_sel:-1}"
+            if [[ "$hlg_sel" =~ ^[0-9]+$ ]] && [ "$hlg_sel" -ge 1 ] && [ "$hlg_sel" -le ${#HLG_LUT_FILES[@]} ]; then
+                selected_hlg_lut="${HLG_LUT_FILES[$((hlg_sel - 1))]}"
+            else
+                selected_hlg_lut="${HLG_LUT_FILES[0]}"
+            fi
+        fi
+        log "  LOG: Apply HLG LUT — $(basename "$selected_hlg_lut")"
+        LOG_VIDEO_FILTER="lut3d='$selected_hlg_lut',format=yuv420p10le"
+        LOG_PIX_FMT="yuv420p10le"
+        LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+        if [[ "$encoder_type" == "x265" ]]; then
+            LOG_EXTRA_X265="hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
+        fi
+        return 0
+
+    elif [[ "$log_choice" -eq "$opt_hlg" ]] && [[ "$opt_hlg" -gt 0 ]]; then
+        # v39: Convert HLG (no LUT) — best-effort
+        log "  LOG: Convert HLG (best-effort, fara LUT)"
+        LOG_VIDEO_FILTER="zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+        LOG_PIX_FMT="yuv420p10le"
+        LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+        if [[ "$encoder_type" == "x265" ]]; then
+            LOG_EXTRA_X265="hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
         fi
         return 0
 
@@ -1757,6 +1901,7 @@ mediacodec_print_banner() {
     [[ "$MC_AVAILABLE" != "1" ]] && return
     local cap_str=""
     [[ "$MC_CAP_HEVC10" == "1" ]] && cap_str="${cap_str} HEVC10"
+    [[ "$MC_CAP_HEVC10" == "1" ]] && cap_str="${cap_str} HLG"
     [[ "$MC_CAP_AV1" == "1" ]] && cap_str="${cap_str} AV1"
     [[ -z "$cap_str" ]] && cap_str=" 8-bit only"
     local verified_str
@@ -1776,6 +1921,7 @@ mediacodec_print_banner() {
 # MC_HDR_MODE valori:
 #   ""           — SDR encode normal (pentru surse SDR)
 #   hw_repair    — 10-bit + signaling HDR10 + repair flag setat
+#   hw_hlg       — v39: 10-bit + transfer=arib-std-b67 (HLG nativ, fără SEI repair)
 #   hw_sdr       — tonemap HDR→SDR 8-bit
 # (sw_full / sw_degraded sunt rezolvate inainte de a ajunge aici — nu se cheama mediacodec)
 # ══════════════════════════════════════════════════════════════════════
@@ -1818,6 +1964,19 @@ build_mediacodec_cmd() {
             fi
             color_flags="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
             MC_NEEDS_REPAIR=1
+            ;;
+        hw_hlg)
+            # v39: HLG nativ 10-bit — fara SEI repair (signaling in transfer chars)
+            if [[ "$MC_CAP_HEVC10" == "1" ]] && [[ "$enc_codec" == "hevc" ]]; then
+                pix_fmt="yuv420p10le"
+                profile_flag="-profile:v main10"
+            elif [[ "$enc_codec" == "av1" ]]; then
+                pix_fmt="yuv420p10le"
+            else
+                pix_fmt="yuv420p"
+                log "  ATENTIE: SoC nu suporta 10-bit pentru HLG, fallback la 8-bit"
+            fi
+            color_flags="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
             ;;
         hw_sdr)
             # Tonemap HDR→SDR 8-bit
@@ -3451,7 +3610,12 @@ trimconcat_flow_pipeline() {
                     [[ "$hdr_mode" == "hlg" ]] && trc="arib-std-b67"
                     hdr_pix_fmt="yuv420p10le"
                     hdr_color_args=(-color_primaries bt2020 -color_trc "$trc" -colorspace bt2020nc)
-                    hdr_x265_extra="hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                    if [[ "$hdr_mode" == "hlg" ]]; then
+                        # v39: HLG NU foloseste hdr10=1 (signaling in transfer chars, fara SEI PQ)
+                        hdr_x265_extra="hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                    else
+                        hdr_x265_extra="hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                    fi
                     if [[ "$hdr_mode" == "dv" ]]; then
                         echo ""
                         echo "  ⚠ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)."
@@ -3475,6 +3639,9 @@ trimconcat_flow_pipeline() {
                                 echo "       Instaleaza: $TOOLS_DIR/hdr10plus_parser.sh"
                             fi
                         fi
+                    elif [[ "$hdr_mode" == "hlg" ]]; then
+                        echo ""
+                        echo "  ⚡ AUTO HLG: pix_fmt=$hdr_pix_fmt, transfer=arib-std-b67, color=bt2020"
                     else
                         echo ""
                         echo "  ⚡ AUTO HDR10: pix_fmt=$hdr_pix_fmt, transfer=$trc, color=bt2020"

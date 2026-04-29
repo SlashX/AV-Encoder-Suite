@@ -60,6 +60,8 @@ encoder_setup_file() {
             mc_source_type="dv"; mc_dv_profile="$DOVI"
         elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
             mc_source_type="hdr10plus"
+        elif [[ "${IS_HLG:-0}" == "1" ]]; then
+            mc_source_type="hlg"
         elif [[ "$HDR_TYPE" == *"smpte2084"* ]]; then
             mc_source_type="hdr10"
         fi
@@ -74,10 +76,10 @@ encoder_setup_file() {
             case "$MC_HDR_MODE" in
                 sw_full|sw_degraded)
                     log "  Fallback la SW libx264 (HDR strip — x264 nu poate HDR)"
-                    HDR_PLUS=""; DOVI=""; HDR_TYPE=""
+                    HDR_PLUS=""; DOVI=""; HDR_TYPE=""; IS_HLG=0
                     ;;
-                hw_repair)
-                    log "  ⚠ MediaCodec H.264 nu poate HDR repair — comut pe SDR tonemap"
+                hw_repair|hw_hlg)
+                    log "  ⚠ MediaCodec H.264 nu poate HDR/HLG — comut pe SDR tonemap"
                     MC_HDR_MODE="hw_sdr"
                     if [[ "${DRY_RUN:-0}" == "1" ]]; then
                         dry_run_report "$file" "$output" "h264_mediacodec (SDR tonemap)" \
@@ -123,9 +125,42 @@ encoder_setup_file() {
     [ "$src_is_hdr" -eq 1 ] && [ "$src_is_hdrplus" -eq 0 ] && [ "$src_is_dv" -eq 0 ] && src_label="HDR10 $src_bitdepth"
 
     local local_profile x264_pixfmt
+    local x264_hlg_color_flags=""
 
-    # ── LOG format video — dialog dedicat ────────────────────────────
-    if [[ -n "$LOG_PROFILE" ]]; then
+    # ── HLG (BT.2100 HLG) — dialog dedicat ────────────────────────────
+    if [[ "${IS_HLG:-0}" == "1" ]]; then
+        src_label="HLG $src_bitdepth"
+        handle_hlg_dialog "$file" "$filename" "x264"
+        local hlg_rc=$?
+        if [ $hlg_rc -eq 97 ]; then
+            do_stream_copy "$file" "$output" "$MAP_FLAGS"; return 98
+        elif [ $hlg_rc -eq 98 ]; then
+            return 98
+        fi
+        # x264 nu poate produce HDR10 PQ — treat hlg_to_hdr10 ca hlg_native cu warning
+        if [[ "$HLG_DIALOG_MODE" == "hlg_to_hdr10" ]]; then
+            log "  ⚠ x264 nu suporta SEI HDR10 — pastrez HLG nativ"
+            HLG_DIALOG_MODE="hlg_native"
+        fi
+        case "$HLG_DIALOG_MODE" in
+            hlg_native)
+                local_profile="high10"; x264_pixfmt="yuv420p10le"
+                x264_hlg_color_flags="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+                log "  Ales: HLG nativ (high10 + HLG signaling)"
+                ;;
+            hlg_to_sdr)
+                local_profile="high"; x264_pixfmt="yuv420p"
+                x264_hlg_color_flags="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+                local _hlg2sdr_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p"
+                if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+                    VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hlg2sdr_vf},}"
+                else
+                    VIDEO_FILTER="-vf $_hlg2sdr_vf"
+                fi
+                log "  Ales: HLG → SDR (Rec.709) tonemap"
+                ;;
+        esac
+    elif [[ -n "$LOG_PROFILE" ]]; then
         src_label="LOG $src_bitdepth ($(_log_profile_label "$LOG_PROFILE"))"
         handle_log_dialog "$file" "$filename" "x264"
         local log_rc=$?
@@ -215,13 +250,14 @@ encoder_setup_file() {
     local x264_refs=$([ "$local_profile" = "high10" ] || [ "$local_profile" = "high422" ] && echo "-refs 4" || echo "-refs 3")
     local x264extra=""
     [[ -n "$EXTRA_X264" ]] && x264extra="-x264-params $EXTRA_X264"
-    local video_params="-profile:v $local_profile -level:v $x264_level -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-}"
+    local video_params="-profile:v $local_profile -level:v $x264_level -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-} ${x264_hlg_color_flags}"
     log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt"
     log "  Container: $CONTAINER | Preset: $PRESET | Tune: ${TUNE_OPT:-fara}"
 
     # ── Dry-run ──────────────────────────────────────────────────────
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         local sf="SDR"; [ "$src_is_hdr" -eq 1 ] && sf="HDR"; [[ -n "$DOVI" ]] && sf="DV"
+        [[ "${IS_HLG:-0}" == "1" ]] && sf="HLG"
         [[ -n "$LOG_PROFILE" ]] && sf="LOG ($LOG_PROFILE)"
         dry_run_report "$file" "$output" "libx264 / $PRESET / $local_profile" "$WIDTH" "$DURATION" "$sf"
         return 0

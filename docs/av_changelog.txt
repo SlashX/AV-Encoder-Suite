@@ -3,9 +3,69 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v38 | 49 bug-uri fixate | 132+ features
-  27 fisiere | ~12852 linii cod | ~1820 linii documentatie
+  TOTAL: v39 | 49 bug-uri fixate | 138+ features
+  27 fisiere | ~13472 linii cod | ~3354 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v39 — HLG end-to-end (BT.2100 HLG ca al 4-lea tip de sursa)
+═══════════════════════════════════════════════════════════════
+
+  ADD HLG detection (bash + PS1)
+        detect_source_info: IS_HLG=1 cand color_transfer=arib-std-b67
+            Mutual-exclusive cu HDR10/HDR10+/DV/LOG (Apple Log poate raporta
+            arib-std-b67, deci IS_HLG ramane 0 cand LOG_PROFILE/DOVI/HDR_PLUS sunt setate)
+        PS1 Get-SourceInfo + Get-SourceInfoExtended: camp isHLG analog
+        mediacodec_print_banner: label "HLG" adaugat cand MC_CAP_HEVC10=1
+  ADD SW HLG path — libx265 / libx264 / libsvtav1 + libaom-av1
+        handle_hlg_dialog (bash) / Show-HLGDialog (PS1) — 5 optiuni:
+            [1] HLG nativ (recomandat) — pastreaza signaling BT.2100 HLG
+            [2] HLG → HDR10 (PQ) — zscale linearization + smpte2084
+            [3] HLG → SDR (Rec.709) — zscale + tonemap=hable
+            [4] Stream copy video — pastreaza tot
+            [5] Skip
+        x265: x265-params transfer=arib-std-b67 (NU hdr10=1 — HLG e in transfer chars)
+        x264: high10 + HLG signaling color flags (HDR10 conversion auto-fallback la nativ
+              cu warning, x264 nu poate produce SEI HDR10)
+        AV1: 10-bit + color_trc=arib-std-b67 (libsvtav1/libaom)
+  ADD HW Windows HLG (NVENC/QSV/AMF, doar PS1)
+        Show-HLGDialog apelat in HW encode flow per fisier
+        p010le pe encodere care suporta 10-bit (NVENC/QSV/AV1-AMF)
+        h264_amf/hevc_amf raman 8-bit (color_trc setat oricum)
+        h264 HW: HDR10 conversion auto-fallback la HLG nativ (no SEI)
+  ADD MediaCodec HLG (bash only, hevc/av1_mediacodec)
+        show_hdr_mediacodec_dialog caz nou "hlg" — 5 optiuni:
+            [1] MediaCodec — HLG nativ 10-bit (recomandat — fara SEI repair)
+            [2] SW libx265 — HLG nativ 10-bit
+            [3] MediaCodec — HLG → HDR10 (PQ) + signaling repair
+            [4] MediaCodec — SDR tonemap 8-bit
+            [5] Skip
+        build_mediacodec_cmd: mod hw_hlg → 10-bit + main10 (HEVC) +
+            transfer=arib-std-b67. NU seteaza MC_NEEDS_REPAIR (signaling
+            in transfer chars, nu SEI mastering display)
+        h264_mediacodec: HDR10/HLG auto-comut pe SDR tonemap (h264_mediacodec
+            nu suporta HDR/HLG la nivel API)
+        MEDIACODEC_HDR_POLICY accepta valoarea hw_hlg pentru bypass dialog
+  ADD Pipeline + Trim&Concat HLG injection
+        detect_pipeline_hdr_mode / Get-PipelineHdrMode returneaza "hlg"
+            (deja existent — re-validat la v39)
+        Pass 3 re-encode HLG: hdr_x265_extra branch dedicat fara hdr10=1
+            Mesaj "AUTO HLG" separat de "AUTO HDR10"
+        Pasul 5 (LOG → HLG via LUT) integrat cu Pipeline (Log files convertite
+            la HLG pe Pass 3 cand encoder=libx265)
+  ADD LOG → HLG via LUT category (bash + PS1)
+        Convenție LUT: Luts/hlg_<brand>_*.cube
+            hlg_apple_log_*.cube (Apple Log → HLG)
+            hlg_dji_dlog_m_*.cube (D-Log M → HLG)
+            hlg_samsung_log_*.cube (Samsung Log → HLG)
+            hlg_*.cube (prefix generic, brand necunoscut)
+        find_hlg_lut_for_brand (bash) / Find-HlgLutForBrand (PS1) —
+            cautare separata de Find-LutForBrand (Rec.709 Log → SDR)
+        handle_log_dialog / Show-LogDialog: 2 optiuni noi (x265/AV1 only):
+            "Apply LUT Log→HLG → 10-bit BT.2100" (cand fisier .cube gasit)
+            "Convert HLG (fara LUT) → 10-bit" (zscale best-effort)
+        x265 inject LOG_EXTRA_X265 cu transfer=arib-std-b67
 
 
 ═══════════════════════════════════════════════════════════════

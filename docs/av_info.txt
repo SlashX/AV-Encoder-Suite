@@ -1251,7 +1251,57 @@ PASUL 4: Permite executia scripturilor PowerShell
   PS1 NU este atins: MediaCodec e Android only. Pe Windows ramane
   NVENC/QSV/AMF.
 
-  HLG dedicated va fi adaugat in v39 (acum HLG e tratat ca HDR10 generic).
+  HLG SUPPORT (v39, end-to-end)
+  ─────────────────────────────
+  HLG (BT.2100 HLG, transfer=arib-std-b67) este al 4-lea tip de sursa HDR
+  cu dialog dedicat, alaturi de HDR10/HDR10+/Dolby Vision.
+
+  DETECTIE: detect_source_info / Get-SourceInfo seteaza IS_HLG / isHLG
+  cand color_transfer=arib-std-b67. Mutual-exclusive cu HDR10/HDR10+/DV/LOG
+  (Apple Log poate raporta arib-std-b67, deci HLG ramane 0 cand LOG e detectat).
+
+  DIALOG HLG (5 optiuni — bash handle_hlg_dialog / PS Show-HLGDialog):
+    [1] HLG nativ — pastreaza signaling BT.2100 HLG (recomandat)
+    [2] HLG → HDR10 (PQ) — zscale linearization + smpte2084
+    [3] HLG → SDR (Rec.709) — zscale + tonemap=hable
+    [4] Stream copy video — pastreaza tot
+    [5] Skip
+
+  PARAMS HLG x265 (NU foloseste hdr10=1):
+    -pix_fmt yuv420p10le
+    -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc
+    -x265-params hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc
+
+  HW WINDOWS: NVENC/QSV/AV1-AMF suporta p010le + signaling HLG.
+    h264_amf/hevc_amf raman 8-bit (signaling se transmite oricum).
+    h264 HW: HLG → HDR10 auto-fallback la HLG nativ (no SEI HDR10 pe H.264).
+
+  MEDIACODEC HLG (Termux): HLG nativ avantaj — signaling in transfer chars,
+    fara nevoie de SEI repair (spre deosebire de HDR10 unde mastering display
+    SEI trebuie reinjectat).
+    Dialog MediaCodec HLG (5 optiuni):
+      [1] MediaCodec — HLG nativ 10-bit (recomandat)
+      [2] SW libx265 — HLG nativ 10-bit
+      [3] MediaCodec — HLG → HDR10 (PQ) + signaling repair
+      [4] MediaCodec — SDR tonemap 8-bit
+      [5] Skip
+    h264_mediacodec NU suporta HLG → auto-comut pe SDR tonemap.
+    AV1 MediaCodec accepta HLG dacă SoC suporta (MC_CAP_AV1=1).
+
+  LOG → HLG via LUT (Convenție Luts/hlg_*.cube):
+    hlg_apple_log_*.cube — Apple Log → HLG
+    hlg_dji_dlog_m_*.cube — D-Log M → HLG
+    hlg_samsung_log_*.cube — Samsung Log → HLG
+    hlg_*.cube — prefix generic (brand necunoscut)
+  LUT-urile se cauta in $InputDir/Luts/ paralel cu cele Rec.709.
+  Dialog LOG (x265/AV1 only) primeste 2 optiuni noi:
+    "Apply LUT Log→HLG → 10-bit BT.2100" (cand fisier hlg_*.cube gasit)
+    "Convert HLG (fara LUT) → 10-bit" (zscale best-effort)
+
+  PIPELINE/TRIM-CONCAT HLG: detect_pipeline_hdr_mode returneaza "hlg" cand
+  toate input files sunt HLG. Pass 3 inject params HLG corect (fara hdr10=1).
+
+  PROFILE FIELD: MEDIACODEC_HDR_POLICY=hw_hlg pentru bypass dialog HLG MediaCodec.
 
 
   LUT-URI CREATIVE (v33)

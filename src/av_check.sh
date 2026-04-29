@@ -33,9 +33,10 @@ echo "Fisier,Format_sursa,Dimensiune(MB),Durata(sec),Rezolutie,PixelFormat,FPS,B
 # ── Format sursa — primeste date deja extrase, fara ffprobe suplimentar ─
 get_source_format() {
     local codec="$1" pix_fmt="$2" transfer="$3" hdr_plus_found="$4"
-    local is_10bit=0 is_hdr=0 is_hdrplus=0
+    local is_10bit=0 is_hdr=0 is_hdrplus=0 is_hlg=0
     [[ "$pix_fmt"        == *10*        ]] && is_10bit=1
     [[ "$transfer"       == "smpte2084" ]] && is_hdr=1
+    [[ "$transfer"       == "arib-std-b67" ]] && is_hlg=1
     [[ "$hdr_plus_found" == "1"         ]] && is_hdrplus=1 && is_hdr=1
     local fmt
     case "$codec" in
@@ -43,11 +44,13 @@ get_source_format() {
         hevc)
             if   [ $is_hdrplus -eq 1 ]; then fmt="H.265 HEVC HDR10+"
             elif [ $is_hdr -eq 1 ];     then fmt="H.265 HEVC HDR10"
+            elif [ $is_hlg -eq 1 ];     then fmt="H.265 HEVC HLG"
             elif [ $is_10bit -eq 1 ];   then fmt="H.265 HEVC 10bit SDR"
             else                             fmt="H.265 HEVC 8bit SDR"; fi ;;
         av1)
             if   [ $is_hdrplus -eq 1 ]; then fmt="AV1 HDR10+"
             elif [ $is_hdr -eq 1 ];     then fmt="AV1 HDR10"
+            elif [ $is_hlg -eq 1 ];     then fmt="AV1 HLG"
             elif [ $is_10bit -eq 1 ];   then fmt="AV1 10bit SDR"
             else                             fmt="AV1 8bit SDR"; fi ;;
         vp9)        [ $is_10bit -eq 1 ] && fmt="VP9 10bit"      || fmt="VP9 8bit" ;;
@@ -218,13 +221,14 @@ get_encoder_recommendation() {
         echo "libx265 (singurul care suporta DV)"; return
     fi
     if [ "$is_dji" -eq 1 ]; then
-        [[ "$type_hdr" == *"HDR"* ]] \
-            && echo "libx265 (HDR DJI — compresie buna, metadata pastrate)" \
+        [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "HLG" ]] \
+            && echo "libx265 (HDR/HLG DJI — compresie buna, metadata pastrate)" \
             || echo "libx265 sau AV1/SVT (SDR DJI — AV1 ~30% mai mic)"
         return
     fi
     if   [[ "$type_hdr" == "HDR10+" ]];                              then echo "libx265 (HDR10+ metadata native)"
     elif [[ "$type_hdr" == "HDR10" ]];                               then echo "libx265 sau AV1/SVT (ambele suporta HDR10)"
+    elif [[ "$type_hdr" == "HLG" ]];                                 then echo "libx265 sau AV1/SVT (HLG nativ — transfer=arib-std-b67)"
     elif [[ "$src_fmt"  == *"H.264"* ]];                             then echo "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)"
     elif [[ "$src_fmt"  == *"HEVC"* ]] || [[ "$src_fmt" == *"H.265"* ]]; then echo "AV1/SVT (HEVC→AV1 ~20-30% mai mic)"
     elif [[ "$src_fmt"  == *"AV1"* ]];                               then echo "Deja AV1 — re-encode nu e recomandat"
@@ -246,7 +250,7 @@ get_output_size_estimate() {
         if   [ "$width" -ge 3840 ]; then target_bps=8000000
         elif [ "$width" -ge 1920 ]; then target_bps=3000000
         else                             target_bps=1500000; fi
-        [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "Dolby Vision" ]] && \
+        [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "Dolby Vision" || "$type_hdr" == "HLG" ]] && \
             target_bps=$((target_bps * 130 / 100))
     elif [[ "$encoder" == "x264" ]]; then
         if   [ "$width" -ge 3840 ]; then target_bps=12000000
@@ -261,7 +265,7 @@ get_output_size_estimate() {
         if   [ "$width" -ge 3840 ]; then target_bps=10000000
         elif [ "$width" -ge 1920 ]; then target_bps=4000000
         else                             target_bps=2000000; fi
-        [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "Dolby Vision" ]] && \
+        [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "Dolby Vision" || "$type_hdr" == "HLG" ]] && \
             target_bps=$((target_bps * 130 / 100))
     fi
     # FIX: local si assignment pe linii separate — local masca exit code pe aceeasi linie
@@ -400,6 +404,7 @@ for file in "${FILES[@]}"; do
         grep -i "dovi\|dvhe\|dvh1" | head -1)
 
     TYPE="SDR"; DV_PROFILE_STR="N/A"
+    [[ "$TRANSFER"  == "arib-std-b67" ]] && TYPE="HLG"
     [[ "$TRANSFER"  == "smpte2084" ]] && TYPE="HDR10"
     [[ -n "$HDR10PLUS" ]]             && TYPE="HDR10+"
     if [[ -n "$DOVI_TAG" ]]; then

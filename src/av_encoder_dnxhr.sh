@@ -51,9 +51,9 @@ encoder_setup_file() {
         log "  LOG detectat: $profile_label — DNxHR pastreaza profilul Log intact."
     fi
 
-    # ── Avertisment HDR cu profil non-HQX ─────────────────────────────
-    if [[ "$HDR_TYPE" == "smpte2084" ]] && [[ "$DNXHR_PROFILE" != "hqx" ]]; then
-        log "  ATENTIE: Sursa HDR detectata. Recomandat: profil HQX (12-bit)."
+    # ── Avertisment HDR/HLG cu profil non-HQX ─────────────────────────
+    if { [[ "$HDR_TYPE" == "smpte2084" ]] || [[ "${IS_HLG:-0}" == "1" ]]; } && [[ "$DNXHR_PROFILE" != "hqx" ]]; then
+        log "  ATENTIE: Sursa HDR/HLG detectata. Recomandat: profil HQX (12-bit)."
         log "  Profilul curent ($DNXHR_PROFILE) va converti la SDR range."
     fi
 

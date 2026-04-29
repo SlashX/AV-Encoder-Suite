@@ -71,6 +71,8 @@ encoder_setup_file() {
             mc_dv_profile="$DOVI"
         elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
             mc_source_type="hdr10plus"
+        elif [[ "${IS_HLG:-0}" == "1" ]]; then
+            mc_source_type="hlg"
         elif [[ "$HDR_TYPE" == *"smpte2084"* ]]; then
             mc_source_type="hdr10"
         fi
@@ -94,7 +96,7 @@ encoder_setup_file() {
                     fi
                     # Continua spre path-ul SW standard de mai jos
                     ;;
-                hw_repair|hw_sdr)
+                hw_repair|hw_sdr|hw_hlg)
                     # Build MediaCodec FFMPEG_CMD si return
                     if [[ "${DRY_RUN:-0}" == "1" ]]; then
                         dry_run_report "$file" "$output" "hevc_mediacodec ($MC_HDR_MODE)" \
@@ -180,6 +182,41 @@ encoder_setup_file() {
         # hdr10p_rc=1: HDR10 static (fara dhdr10-info)
         x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1${hdr10plus_param}")
         video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+    elif [[ "${IS_HLG:-0}" == "1" ]]; then
+        # ── HLG (BT.2100 HLG) ─────────────────────────────────────────
+        handle_hlg_dialog "$file" "$filename" "x265"
+        local hlg_rc=$?
+        if [ $hlg_rc -eq 97 ]; then
+            do_stream_copy "$file" "$output" "$MAP_FLAGS"; return 98
+        elif [ $hlg_rc -eq 98 ]; then
+            return 98
+        fi
+        case "$HLG_DIALOG_MODE" in
+            hlg_native)
+                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+                ;;
+            hlg_to_hdr10)
+                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+                local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+                if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+                    VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hlg2hdr10_vf},}"
+                else
+                    VIDEO_FILTER="-vf $_hlg2hdr10_vf"
+                fi
+                ;;
+            hlg_to_sdr)
+                x265params=$(build_x265_params "")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt709 -color_trc bt709 -colorspace bt709"
+                local _hlg2sdr_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p10le"
+                if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+                    VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hlg2sdr_vf},}"
+                else
+                    VIDEO_FILTER="-vf $_hlg2sdr_vf"
+                fi
+                ;;
+        esac
     elif [[ -n "$LOG_PROFILE" ]]; then
         # ── LOG format video ─────────────────────────────────────────
         handle_log_dialog "$file" "$filename" "x265"
@@ -245,6 +282,7 @@ encoder_setup_file() {
         local sf="SDR"
         [[ "$HDR_PLUS" == *"HDR10+"* ]] && sf="HDR10+"
         [[ "$HDR_TYPE" == *"smpte2084"* ]] && sf="HDR10"
+        [[ "${IS_HLG:-0}" == "1" ]] && sf="HLG"
         [[ -n "$DOVI" ]] && sf="Dolby Vision"
         [[ -n "$LOG_PROFILE" ]] && sf="LOG ($LOG_PROFILE)"
         dry_run_report "$file" "$output" "libx265 / $PRESET" "$WIDTH" "$DURATION" "$sf"
