@@ -331,6 +331,46 @@ case "$ENCODER" in
         ;;
 esac
 
+# ── v38: HW MediaCodec menu (Termux/Android only, doar pe x265/x264/av1) ──
+USE_MEDIACODEC=0
+MC_CODEC=""
+if [[ "$ENCODER_NAME" =~ ^(libx265|libx264|av1)$ ]]; then
+    # Source minimal pentru detect (av_common.sh nu schimba state global periculos)
+    if [[ -f "$SCRIPT_DIR/av_common.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR/av_common.sh" 2>/dev/null
+        if declare -f detect_mediacodec_caps >/dev/null 2>&1; then
+            detect_mediacodec_caps
+            case "$ENCODER_NAME" in
+                libx265) MC_CODEC="hevc"; SW_LABEL="libx265 (SW)" ;;
+                libx264) MC_CODEC="h264"; SW_LABEL="libx264 (SW)" ;;
+                av1)     MC_CODEC="av1";  SW_LABEL="${AV1_ENCODER_NAME:-av1} (SW)" ;;
+            esac
+            if [[ "${MC_AVAILABLE:-0}" == "1" ]] && [[ "$MC_ENCODERS" == *"${MC_CODEC}_mediacodec"* ]]; then
+                mediacodec_print_banner
+                mc_label=$(mediacodec_menu_label "$MC_CODEC")
+                echo ""
+                echo "Mod encoding pentru $ENCODER_NAME:"
+                echo "  1) $SW_LABEL — calitate maxima (recomandat)"
+                echo "  2) $mc_label — viteza + baterie (HW Android)"
+                read -p "Alege 1-2 [implicit: 1]: " hw_choice
+                if [[ "${hw_choice:-1}" == "2" ]]; then
+                    if mediacodec_confirm_unknown_soc; then
+                        USE_MEDIACODEC=1
+                        echo "  HW selectat: ${MC_CODEC}_mediacodec"
+                    else
+                        echo "  Anulat — folosesc SW"
+                    fi
+                fi
+            fi
+        fi
+    fi
+fi
+export USE_MEDIACODEC MC_CODEC MC_AVAILABLE MC_ENCODERS \
+       MC_SOC_VENDOR MC_SOC_MODEL MC_ANDROID_VER \
+       MC_SOC_VERIFIED MC_CAP_HEVC10 MC_CAP_AV1 \
+       MEDIACODEC_HDR_POLICY HW_FORCE
+
 # ── Profil x264 ───────────────────────────────────────────────────────
 X264_PROFILE=""
 if [[ "$ENCODER_NAME" == "libx264" ]]; then

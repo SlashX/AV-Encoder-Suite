@@ -494,11 +494,28 @@ PASUL 4: Permite executia scripturilor PowerShell
        Sumar final: OK / FAIL / SKIP
     Util pentru: scoatere intro/outro din toate clipurile dintr-o sedinta cu un singur set de cuts.
 
-  PROGRESS BAR REAL (v37):
+  PROGRESS BAR REAL (v37/v38):
   Toate apelurile ffmpeg heavy (Trim re-encode, Concat copy + filter, Pipeline Pass 3
-  toate variantele, Batch trim re-encode) folosesc -progress file watched paralel.
-  Afiseaza in terminal: "<label>: NN% | FPS: X.X | ETA: HH:MM:SS"
-  La exit code != 0: tail -10 din stderr capturat in fisier temporar (root cause vizibil).
+  toate variantele, Batch trim re-encode, ENCODE FLOW PRINCIPAL v38) folosesc
+  -progress file watched paralel.
+  Afiseaza in terminal: "<LABEL>: NN% | FPS: X.X | ETA: HH:MM:SS"
+  Label dinamic (v38) bazat pe encoder activ:
+    bash: uppercase ENCODER_NAME (LIBX265, AV1, DNXHR, APV, PRORES, LIBX264)
+    PS:   HEVC / H264 / AV1-SVT / AV1-AOM / DNxHR / ProRes / APV / *-NVENC / *-QSV / *-AMF
+  La exit code != 0: tail -10 din stderr capturat in fisier temporar (root cause vizibil),
+  appended si la LOG_FILE pentru istoric complet.
+
+  SMART STREAM COPY (v38):
+  Detectie automata in run_encode_loop / PS encode main: daca codec source == codec target
+  (libx265↔hevc, libx264↔h264, av1↔av1) si NU sunt transformari planificate, prompt opt-in:
+    "⚡ SMART COPY: source este deja X, identic cu target (libX) (bitrate sursa ~Y kbps)."
+    "Re-encode redundant — pierde calitate fara beneficiu real de compresie."
+    "Stream copy total in loc de re-encode? (D/n) [default: D]:"
+  Skip detectie cand exista: VIDEO_FILTER (scale/vidstab/preset), AUDIO_NORMALIZE,
+  LOG profile (Apple/D-Log M/Samsung), HDR10+ side data, Dolby Vision, TRIPLE_LAYER_MODE,
+  FPS modification — toate cer re-encode legitim.
+  Caz tipic: user descarca .mkv HEVC, alege "encode HEVC CRF 22" — in loc de 4h re-encode
+  cu degradare, primeste smart copy instant lossless.
 
   FOLDER TEMP:
   Termux: /storage/emulated/0/Media/Temp
@@ -1151,6 +1168,91 @@ PASUL 4: Permite executia scripturilor PowerShell
       hevc_* → libx265    h264_* → libx264    av1_*  → libsvtav1
     Bypass: seteaza HW_FORCE=1 in profil (util pt GPU-uri noi
     ne-detectate de regex-ul intern — ex: viitoare generatii nesuportate).
+
+
+  HARDWARE ENCODE MEDIACODEC (v38, Termux/Android only)
+  ──────────────────────────────────────────────────────
+  Meniu HW MediaCodec aparut in launcher dupa selectia encoder-ului
+  (x265/x264/av1). Detectie dubla: ffmpeg binary (h264/hevc/av1_mediacodec)
+  + Termux + getprop.
+
+  ENCODERE MEDIACODEC:
+    hevc_mediacodec — H.265 HW (8-bit + 10-bit pe SoC verificat)
+    h264_mediacodec — H.264 HW (8-bit only, SDR only)
+    av1_mediacodec  — AV1 HW (rar, doar SoC AV1-capable)
+
+  SoC WHITELIST (capabilitati verificate, marcat [verificat] in meniu):
+    Qualcomm Snapdragon 8xx (8 Gen 1+) — HEVC 10-bit
+                            (8 Gen 2+) — AV1 encode
+    Samsung Exynos 21xx-24xx           — HEVC 10-bit
+                   24xx+               — AV1 encode
+    Google Tensor G2+                  — HEVC 10-bit
+                   G3+                 — AV1 encode
+    MediaTek Dimensity 9000+           — HEVC 10-bit
+                       9300+           — AV1 encode
+
+  SoC NEDETECTAT IN WHITELIST: marcat [suport necunoscut] dar selectabil.
+  Prompt confirmare la alegere (default: NU). Bypass: HW_FORCE=1 in profil.
+
+  PIERDERI REALE (universale MediaCodec, nu chip-specific):
+    HDR10+ dynamic metadata (per-frame) — imposibil via API public Android
+    Dolby Vision native preservation    — necesita licenta Dolby (libdovi privat)
+
+  TOT RESTUL FUNCTIONEAZA:
+    HDR10 static (cu signaling repair via hevc_metadata bsf post-encode)
+    HEVC 10-bit (main10) pe SoC verificat
+    AV1 SDR pe SoC AV1-capable
+    H.264 SDR oricare SoC
+
+  DIALOG HDR UNIFORMIZAT (per fisier HDR cand MediaCodec selectat):
+    Surse DV / HDR10+ / HDR10 → meniu cu 4-5 optiuni:
+      [1] SW libx265 — pastrare completa (recomandat, default)
+      [2] SW libx265 — strip enhancement (DV→HDR10 BL, HDR10+→HDR10 static)
+      [3] MediaCodec — HDR10 10-bit + signaling repair (mastering display
+          + max_cll/max_fall extrase din sursa via ffprobe, fallback Rec.2020
+          1000/400 nits daca lipsesc)
+      [4] MediaCodec — SDR tonemap 8-bit (proxy rapid pentru editare/preview)
+      [5] Skip fisier
+    Default mereu pe optiunea SW (apasa Enter pentru calitate maxima).
+
+  H.264 SPECIAL CASE:
+    h264_mediacodec NU suporta HDR — pe surse HDR forteaza tonemap automat
+    sau fallback SW. Optiunea [3] HDR10 repair se comuta automat la [4] SDR.
+
+  AV1 PRE-CHECK:
+    Daca MC_CAP_AV1=0 (SoC fara AV1 HW encoder) → fallback automat la
+    SW (libsvtav1/libaom-av1) cu mesaj informativ. Util sa selectezi
+    MediaCodec pe AV1 fara sa stii cu siguranta daca SoC-ul are AV1 encoder.
+
+  RATE CONTROL:
+    MediaCodec NU suporta CRF — doar VBR/CBR via -b:v.
+    get_adaptive_bitrate mapeaza CRF echivalent la kbps per codec×rezolutie:
+      4K HEVC: 25 Mbps   1080p HEVC: 8 Mbps    720p HEVC: 4.5 Mbps
+      4K H264: 35 Mbps   1080p H264: 12 Mbps   720p H264: 6.5 Mbps
+      4K AV1:  18 Mbps   1080p AV1:  5.5 Mbps  720p AV1:  3 Mbps
+    Maxrate = 1.5x bitrate, bufsize = 2x bitrate.
+
+  PROFILE FIELD MEDIACODEC_HDR_POLICY (.conf bypass dialog pe batch):
+    sw_full      — fallback SW completa
+    sw_degraded  — fallback SW degradata (strip DV/dynamic)
+    hw_repair    — MediaCodec HDR10 + repair
+    hw_sdr       — MediaCodec SDR tonemap 8-bit
+    skip         — skip fisierele HDR
+    gol          — afiseaza dialog interactiv per fisier (default)
+
+  CAZ REAL S24 ULTRA (Snapdragon 8 Gen 3 / Exynos 2400):
+    HEVC 8-bit + 10-bit:  YES
+    HDR10 (cu repair):    YES
+    HDR10+:               drop dynamic, ramane HDR10
+    Dolby Vision:         imposibil — comuta la SW sau strip→HDR10 BL
+    AV1 encode:           YES
+    H.264:                YES (8-bit only)
+
+  PS1 NU este atins: MediaCodec e Android only. Pe Windows ramane
+  NVENC/QSV/AMF.
+
+  HLG dedicated va fi adaugat in v39 (acum HLG e tratat ca HDR10 generic).
+
 
   LUT-URI CREATIVE (v33)
   ──────────────────────

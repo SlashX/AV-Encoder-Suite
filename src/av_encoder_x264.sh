@@ -49,6 +49,64 @@ encoder_log_header() {
 encoder_setup_file() {
     local file="$1"
 
+    # ── v38: MediaCodec branch (Termux HW H.264) ──────────────────────
+    if [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
+        if [[ -n "${LOG_PROFILE:-}" ]]; then
+            log "  ⚠ Sursa LOG ($LOG_PROFILE) — MediaCodec nu suporta LUT/tonemap; fallback la SW libx264"
+        else
+        local mc_source_type=""
+        local mc_dv_profile=""
+        if [[ -n "$DOVI" ]]; then
+            mc_source_type="dv"; mc_dv_profile="$DOVI"
+        elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
+            mc_source_type="hdr10plus"
+        elif [[ "$HDR_TYPE" == *"smpte2084"* ]]; then
+            mc_source_type="hdr10"
+        fi
+
+        # x264 nu suporta HDR — daca user a ales MediaCodec pe HDR,
+        # h264_mediacodec accepta doar SDR. Forteaza tonemap sau fallback SW.
+        if [[ -n "$mc_source_type" ]]; then
+            log "  ⚠ h264_mediacodec nu suporta HDR — sursa $mc_source_type"
+            show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile"
+            local mc_dlg_rc=$?
+            [ $mc_dlg_rc -eq 98 ] && return 98
+            case "$MC_HDR_MODE" in
+                sw_full|sw_degraded)
+                    log "  Fallback la SW libx264 (HDR strip — x264 nu poate HDR)"
+                    HDR_PLUS=""; DOVI=""; HDR_TYPE=""
+                    ;;
+                hw_repair)
+                    log "  ⚠ MediaCodec H.264 nu poate HDR repair — comut pe SDR tonemap"
+                    MC_HDR_MODE="hw_sdr"
+                    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                        dry_run_report "$file" "$output" "h264_mediacodec (SDR tonemap)" \
+                            "$WIDTH" "$DURATION" "$mc_source_type"; return 0
+                    fi
+                    build_mediacodec_cmd "$file" "h264"; return 0
+                    ;;
+                hw_sdr)
+                    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                        dry_run_report "$file" "$output" "h264_mediacodec (SDR tonemap)" \
+                            "$WIDTH" "$DURATION" "$mc_source_type"; return 0
+                    fi
+                    build_mediacodec_cmd "$file" "h264"; return 0
+                    ;;
+            esac
+        else
+            # Sursa SDR — direct la MediaCodec
+            if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                dry_run_report "$file" "$output" "h264_mediacodec (SDR)" \
+                    "$WIDTH" "$DURATION" "SDR"
+                return 0
+            fi
+            MC_HDR_MODE=""
+            build_mediacodec_cmd "$file" "h264"
+            return 0
+        fi
+        fi  # end else LOG_PROFILE
+    fi
+
     # ── Diagnostic sursa ─────────────────────────────────────────────
     local src_is_hdr=0 src_is_hdrplus=0 src_is_dv=0 src_bitdepth="8-bit"
     local src_pixfmt
@@ -117,7 +175,7 @@ encoder_setup_file() {
            ffmpeg -threads "$THREADS" -i "$file" $MAP_FLAGS \
                -c:v copy $sc_audio $sc_sub -c:t copy \
                $sc_cflags -progress "$sc_pf" -nostats "$output" 2>>"$LOG_FILE" &
-           sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file"; wait "$sc_pid"
+           sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "Stream copy"; wait "$sc_pid"
            local sc_rc=$?; PROGRESS_FILE=""
            if [ $sc_rc -eq 0 ]; then
                NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)

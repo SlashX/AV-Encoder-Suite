@@ -1592,10 +1592,20 @@ function Invoke-StreamCopy {
     $scArgs = @("-threads","0","-i",$fileInfo.FullName) + $mapFlags +
               @("-c:v","copy") + $audioParams + $scSubCodec + @("-c:t","copy") +
               $scContFlags + @("-progress",$scProgFile,"-nostats",$outFile)
+    $scErrFile = "$env:TEMP\fferr_sc_$PID.txt"
     $scProc = Start-Process ffmpeg -ArgumentList $scArgs -NoNewWindow -PassThru `
-        -RedirectStandardError "$env:TEMP\fferr.txt"
-    Show-Progress $scProc $scProgFile $durSec $scStart; $scProc.WaitForExit()
-    if ($scProc.ExitCode -ne 0) { return $false }
+        -RedirectStandardError $scErrFile
+    Show-Progress -proc $scProc -progFile $scProgFile -durSec $durSec -startTime $scStart -Label "Stream copy"
+    $scProc.WaitForExit()
+    if ($scProc.ExitCode -ne 0) {
+        if (Test-Path $scErrFile) {
+            Write-Host "  ⚠ ffmpeg exit $($scProc.ExitCode) — ultimele linii stderr:" -ForegroundColor Yellow
+            Get-Content $scErrFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            Remove-Item $scErrFile -Force -ErrorAction SilentlyContinue
+        }
+        return $false
+    }
+    if (Test-Path $scErrFile) { Remove-Item $scErrFile -Force -ErrorAction SilentlyContinue }
 
     # Stats
     $newSize = (Get-Item $outFile).Length
@@ -4237,6 +4247,7 @@ foreach ($f in $inputFiles) {
         Write-Host "  ══════════════════════════════════════════════════" -ForegroundColor Cyan
         $totalDone++; continue
     }
+
     # Vidstab 2-pass: trecerea 1 (analiza)
     $trfFile = $null
     if ($vfIsVidstab) {
@@ -4468,6 +4479,35 @@ foreach ($f in $inputFiles) {
     $script:logPixFmt      = ""
     $script:logExtraX265   = ""
     $script:selectedLutPath = ""
+
+    # v38: Smart stream copy detection — daca source codec == target codec
+    # si nu sunt transformari planificate, propune stream copy total
+    $tgtCodecMap = @{ "libx265" = "hevc"; "libx264" = "h264"; "libsvtav1" = "av1"; "libaom-av1" = "av1" }
+    $tgtCodecSmart = $tgtCodecMap[$rtEncoder]
+    $vfActiveSmart = ($vfParts.Count -gt 0) -or $vfIsVidstab -or [bool]$vfPreset
+    $doviSmart = & ffprobe -v error -show_entries stream=codec_tag_string `
+        -of default=nw=1:nk=1 $f.FullName 2>$null |
+        Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+    if ($tgtCodecSmart -and ($si.codec -eq $tgtCodecSmart) `
+        -and -not $vfActiveSmart `
+        -and -not $audioNormalize `
+        -and -not $logInfo.logProfile `
+        -and -not $si.isHDRPlus `
+        -and -not $doviSmart `
+        -and -not $targetFps) {
+        $srcBr = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
+        $brStr = if ($srcBr -match '^\d+$') { " (bitrate sursa ~$([int]([int]$srcBr/1000)) kbps)" } else { "" }
+        Write-Host ""
+        Write-Host "  SMART COPY: source este deja $($si.codec), identic cu target ($rtEncoder)$brStr." -ForegroundColor Cyan
+        Write-Host "    Re-encode redundant — pierde calitate fara beneficiu real de compresie." -ForegroundColor Cyan
+        $smartCh = Read-Host "  Stream copy total in loc de re-encode? (D/n) [default: D]"
+        if ($smartCh -ine "n") {
+            Write-Host "  -> Smart stream copy aplicat" -ForegroundColor Green
+            $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
+            if (-not $scOk) { $totalErrors++ }
+            continue
+        }
+    }
 
     if ($useX264) {
         # ── x264 per-file dialog ─────────────────────────────────────
@@ -4862,20 +4902,43 @@ foreach ($f in $inputFiles) {
                   $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
     }
 
+    # v38: label dinamic pentru progress bar — bazat pe $rtEncoder (var globala)
+    $encLabel = switch -Wildcard ($rtEncoder) {
+        "libx265"   { "HEVC" }
+        "libx264"   { "H264" }
+        "libsvtav1" { "AV1-SVT" }
+        "libaom-av1"{ "AV1-AOM" }
+        "dnxhd"     { "DNxHR" }
+        "prores_ks" { "ProRes" }
+        "apv"       { "APV" }
+        "*nvenc"    { (($rtEncoder -replace "_nvenc","").ToUpper()) + "-NVENC" }
+        "*qsv"      { (($rtEncoder -replace "_qsv","").ToUpper()) + "-QSV" }
+        "*amf"      { (($rtEncoder -replace "_amf","").ToUpper()) + "-AMF" }
+        default     { if ($rtEncoder) { $rtEncoder.ToUpper() } else { "FFmpeg" } }
+    }
+    $errFile = "$env:TEMP\fferr_$PID.txt"
     $proc = Start-Process ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru `
-        -RedirectStandardError "$env:TEMP\fferr.txt"
-    Show-Progress $proc $progFile $durSec $startTime; $proc.WaitForExit()
+        -RedirectStandardError $errFile
+    Show-Progress -proc $proc -progFile $progFile -durSec $durSec -startTime $startTime -Label $encLabel
+    $proc.WaitForExit()
 
     # Cleanup vidstab .trf
     if ($trfFile -and (Test-Path $trfFile)) { Remove-Item $trfFile -Force -ErrorAction SilentlyContinue }
 
     if ($proc.ExitCode -ne 0) {
         Write-Host "  EROARE encode!" -ForegroundColor Red
+        # v38: tail stderr inline pentru diagnoza rapida
+        if (Test-Path $errFile) {
+            Write-Host "  ⚠ ffmpeg exit $($proc.ExitCode) — ultimele linii stderr:" -ForegroundColor Yellow
+            Get-Content $errFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+        }
         if (Test-Path $outFile) { Remove-Item $outFile -Force }
         if ($hdr10PlusJson -and (Test-Path $hdr10PlusJson)) { Remove-Item $hdr10PlusJson -Force -ErrorAction SilentlyContinue }
         if ($doviRpuFile -and (Test-Path $doviRpuFile)) { Remove-Item $doviRpuFile -Force -ErrorAction SilentlyContinue }
         $totalErrors++; continue
     }
+    if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
 
     # ── Triple-layer: injecteaza DV RPU in HEVC output ───────────────
     if ($tripleLayerMode -and $doviRpuFile) {

@@ -90,6 +90,59 @@ encoder_log_header() {
 encoder_setup_file() {
     local file="$1"
 
+    # ── v38: MediaCodec branch (Termux HW AV1) ────────────────────────
+    if [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
+        # Pre-check: AV1 hw encode disponibil pe SoC? (capabilitate SoC, nu per-fisier)
+        if [[ "${MC_CAP_AV1:-0}" != "1" ]]; then
+            log "  ⚠ SoC nu suporta AV1 HW encode — fallback la SW $AV1_ENCODER (toate fisierele)"
+            USE_MEDIACODEC=0
+        elif [[ -n "${LOG_PROFILE:-}" ]]; then
+            log "  ⚠ Sursa LOG ($LOG_PROFILE) — MediaCodec nu suporta LUT/tonemap; fallback la SW $AV1_ENCODER"
+        else
+            local mc_source_type=""
+            local mc_dv_profile=""
+            if [[ -n "$DOVI" ]]; then
+                mc_source_type="dv"; mc_dv_profile="$DOVI"
+            elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
+                mc_source_type="hdr10plus"
+            elif [[ "$HDR_TYPE" == *"smpte2084"* ]]; then
+                mc_source_type="hdr10"
+            fi
+
+            if [[ -n "$mc_source_type" ]]; then
+                show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile"
+                local mc_dlg_rc=$?
+                [ $mc_dlg_rc -eq 98 ] && return 98
+                case "$MC_HDR_MODE" in
+                    sw_full|sw_degraded)
+                        log "  Fallback la SW $AV1_ENCODER ($MC_HDR_MODE) pentru fisierul curent"
+                        if [[ "$MC_HDR_MODE" == "sw_degraded" ]]; then
+                            HDR_PLUS=""
+                            if [[ -n "$DOVI" ]]; then DOVI=""; HDR_TYPE="smpte2084"; fi
+                        fi
+                        # NU reseta USE_MEDIACODEC (decizie per-fisier);
+                        # cad prin la path-ul SW de mai jos
+                        ;;
+                    hw_repair|hw_sdr)
+                        if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                            dry_run_report "$file" "$output" "av1_mediacodec ($MC_HDR_MODE)" \
+                                "$WIDTH" "$DURATION" "$mc_source_type"; return 0
+                        fi
+                        build_mediacodec_cmd "$file" "av1"; return 0
+                        ;;
+                esac
+            else
+                if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                    dry_run_report "$file" "$output" "av1_mediacodec (SDR)" \
+                        "$WIDTH" "$DURATION" "SDR"; return 0
+                fi
+                MC_HDR_MODE=""
+                build_mediacodec_cmd "$file" "av1"
+                return 0
+            fi
+        fi
+    fi
+
     # ── Dolby Vision — AV1 nu suporta DV nativ ───────────────────────
     if [[ -n "$DOVI" ]]; then
         echo ""
@@ -136,7 +189,7 @@ encoder_setup_file() {
             ffmpeg -threads "$THREADS" -i "$file" $MAP_FLAGS \
                 -c:v copy $sc_audio $sc_sub -c:t copy \
                 $sc_cflags -progress "$sc_pf" -nostats "$output" 2>>"$LOG_FILE" &
-            sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file"; wait "$sc_pid"
+            sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "Stream copy"; wait "$sc_pid"
             local sc_rc=$?; PROGRESS_FILE=""
             if [ $sc_rc -eq 0 ]; then
                 NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)

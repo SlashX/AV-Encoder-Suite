@@ -57,6 +57,68 @@ encoder_log_header() {
 encoder_setup_file() {
     local file="$1"
 
+    # ── v38: MediaCodec branch (Termux HW encoding) ───────────────────
+    if [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
+        # LOG sources nu sunt suportate pe MediaCodec (necesita LUT + tonemap dialog)
+        if [[ -n "${LOG_PROFILE:-}" ]]; then
+            log "  ⚠ Sursa LOG ($LOG_PROFILE) — MediaCodec nu suporta LUT/tonemap; fallback la SW libx265"
+            # Cad prin la path-ul SW standard de mai jos (USE_MEDIACODEC ramane 1 pentru fisierele urmatoare)
+        else
+        local mc_source_type=""
+        local mc_dv_profile=""
+        if [[ -n "$DOVI" ]]; then
+            mc_source_type="dv"
+            mc_dv_profile="$DOVI"
+        elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
+            mc_source_type="hdr10plus"
+        elif [[ "$HDR_TYPE" == *"smpte2084"* ]]; then
+            mc_source_type="hdr10"
+        fi
+
+        if [[ -n "$mc_source_type" ]]; then
+            show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile"
+            local mc_dlg_rc=$?
+            [ $mc_dlg_rc -eq 98 ] && return 98
+            case "$MC_HDR_MODE" in
+                sw_full|sw_degraded)
+                    log "  Fallback la SW libx265 ($MC_HDR_MODE) pentru fisierul curent"
+                    # Resetam USE_MEDIACODEC pentru acest fisier — va merge prin path-ul SW de mai jos
+                    # (HDR10+/DV degraded vor fi tratate ca HDR10 simplu cand intra in SW path)
+                    if [[ "$MC_HDR_MODE" == "sw_degraded" ]]; then
+                        # Strip enhancement: HDR10+ → HDR10 static, DV → HDR10 BL
+                        HDR_PLUS=""
+                        if [[ -n "$DOVI" ]]; then
+                            DOVI=""
+                            HDR_TYPE="smpte2084"
+                        fi
+                    fi
+                    # Continua spre path-ul SW standard de mai jos
+                    ;;
+                hw_repair|hw_sdr)
+                    # Build MediaCodec FFMPEG_CMD si return
+                    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                        dry_run_report "$file" "$output" "hevc_mediacodec ($MC_HDR_MODE)" \
+                            "$WIDTH" "$DURATION" "$mc_source_type"
+                        return 0
+                    fi
+                    build_mediacodec_cmd "$file" "hevc"
+                    return 0
+                    ;;
+            esac
+        else
+            # Sursa SDR — direct la MediaCodec fara dialog
+            if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                dry_run_report "$file" "$output" "hevc_mediacodec (SDR)" \
+                    "$WIDTH" "$DURATION" "SDR"
+                return 0
+            fi
+            MC_HDR_MODE=""
+            build_mediacodec_cmd "$file" "hevc"
+            return 0
+        fi
+        fi  # end else LOG_PROFILE
+    fi
+
     # ── Dolby Vision ──────────────────────────────────────────────────
     if [[ -n "$DOVI" ]]; then
         log "  Dolby Vision detectat"
@@ -95,7 +157,7 @@ encoder_setup_file() {
             ffmpeg -threads "$THREADS" -i "$file" $MAP_FLAGS \
                 -c:v copy $sc_audio $sc_sub -c:t copy \
                 $sc_cflags -progress "$sc_pf" -nostats "$output" 2>>"$LOG_FILE" &
-            sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file"; wait "$sc_pid"
+            sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "HDR10+ stream copy"; wait "$sc_pid"
             local sc_rc=$?; PROGRESS_FILE=""
             if [ $sc_rc -eq 0 ]; then
                 NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)

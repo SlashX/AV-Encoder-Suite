@@ -455,7 +455,7 @@ handle_dolby_vision() {
             ffmpeg -threads "$THREADS" -i "$file" $map_flags \
                 -c:v copy $dv_audio $sub_codec_dv -c:t copy \
                 $dv_container_flags -progress "$pf" -nostats "$output" 2>>"$LOG_FILE" &
-            fpid=$!; _show_progress "$fpid" "$pf" "$file"; wait "$fpid"
+            fpid=$!; _show_progress "$fpid" "$pf" "$file" "DV stream copy"; wait "$fpid"
             local rc=$?; PROGRESS_FILE=""; return $rc ;;
         2) log "  DV: re-encode ($opt2_label)"; return 99 ;;
         3) log "  DV: sarit de utilizator"; return 98 ;;
@@ -584,6 +584,7 @@ build_video_filters() {
 # ══════════════════════════════════════════════════════════════════════
 _show_progress() {
     local pid=$1 prog_file=$2 src_file=$3
+    local label="${4:-Progres}"   # v38: label opțional pentru context (encoder name etc.)
     local dur_p st_p
     dur_p=$(ffprobe -v error -show_entries format=duration \
         -of default=noprint_wrappers=1:nokey=1 "$src_file" 2>/dev/null)
@@ -593,7 +594,7 @@ _show_progress() {
         sleep 1
         local otms=$(grep "^out_time_ms=" "$prog_file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
         if ! [[ "$otms" =~ ^[0-9]+$ ]] || [ "$otms" -le 0 ]; then
-            echo -ne "\r  Se initializeaza...                                    "; continue
+            echo -ne "\r  ${label}: se initializeaza...                          "; continue
         fi
         local ot=$((otms / 1000000)); [ "$ot" -lt 0 ] && ot=0
         local el=$(( $(date +%s) - st_p )); [ "$el" -le 0 ] && el=1
@@ -603,8 +604,8 @@ _show_progress() {
         else [ "$ot" -gt 0 ] && rfps="$(awk "BEGIN{printf \"%.1f\", $ot / $el}")x" || rfps="0.0x"; fi
         local eta=0
         [ "$ot" -gt 0 ] && [ "$dur_p" -gt "$ot" ] && eta=$(( el * (dur_p - ot) / ot ))
-        printf "\r  Progres: %3d%% | FPS: %s | Timp ramas: %02d:%02d:%02d   " \
-            "$pct" "$rfps" $((eta/3600)) $(((eta%3600)/60)) $((eta%60))
+        printf "\r  %s: %3d%% | FPS: %s | ETA: %02d:%02d:%02d   " \
+            "$label" "$pct" "$rfps" $((eta/3600)) $(((eta%3600)/60)) $((eta%60))
     done
     rm -f "$prog_file"; PROGRESS_FILE=""; echo ""
 }
@@ -958,7 +959,7 @@ do_stream_copy() {
     ffmpeg -threads "$THREADS" -i "$file" $map_flags \
         -c:v copy $sc_audio $sc_sub -c:t copy \
         $sc_cflags -progress "$sc_pf" -nostats "$output" 2>>"$LOG_FILE" &
-    sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file"; wait "$sc_pid"
+    sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "Stream copy"; wait "$sc_pid"
     local sc_rc=$?; PROGRESS_FILE=""
     if [ $sc_rc -eq 0 ]; then
         NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
@@ -1041,6 +1042,163 @@ handle_source_dialog() {
                return 0 ;;
         esac
     fi
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v38: MEDIACODEC HDR DIALOG — uniformizat pentru DV / HDR10+ / HDR10
+# Apelat DOAR cand userul a selectat MediaCodec ca encoder.
+# Param: source_type = dv|hdr10plus|hdr10 ; dv_profile (optional)
+# Set MC_HDR_MODE global:
+#   sw_full     — fallback SW cu preservare completa (DV native, HDR10+ dynamic)
+#   sw_degraded — fallback SW degradat (DV→HDR10 BL, HDR10+→HDR10 static)
+#   hw_repair   — MediaCodec 10-bit + signaling repair via hevc_metadata bsf
+#   hw_sdr      — MediaCodec SDR tonemap 8-bit (proxy)
+# Override prin profile field MEDIACODEC_HDR_POLICY=sw_full|sw_degraded|hw_repair|hw_sdr|skip
+# Return: 0 = proceed cu MC_HDR_MODE setat | 98 = skip
+# ══════════════════════════════════════════════════════════════════════
+show_hdr_mediacodec_dialog() {
+    local source_type="$1" dv_profile="${2:-}"
+    MC_HDR_MODE=""
+
+    # Profile bypass
+    if [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]]; then
+        case "$MEDIACODEC_HDR_POLICY" in
+            sw_full|sw_degraded|hw_repair|hw_sdr)
+                MC_HDR_MODE="$MEDIACODEC_HDR_POLICY"
+                log "  MediaCodec HDR policy din profil: $MC_HDR_MODE"
+                return 0 ;;
+            skip)
+                log "  MediaCodec HDR policy din profil: skip"
+                return 98 ;;
+        esac
+    fi
+
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    case "$source_type" in
+        dv)
+            echo "  ║  ⚠ Sursa este Dolby Vision (profil ${dv_profile:-?})"
+            echo "  ║  MediaCodec nu poate produce DV. Optiuni:"
+            echo "  ╠══════════════════════════════════════════════════════╣"
+            echo "  ║  1) SW libx265 — pastreaza DV complet (recomandat)"
+            echo "  ║  2) SW libx265 — strip DV, pastreaza HDR10 BL"
+            echo "  ║  3) MediaCodec — strip DV → HDR10 10-bit + repair"
+            echo "  ║  4) MediaCodec — strip DV → SDR tonemap 8-bit (proxy)"
+            echo "  ║  5) Skip fisier"
+            echo "  ╚══════════════════════════════════════════════════════╝"
+            read -p "  Alege 1-5 [implicit: 1]: " _mc_ch
+            case "${_mc_ch:-1}" in
+                2) MC_HDR_MODE="sw_degraded"; log "  Ales: SW libx265 strip DV → HDR10 BL" ;;
+                3) MC_HDR_MODE="hw_repair";   log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
+                4) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
+                5) log "  Sarit de utilizator"; return 98 ;;
+                *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu DV complet" ;;
+            esac
+            ;;
+        hdr10plus)
+            echo "  ║  ⚠ Sursa este HDR10+ (cu dynamic metadata)"
+            echo "  ║  MediaCodec nu transmite dynamic metadata. Optiuni:"
+            echo "  ╠══════════════════════════════════════════════════════╣"
+            echo "  ║  1) SW libx265 — pastreaza HDR10+ complet (recomandat)"
+            echo "  ║  2) SW libx265 — encode ca HDR10 static (drop dynamic)"
+            echo "  ║  3) MediaCodec — HDR10 10-bit + repair (drop dynamic)"
+            echo "  ║  4) MediaCodec — SDR tonemap 8-bit (proxy)"
+            echo "  ║  5) Skip fisier"
+            echo "  ╚══════════════════════════════════════════════════════╝"
+            read -p "  Alege 1-5 [implicit: 1]: " _mc_ch
+            case "${_mc_ch:-1}" in
+                2) MC_HDR_MODE="sw_degraded"; log "  Ales: SW libx265 HDR10 static (drop dynamic)" ;;
+                3) MC_HDR_MODE="hw_repair";   log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
+                4) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
+                5) log "  Sarit de utilizator"; return 98 ;;
+                *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu HDR10+ complet" ;;
+            esac
+            ;;
+        hdr10|*)
+            echo "  ║  ⚠ Sursa este HDR10"
+            echo "  ║  MediaCodec necesita signaling repair. Optiuni:"
+            echo "  ╠══════════════════════════════════════════════════════╣"
+            echo "  ║  1) SW libx265 — HDR10 nativ (recomandat)"
+            echo "  ║  2) MediaCodec — HDR10 10-bit + signaling repair"
+            echo "  ║  3) MediaCodec — SDR tonemap 8-bit (proxy)"
+            echo "  ║  4) Skip fisier"
+            echo "  ╚══════════════════════════════════════════════════════╝"
+            read -p "  Alege 1-4 [implicit: 1]: " _mc_ch
+            case "${_mc_ch:-1}" in
+                2) MC_HDR_MODE="hw_repair"; log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
+                3) MC_HDR_MODE="hw_sdr";    log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
+                4) log "  Sarit de utilizator"; return 98 ;;
+                *) MC_HDR_MODE="sw_full";   log "  Ales: SW libx265 HDR10 nativ" ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v38: HDR10 SIGNALING REPAIR — post-encode bsf hevc_metadata
+# Repara SEI mastering_display + max_cll/max_fall pierdute de hevc_mediacodec.
+# Args: $1 = encoded_file (hevc/mp4 in-place fix via temp)
+#       $2 = master_display string (optional, ex: "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)")
+#       $3 = max_cll string (optional, ex: "1000,400")
+# Daca $2/$3 lipsesc, citeste din source via ffprobe (pasat prin env: MC_REPAIR_SRC)
+# Return: 0 OK | non-zero error
+# ══════════════════════════════════════════════════════════════════════
+repair_hdr10_signaling() {
+    local encoded="$1" md_str="${2:-}" cll_str="${3:-}"
+    [[ ! -f "$encoded" ]] && return 1
+
+    # Daca lipsesc, extrage din sursa originala
+    if [[ -z "$md_str" || -z "$cll_str" ]] && [[ -n "${MC_REPAIR_SRC:-}" && -f "$MC_REPAIR_SRC" ]]; then
+        local sd_json
+        sd_json=$(ffprobe -v error -select_streams v:0 -read_intervals "%+#1" \
+            -show_frames -show_entries frame_side_data_list \
+            -of default=nw=1 "$MC_REPAIR_SRC" 2>/dev/null)
+        # Mastering display: format ffmpeg "G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"
+        if [[ -z "$md_str" ]]; then
+            local r_x r_y g_x g_y b_x b_y wp_x wp_y l_max l_min
+            r_x=$(echo "$sd_json" | grep -oP "red_x=\K[0-9/]+" | head -1)
+            r_y=$(echo "$sd_json" | grep -oP "red_y=\K[0-9/]+" | head -1)
+            g_x=$(echo "$sd_json" | grep -oP "green_x=\K[0-9/]+" | head -1)
+            g_y=$(echo "$sd_json" | grep -oP "green_y=\K[0-9/]+" | head -1)
+            b_x=$(echo "$sd_json" | grep -oP "blue_x=\K[0-9/]+" | head -1)
+            b_y=$(echo "$sd_json" | grep -oP "blue_y=\K[0-9/]+" | head -1)
+            wp_x=$(echo "$sd_json" | grep -oP "white_point_x=\K[0-9/]+" | head -1)
+            wp_y=$(echo "$sd_json" | grep -oP "white_point_y=\K[0-9/]+" | head -1)
+            l_max=$(echo "$sd_json" | grep -oP "max_luminance=\K[0-9/]+" | head -1)
+            l_min=$(echo "$sd_json" | grep -oP "min_luminance=\K[0-9/]+" | head -1)
+            if [[ -n "$g_x" && -n "$r_x" && -n "$wp_x" && -n "$l_max" ]]; then
+                # Convert ratios numerator/denominator → integer scaled (50000 pentru chroma, 10000 pentru luminance)
+                md_str="G($(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$g_x"),$(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$g_y"))B($(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$b_x"),$(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$b_y"))R($(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$r_x"),$(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$r_y"))WP($(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$wp_x"),$(awk -F/ '{printf "%d", ($1*50000)/$2}' <<< "$wp_y"))L($(awk -F/ '{printf "%d", ($1*10000)/$2}' <<< "$l_max"),$(awk -F/ '{printf "%d", ($1*10000)/$2}' <<< "$l_min"))"
+            fi
+        fi
+        if [[ -z "$cll_str" ]]; then
+            local mcll mfall
+            mcll=$(echo "$sd_json" | grep -oP "max_content=\K[0-9]+" | head -1)
+            mfall=$(echo "$sd_json" | grep -oP "max_average=\K[0-9]+" | head -1)
+            [[ -n "$mcll" && -n "$mfall" ]] && cll_str="${mcll},${mfall}"
+        fi
+    fi
+
+    # Defaults conservative daca tot lipsesc — Rec.2020 + 1000/400 nits
+    [[ -z "$md_str" ]] && md_str="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+    [[ -z "$cll_str" ]] && cll_str="1000,400"
+
+    local tmp_out
+    tmp_out=$(mktemp --suffix=".${encoded##*.}")
+    log "  HDR10 signaling repair: injectez mastering_display + max_cll..."
+    ffmpeg -v error -i "$encoded" -c copy \
+        -bsf:v "hevc_metadata=mastering_display=${md_str}:max_content=${cll_str%,*}:max_average=${cll_str#*,}:colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9" \
+        -movflags +faststart "$tmp_out" 2>>"${LOG_FILE:-/dev/null}"
+    local rc=$?
+    if [ $rc -eq 0 ] && [ -s "$tmp_out" ]; then
+        mv -f "$tmp_out" "$encoded"
+        log "  HDR10 signaling repair OK"
+        return 0
+    fi
+    rm -f "$tmp_out"
+    log "  HDR10 signaling repair FAILED (rc=$rc) — output ramane fara SEI HDR"
+    return 1
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1453,6 +1611,245 @@ get_adaptive_crf() {
 }
 
 # ══════════════════════════════════════════════════════════════════════
+# v38: ADAPTIVE BITRATE pentru MediaCodec (nu suporta CRF, doar VBR/CBR)
+# Returneaza bitrate-ul tinta (in kbps) per encoder + rezolutie
+# Mapping aproximativ echivalent calitate cu CRF-urile din get_adaptive_crf
+# ══════════════════════════════════════════════════════════════════════
+get_adaptive_bitrate() {
+    local enc="$1" w="$2"
+    case "$enc" in
+        hevc_mediacodec)
+            [ "$w" -ge 3840 ] && echo 25000 || \
+            { [ "$w" -ge 2560 ] && echo 14000 || \
+              { [ "$w" -ge 1920 ] && echo 8000 || \
+                { [ "$w" -ge 1280 ] && echo 4500 || echo 2500; }; }; }
+            ;;
+        h264_mediacodec)
+            [ "$w" -ge 3840 ] && echo 35000 || \
+            { [ "$w" -ge 2560 ] && echo 20000 || \
+              { [ "$w" -ge 1920 ] && echo 12000 || \
+                { [ "$w" -ge 1280 ] && echo 6500 || echo 3500; }; }; }
+            ;;
+        av1_mediacodec)
+            [ "$w" -ge 3840 ] && echo 18000 || \
+            { [ "$w" -ge 2560 ] && echo 10000 || \
+              { [ "$w" -ge 1920 ] && echo 5500 || \
+                { [ "$w" -ge 1280 ] && echo 3000 || echo 1800; }; }; }
+            ;;
+        *) echo 8000 ;;
+    esac
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v38: MEDIACODEC DETECTION (Termux/Android)
+# Set vars globale: MC_AVAILABLE, MC_ENCODERS (h264/hevc/av1 list),
+#   MC_SOC_VENDOR, MC_SOC_MODEL, MC_ANDROID_VER, MC_SOC_VERIFIED,
+#   MC_CAP_HEVC10, MC_CAP_AV1
+# ══════════════════════════════════════════════════════════════════════
+detect_mediacodec_caps() {
+    MC_AVAILABLE=0
+    MC_ENCODERS=""
+    MC_SOC_VENDOR=""
+    MC_SOC_MODEL=""
+    MC_ANDROID_VER=""
+    MC_SOC_VERIFIED=0
+    MC_CAP_HEVC10=0
+    MC_CAP_AV1=0
+
+    # Platform gate: Termux/Android necesita getprop pentru SoC info; ffmpeg pentru encoder check
+    command -v getprop >/dev/null 2>&1 || return 1
+    command -v ffmpeg  >/dev/null 2>&1 || return 1
+
+    # Binary check: ce encodere mediacodec are ffmpeg-ul
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1)_mediacodec" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+
+    MC_ENCODERS="$enc_list"
+    MC_AVAILABLE=1
+
+    # SoC info
+    MC_SOC_VENDOR=$(getprop ro.soc.manufacturer 2>/dev/null)
+    MC_SOC_MODEL=$(getprop ro.soc.model 2>/dev/null)
+    [[ -z "$MC_SOC_VENDOR" ]] && MC_SOC_VENDOR=$(getprop ro.hardware 2>/dev/null)
+    [[ -z "$MC_SOC_MODEL" ]] && MC_SOC_MODEL=$(getprop ro.product.board 2>/dev/null)
+    MC_ANDROID_VER=$(getprop ro.build.version.release 2>/dev/null)
+
+    # SoC whitelist pentru capabilitati fine (10-bit HEVC, AV1 encode)
+    # Nota: prezenta in whitelist marcheaza [verificat] in UI; absenta nu blocheaza
+    local v_lc m_lc
+    v_lc=$(echo "$MC_SOC_VENDOR" | tr '[:upper:]' '[:lower:]')
+    m_lc=$(echo "$MC_SOC_MODEL" | tr '[:upper:]' '[:lower:]')
+
+    # Snapdragon 8xx (Gen 1+) — HEVC main10 + AV1 encode pe 8 Gen 2+
+    if [[ "$v_lc" == *"qualcomm"* ]] || [[ "$v_lc" == *"qcom"* ]]; then
+        # SM8450 (8 Gen 1), SM8475 (8+ Gen 1), SM8550 (8 Gen 2), SM8650 (8 Gen 3), SM8750 (8 Gen 4)
+        if [[ "$m_lc" =~ sm8(4|5|6|7)[0-9]{2} ]] || [[ "$m_lc" =~ sm8[5-9][0-9]{2} ]]; then
+            MC_SOC_VERIFIED=1
+            MC_CAP_HEVC10=1
+            # AV1 encode HW: doar 8 Gen 2+ (SM8550+)
+            if [[ "$m_lc" =~ sm8[5-9][0-9]{2} ]] || [[ "$m_lc" =~ sm87[0-9]{2} ]]; then
+                MC_CAP_AV1=1
+            fi
+        fi
+    fi
+    # Samsung Exynos 2100+ (HEVC 10-bit), Exynos 2400+ (AV1 encode)
+    if [[ "$v_lc" == *"samsung"* ]] || [[ "$m_lc" == *"exynos"* ]]; then
+        if [[ "$m_lc" =~ exynos2[1-9][0-9]{2} ]]; then
+            MC_SOC_VERIFIED=1
+            MC_CAP_HEVC10=1
+            [[ "$m_lc" =~ exynos2[4-9][0-9]{2} ]] && MC_CAP_AV1=1
+        fi
+    fi
+    # Google Tensor (G2+) — HEVC 10-bit; G3+ AV1 encode
+    if [[ "$v_lc" == *"google"* ]] || [[ "$m_lc" == *"tensor"* ]] || [[ "$m_lc" == *"gs"* ]]; then
+        if [[ "$m_lc" =~ (gs[2-9]|tensor.*g[2-9]) ]]; then
+            MC_SOC_VERIFIED=1
+            MC_CAP_HEVC10=1
+            [[ "$m_lc" =~ (gs[3-9]|tensor.*g[3-9]) ]] && MC_CAP_AV1=1
+        fi
+    fi
+    # MediaTek Dimensity 9000+ — HEVC 10-bit; 9300+ AV1 encode
+    # MTK SoC numbers: D9000=MT6983, D9200=MT6985, D9300=MT6989, D9400=MT6991, D9500+=MT699x
+    if [[ "$v_lc" == *"mediatek"* ]] || [[ "$m_lc" == *"mt"* ]] || [[ "$m_lc" == *"dimensity"* ]]; then
+        if [[ "$m_lc" =~ (mt69[89][0-9]|dimensity.?9[0-9]{3}) ]]; then
+            MC_SOC_VERIFIED=1
+            MC_CAP_HEVC10=1
+            # AV1: D9300+ (MT6989, MT6991, MT699x) sau "Dimensity 9300+"
+            [[ "$m_lc" =~ (mt6989|mt699[0-9]|dimensity.?9[3-9][0-9]{2}) ]] && MC_CAP_AV1=1
+        fi
+    fi
+
+    return 0
+}
+
+# Helper: returneaza label-ul scurt pentru meniul HW (ex: "MediaCodec HEVC [verificat]")
+mediacodec_menu_label() {
+    local codec="$1"  # h264|hevc|av1
+    local enc_name="${codec}_mediacodec"
+    [[ "$MC_ENCODERS" != *"$enc_name"* ]] && { echo ""; return; }
+    local marker
+    if [[ "$MC_SOC_VERIFIED" == "1" ]]; then
+        marker="[verificat]"
+    else
+        marker="[suport necunoscut]"
+    fi
+    echo "MediaCodec ${codec^^} $marker"
+}
+
+# Helper: prompt confirmare pe SoC necunoscut (return 0 = continua, 1 = abort)
+mediacodec_confirm_unknown_soc() {
+    [[ "${HW_FORCE:-0}" == "1" ]] && return 0
+    [[ "$MC_SOC_VERIFIED" == "1" ]] && return 0
+    echo ""
+    echo "  ⚠ SoC nedetectat in whitelist:"
+    echo "    Vendor: ${MC_SOC_VENDOR:-necunoscut}"
+    echo "    Model : ${MC_SOC_MODEL:-necunoscut}"
+    echo "    Android: ${MC_ANDROID_VER:-?}"
+    echo "    MediaCodec va incerca encoding, dar capabilitatile (10-bit, AV1) sunt incerte."
+    read -p "  Continui cu MediaCodec? (d/N) [default: N]: " _mc_conf
+    [[ "${_mc_conf,,}" == "d" ]] && return 0
+    return 1
+}
+
+# Helper: banner SoC pentru log la inceputul flow-ului encode
+mediacodec_print_banner() {
+    [[ "$MC_AVAILABLE" != "1" ]] && return
+    local cap_str=""
+    [[ "$MC_CAP_HEVC10" == "1" ]] && cap_str="${cap_str} HEVC10"
+    [[ "$MC_CAP_AV1" == "1" ]] && cap_str="${cap_str} AV1"
+    [[ -z "$cap_str" ]] && cap_str=" 8-bit only"
+    local verified_str
+    if [[ "$MC_SOC_VERIFIED" == "1" ]]; then
+        verified_str="verificat"
+    else
+        verified_str="necunoscut"
+    fi
+    log "  HW MediaCodec: SoC ${MC_SOC_VENDOR:-?} ${MC_SOC_MODEL:-?} / Android ${MC_ANDROID_VER:-?} [${verified_str}]${cap_str}"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v38: BUILD MEDIACODEC FFMPEG_CMD
+# Args: $1 = file ; $2 = enc_codec (hevc|h264|av1)
+# Citeste env: WIDTH, MC_HDR_MODE, MC_CAP_HEVC10, AUDIO_PARAMS, MAP_FLAGS, THREADS
+# Seteaza: FFMPEG_CMD (ca string), MC_NEEDS_REPAIR (0/1) pentru post-encode SEI
+# MC_HDR_MODE valori:
+#   ""           — SDR encode normal (pentru surse SDR)
+#   hw_repair    — 10-bit + signaling HDR10 + repair flag setat
+#   hw_sdr       — tonemap HDR→SDR 8-bit
+# (sw_full / sw_degraded sunt rezolvate inainte de a ajunge aici — nu se cheama mediacodec)
+# ══════════════════════════════════════════════════════════════════════
+build_mediacodec_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name="${enc_codec}_mediacodec"
+    MC_NEEDS_REPAIR=0
+
+    # Rate control: respecta ENCODE_MODE=2 (VBR custom) daca user a setat target
+    local bitrate maxrate bufsize rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        # VBR_TARGET vine ca "8M" sau "8000k" — extrage numarul ca kbps
+        local vt="$VBR_TARGET"
+        if [[ "$vt" =~ ^([0-9]+)[Mm]$ ]]; then bitrate=$(( ${BASH_REMATCH[1]} * 1000 ))
+        elif [[ "$vt" =~ ^([0-9]+)[Kk]$ ]]; then bitrate="${BASH_REMATCH[1]}"
+        elif [[ "$vt" =~ ^[0-9]+$ ]]; then bitrate=$(( vt / 1000 ))
+        else bitrate=$(get_adaptive_bitrate "$enc_name" "$WIDTH"); fi
+        local mr="${VBR_MAXRATE:-}"
+        if [[ "$mr" =~ ^([0-9]+)[Mm]$ ]]; then maxrate=$(( ${BASH_REMATCH[1]} * 1000 ))
+        elif [[ "$mr" =~ ^([0-9]+)[Kk]$ ]]; then maxrate="${BASH_REMATCH[1]}"
+        else maxrate=$(( bitrate * 3 / 2 )); fi
+    else
+        bitrate=$(get_adaptive_bitrate "$enc_name" "$WIDTH")
+        maxrate=$(( bitrate * 3 / 2 ))
+    fi
+    bufsize=$(( bitrate * 2 ))
+    rate_flags="-b:v ${bitrate}k -maxrate ${maxrate}k -bufsize ${bufsize}k"
+
+    local pix_fmt color_flags="" mc_extra_vf="" profile_flag=""
+
+    case "${MC_HDR_MODE:-}" in
+        hw_repair)
+            # 10-bit HDR10: BT.2020 + PQ + main10 (doar HEVC suporta main10)
+            if [[ "$MC_CAP_HEVC10" == "1" ]] && [[ "$enc_codec" == "hevc" ]]; then
+                pix_fmt="yuv420p10le"
+                profile_flag="-profile:v main10"
+            else
+                pix_fmt="yuv420p"
+                log "  ATENTIE: SoC nu suporta 10-bit (sau codec != HEVC), fallback la 8-bit"
+            fi
+            color_flags="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+            MC_NEEDS_REPAIR=1
+            ;;
+        hw_sdr)
+            # Tonemap HDR→SDR 8-bit
+            pix_fmt="yuv420p"
+            color_flags="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+            mc_extra_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
+            ;;
+        *)
+            pix_fmt="yuv420p"
+            ;;
+    esac
+
+    # Inject extra VF (tonemap) in VIDEO_FILTER global
+    if [[ -n "$mc_extra_vf" ]]; then
+        if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+            VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${mc_extra_vf},}"
+        else
+            VIDEO_FILTER="-vf $mc_extra_vf"
+        fi
+    fi
+
+    log "  MediaCodec: $enc_name | bitrate ${bitrate}k / max ${maxrate}k | pix_fmt $pix_fmt"
+    [[ -n "${MC_HDR_MODE:-}" ]] && log "  Mod HDR    : $MC_HDR_MODE"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name $rate_flags \
+        $profile_flag -pix_fmt $pix_fmt $color_flags $VIDEO_FILTER $AUDIO_PARAMS"
+
+    return 0
+}
+
+# ══════════════════════════════════════════════════════════════════════
 # DRY-RUN REPORT
 # ══════════════════════════════════════════════════════════════════════
 dry_run_report() {
@@ -1794,6 +2191,9 @@ run_encode_loop() {
         fi
 
         ORIGINAL_SIZE=$(stat -c%s "$file")
+        # v38: reset MediaCodec per-file flags pentru a evita leak intre iteratii
+        MC_NEEDS_REPAIR=0
+        MC_HDR_MODE=""
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
         CRF=$(get_adaptive_crf "${ENCODER_TYPE:-x265}" "$WIDTH")
@@ -1812,24 +2212,84 @@ run_encode_loop() {
 
         if [[ "${DRY_RUN:-0}" == "1" ]]; then TOTAL_DONE=$((TOTAL_DONE+1)); continue; fi
 
+        # v38: Smart stream copy detection — daca source codec == target codec
+        # și nu sunt transformări planificate (filter, normalize, HDR, LOG, DV),
+        # propune stream copy total. Salvează ore de encode + zero pierdere calitate.
+        local _src_codec; _src_codec=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name -of default=nw=1:nk=1 "$file" 2>/dev/null)
+        local _tgt_codec=""
+        case "${ENCODER_NAME:-}" in
+            libx265) _tgt_codec="hevc" ;;
+            libx264) _tgt_codec="h264" ;;
+            av1)     _tgt_codec="av1" ;;
+        esac
+        if [[ -n "$_tgt_codec" && "$_src_codec" == "$_tgt_codec" ]] \
+           && [[ -z "$VIDEO_FILTER" ]] \
+           && [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] \
+           && [[ "${IS_LOG:-0}" != "1" ]] \
+           && [[ -z "${HDR_PLUS:-}" ]] && [[ -z "${DOVI:-}" ]] \
+           && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]]; then
+            # Bonus: bitrate sanity info
+            local _src_br _br_str=""
+            _src_br=$(ffprobe -v error -select_streams v:0 \
+                -show_entries stream=bit_rate -of default=nw=1:nk=1 "$file" 2>/dev/null)
+            [[ "$_src_br" =~ ^[0-9]+$ ]] && _br_str=" (bitrate sursa ~$((_src_br/1000)) kbps)"
+            log ""
+            log "  ⚡ SMART COPY: source este deja $_src_codec, identic cu target ($ENCODER_NAME)$_br_str."
+            log "    Re-encode redundant — pierde calitate fără beneficiu real de compresie."
+            read -p "  Stream copy total in loc de re-encode? (D/n) [default: D]: " _smart_ch
+            if [[ "${_smart_ch,,}" != "n" ]]; then
+                log "  → Smart stream copy aplicat"
+                do_stream_copy "$file" "$output" "$MAP_FLAGS"
+                local _sc_rc=$?
+                if [ $_sc_rc -ne 0 ]; then
+                    TOTAL_ERRORS=$((TOTAL_ERRORS+1))
+                    rm -f "$output"
+                fi
+                [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
+                [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
+                TRIPLE_LAYER_MODE=0
+                continue
+            fi
+        fi
+
         LOUDNORM_FILTER=""
         [[ "$AUDIO_NORMALIZE" == "1" ]] && [[ "$AUDIO_CODEC_ARG" != "copy" ]] && \
             LOUDNORM_FILTER=$(get_loudnorm_filter "$file")
         TRF_FILE=""; _apply_vidstab "$file"
 
         PROGRESS_FILE=$(mktemp); START_TIME=$(date +%s)
+        # v38: stderr capture într-un fișier separat (în paralel cu LOG_FILE)
+        local _enc_err; _enc_err=$(mktemp)
+        # v38: label dinamic — uppercase ENCODER_NAME (ex: LIBX265, AV1, DNXHR)
+        local _enc_label; _enc_label="${ENCODER_NAME:-FFmpeg}"; _enc_label="${_enc_label^^}"
         # shellcheck disable=SC2086
         eval $FFMPEG_CMD $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
-            $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>>"$LOG_FILE"' '&'
-        FFMPEG_PID=$!; _show_progress "$FFMPEG_PID" "$PROGRESS_FILE" "$file"
+            $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>"$_enc_err"' '&'
+        FFMPEG_PID=$!; _show_progress "$FFMPEG_PID" "$PROGRESS_FILE" "$file" "$_enc_label"
         wait "$FFMPEG_PID"; FFMPEG_EXIT=$?
+        # Append stderr la LOG_FILE pentru istoric complet
+        [[ -s "$_enc_err" ]] && cat "$_enc_err" >> "$LOG_FILE"
         [[ -n "${TRF_FILE:-}" ]] && rm -f "$TRF_FILE"; TRF_FILE=""
         if [ $FFMPEG_EXIT -ne 0 ]; then
             log "  EROARE encodare (cod $FFMPEG_EXIT)"
+            # v38: arata ultimele linii stderr inline pentru diagnoza rapida
+            if [[ -s "$_enc_err" ]]; then
+                echo "  ⚠ ffmpeg exit $FFMPEG_EXIT — ultimele linii stderr:"
+                tail -10 "$_enc_err" | sed 's/^/    /'
+            fi
+            rm -f "$_enc_err"
             [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
             [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
             TRIPLE_LAYER_MODE=0
             TOTAL_ERRORS=$((TOTAL_ERRORS+1)); rm -f "$output"; continue
+        fi
+        rm -f "$_enc_err"
+
+        # ── v38: MediaCodec HDR10 signaling repair ────────────────────
+        if [[ "${MC_NEEDS_REPAIR:-0}" == "1" ]] && [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
+            MC_REPAIR_SRC="$file" repair_hdr10_signaling "$output"
+            MC_NEEDS_REPAIR=0
         fi
 
         # ── Triple-layer: injecteaza DV RPU in HEVC output ───────────

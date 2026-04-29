@@ -3,9 +3,71 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v37 | 49 bug-uri fixate | 130+ features
-  27 fisiere | ~12731 linii cod | ~1800 linii documentatie
+  TOTAL: v38 | 49 bug-uri fixate | 132+ features
+  27 fisiere | ~12852 linii cod | ~1820 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v38 — Encode flow polish (unified progress / smart copy)
+═══════════════════════════════════════════════════════════════
+
+  ADD Unified progress bar pe toate encode flows
+        bash _show_progress: parametru label opțional (default "Progres")
+        Format nou: "<LABEL>: NN% | FPS: X.X | ETA: HH:MM:SS"
+        Label dinamic în run_encode_loop = uppercase ENCODER_NAME (LIBX265, AV1, DNXHR, APV, PRORES, LIBX264)
+        PS Show-Progress: -Label parameter folosit în main encode + Invoke-StreamCopy
+        Mapping PS: HEVC / H264 / AV1-SVT / AV1-AOM / DNxHR / ProRes / APV / *-NVENC / *-QSV / *-AMF
+        Apel-uri _show_progress din encoder scripts (x265/x264/av1) actualizate cu label context
+            ("Stream copy", "DV stream copy", "HDR10+ stream copy")
+  ADD Stderr capture + tail pe error în encode flow
+        bash run_encode_loop: stderr → fișier temporar paralel cu LOG_FILE
+        Pe FFMPEG_EXIT != 0: tail -10 inline pentru diagnoză rapidă (root cause vizibil)
+        PS encode main + Invoke-StreamCopy: același pattern cu RedirectStandardError + Get-Content -Tail 10
+        Stderr appended la LOG_FILE pentru istoric complet (zero info pierdut)
+  ADD Smart stream copy detection în encode flow
+        bash run_encode_loop: după encoder_setup_file + DRY_RUN check
+            ffprobe codec_name pe input → mapping libx265=hevc / libx264=h264 / av1=av1
+            Skip dacă: VIDEO_FILTER non-empty, AUDIO_NORMALIZE=1, IS_LOG=1,
+                      HDR_PLUS detectat, DOVI detectat, TRIPLE_LAYER_MODE=1
+            Match clean → banner "⚡ SMART COPY: source este deja X" cu bitrate sursă info
+            Prompt opt-in (default Da) → cheamă do_stream_copy + cleanup HDR temp + continue
+        PS encode main: după dry-run check, înainte de Vidstab Pass 1
+            Skip dacă: vfParts populated, vfIsVidstab, vfPreset, audioNormalize,
+                      logProfile detectat, isHDRPlus, targetFps setat
+            Match clean → același banner + Invoke-StreamCopy fallback
+        Caz real: user descarcă HEVC, alege "encode HEVC CRF 22" — în loc de re-encode 4h
+                  cu pierdere calitate, primește prompt smart copy → instant + lossless
+  ADD MediaCodec HW encoder (Termux/Android, doar bash)
+        detect_mediacodec_caps în av_common.sh: platform gate (Termux + getprop) + binary
+            check (h264/hevc/av1_mediacodec) + SoC info (ro.soc.manufacturer/model + Android)
+        SoC whitelist pentru capabilități fine: Snapdragon 8xx (8 Gen 1+) HEVC10, 8 Gen 2+ AV1
+            Exynos 21xx-24xx HEVC10, Exynos 24xx+ AV1
+            Tensor G2+ HEVC10, G3+ AV1
+            Dimensity 9xxx HEVC10, 9300+ AV1
+        get_adaptive_bitrate paralel cu get_adaptive_crf — mapping kbps per codec×rezoluție
+        Always-on display în meniul HW (analog AMF): SoC verificat sau "[suport necunoscut]"
+            Prompt confirmare pe SoC necunoscut (HW_FORCE=1 bypass)
+        Dialog HDR uniformizat show_hdr_mediacodec_dialog (DV / HDR10+ / HDR10):
+            [1] SW libx265 — păstrare completă (default safe)
+            [2] SW libx265 — strip DV / drop dynamic (degraded)
+            [3] MediaCodec — HDR10 10-bit + signaling repair
+            [4] MediaCodec — SDR tonemap 8-bit (proxy)
+            [5] Skip
+        repair_hdr10_signaling: bsf hevc_metadata post-encode injectează mastering_display
+            + max_cll/max_fall extrase din sursa originală (auto-detect via ffprobe)
+            Fallback la defaults Rec.2020 1000/400 nits dacă lipsesc
+            Apelat automat în run_encode_loop dacă MC_NEEDS_REPAIR=1
+        x264 special-case: h264_mediacodec nu suportă HDR — auto-tonemap sau fallback SW
+        AV1 pre-check MC_CAP_AV1: SoC fără hardware AV1 encoder → fallback SW automat
+        Profile field MEDIACODEC_HDR_POLICY pentru bypass dialog (sw_full/sw_degraded/
+            hw_repair/hw_sdr/skip) util pe batch-uri DJI HDR
+        Pierderi reale (universale MediaCodec, nu chip-specific):
+            HDR10+ dynamic metadata (per-frame) — imposibil via API public
+            Dolby Vision native — necesită licență Dolby (libdovi privat)
+        Tot restul preserved: HDR10 static, 10-bit, AV1 SDR, signaling repair complet
+        PS1 NU este atins (MediaCodec e Android only)
+        Notă: HLG dedicated va veni în v39 (acum tratat ca HDR10 generic)
 
 
 ═══════════════════════════════════════════════════════════════

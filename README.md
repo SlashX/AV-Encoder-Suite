@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v37
+> FFmpeg Smart Adaptive Encoder with HDR/DV detection, DJI GPS extraction, batch processing and profile system — v38
 
 ---
 
@@ -10,6 +10,7 @@
 
 - **6 video encoders**: H.265/HEVC, H.264/AVC, AV1 (SVT-AV1/libaom), DNxHR, ProRes, APV
 - **Hardware encoding (Windows)**: NVENC, QSV, AMF for H.264/H.265/AV1 with GPU capability detection (RTX 40+, Intel Arc, AMD RDNA3+)
+- **Hardware encoding (Termux/Android, v38)**: MediaCodec for H.264/H.265/AV1 with SoC whitelist (Snapdragon 8xx 8 Gen 1+, Exynos 21xx-24xx, Tensor G2+, Dimensity 9xxx); HDR10 supported via signaling repair (mastering display + max_cll injected post-encode); unified HDR dialog (DV/HDR10+/HDR10) with SW fallback options per file; HDR10+ dynamic and DV native preservation are SW-only
 - **Trim & Concat pipeline** (v36/v37): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline + **batch trim** (v37: same cuts on N files), **smart stream copy**, **audio-only mode**, **chapter markers**, **preview thumbnails**, **HDR-aware** (v37: HDR10 auto + HDR10+ opt-in)
 - **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, LOG (Apple Log, D-Log M, Samsung Log)
 - **DJI support**: GPS/telemetry extraction (GPX, KML, CSV, SRT), DJI track control, metadata strip (remux)
@@ -18,6 +19,8 @@
 - **Audio normalization**: EBU R128 loudnorm (2-pass, -24 LUFS)
 - **Profile system**: save/load full encode config as `.conf` files (cross-platform KEY=VALUE)
 - **Batch processing**: resume interrupted batch, skip existing, dry-run preview, detailed summary
+- **Smart stream copy** (v38): auto-detect when source codec matches target → opt-in skip re-encode (instant, lossless, prevents quality loss)
+- **Unified progress bar** (v38): all encode flows show codec-labeled progress (HEVC/H264/AV1/DNxHR/etc.) with FPS, ETA, percent; stderr tail on error for instant diagnosis
 - **Media analysis**: `av_check` with 50-field CSV export, I/O comparison
 - **GPS import**: external GPX/FIT/KML → CSV, SRT, GPX, KML conversion
 
@@ -277,4 +280,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v37** — 49 bugs fixed | 130+ features | ~12731 lines of code
+Current: **v38** — 49 bugs fixed | 132+ features | ~12852 lines of code
