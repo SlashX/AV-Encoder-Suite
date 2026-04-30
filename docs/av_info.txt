@@ -39,8 +39,10 @@ CUPRINS
   av_encoder_audio.sh      — Re-encode doar audio (video stream copy, rapid)
   av_trimconcat.sh         — Trim & Concat pipeline (v36/v37: trim / concat / pipeline / batch trim)
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
-  av_extractor_dji.sh           — Export date GPS/telemetrie DJI (GPX, KML, CSV, SRT)
-  av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV, SRT, GPX, KML)
+  av_telemetry.sh               — Telemetrie unificata multi-brand (DJI/GoPro/Sony/Garmin/QuickTime)
+  av_telemetry.ps1              — PS1 mirror standalone al av_telemetry.sh (Windows)
+  av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV basic/full/norm, SRT, GPX, KML)
+  av_extractor_gps.ps1          — PS1 mirror standalone al av_extractor_gps.sh (Windows)
   PROFILES (src/profiles/) — Profile pre-definite pentru camere specifice
   ────────────────────────────────────────────────────────────────────────
   profiles/example_profile.conf                          — Exemplu profil .conf documentat cu toate campurile
@@ -87,9 +89,9 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
   - FFmpeg 8.1+ RECOMANDAT (suport ProRes Vulkan, HDR10+ metadata, APV decode)
     Minim necesar: ffmpeg cu libx265, libx264, libsvtav1/libaom-av1
   - ffprobe (inclus cu FFmpeg)
-  - ExifTool (optional — necesar doar pentru av_extractor_dji.sh)
+  - ExifTool (optional — necesar pentru DJI + QuickTime in av_telemetry.sh)
     Instaleaza/actualizeaza cu: ./tools/exiftool_update.sh
-  - Python3 (optional — necesar doar pentru av_extractor_gps.sh)
+  - Python3 (necesar pentru av_telemetry.sh GoPro/Sony/Garmin si av_extractor_gps.sh)
   - hdr10plus_tool (optional — necesar pentru HDR10+ metadata preserve)
     Instaleaza cu: ./tools/hdr10plus_parser.sh
 
@@ -98,9 +100,9 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
   - FFmpeg instalat si in PATH (ffmpeg.exe + ffprobe.exe)
     Download: https://www.gyan.dev/ffmpeg/builds/ (versiunea full)
   - PowerShell 5.1+ (inclus in Windows 10/11) — pentru av_encode.ps1
-  - ExifTool (optional — necesar doar pentru extractorul GPS/DJI)
+  - ExifTool (optional — necesar pentru telemetrie DJI/QuickTime)
     Download: https://exiftool.org/ (Windows Executable)
-  - Python3 (optional — necesar doar pentru import GPS extern GPX/FIT)
+  - Python3 (necesar pentru telemetrie GoPro/Sony/Garmin si import GPS extern)
     Download: https://python.org/downloads/
 
   Dependinte per script:
@@ -108,12 +110,18 @@ Nota: Scriptul Windows (ps1) este complet independent de cele bash.
     av_encoder_dnxhr/prores/apv  → ffmpeg + ffprobe
     av_encoder_audio.sh          → ffmpeg + ffprobe
     av_check.sh                  → ffprobe
-    av_extractor_dji.sh (opt 1-4)→ exiftool
-    av_extractor_dji.sh (opt 5-6)→ ffmpeg
+    av_telemetry.sh (DJI 1-4)    → exiftool
+    av_telemetry.sh (GoPro 1-4)  → python3 + ffmpeg
+    av_telemetry.sh (Sony 1-4)   → python3 + ffmpeg
+    av_telemetry.sh (Garmin 1-4) → python3 + ffmpeg
+    av_telemetry.sh (QT 1-4)     → exiftool
+    av_telemetry.sh (5-6 raw/strip) → ffmpeg
     av_extractor_gps.sh          → python3
     tools/hdr10plus_parser.sh    → cargo (Rust) pentru compilare
     tools/dovi_parser.sh         → cargo (Rust) pentru compilare
     av_encode.ps1                → ffmpeg + ffprobe (+ exiftool/python3 optional)
+    av_telemetry.ps1             → ffmpeg + ffprobe (+ exiftool DJI/QT, python3 GoPro/Sony/Garmin)
+    av_extractor_gps.ps1         → python3
     av_check.ps1                 → ffprobe
 
 
@@ -175,10 +183,10 @@ PASUL 6: Instaleaza Python3 (optional — doar pentru import GPS extern)
   Verifica instalarea:
     python3 --version
 
-  NOTA: Python3 este necesar DOAR pentru optiunea "Import GPS extern"
-  (av_extractor_gps.sh) care converteste fisiere GPX/FIT. Nu are
-  dependinte externe — foloseste doar module standard Python (xml, csv,
-  struct, math, datetime).
+  NOTA: Python3 este necesar pentru: (a) telemetrie GoPro/Sony/Garmin
+  (av_telemetry.sh) si (b) "Import GPS extern" (av_extractor_gps.sh)
+  care converteste fisiere GPX/FIT/KML. Nu are dependinte externe —
+  foloseste doar module standard Python (xml, csv, struct, math, datetime, re).
 
 PASUL 7: Copiaza scripturile si seteaza permisiuni
 ───────────────────────────────────────────────────
@@ -187,7 +195,7 @@ PASUL 7: Copiaza scripturile si seteaza permisiuni
   Seteaza permisiuni executare:
     chmod +x av_launcher.sh av_common.sh \
               av_encoder_x265.sh av_encoder_x264.sh \
-              av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_extractor_dji.sh
+              av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_telemetry.sh av_extractor_gps.sh
 
   Verifica permisiunile (rwx la inceput = executabil):
     ls -l *.sh
@@ -198,7 +206,7 @@ PASUL 8 (optional): Backup scripturi in folder Android
 
   cp av_launcher.sh av_common.sh \
      av_encoder_x265.sh av_encoder_x264.sh \
-     av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_extractor_dji.sh \
+     av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_telemetry.sh av_extractor_gps.sh \
      /storage/emulated/0/Media/Scripts/
 
   chmod +x /storage/emulated/0/Media/Scripts/*.sh
@@ -259,7 +267,7 @@ PASUL 4: Permite executia scripturilor PowerShell
   │   ├── av_encoder_audio.sh
   │   ├── av_trimconcat.sh
   │   ├── av_check.sh
-  │   ├── av_extractor_dji.sh
+  │   ├── av_telemetry.sh
   │   ├── av_extractor_gps.sh
   │   └── (photo scripts — viitor)
   ├── InputVideos/            ← surse video + fisiere GPS (.gpx, .fit)
@@ -1422,14 +1430,14 @@ PASUL 4: Permite executia scripturilor PowerShell
       1) Encode video + audio
       2) Encode doar audio (video copy)
       3) Verifica fisiere media (analiza + CSV 30 campuri)
-      4) Export date GPS/DJI din video (necesita ExifTool)
-      5) Import GPS extern — GPX/FIT (necesita python3)
+      4) Telemetrie video (DJI/GoPro/Sony/Garmin/QuickTime)
+      5) Import GPS extern — GPX/FIT/KML (necesita python3)
       6) Iesire
     Windows PS1 (6 optiuni):
       1) Encode video + audio
       2) Encode doar audio (video copy)
       3) Verifica fisiere media (analiza + CSV 30 campuri)
-      4) Export date GPS/DJI din video (necesita ExifTool)
+      4) Telemetrie video (DJI/GoPro/Sony/Garmin/QuickTime)
       5) Import GPS extern — GPX/FIT/KML (necesita Python3)
       6) Iesire
 
@@ -1437,8 +1445,72 @@ PASUL 4: Permite executia scripturilor PowerShell
     Termux:  /storage/emulated/0/Media/OutputVideos/
     Windows: subfolder "output" langa script
     CSV:     av_check_report.csv in folderul output
-    DJI:     .gpx, .csv, .srt in folderul output (dupa export DJI)
-    GPS:     _gps_basic.csv, _gps_full.csv, _gps.srt (dupa import GPX/FIT)
+    Telem:   .gpx, _basic.csv, _FULL.csv, _norm.csv, .srt (dupa telemetrie video)
+    GPS:     _gps_basic.csv, _gps_full.csv, _norm.csv, _gps.srt (dupa import GPX/FIT/KML)
+
+
+═══════════════════════════════════════════════════════════════
+10b. TELEMETRY UNIFIED (v40) — DJI/GoPro/Sony/Garmin/QuickTime
+═══════════════════════════════════════════════════════════════
+
+  CE FACE:
+    Extragere unificata telemetrie din video pentru 5 branduri majore.
+    Brand auto-detectat per fisier (codec_tag + ISO 6709 fallback).
+    Output normalizat cross-brand: <name>_norm.csv (schema 18 coloane).
+
+  BRAND DETECTION (codec_tag scan):
+    djmd | dbgi  → DJI         (ExifTool)
+    gpmd         → GoPro       (parser GPMF Python)
+    fdsc         → Garmin VIRB (parser FIT Python)
+    nmea | sony  → Sony Action (parser NMEA Python)
+    fallback     → QuickTime   (atom ISO 6709 via ExifTool, single-point)
+
+  EXCLUDED v40: Insta360, Yi/Akaso/SJCAM (decizie utilizator).
+
+  6 OPTIUNI MENIU:
+    1) Standard       — GPX + CSV basic + CSV norm
+    2) Full Data      — GPX + CSV FULL + CSV norm (toate metadatele disponibile)
+    3) Subtitrare SRT — pentru overlay in VLC
+    4) Totul          — GPX + CSV basic + CSV FULL + SRT + CSV norm
+    5) Raw streams    — exporta track-ul nativ (DJI: djmd/dbgi/tmcd/cover;
+                        GoPro: gpmd; Sony: nmea; Garmin: fdsc); QT: N/A
+    6) Strip metadata — remux fara re-encode (sterge tracks)
+                        DJI sub-dialog: 1)dbgi-only 2)djmd+dbgi 3)tot
+                        Restul: orice optiune sterge track-ul telemetry
+
+  CSV NORMALIZAT — schema 18 coloane (cross-brand):
+    timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
+    gforce_x, gforce_y, gforce_z, gyro_x, gyro_y, gyro_z,
+    temp_c, hr_bpm, cadence_rpm, power_w, source_brand
+
+    source_brand valori:
+      dji, gopro, sony, garmin, quicktime,
+      external_gpx, external_fit, external_kml
+
+  EXEMPLE:
+    Termux:  cd $HOME && ./av_telemetry.sh   (sau prin av_launcher.sh opt 4)
+    Windows: pwsh -File av_telemetry.ps1     (sau prin av_encode.ps1 opt 4)
+
+    Pune fisierele video in InputVideos/, output in OutputVideos/output/.
+
+  PARSERS DETALII:
+    GPMF (GoPro): KLV binary, FourCC + 1B type + 1B struct_size + 2B BE sample_count.
+                  Containere DEVC → STRM nested. SCAL aplicat la GPS5 (5×int32:
+                  lat/lon/alt/speed_2d/speed_3d). Filter: skip GPSF<2 (no fix).
+    FIT (Garmin): header validare ".FIT", definition+data messages.
+                  mesg_num=20 record: lat/lon semicircles → degrees (×180/2^31),
+                  alt=(raw/5)-500, speed=raw/1000. Extra: HR(3), cad(4),
+                  power(7), temp(23). Timestamp: FIT epoch=1989-12-31.
+    NMEA (Sony): $GPRMC + $GPGGA (+$GNRMC/$GNGGA multi-constellation).
+                 ddmm.mmmm → decimal grade. Knots → m/s (×0.514444).
+                 Altitudine din $GPGGA atasata la ultimul $GPRMC.
+    QuickTime:   atom com.apple.quicktime.location.ISO6709, 1 punct (start).
+                 Apple iPhone, Samsung, Pixel, OnePlus, Xiaomi (Android stock).
+
+  BURN-IN HUD: planificat v41 (3 niveluri):
+    - Extract only (v40 actual)
+    - Embed lossless (atasare track GPX/CSV ca data stream)
+    - Burn-in re-encode (overlay grafic + re-encode forced)
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1473,7 +1545,7 @@ PASUL 4: Permite executia scripturilor PowerShell
        av_encoder_av1.sh av_encoder_dnxhr.sh \
        av_encoder_apv.sh av_encoder_prores.sh \
        av_encoder_audio.sh av_check.sh \
-       av_extractor_dji.sh av_extractor_gps.sh \
+       av_telemetry.sh av_extractor_gps.sh \
        /storage/emulated/0/Media/Scripts/
     cp hdr10plus_parser.sh dovi_parser.sh \
        exiftool_update.sh \

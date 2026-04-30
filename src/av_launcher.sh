@@ -59,7 +59,7 @@ else echo "Optiune invalida. Iesi..."; exit 1; fi
 for script in av_encoder_x265.sh av_encoder_x264.sh \
               av_encoder_av1.sh av_encoder_dnxhr.sh av_encoder_apv.sh av_encoder_prores.sh \
               av_check.sh av_common.sh \
-              av_extractor_dji.sh av_encoder_audio.sh av_extractor_gps.sh; do
+              av_telemetry.sh av_encoder_audio.sh av_extractor_gps.sh; do
     if [ ! -f "$SCRIPT_DIR/$script" ]; then
         echo "Eroare: $script nu a fost gasit in $SCRIPT_DIR"; exit 1
     fi
@@ -82,15 +82,15 @@ else
 fi
 
 # ── Meniu principal — INAINTE de configurarea parametrilor ────────────
-# Daca utilizatorul alege Verifica, Extractor DJI sau Iesire, evita intrebarile inutile
+# Daca utilizatorul alege Verifica, Telemetrie sau Iesire, evita intrebarile inutile
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║  Ce vrei sa faci?                    ║"
 echo "║  1) Encodeaza video + audio          ║"
 echo "║  2) Encodeaza doar audio (video copy)║"
 echo "║  3) Verifica fisiere media           ║"
-echo "║  4) Export date GPS/DJI (din video)  ║"
-echo "║  5) Import GPS extern (GPX/FIT)     ║"
+echo "║  4) Telemetrie video (DJI/GoPro/...) ║"
+echo "║  5) Import GPS extern (GPX/FIT/KML)  ║"
 echo "║  6) Trim & Concat (taiere/unire)     ║"
 echo "║  7) Anulare / iesire                 ║"
 echo "╚══════════════════════════════════════╝"
@@ -99,7 +99,7 @@ read -p "Introdu 1-7: " main_choice
 case "$main_choice" in
     2) echo "Rulez av_encoder_audio.sh..."; ./av_encoder_audio.sh; exit $? ;;
     3) echo "Rulez av_check.sh..."; ./av_check.sh; exit $? ;;
-    4) echo "Rulez av_extractor_dji.sh..."; ./av_extractor_dji.sh; exit $? ;;
+    4) echo "Rulez av_telemetry.sh..."; ./av_telemetry.sh; exit $? ;;
     5) echo "Rulez av_extractor_gps.sh..."; ./av_extractor_gps.sh; exit $? ;;
     6) echo "Rulez av_trimconcat.sh..."; ./av_trimconcat.sh; exit $? ;;
     7) echo "Anulat."; exit 0 ;;

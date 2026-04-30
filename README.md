@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, DJI GPS extraction, batch processing and profile system — v39
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing and profile system — v40
 
 ---
 
@@ -14,7 +14,7 @@
 - **Trim & Concat pipeline** (v36/v37): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline + **batch trim** (v37: same cuts on N files), **smart stream copy**, **audio-only mode**, **chapter markers**, **preview thumbnails**, **HDR-aware** (v37: HDR10 auto + HDR10+ opt-in)
 - **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, **HLG (BT.2100 HLG, v39)**, LOG (Apple Log, D-Log M, Samsung Log)
 - **HLG end-to-end (v39)**: native HLG signaling preserved across SW (libx265/x264/AV1), HW Windows (NVENC/QSV/AMF), and MediaCodec (Termux); dialog with HLG nativ / HLG→HDR10 / HLG→SDR / Stream copy / Skip; LOG → HLG via dedicated LUT category (`Luts/hlg_<brand>_*.cube`)
-- **DJI support**: GPS/telemetry extraction (GPX, KML, CSV, SRT), DJI track control, metadata strip (remux)
+- **Telemetry Unified (v40)**: multi-brand telemetry extraction (DJI / GoPro GPMF / Sony NMEA / Garmin VIRB FIT / QuickTime ISO 6709) with auto brand detection and **normalized cross-brand CSV** (18-column schema: timestamp, lat/lon, alt_m, speed_mps/kmh, heading, gforce/gyro, temp, hr, cadence, power, source_brand)
 - **Audio encoding**: AAC, AC3, E-AC3 (Dolby Digital Plus), DTS, TrueHD, FLAC, PCM, Opus
 - **Video filters**: 4K upscale (Lanczos), vidstab 2-pass stabilization, denoise, deinterlace, crop, resize, FPS conversion
 - **Audio normalization**: EBU R128 loudnorm (2-pass, -24 LUFS)
@@ -53,9 +53,11 @@ AV-Encoder-Suite/
 │   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36: trim / concat / full pipeline)
 │   ├── av_check.sh             # Media analysis + CSV export (Termux)
 │   ├── av_check.ps1            # Media analysis + CSV export (Windows)
-│   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
-│   ├── av_extractor_dji.sh     # DJI GPS/telemetry extractor (Termux)
-│   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML (Termux)
+│   ├── av_encode.ps1           # All-in-one PowerShell script (Windows; encode + Trim/Concat)
+│   ├── av_telemetry.sh         # Unified telemetry extractor (DJI/GoPro/Sony/Garmin/QuickTime)
+│   ├── av_telemetry.ps1        # PS1 mirror standalone (v40)
+│   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML
+│   ├── av_extractor_gps.ps1    # PS1 mirror standalone (v40)
 │   ├── profiles/
 │   │   ├── example_profile.conf    # Documented profile example (all fields)
 │   │   └── dji_action6/        # DJI Osmo Action 6 preset profiles
@@ -89,22 +91,22 @@ AV-Encoder-Suite/
 - [Termux:API](https://f-droid.org/en/packages/com.termux.api/) — for wake-lock and notifications
 - **FFmpeg 8.1+** recommended (APV decode, ProRes Vulkan, HDR10+ metadata)
 - **ffprobe** (included with FFmpeg)
-- ExifTool *(optional — required only for DJI GPS extraction)*
-- Python3 *(optional — required only for external GPS import)*
+- ExifTool *(required for DJI + QuickTime telemetry; optional otherwise)*
+- Python3 *(required for GoPro/Sony/Garmin telemetry and external GPS import)*
 
 ```bash
 pkg update && pkg upgrade -y
 pkg install ffmpeg termux-api -y
-pkg install exiftool -y   # optional
-pkg install python -y     # optional
+pkg install exiftool -y   # for DJI/QuickTime telemetry
+pkg install python -y     # for GoPro/Sony/Garmin/external GPS
 ```
 
 ### Windows
 
 - **FFmpeg** installed and in PATH — download from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (full build)
 - **PowerShell 5.1+** (included in Windows 10/11)
-- ExifTool *(optional — download from [exiftool.org](https://exiftool.org/))*
-- Python3 *(optional — download from [python.org](https://www.python.org/downloads/))*
+- ExifTool *(required for DJI + QuickTime telemetry — download from [exiftool.org](https://exiftool.org/))*
+- Python3 *(required for GoPro/Sony/Garmin telemetry and external GPS — download from [python.org](https://www.python.org/downloads/))*
 
 ---
 
@@ -140,8 +142,8 @@ cd src
 1. Encode video + audio
 2. Encode audio only (video stream copy)
 3. Analyze media files (analysis + CSV export)
-4. Export DJI GPS/telemetry data
-5. Import external GPS — GPX/FIT
+4. Telemetry video *(v40 — DJI / GoPro / Sony / Garmin / QuickTime)*
+5. Import external GPS — GPX/FIT/KML
 6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
 7. Exit
 
@@ -149,7 +151,7 @@ cd src
 1. Encode video + audio
 2. Encode audio only (video stream copy)
 3. Analyze media files (analysis + CSV 30 fields)
-4. Export DJI GPS data *(requires ExifTool)*
+4. Telemetry video *(v40 — DJI / GoPro / Sony / Garmin / QuickTime)*
 5. Import external GPS — GPX/FIT/KML *(requires Python3)*
 6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
 7. Exit
@@ -193,6 +195,16 @@ cd src
 - **Vidstab 2-pass** — `vidstabdetect` (shakiness=5, accuracy=15) + `vidstabtransform` (smoothing=10)
 - Denoise, deinterlace, crop, resize, FPS conversion, HDR→SDR tonemap
 
+### Telemetry Unified (v40)
+- **Auto brand detection** per file (codec_tag scan + ISO 6709 fallback): DJI, GoPro, Sony, Garmin VIRB, QuickTime (Apple/Samsung/Pixel/OnePlus/Xiaomi)
+- **GPMF parser** (GoPro) — KLV binary, DEVC→STRM nested, GPS5 5×int32 with SCAL factors, GPSU/GPSF/GPSP/TMPC; filters no-fix points
+- **NMEA 0183 parser** (Sony) — `$GPRMC` + `$GPGGA` (+ `$GNRMC`/`$GNGGA`), ddmm.mmmm → decimal, knots → m/s
+- **FIT parser** (Garmin VIRB) — semicircles → degrees, altitude (raw/5)−500, speed raw/1000, plus HR/cadence/power/temp
+- **QuickTime ISO 6709** — single-point GPS via ExifTool atom (`com.apple.quicktime.location.ISO6709`)
+- **Normalized cross-brand CSV** (`<name>_norm.csv`, 18 columns): timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg, gforce_x/y/z, gyro_x/y/z, temp_c, hr_bpm, cadence_rpm, power_w, source_brand
+- **6 menu options**: Standard / Full / SRT / All / Raw streams / Strip metadata (DJI sub-dialog: dbgi-only / djmd+dbgi / total)
+- **Excluded v40**: Insta360, Yi/Akaso/SJCAM. **Burn-in HUD** planned for v41 (Extract / Embed lossless / Burn-in re-encode)
+
 ### Trim & Concat (v36/v37)
 - **Trim** — cut a single file with stream copy (instant, ±1-2s keyframe accuracy) or re-encode (frame-accurate); multi-cut loop per file
 - **Concat** — concatenate multiple files; auto compat check (codec/resolution/fps/pix_fmt) picks demuxer (stream copy, lossless) or filter (re-encode); sort by name/date/size/manual
@@ -212,10 +224,10 @@ cd src
 
 ## Output Locations
 
-| Platform | Video output | CSV report | DJI export |
-|----------|-------------|------------|------------|
-| Termux | `/storage/emulated/0/Media/OutputVideos/` | `av_check_report.csv` | `.gpx / .csv / .srt` |
-| Windows | `output\` subfolder next to script | `av_check_report.csv` | `.gpx / .csv / .srt` |
+| Platform | Video output | CSV report | Telemetry export |
+|----------|-------------|------------|------------------|
+| Termux | `/storage/emulated/0/Media/OutputVideos/` | `av_check_report.csv` | `.gpx / _basic.csv / _FULL.csv / _norm.csv / .srt` |
+| Windows | `output\` subfolder next to script | `av_check_report.csv` | `.gpx / _basic.csv / _FULL.csv / _norm.csv / .srt` |
 
 ---
 
@@ -282,4 +294,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v39** — 49 bugs fixed | 138+ features | ~13472 lines of code
+Current: **v40** — 49 bugs fixed | 145+ features | ~15700 lines of code

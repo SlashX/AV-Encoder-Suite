@@ -3,9 +3,77 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v39 | 49 bug-uri fixate | 138+ features
-  27 fisiere | ~13472 linii cod | ~3354 linii documentatie
+  TOTAL: v40 | 49 bug-uri fixate | 145+ features
+  29 fisiere | ~15700 linii cod | ~3494 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v40 — Telemetry Unified (DJI + GoPro + Sony + Garmin + QuickTime)
+═══════════════════════════════════════════════════════════════
+
+  BREAKING Rename av_extractor_dji.sh → av_telemetry.sh
+        Vechiul script DJI-only devine extractor unificat multi-brand
+        Logica DJI existenta pastrata identic; brand detection automat per fisier
+        Meniu PS1 av_encode.ps1: "DJI extractor" → "Telemetrie video"
+  ADD Brand auto-detection (av_telemetry.sh / av_telemetry.ps1)
+        detect_brand() / Get-TelemetryBrand: scan codec_tag prin ffprobe
+            djmd|dbgi → DJI (exiftool)
+            gpmd      → GoPro (parser GPMF Python)
+            fdsc      → Garmin VIRB (parser FIT Python)
+            nmea|sony → Sony Action Cam (parser NMEA Python)
+            fallback ISO 6709 (exiftool -GPSLatitude) → QuickTime
+        Pre-scan fisiere la start cu counter per brand in banner UI
+  ADD GoPro GPMF parser (Python embedded, bash + PS1)
+        KLV (Key-Length-Value) parser custom: FourCC + 1B type + 1B struct_size
+            + 2B big-endian sample_count, padded to 4 bytes
+        Containere nested DEVC → STRM cu state inheritance (SCAL/GPSU/GPSF/GPSP/TMPC)
+        GPS5 records: 5×int32 (lat/lon/alt/speed_2d/speed_3d) cu scale factors
+        Filtre: skip GPSF<2 (no fix), skip lat=lon≈0 (zero coords)
+        Date timestamp GPSU (YYMMDDHHmmss.sss → ISO8601), DOP, temperatura
+  ADD Sony Action Cam NMEA parser (Python embedded)
+        $GPRMC + $GPGGA + $GNRMC + $GNGGA (multi-constellation)
+        Conversie ddmm.mmmm → grade decimale (deg + minutes/60)
+        Hemispheres N/S/E/W cu inversiune semn
+        Speed knots → m/s (× 0.514444), heading deg, timestamp from date+time
+        Altitudine din $GPGGA atasata la ultimul $GPRMC
+  ADD Garmin VIRB FIT parser (Python embedded)
+        Parser binary minimal: header validare ".FIT", definition+data messages
+        mesg_num=20 (record): lat/lon semicircles → degrees (× 180/2^31)
+        Altitudine (raw/5)-500, speed (raw/1000), timestamp (FIT epoch=1989-12-31)
+        Extra fields: HR (3), cadence (4), power (7), temperature (23)
+  ADD QuickTime ISO 6709 single-point GPS (Apple/Samsung/Pixel/OnePlus/Xiaomi)
+        Atom com.apple.quicktime.location.ISO6709 via exiftool standard tags
+        Output: 1 punct (start) — GPX wpt + CSV basic 1 rand + SRT 1 entry
+        Optiuni 5/6 (raw/strip): nu se aplica (info-only)
+  ADD CSV normalizat unificat — schema 18 coloane cross-brand
+        Coloane: timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
+            gforce_x/y/z, gyro_x/y/z, temp_c, hr_bpm, cadence_rpm, power_w, source_brand
+        source_brand valori: dji, gopro, sony, garmin, quicktime,
+            external_gpx, external_fit, external_kml
+        Output: <name>_norm.csv paralel cu basic/full la choice 1/2/4
+        Toate brandurile + GPS extern emit norm CSV (DRY format unificat)
+        DJI: post-procesare CSV exiftool prin Python inline (utf-8-sig pe Windows)
+        QuickTime: 1 rand inline (no Python needed pentru single-point)
+        GoPro/Sony/Garmin/extern: write_csv_normalized in dispatcher Python
+  ADD av_extractor_gps.ps1 — PS1 mirror standalone
+        Refactor din av_encode.ps1 (lines 2383-2620 extrase) — 244 linii
+        GPX/FIT/KML import + conversie + CSV normalizat (paralel cu av_extractor_gps.sh)
+  ADD av_telemetry.ps1 — PS1 mirror standalone (732+ linii)
+        Refactor din av_encode.ps1 (lines 2622-2841 extrase + extindere multi-brand)
+        Mirror complet: brand detection, parser Python embedded, helper-i Invoke-*
+        Soft Python detection pentru DJI norm CSV (skip cu INFO daca lipseste)
+  UPDATE av_encode.ps1 slimmed (~5274 → ~4864 linii)
+        Telemetria + GPS extern delegata catre scripturile standalone
+        Wrapper subtire pentru meniul "4-Telemetrie video"
+  UPDATE av_launcher.sh referinta script
+        Lista helpers: av_extractor_dji.sh → av_telemetry.sh
+        Meniu text: "Telemetrie video (DJI/GoPro/Sony/Garmin/QT)"
+
+  EXCLUDED v40 (decizie utilizator):
+        - Insta360 (formate proprietare complexe)
+        - Yi Action Cam / Akaso / SJCAM
+        - Burn-in HUD overlay → planificat v41 (Extract / Embed lossless / Burn-in re-encode)
 
 
 ═══════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ══════════════════════════════════════════════════════════════════════
-# av_extractor_gps.sh — Import GPS extern (GPX/FIT → CSV/SRT)
-# Converteste fisiere GPX si FIT de la orice dispozitiv GPS
+# av_extractor_gps.sh — Import GPS extern (GPX/FIT/KML → CSV/SRT/Norm)
+# Converteste fisiere GPX, FIT si KML de la orice dispozitiv GPS
 # (Garmin, Huawei, Apple Watch, Strava, Komoot, etc.)
 # Necesita: python3 (pkg install python)
 # ══════════════════════════════════════════════════════════════════════
@@ -223,6 +223,33 @@ if choice in ('3', '4'):
             f.write(f"GPS: {p['lat']}, {p['lon']}\n")
             f.write(f"\n")
     print(f"  [OK] SRT: {name}_gps.srt ({len(points)} entries)")
+
+# CSV Normalizat (schema unificata, choice 1, 2, 4)
+if choice in ('1', '2', '4'):
+    NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
+            'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
+            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+    csv_path = os.path.join(output_dir, f"{name}_norm.csv")
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f); w.writerow(NORM)
+        for p in points:
+            sp = p.get('speed','')
+            try: skmh = f"{float(sp)*3.6:.2f}" if sp else ''
+            except: skmh = ''
+            row = {c:'' for c in NORM}
+            row['timestamp']    = p.get('time','')
+            row['lat']          = p.get('lat','')
+            row['lon']          = p.get('lon','')
+            row['alt_m']        = p.get('alt','')
+            row['speed_mps']    = sp
+            row['speed_kmh']    = skmh
+            row['temp_c']       = p.get('temp','')
+            row['hr_bpm']       = p.get('hr','')
+            row['cadence_rpm']  = p.get('cad','')
+            row['power_w']      = p.get('power','')
+            row['source_brand'] = 'external_gpx'
+            w.writerow([row[c] for c in NORM])
+    print(f"  [OK] CSV Norm: {name}_norm.csv ({len(points)} puncte)")
 
 # KML (choice 5 — GPX → KML conversion)
 if choice in ('5',):
@@ -475,6 +502,33 @@ if choice in ('3', '4'):
             f.write(f"\n")
     print(f"  [OK] SRT: {name}_gps.srt ({len(points)} entries)")
 
+# CSV Normalizat (schema unificata, choice 1, 2, 4)
+if choice in ('1', '2', '4'):
+    NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
+            'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
+            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+    csv_path = os.path.join(output_dir, f"{name}_norm.csv")
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f); w.writerow(NORM)
+        for p in points:
+            sp = p.get('speed','')
+            try: skmh = f"{float(sp)*3.6:.2f}" if sp else ''
+            except: skmh = ''
+            row = {c:'' for c in NORM}
+            row['timestamp']    = p.get('time','')
+            row['lat']          = p.get('lat','')
+            row['lon']          = p.get('lon','')
+            row['alt_m']        = p.get('alt','')
+            row['speed_mps']    = sp
+            row['speed_kmh']    = skmh
+            row['temp_c']       = p.get('temp','')
+            row['hr_bpm']       = p.get('hr','')
+            row['cadence_rpm']  = p.get('cad','')
+            row['power_w']      = p.get('power','')
+            row['source_brand'] = 'external_fit'
+            w.writerow([row[c] for c in NORM])
+    print(f"  [OK] CSV Norm: {name}_norm.csv ({len(points)} puncte)")
+
 # KML (choice 5 — FIT → KML conversion)
 if choice in ('5',):
     kml_path = os.path.join(output_dir, f"{name}.kml")
@@ -595,6 +649,29 @@ if choice in ('3', '4'):
             f.write(f"Alt: {p.get('alt', 'N/A')}m\n")
             f.write(f"GPS: {p['lat']}, {p['lon']}\n\n")
     print(f"  [OK] SRT: {name}_gps.srt ({len(points)} entries)")
+
+# CSV Normalizat (schema unificata, choice 1, 2, 4)
+if choice in ('1', '2', '4'):
+    NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
+            'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
+            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+    csv_path = os.path.join(output_dir, f"{name}_norm.csv")
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f); w.writerow(NORM)
+        for p in points:
+            sp = p.get('speed','')
+            try: skmh = f"{float(sp)*3.6:.2f}" if sp else ''
+            except: skmh = ''
+            row = {c:'' for c in NORM}
+            row['timestamp']    = p.get('time','')
+            row['lat']          = p.get('lat','')
+            row['lon']          = p.get('lon','')
+            row['alt_m']        = p.get('alt','')
+            row['speed_mps']    = sp
+            row['speed_kmh']    = skmh
+            row['source_brand'] = 'external_kml'
+            w.writerow([row[c] for c in NORM])
+    print(f"  [OK] CSV Norm: {name}_norm.csv ({len(points)} puncte)")
 
 # GPX output (choice 5 — KML → GPX conversion)
 if choice in ('5',):
