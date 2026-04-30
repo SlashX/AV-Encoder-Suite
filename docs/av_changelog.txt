@@ -3,9 +3,99 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v40 | 49 bug-uri fixate | 145+ features
-  29 fisiere | ~15700 linii cod | ~3494 linii documentatie
+  TOTAL: v41 | 49 bug-uri fixate | 150+ features
+  29 fisiere | ~15500 linii cod | ~3650 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v41 — Cross-platform bash (Linux + macOS support)
+═══════════════════════════════════════════════════════════════
+
+  BREAKING Shebang #!/data/data/com.termux/files/usr/bin/bash → #!/usr/bin/env bash
+        Toate cele 15 scripturi .sh (src + tools) actualizate pentru portabilitate
+        Pe Termux comportamentul e identic; pe Linux/macOS folosesc bash-ul din PATH
+  ADD Platform detection layer (av_common.sh)
+        detect_platform() — Termux (/data/data/com.termux + TERMUX_VERSION),
+            macOS (uname=Darwin + sw_vers), Linux (uname=Linux + /etc/os-release)
+        Variabile globale: AV_PLATFORM (termux|linux|macos), AV_IS_TERMUX (0|1),
+            AV_OS_LABEL (string user-friendly cu versiune)
+        Banner OS la startup launcher (av_print_os_banner) cu OS + bash + thread count
+  ADD Path resolution platform-aware (av_common.sh)
+        Termux: pastreaza /storage/emulated/0/Media/{InputVideos,OutputVideos,Luts,
+            Scripts/tools,Scripts/profiles,UserProfiles,Temp} (zero schimbari)
+        Linux/macOS: foldere create langa scripturi via $SCRIPT_DIR
+            ($SCRIPT_DIR/InputVideos, $SCRIPT_DIR/OutputVideos, etc.)
+        SCRIPT_DIR auto-resolvat din BASH_SOURCE pe Linux/macOS — fara prompt
+        Pe Termux pastram istoric prompt-ul "1) Termux ($HOME) 2) Folder Android"
+  ADD Cross-platform wrappers GNU vs BSD (av_common.sh)
+        av_nproc — nproc / sysctl -n hw.ncpu / getconf _NPROCESSORS_ONLN fallback
+        av_stat_mtime — stat -c %Y (Linux) vs stat -f %m (BSD/macOS)
+        av_stat_size  — stat -c %s vs stat -f %z
+        av_sed_inplace — sed -i -e (GNU) vs sed -i '' -e (BSD)
+        av_readlink_f — readlink -f / greadlink -f / Python fallback (macOS)
+        av_mktemp_dir — mktemp -d -t cu sufix portabil
+        av_mktemp_ext <ext> — mktemp + extensie (GNU --suffix vs BSD mv fallback)
+        av_grep_perl  — grep -P / ggrep -P / fallback grep -E
+        av_date_to_epoch — date -d (GNU) vs date -j -f formats (BSD)
+        av_du_mb — du -sm portabil
+        av_df_kb — df -Pk POSIX format + 1K blocks (corecteaza calculul GB pe macOS BSD)
+  ADD Wake-lock / notify / open path wrappers cross-platform
+        av_wake_lock / av_wake_unlock:
+            Termux: termux-wake-lock / termux-wake-unlock
+            macOS:  caffeinate -dimsu (background, AV_WAKE_PID tracking)
+            Linux:  no-op (best effort, fara comanda activa de wrapped)
+        av_notify_done <title> <msg>:
+            Termux: termux-notification --title --content
+            Linux:  notify-send (libnotify)
+            macOS:  osascript display notification
+        av_open_path <path>:
+            Termux: termux-open
+            Linux:  xdg-open
+            macOS:  open
+  ADD Bash 4+ check la startup (av_common.sh)
+        Refuza bash 3.x (macOS default) cu hint per platforma:
+            Darwin → "brew install bash"
+            Linux  → "instaleaza bash din package manager (apt/dnf/pacman)"
+        Mesaj direct la stderr; exit 1 — protejeaza features bash 4+ (associative
+            arrays, ${var^^}, ${var,,} etc.) folosite intens in scripturi
+  ADD Package manager hints adaptive (av_pkg_install_hint)
+        Termux: pkg install <pkg>
+        macOS:  brew install <pkg>
+        Linux:  detectie automata apt/dnf/pacman/zypper si sugestie cu sudo
+        Folosit in mesaje "ffmpeg lipseste" / "python3 lipseste" etc.
+  UPDATE Encoderele 6 (x265/x264/av1/dnxhr/prores/apv) — restructurare init
+        Eliminat hardcoded INPUT_DIR/OUTPUT_DIR si THREADS=$(nproc) din
+            sectiunea pre-source (incompatibil cu macOS BSD si paths Linux)
+        source av_common.sh inainte de THREADS=$(av_nproc) si mkdir -p
+        Beneficiu: paths cross-platform corecte, nproc inlocuit cu wrapper
+  UPDATE av_check.sh, av_encoder_audio.sh, av_telemetry.sh, av_extractor_gps.sh
+        Source av_common.sh la inceput (anterior erau standalone hardcoded)
+        Comentariu "standalone" ramane pentru get_dv_profile copy intentionata
+        Mesaje pkg install adaptate via av_pkg_install_hint
+  UPDATE av_launcher.sh — auto SCRIPT_DIR + skip prompt Termux/Android pe non-Termux
+        Pe Linux/macOS: SCRIPT_DIR rezolvat din BASH_SOURCE, sare peste prompt
+        Pe Termux: prompt "1) Termux ($HOME) 2) Folder Android" pastrat identic
+        ffmpeg version detection: av_grep_perl cu fallback sed -nE pentru BSD
+  UPDATE tools/hdr10plus_parser.sh + tools/dovi_parser.sh
+        Pe Linux/macOS afiseaza hint "brew install" / "cargo install" si exit 0
+        Pe Termux comportamentul build-from-source ramane identic
+  FIX MediaCodec menu silent skip pe Linux/macOS
+        detect_mediacodec_caps() avea deja gate pe getprop (Android-only)
+        Pe non-Termux: MC_AVAILABLE stays 0, intregul block menu MediaCodec sarit
+        Zero schimbari necesare — comportamentul natural e corect
+  FIX mktemp --suffix= pe macOS (BSD mktemp NU suporta --suffix)
+        9 ocurente in av_common.sh + av_telemetry.sh inlocuite cu av_mktemp_ext
+        Wrapper foloseste mktemp + mv pe macOS, mktemp --suffix native pe GNU
+  FIX df calcul incorect pe macOS BSD (block size default 512B in loc de 1K)
+        av_launcher.sh: df → av_df_kb (df -Pk forteaza POSIX + 1K blocks)
+        Calculul $4/1024/1024 → GB acum corect pe toate platformele
+  FIX av_telemetry.sh — mesaje "pkg install" hardcoded → av_pkg_install_hint
+        exiftool / python3 / ffmpeg sugestii adaptate per platforma
+  FIX VIDEO_TS prompt example platform-aware (Termux: /storage/...; macOS: ~/Movies; Linux: ~/Videos)
+  FIX tools/exiftool_update.sh — adaugat platform guard ca la dovi/hdr10plus_parser
+        Termux: comportament identic (pkg vs build manual din sursa)
+        Linux/macOS: hint apt/dnf/pacman/brew si exit 0
 
 
 ═══════════════════════════════════════════════════════════════

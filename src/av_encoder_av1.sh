@@ -1,14 +1,10 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_av1.sh — Encoder AV1 (libsvtav1 / libaom-av1)
 # v26: Doar logica specifica — loop-ul e in av_common.sh
 # ══════════════════════════════════════════════════════════════════════
 
-THREADS=$(nproc)
 ENCODER_TYPE="av1"
-
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 
 AUDIO_CODEC_ARG="${1:-aac:192k}"
 CUSTOM_CRF="$2"; PRESET_CHOICE="$3"; TUNE_OPT="$4"; EXTRA_AV1="$5"
@@ -17,11 +13,11 @@ AV1_ENCODER="${10:-libsvtav1}"; CONTAINER="${11:-mkv}"; SCALE_WIDTH="${12}"
 TARGET_FPS="${13}"; FPS_METHOD="${14}"; VIDEO_FILTER_PRESET="${15}"
 AUDIO_NORMALIZE="${16:-0}"
 
-LOG_FILE="$OUTPUT_DIR/av_encode_log_av1.txt"
-mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
+THREADS=$(av_nproc)
+LOG_FILE="$OUTPUT_DIR/av_encode_log_av1.txt"
+mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 setup_trap
 
 # ── Runtime check: AV1 encoder disponibil? ────────────────────────────
@@ -194,7 +190,7 @@ encoder_setup_file() {
             sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "Stream copy"; wait "$sc_pid"
             local sc_rc=$?; PROGRESS_FILE=""
             if [ $sc_rc -eq 0 ]; then
-                NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+                NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
                 SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
                 TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
                 ENCODE_TIME=$(( $(date +%s) - START_TIME )); TOTAL_DONE=$((TOTAL_DONE+1))

@@ -1,8 +1,8 @@
 # AV Encoder Suite
 
-**Cross-platform video encoding suite (bash/PS1) for Termux (Android) and Windows**
+**Cross-platform video encoding suite (bash/PS1) for Termux (Android), Linux, macOS and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing and profile system — v40
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing and profile system — v41
 
 ---
 
@@ -32,7 +32,11 @@
 | Platform | Scripts | Requirements |
 |----------|---------|--------------|
 | **Termux (Android)** | `.sh` (bash) | FFmpeg 8.1+, ffprobe, Termux:API |
+| **Linux** (v41) | `.sh` (bash 4+) | FFmpeg 8.1+, python3, exiftool; optional: `notify-send` (libnotify), `xdg-open` |
+| **macOS** (v41) | `.sh` (bash 4+) | `brew install bash ffmpeg python3 exiftool` (default macOS bash 3.2 NOT supported); optional: `coreutils`, `hdr10plus_tool`, `dovi_tool` |
 | **Windows** | `.ps1` (PowerShell) | FFmpeg in PATH, PowerShell 5.1+ |
+
+**v41 cross-platform bash**: paths are auto-detected — Termux keeps `/storage/emulated/0/Media/...`; Linux/macOS create folders next to scripts (`$SCRIPT_DIR/InputVideos`, etc.). Wrappers in `av_common.sh` abstract GNU vs BSD coreutils differences (stat, sed, nproc, readlink, grep -P, date), wake-lock (caffeinate on macOS), and notifications (notify-send / osascript).
 
 ---
 
@@ -203,7 +207,19 @@ cd src
 - **QuickTime ISO 6709** — single-point GPS via ExifTool atom (`com.apple.quicktime.location.ISO6709`)
 - **Normalized cross-brand CSV** (`<name>_norm.csv`, 18 columns): timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg, gforce_x/y/z, gyro_x/y/z, temp_c, hr_bpm, cadence_rpm, power_w, source_brand
 - **6 menu options**: Standard / Full / SRT / All / Raw streams / Strip metadata (DJI sub-dialog: dbgi-only / djmd+dbgi / total)
-- **Excluded v40**: Insta360, Yi/Akaso/SJCAM. **Burn-in HUD** planned for v41 (Extract / Embed lossless / Burn-in re-encode)
+- **Excluded v40**: Insta360, Yi/Akaso/SJCAM. **Burn-in HUD** and **Embed lossless telemetry** planned for later versions.
+
+### Cross-platform bash (v41)
+
+- Single `av_launcher.sh` runs on Termux, Linux and macOS — `detect_platform()` in `av_common.sh` auto-detects platform via `uname -s` + Termux markers (`/data/data/com.termux`, `$TERMUX_VERSION`).
+- **Path resolution**: Termux keeps `/storage/emulated/0/Media/...` (zero changes); Linux/macOS use `$SCRIPT_DIR/InputVideos`, `$SCRIPT_DIR/OutputVideos`, etc. (folders next to scripts, mirroring the PS1 layout).
+- **Wrappers** abstract GNU vs BSD coreutils: `av_nproc`, `av_stat_mtime`, `av_stat_size`, `av_sed_inplace`, `av_readlink_f`, `av_grep_perl`, `av_date_to_epoch`.
+- **Wake-lock cross-platform**: `av_wake_lock` / `av_wake_unlock` (Termux: `termux-wake-lock`; macOS: `caffeinate -dimsu` background; Linux: no-op best effort).
+- **Notifications**: `av_notify_done` (Termux: `termux-notification`; Linux: `notify-send`; macOS: `osascript display notification`).
+- **Open output folder**: `av_open_path` (Termux: `termux-open`; Linux: `xdg-open`; macOS: `open`).
+- **Bash 4+ enforced** at startup with platform-specific install hint (macOS default 3.2 refused; `brew install bash` required).
+- **MediaCodec** (Termux Android only) auto-skipped on Linux/macOS — silent fallback to SW encode.
+- **HDR10+/DV tools**: `tools/hdr10plus_parser.sh` and `tools/dovi_parser.sh` build from source on Termux; on macOS hint to `brew install hdr10plus_tool` / `brew install dovi_tool`; on Linux hint to `cargo install`.
 
 ### Trim & Concat (v36/v37)
 - **Trim** — cut a single file with stream copy (instant, ±1-2s keyframe accuracy) or re-encode (frame-accurate); multi-cut loop per file
@@ -294,4 +310,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v40** — 49 bugs fixed | 145+ features | ~15700 lines of code
+Current: **v41** — 49 bugs fixed | 150+ features | ~15500 lines of code

@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_trimconcat.sh — Trim & Concat Pipeline (v36+)
 #

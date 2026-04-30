@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_prores.sh — Encoder Apple ProRes (prores_ks)
 # Codec profesional intra-frame, standard Apple/Final Cut Pro.
@@ -6,22 +6,18 @@
 # v30: Doar logica specifica — loop-ul e in av_common.sh
 # ══════════════════════════════════════════════════════════════════════
 
-THREADS=$(nproc)
 ENCODER_TYPE="prores"
-
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 
 AUDIO_CODEC_ARG="${1:-aac:192k}"
 PRORES_PROFILE="${2:-hq}"; CONTAINER="${3:-mov}"; SCALE_WIDTH="${4}"
 TARGET_FPS="${5}"; FPS_METHOD="${6}"; VIDEO_FILTER_PRESET="${7}"
 AUDIO_NORMALIZE="${8:-0}"
 
-LOG_FILE="$OUTPUT_DIR/av_encode_log_prores.txt"
-mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
+THREADS=$(av_nproc)
+LOG_FILE="$OUTPUT_DIR/av_encode_log_prores.txt"
+mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 setup_trap
 
 # ── Runtime check: prores_ks encoder disponibil? ──────────────────────

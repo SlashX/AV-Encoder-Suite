@@ -1,25 +1,21 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_dnxhr.sh — Encoder DNxHR/DNxHD (Avid, codec video mezzanine)
 # v26: Doar logica specifica — loop-ul e in av_common.sh
 # ══════════════════════════════════════════════════════════════════════
 
-THREADS=$(nproc)
 ENCODER_TYPE="dnxhr"
-
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 
 AUDIO_CODEC_ARG="${1:-aac:192k}"
 DNXHR_PROFILE="${2:-sq}"; CONTAINER="${3:-mov}"; SCALE_WIDTH="${4}"
 TARGET_FPS="${5}"; FPS_METHOD="${6}"; VIDEO_FILTER_PRESET="${7}"
 AUDIO_NORMALIZE="${8:-0}"
 
-LOG_FILE="$OUTPUT_DIR/av_encode_log_dnxhr.txt"
-mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
+THREADS=$(av_nproc)
+LOG_FILE="$OUTPUT_DIR/av_encode_log_dnxhr.txt"
+mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 setup_trap
 
 # ── Runtime check: dnxhd encoder disponibil? ──────────────────────────

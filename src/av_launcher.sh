@@ -1,22 +1,42 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_launcher.sh — Meniu interactiv pentru selectia encoderului si parametrilor
+#
+# v41: Cross-platform (Termux / Linux / macOS).
+# Pe Termux: prompt interactiv "Termux home vs folder Android".
+# Pe Linux/macOS: SCRIPT_DIR auto-detectat via BASH_SOURCE; foldere langa scripturi.
 # ══════════════════════════════════════════════════════════════════════
 
+# Self-resolve SCRIPT_DIR (folosit pentru source av_common.sh chiar de la inceput).
+LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Sourceaza av_common.sh devreme — aduce detect_platform, wrappere si paths default.
+if [ -f "$LAUNCHER_DIR/av_common.sh" ]; then
+    SCRIPT_DIR="$LAUNCHER_DIR"
+    # shellcheck disable=SC1091
+    source "$LAUNCHER_DIR/av_common.sh"
+else
+    echo "Eroare: av_common.sh nu a fost gasit langa launcher ($LAUNCHER_DIR)" >&2
+    exit 1
+fi
+
+# Pe Termux pastram prompt-ul istoric; pe Linux/macOS sarim direct in launcher.
 TERMUX_DIR="$HOME"
 ANDROID_DIR="/storage/emulated/0/Media/Scripts"
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
-LUTS_DIR="/storage/emulated/0/Media/Luts"
-TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
-PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
-USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
-# v36: Folder temporar (Trim & Concat) — creat lazy la prima folosire
-AV_TEMP_DIR="/storage/emulated/0/Media/Temp"
+
+# Hint VIDEO_TS prompt (DVD import) — platform-aware
+if [[ "$AV_PLATFORM" == "termux" ]]; then
+    VTS_HINT="/storage/emulated/0/DVD/VIDEO_TS"
+elif [[ "$AV_PLATFORM" == "macos" ]]; then
+    VTS_HINT="$HOME/Movies/VIDEO_TS"
+else
+    VTS_HINT="$HOME/Videos/VIDEO_TS"
+fi
 
 echo "╔══════════════════════════════════════╗"
 echo "║         AV ENCODER LAUNCHER       ║"
 echo "╚══════════════════════════════════════╝"
+av_print_os_banner
 
 # ── Statistici rapide ─────────────────────────────────────────────────
 echo ""
@@ -38,23 +58,28 @@ if [ -d "$INPUT_DIR" ]; then
 else
     echo "  Folderul Input nu exista inca."
 fi
-FREE_SPACE=$(df "$OUTPUT_DIR" 2>/dev/null | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
-if [ -z "$FREE_SPACE" ]; then
-    FREE_SPACE=$(df "/storage/emulated/0" 2>/dev/null | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
+# v41: df -Pk forteaza POSIX format + 1K blocks (cross-platform GNU/BSD/macOS).
+FREE_SPACE=$(av_df_kb "$OUTPUT_DIR" | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
+if [ -z "$FREE_SPACE" ] && [[ "$AV_PLATFORM" == "termux" ]]; then
+    FREE_SPACE=$(av_df_kb "/storage/emulated/0" | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
 fi
 [ -z "$FREE_SPACE" ] && FREE_SPACE="N/A"
 echo "  Spatiu liber   : $FREE_SPACE"
 echo "─────────────────────────────────────"
 
 # ── Director scripturi ────────────────────────────────────────────────
-echo ""
-echo "De unde vrei sa rulezi scripturile?"
-echo "  1) Termux ($TERMUX_DIR)"
-echo "  2) Folder Android ($ANDROID_DIR)"
-read -p "Introdu 1 sau 2: " location_choice
-if   [[ "$location_choice" == "1" ]]; then SCRIPT_DIR="$TERMUX_DIR"
-elif [[ "$location_choice" == "2" ]]; then SCRIPT_DIR="$ANDROID_DIR"
-else echo "Optiune invalida. Iesi..."; exit 1; fi
+# Pe Termux: utilizatorul alegea istoric intre HOME si folderul Android (Scripts).
+# Pe Linux/macOS: SCRIPT_DIR e deja resolvat din BASH_SOURCE — nu mai intrebam.
+if [[ "$AV_PLATFORM" == "termux" ]]; then
+    echo ""
+    echo "De unde vrei sa rulezi scripturile?"
+    echo "  1) Termux ($TERMUX_DIR)"
+    echo "  2) Folder Android ($ANDROID_DIR)"
+    read -p "Introdu 1 sau 2: " location_choice
+    if   [[ "$location_choice" == "1" ]]; then SCRIPT_DIR="$TERMUX_DIR"
+    elif [[ "$location_choice" == "2" ]]; then SCRIPT_DIR="$ANDROID_DIR"
+    else echo "Optiune invalida. Iesi..."; exit 1; fi
+fi
 
 for script in av_encoder_x265.sh av_encoder_x264.sh \
               av_encoder_av1.sh av_encoder_dnxhr.sh av_encoder_apv.sh av_encoder_prores.sh \
@@ -68,7 +93,8 @@ cd "$SCRIPT_DIR" || exit 1
 
 # ── Verificare ffmpeg + mesaj recomandare ────────────────────────────
 if command -v ffmpeg &>/dev/null; then
-    _ffver=$(ffmpeg -version 2>/dev/null | head -1 | grep -oP 'version \K[0-9]+\.[0-9]+')
+    _ffver=$(ffmpeg -version 2>/dev/null | head -1 | av_grep_perl -o 'version \K[0-9]+\.[0-9]+' 2>/dev/null \
+             || ffmpeg -version 2>/dev/null | head -1 | sed -nE 's/.*version ([0-9]+\.[0-9]+).*/\1/p')
     echo ""
     echo "  ffmpeg detectat: versiunea $_ffver"
     if [[ "$_ffver" < "8.1" ]] 2>/dev/null; then
@@ -77,7 +103,7 @@ if command -v ffmpeg &>/dev/null; then
     fi
 else
     echo ""
-    echo "  ⚠ ffmpeg NU a fost gasit! Instaleaza cu: pkg install ffmpeg"
+    echo "  ⚠ ffmpeg NU a fost gasit! Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
     exit 1
 fi
 
@@ -241,7 +267,7 @@ if [ ${#VOB_FILES[@]} -gt 0 ]; then
     echo "  ╚══════════════════════════════════════╝"
     read -p "  Alege 1 sau 2 [implicit: 1]: " vob_choice
     if [[ "${vob_choice:-1}" == "2" ]]; then
-        read -p "  Cale folder VIDEO_TS/ (ex: /storage/emulated/0/DVD/VIDEO_TS): " vts_path
+        read -p "  Cale folder VIDEO_TS/ (ex: $VTS_HINT): " vts_path
         if [[ -d "$vts_path" ]]; then
             # Construieste lista fisierelor VOB sortate pentru titlul principal (VTS_01_*.VOB)
             # VTS_01_0.VOB = menu (sarit), VTS_01_1.VOB..VTS_01_N.VOB = continut

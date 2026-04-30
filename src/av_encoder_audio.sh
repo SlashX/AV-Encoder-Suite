@@ -1,13 +1,15 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_audio.sh — Re-encode doar audio (video stream copy)
 # Rapid — nu re-encodeaza video, pastreaza calitatea video 1:1.
 # ══════════════════════════════════════════════════════════════════════
 
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
-LOG_FILE="$OUTPUT_DIR/av_encode_log_audio.txt"
+# v41: Source av_common.sh pentru detect_platform + paths cross-platform + wrappere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/av_common.sh"
 
+LOG_FILE="$OUTPUT_DIR/av_encode_log_audio.txt"
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 
 # ── Container output ─────────────────────────────────────────────────
@@ -140,8 +142,8 @@ CONTAINER_FLAGS=""
 # ── Wake lock ────────────────────────────────────────────────────────
 echo ""
 echo "Activez wake lock..."
-termux-wake-lock
-[ $? -ne 0 ] && echo "AVERTISMENT: termux-wake-lock a esuat."
+av_wake_lock
+[ $? -ne 0 ] && echo "AVERTISMENT: av_wake_lock a esuat."
 
 # ── Scanare fisiere ──────────────────────────────────────────────────
 shopt -s nullglob nocaseglob
@@ -151,7 +153,7 @@ TOTAL=${#FILES[@]}
 
 if [ "$TOTAL" -eq 0 ]; then
     echo "Nu am gasit fisiere video in $INPUT_DIR"
-    termux-wake-unlock; exit 1
+    av_wake_unlock; exit 1
 fi
 
 echo "=======================================" | tee "$LOG_FILE"
@@ -175,7 +177,7 @@ for file in "${FILES[@]}"; do
 
     # Skip daca exista si >1MB
     if [ -f "$output" ]; then
-        OUT_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        OUT_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         if [ "$OUT_SIZE" -gt 1048576 ]; then
             echo "  SKIP: output deja exista ($(( OUT_SIZE / 1048576 )) MB)"
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
@@ -255,7 +257,7 @@ for file in "${FILES[@]}"; do
         fi
     fi
 
-    ORIG_SIZE=$(stat -c%s "$file" 2>/dev/null || echo 0)
+    ORIG_SIZE=$(av_stat_size "$file" 2>/dev/null || echo 0)
     START_TIME=$(date +%s)
 
     # shellcheck disable=SC2086
@@ -277,7 +279,7 @@ for file in "${FILES[@]}"; do
         rm -f "$output"
         TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
     else
-        NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
         echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"
         TOTAL_DONE=$((TOTAL_DONE + 1))
@@ -299,6 +301,6 @@ echo "════════════════════════�
 
 echo "FINAL: $TOTAL_DONE procesate, $TOTAL_ERRORS erori" >> "$LOG_FILE"
 
-termux-wake-unlock
-termux-notification -t "Audio encode complet" \
-    -c "$TOTAL_DONE fisiere, $TOTAL_ERRORS erori, ${GRAND_ELAPSED}s" 2>/dev/null
+av_wake_unlock
+av_notify_done "Audio encode complet" \
+    "$TOTAL_DONE fisiere, $TOTAL_ERRORS erori, ${GRAND_ELAPSED}s"

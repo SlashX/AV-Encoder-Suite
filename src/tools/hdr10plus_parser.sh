@@ -1,10 +1,28 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
-# hdr10plus_parser.sh — Installer & Updater (Termux Edition)
+# hdr10plus_parser.sh — Installer & Updater
 # Instalează quietvoid/hdr10plus_tool pentru procesare metadata HDR10+.
 # Folosit de av_encoder_x265.sh si av_encoder_av1.sh pentru extragerea
 # si injectarea metadatelor dinamice HDR10+ la re-encode.
+# Termux: build din sursa cu pkg + cargo. Linux/macOS: hint catre brew/cargo.
 # ══════════════════════════════════════════════════════════════════════
+
+# v41: pe Linux/macOS sugeram install via package manager si iesim.
+case "$(uname -s 2>/dev/null)" in
+    Darwin)
+        echo "macOS detectat — instaleaza prin Homebrew:"
+        echo "  brew install hdr10plus_tool"
+        exit 0
+        ;;
+    Linux)
+        if [ ! -d "/data/data/com.termux" ]; then
+            echo "Linux detectat — instaleaza via cargo (Rust) sau distro package:"
+            echo "  cargo install hdr10plus_tool"
+            echo "  (sau verifica AUR/COPR daca distroul tau il are pachetizat)"
+            exit 0
+        fi
+        ;;
+esac
 
 REPO_URL="https://github.com/quietvoid/hdr10plus_tool.git"
 INSTALL_DIR="$HOME/hdr10plus_tool"

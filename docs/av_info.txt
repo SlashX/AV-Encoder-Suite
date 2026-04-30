@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + DJI GPS Extractor
-  Documentatie Setup & Utilizare — v33.1
+  Documentatie Setup & Utilizare — v41
 ═══════════════════════════════════════════════════════════════
 
 
@@ -9,6 +9,8 @@ CUPRINS
   1. Structura proiectului
   2. Cerinte de sistem
   3. Setup Termux (Android)
+  3a. Setup Linux (v41)
+  3b. Setup macOS (v41)
   4. Setup Windows
   5. Structura foldere video
   6. Flux encodare — cum functioneaza
@@ -212,6 +214,96 @@ PASUL 8 (optional): Backup scripturi in folder Android
   chmod +x /storage/emulated/0/Media/Scripts/*.sh
 
   ls -l /storage/emulated/0/Media/Scripts/
+
+
+═══════════════════════════════════════════════════════════════
+3a. SETUP LINUX (v41)
+═══════════════════════════════════════════════════════════════
+
+Suport nativ Linux x86_64 / ARM cu bash 4+ via av_common.sh detect_platform().
+Folderele se creeaza langa scripturi (NU /storage/emulated/0/...).
+
+PASUL 1: Instaleaza ffmpeg si dependinte
+─────────────────────────────────────────
+  Debian / Ubuntu:
+    sudo apt update && sudo apt install ffmpeg python3 git exiftool libnotify-bin
+
+  Fedora:
+    sudo dnf install ffmpeg python3 git perl-Image-ExifTool libnotify
+
+  Arch / Manjaro:
+    sudo pacman -S ffmpeg python git perl-image-exiftool libnotify
+
+  RPMFusion (Fedora) / official builds: ffmpeg 8.1+ recomandat pentru APV/HDR10+.
+
+PASUL 2: Cloneaza proiectul
+───────────────────────────
+  git clone <repo-url> ~/AV-Encoder-Suite
+  cd ~/AV-Encoder-Suite/src
+  chmod +x *.sh tools/*.sh
+
+PASUL 3: Lanseaza
+─────────────────
+  ./av_launcher.sh
+
+  La primul rulaj se creeaza automat:
+    InputVideos/  OutputVideos/  Luts/  UserProfiles/  Temp/
+  toate in folderul src/ (langa scripturi).
+
+PASUL 4: Optional — HDR10+ / DV tools
+──────────────────────────────────────
+  cargo install hdr10plus_tool   # necesita rustup
+  cargo install dovi_tool
+
+PASUL 5: Optional — coreutils GNU (daca distroul tau e BSD-like)
+────────────────────────────────────────────────────────────────
+  Wrapperele av_common.sh detecteaza nproc/stat/sed GNU automat.
+
+
+═══════════════════════════════════════════════════════════════
+3b. SETUP macOS (v41)
+═══════════════════════════════════════════════════════════════
+
+PASUL 1: Instaleaza Homebrew (daca nu il ai)
+─────────────────────────────────────────────
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+PASUL 2: Instaleaza bash 4+ (CRITIC — macOS ships bash 3.2)
+─────────────────────────────────────────────────────────────
+  brew install bash
+
+  Fara acest pas av_common.sh refuza pornirea (verificare BASH_VERSINFO ≥ 4).
+
+PASUL 3: Instaleaza ffmpeg + dependinte
+────────────────────────────────────────
+  brew install ffmpeg python3 git exiftool
+
+PASUL 4: Optional — coreutils GNU (recomandat)
+───────────────────────────────────────────────
+  brew install coreutils
+
+  Activeaza fallback ggrep/greadlink in wrappere (nu obligatoriu — exista
+  fallback Python pentru readlink -f si grep -E pentru pattern-uri simple).
+
+PASUL 5: Optional — HDR10+ / DV tools
+──────────────────────────────────────
+  brew install hdr10plus_tool
+  brew install dovi_tool
+
+PASUL 6: Cloneaza proiectul si lanseaza
+────────────────────────────────────────
+  git clone <repo-url> ~/AV-Encoder-Suite
+  cd ~/AV-Encoder-Suite/src
+  chmod +x *.sh tools/*.sh
+  ./av_launcher.sh
+
+  Folderele se creeaza langa scripturi (Movies/InputVideos NU este folosit;
+  totul ramane in $SCRIPT_DIR).
+
+PASUL 7: Wake-lock pe macOS
+────────────────────────────
+  Wrapperul av_wake_lock foloseste caffeinate -dimsu in background pe durata
+  encode-ului. Nu necesita configurare suplimentara.
 
 
 ═══════════════════════════════════════════════════════════════

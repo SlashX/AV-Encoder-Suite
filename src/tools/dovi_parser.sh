@@ -1,9 +1,27 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
-# dovi_parser.sh — Installer & Updater (Termux Edition)
+# dovi_parser.sh — Installer & Updater
 # Instaleaza quietvoid/dovi_tool pentru procesare Dolby Vision RPU.
 # Folosit de av_encoder_x265.sh pentru triple-layer DV+HDR10+HDR10+.
+# Termux: build din sursa cu pkg + cargo. Linux/macOS: hint catre brew/cargo.
 # ══════════════════════════════════════════════════════════════════════
+
+# v41: pe Linux/macOS sugeram install via package manager si iesim.
+case "$(uname -s 2>/dev/null)" in
+    Darwin)
+        echo "macOS detectat — instaleaza prin Homebrew:"
+        echo "  brew install dovi_tool"
+        exit 0
+        ;;
+    Linux)
+        if [ ! -d "/data/data/com.termux" ]; then
+            echo "Linux detectat — instaleaza via cargo (Rust) sau distro package:"
+            echo "  cargo install dovi_tool"
+            echo "  (sau verifica AUR/COPR daca distroul tau il are pachetizat)"
+            exit 0
+        fi
+        ;;
+esac
 
 REPO_URL="https://github.com/quietvoid/dovi_tool.git"
 INSTALL_DIR="$HOME/dovi_tool"

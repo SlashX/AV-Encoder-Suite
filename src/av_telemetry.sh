@@ -1,12 +1,14 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_telemetry.sh — Extractor unificat de telemetrie din fisiere video
 # v40: Suport DJI + GoPro (GPMF). Sony/Garmin VIRB/QuickTime — chunk-uri ulterioare.
 # Necesita: exiftool (DJI/QT), ffmpeg, python3 (GoPro GPMF parser)
 # ══════════════════════════════════════════════════════════════════════
 
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
+# v41: Source av_common.sh pentru detect_platform + paths cross-platform + wrappere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/av_common.sh"
 
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 
@@ -108,16 +110,17 @@ esac
 
 if [ "$NEED_EXIFTOOL" -eq 1 ] && ! command -v exiftool &>/dev/null; then
     echo "EROARE: exiftool nu este instalat (necesar pentru DJI/QuickTime)."
-    echo "Instaleaza cu: pkg install exiftool  sau  cpan App::ExifTool"
+    echo "Instaleaza cu: $(av_pkg_install_hint exiftool)"
     exit 1
 fi
 if [ "$NEED_PYTHON" -eq 1 ] && ! command -v python3 &>/dev/null; then
     echo "EROARE: python3 nu este instalat (necesar pentru parser GoPro/Sony/Garmin)."
-    echo "Instaleaza cu: pkg install python"
+    echo "Instaleaza cu: $(av_pkg_install_hint python3)"
     exit 1
 fi
 if ! command -v ffmpeg &>/dev/null; then
     echo "EROARE: ffmpeg nu este instalat."
+    echo "Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
     exit 1
 fi
 
@@ -171,7 +174,7 @@ KMLEOF
 # ── Python GPMF parser (GoPro) — scris ca temp file la nevoie ────────
 GPMF_PY=""
 write_gpmf_parser() {
-    GPMF_PY=$(mktemp --suffix=.py)
+    GPMF_PY=$(av_mktemp_ext py)
     cat > "$GPMF_PY" << 'PYEOF'
 import struct, sys, os, csv
 

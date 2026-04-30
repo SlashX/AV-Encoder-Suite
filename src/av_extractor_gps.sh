@@ -1,20 +1,22 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_extractor_gps.sh — Import GPS extern (GPX/FIT/KML → CSV/SRT/Norm)
 # Converteste fisiere GPX, FIT si KML de la orice dispozitiv GPS
 # (Garmin, Huawei, Apple Watch, Strava, Komoot, etc.)
-# Necesita: python3 (pkg install python)
+# Necesita: python3 (Termux: pkg install python; Linux: apt/dnf/pacman; macOS: brew install python3)
 # ══════════════════════════════════════════════════════════════════════
 
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
+# v41: Source av_common.sh pentru detect_platform + paths cross-platform + wrappere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/av_common.sh"
 
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 
 # ── Verificare python3 ───────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
     echo "EROARE: python3 nu este instalat."
-    echo "Instaleaza cu: pkg install python"
+    echo "Instaleaza cu: $(av_pkg_install_hint python3)"
     exit 1
 fi
 

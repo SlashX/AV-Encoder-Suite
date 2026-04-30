@@ -1,10 +1,30 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  exiftool_update.sh — ExifTool smart updater pentru Termux
-#  Verifica versiunea din pkg vs exiftool.org
-#  Daca pkg e actualizat → pkg upgrade
-#  Daca pkg e in urma   → build manual din sursa
+#  exiftool_update.sh — ExifTool smart updater
+#  Termux: verifica versiunea din pkg vs exiftool.org si build manual daca e cazul.
+#  Linux/macOS: hint catre package manager nativ si exit (exiftool larg disponibil).
 # ═══════════════════════════════════════════════════════════════
+
+# v41: pe Linux/macOS sugeram package manager si iesim.
+case "$(uname -s 2>/dev/null)" in
+    Darwin)
+        echo "macOS detectat — instaleaza/actualizeaza prin Homebrew:"
+        echo "  brew install exiftool        # prima instalare"
+        echo "  brew upgrade exiftool        # update"
+        exit 0
+        ;;
+    Linux)
+        if [ ! -d "/data/data/com.termux" ]; then
+            echo "Linux detectat — instaleaza/actualizeaza prin distro package manager:"
+            if command -v apt &>/dev/null;     then echo "  sudo apt install --only-upgrade exiftool"
+            elif command -v dnf &>/dev/null;   then echo "  sudo dnf upgrade perl-Image-ExifTool"
+            elif command -v pacman &>/dev/null; then echo "  sudo pacman -S perl-image-exiftool"
+            else echo "  Verifica package manager-ul distributiei pentru exiftool"
+            fi
+            exit 0
+        fi
+        ;;
+esac
 
 set -e
 

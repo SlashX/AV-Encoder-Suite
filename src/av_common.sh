@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_common.sh — Functii partajate + run_encode_loop()
 #
@@ -8,17 +8,301 @@
 #   encoder_setup_file()     — per fisier: seteaza FFMPEG_CMD (return 0/98)
 #   encoder_get_suffix()     — "_x265" / "_x264" / "_av1" / "_dnxhr"
 #   encoder_get_label()      — "libx265" / "libx264" / ... (UI)
+#
+# v41: Cross-platform — Termux / Linux / macOS.
+#   detect_platform() seteaza AV_PLATFORM (termux|linux|macos) si AV_IS_TERMUX.
+#   Pe Termux: caile raman /storage/emulated/0/Media/...
+#   Pe Linux/macOS: cai relative la SCRIPT_DIR ($SCRIPT_DIR/InputVideos etc).
+#   Wrapperele av_* abstractizeaza diferentele GNU vs BSD coreutils.
 # ══════════════════════════════════════════════════════════════════════
 
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
-LUTS_DIR="/storage/emulated/0/Media/Luts"
-TOOLS_DIR="/storage/emulated/0/Media/Scripts/tools"
-PROFILES_DIR="/storage/emulated/0/Media/Scripts/profiles"
-USER_PROFILES_DIR="/storage/emulated/0/Media/UserProfiles"
-# v36: Folder temporar (Trim & Concat, feature-uri viitoare) — creat lazy la prima folosire
-AV_TEMP_DIR="/storage/emulated/0/Media/Temp"
+# ── Bash 4+ check (macOS ships bash 3.2 — necesita brew install bash) ─
+if [ -n "${BASH_VERSINFO:-}" ] && [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "EROARE: bash $BASH_VERSION detectat, este necesar bash 4+." >&2
+    case "$(uname -s 2>/dev/null)" in
+        Darwin)  echo "  macOS: brew install bash" >&2 ;;
+        Linux)   echo "  Linux: instaleaza bash din package manager (apt/dnf/pacman)" >&2 ;;
+        *)       echo "  Actualizeaza bash la versiunea 4 sau mai noua" >&2 ;;
+    esac
+    exit 1
+fi
+
+# ── Platform detection (v41) ──────────────────────────────────────────
+# Seteaza: AV_PLATFORM (termux|linux|macos), AV_IS_TERMUX (0|1), AV_OS_LABEL
+detect_platform() {
+    local uname_s
+    uname_s=$(uname -s 2>/dev/null)
+    if [[ -d "/data/data/com.termux" ]] || [[ -n "${TERMUX_VERSION:-}" ]]; then
+        AV_PLATFORM="termux"
+        AV_IS_TERMUX=1
+        AV_OS_LABEL="Termux (Android)"
+    elif [[ "$uname_s" == "Darwin" ]]; then
+        AV_PLATFORM="macos"
+        AV_IS_TERMUX=0
+        AV_OS_LABEL="macOS $(sw_vers -productVersion 2>/dev/null)"
+    elif [[ "$uname_s" == "Linux" ]]; then
+        AV_PLATFORM="linux"
+        AV_IS_TERMUX=0
+        local distro
+        distro=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo "Linux")
+        AV_OS_LABEL="$distro"
+    else
+        AV_PLATFORM="linux"
+        AV_IS_TERMUX=0
+        AV_OS_LABEL="$uname_s (necunoscut)"
+    fi
+    export AV_PLATFORM AV_IS_TERMUX AV_OS_LABEL
+}
+detect_platform
+
+# ── SCRIPT_DIR resolution via BASH_SOURCE ─────────────────────────────
+# Daca SCRIPT_DIR e deja setat de caller (launcher pe Termux), il pastram.
+if [ -z "${SCRIPT_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# ── Path resolution: Termux pastreaza Android storage; Linux/macOS folosesc SCRIPT_DIR ──
+if [[ "$AV_PLATFORM" == "termux" ]]; then
+    INPUT_DIR="${INPUT_DIR:-/storage/emulated/0/Media/InputVideos}"
+    OUTPUT_DIR="${OUTPUT_DIR:-/storage/emulated/0/Media/OutputVideos}"
+    LUTS_DIR="${LUTS_DIR:-/storage/emulated/0/Media/Luts}"
+    TOOLS_DIR="${TOOLS_DIR:-/storage/emulated/0/Media/Scripts/tools}"
+    PROFILES_DIR="${PROFILES_DIR:-/storage/emulated/0/Media/Scripts/profiles}"
+    USER_PROFILES_DIR="${USER_PROFILES_DIR:-/storage/emulated/0/Media/UserProfiles}"
+    AV_TEMP_DIR="${AV_TEMP_DIR:-/storage/emulated/0/Media/Temp}"
+else
+    # Linux / macOS — totul langa scripturi
+    INPUT_DIR="${INPUT_DIR:-$SCRIPT_DIR/InputVideos}"
+    OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/OutputVideos}"
+    LUTS_DIR="${LUTS_DIR:-$SCRIPT_DIR/Luts}"
+    TOOLS_DIR="${TOOLS_DIR:-$SCRIPT_DIR/tools}"
+    PROFILES_DIR="${PROFILES_DIR:-$SCRIPT_DIR/profiles}"
+    USER_PROFILES_DIR="${USER_PROFILES_DIR:-$SCRIPT_DIR/UserProfiles}"
+    AV_TEMP_DIR="${AV_TEMP_DIR:-$SCRIPT_DIR/Temp}"
+fi
 ensure_temp_dir() { mkdir -p "$AV_TEMP_DIR" 2>/dev/null; }
+
+# ══════════════════════════════════════════════════════════════════════
+# Cross-platform wrappers (v41) — abstractizeaza GNU vs BSD coreutils
+# ══════════════════════════════════════════════════════════════════════
+
+# av_nproc — numar de nuclee CPU (Linux/Termux: nproc, macOS: sysctl)
+av_nproc() {
+    if command -v nproc &>/dev/null; then
+        nproc
+    elif [[ "$AV_PLATFORM" == "macos" ]]; then
+        sysctl -n hw.ncpu 2>/dev/null || echo 4
+    else
+        getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4
+    fi
+}
+
+# av_stat_mtime <file> — modification time as epoch seconds
+av_stat_mtime() {
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        stat -f %m "$1" 2>/dev/null
+    else
+        stat -c %Y "$1" 2>/dev/null
+    fi
+}
+
+# av_stat_size <file> — file size in bytes
+av_stat_size() {
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        stat -f %z "$1" 2>/dev/null
+    else
+        stat -c %s "$1" 2>/dev/null
+    fi
+}
+
+# av_sed_inplace <expr> <file> — in-place sed (BSD necesita extensia argumentului)
+av_sed_inplace() {
+    local expr="$1"; shift
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        sed -i '' -e "$expr" "$@"
+    else
+        sed -i -e "$expr" "$@"
+    fi
+}
+
+# av_readlink_f <path> — canonicalize path (BSD readlink nu suporta -f)
+av_readlink_f() {
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        if command -v greadlink &>/dev/null; then
+            greadlink -f "$1"
+        else
+            # Fallback Python (preinstalat pe macOS)
+            python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1" 2>/dev/null
+        fi
+    else
+        readlink -f "$1"
+    fi
+}
+
+# av_mktemp_dir [prefix] — temp directory portabil
+av_mktemp_dir() {
+    local prefix="${1:-avtmp}"
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        mktemp -d -t "${prefix}.XXXXXX"
+    else
+        mktemp -d -t "${prefix}.XXXXXX" 2>/dev/null || mktemp -d "/tmp/${prefix}.XXXXXX"
+    fi
+}
+
+# av_mktemp_ext <extension> — temp file cu extensie (portabil GNU vs BSD)
+# GNU mktemp suporta --suffix; BSD mktemp NU. Fallback: mktemp + mv.
+av_mktemp_ext() {
+    local ext="$1"
+    [[ "$ext" != .* ]] && ext=".$ext"
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        local tmp; tmp=$(mktemp) || return 1
+        mv "$tmp" "${tmp}${ext}" 2>/dev/null && echo "${tmp}${ext}"
+    else
+        mktemp --suffix="$ext" 2>/dev/null || {
+            # Fallback (mktemp vechi care nu suporta --suffix)
+            local tmp; tmp=$(mktemp) || return 1
+            mv "$tmp" "${tmp}${ext}" && echo "${tmp}${ext}"
+        }
+    fi
+}
+
+# av_df_kb <path> — df portabil cu block size 1K (POSIX -Pk, GNU + BSD compatibil)
+# Output: o singura linie cu campurile POSIX standard (col 4 = available KB).
+av_df_kb() {
+    df -Pk "$1" 2>/dev/null
+}
+
+# av_grep_perl <pattern> [args...] — grep cu suport regex Perl (BSD nu are -P)
+av_grep_perl() {
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        if command -v ggrep &>/dev/null; then
+            ggrep -P "$@"
+        else
+            # Fallback: extended regex (nu acopera 100% Perl, dar suficient pentru pattern-uri simple)
+            grep -E "$@"
+        fi
+    else
+        grep -P "$@"
+    fi
+}
+
+# av_date_to_epoch <date_string> — converteste data in epoch seconds
+av_date_to_epoch() {
+    if [[ "$AV_PLATFORM" == "macos" ]]; then
+        # BSD date asteapta format explicit; incercam ISO 8601 si fallback
+        date -j -f "%Y-%m-%d %H:%M:%S" "$1" +%s 2>/dev/null \
+        || date -j -f "%Y-%m-%dT%H:%M:%S" "$1" +%s 2>/dev/null \
+        || date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null
+    else
+        date -d "$1" +%s 2>/dev/null
+    fi
+}
+
+# av_du_mb <path> — size MB (portabil)
+av_du_mb() {
+    du -sm "$1" 2>/dev/null | awk '{print $1}'
+}
+
+# ── Wake-lock / notify / open path wrappers (v41) ─────────────────────
+# Termux: termux-wake-lock; Linux: systemd-inhibit (best effort); macOS: caffeinate
+AV_WAKE_PID=""
+
+av_wake_lock() {
+    case "$AV_PLATFORM" in
+        termux)
+            command -v termux-wake-lock &>/dev/null && termux-wake-lock 2>/dev/null
+            ;;
+        macos)
+            if command -v caffeinate &>/dev/null && [ -z "$AV_WAKE_PID" ]; then
+                caffeinate -dimsu &
+                AV_WAKE_PID=$!
+            fi
+            ;;
+        linux)
+            # Pe Linux nu putem mentine usor wake-lock background fara comanda activa;
+            # systemd-inhibit asteapta o comanda — folosim doar daca disponibil ca info.
+            :
+            ;;
+    esac
+}
+
+av_wake_unlock() {
+    case "$AV_PLATFORM" in
+        termux)
+            command -v termux-wake-unlock &>/dev/null && termux-wake-unlock 2>/dev/null
+            ;;
+        macos)
+            if [ -n "$AV_WAKE_PID" ]; then
+                kill "$AV_WAKE_PID" 2>/dev/null
+                AV_WAKE_PID=""
+            fi
+            ;;
+        linux)
+            :
+            ;;
+    esac
+}
+
+# av_notify_done <title> <message> — notificare la final batch
+av_notify_done() {
+    local title="${1:-AV Encoder}"
+    local msg="${2:-Operatiune finalizata}"
+    case "$AV_PLATFORM" in
+        termux)
+            command -v termux-notification &>/dev/null && \
+                termux-notification --title "$title" --content "$msg" 2>/dev/null
+            ;;
+        linux)
+            command -v notify-send &>/dev/null && \
+                notify-send "$title" "$msg" 2>/dev/null
+            ;;
+        macos)
+            command -v osascript &>/dev/null && \
+                osascript -e "display notification \"$msg\" with title \"$title\"" 2>/dev/null
+            ;;
+    esac
+}
+
+# av_open_path <path> — deschide folder in file manager
+av_open_path() {
+    local p="${1:-$OUTPUT_DIR}"
+    case "$AV_PLATFORM" in
+        termux)
+            command -v termux-open &>/dev/null && termux-open "$p" 2>/dev/null
+            ;;
+        linux)
+            command -v xdg-open &>/dev/null && xdg-open "$p" 2>/dev/null &
+            ;;
+        macos)
+            command -v open &>/dev/null && open "$p" 2>/dev/null
+            ;;
+    esac
+}
+
+# av_print_os_banner — afiseaza banner OS la startup (chemat din launcher)
+av_print_os_banner() {
+    echo ""
+    echo "  Sistem: $AV_OS_LABEL  |  bash $BASH_VERSION  |  $(av_nproc) thread(s)"
+    if [[ "$AV_PLATFORM" == "termux" ]] && ! [ -d "/storage/emulated/0" ]; then
+        echo "  ⚠ Storage Termux inaccesibil — ruleaza: termux-setup-storage"
+    fi
+}
+
+# av_pkg_install_hint <package> — sugestie de instalare per platforma
+av_pkg_install_hint() {
+    local pkg="$1"
+    case "$AV_PLATFORM" in
+        termux) echo "pkg install $pkg" ;;
+        macos)  echo "brew install $pkg" ;;
+        linux)
+            if command -v apt &>/dev/null;     then echo "sudo apt install $pkg"
+            elif command -v dnf &>/dev/null;   then echo "sudo dnf install $pkg"
+            elif command -v pacman &>/dev/null; then echo "sudo pacman -S $pkg"
+            elif command -v zypper &>/dev/null; then echo "sudo zypper install $pkg"
+            else echo "instaleaza $pkg din package manager-ul distributiei"
+            fi ;;
+    esac
+}
 
 # v36/v37: Scan foldere reziduale (trim_*, concat_*, pipeline_*, preview_*) in $AV_TEMP_DIR
 # Chemat la intrarea in submeniul Trim & Concat.
@@ -37,7 +321,7 @@ tc_scan_leftover_temp() {
     echo "╠══════════════════════════════════════════════╣"
     local now; now=$(date +%s)
     for d in "${leftover[@]}"; do
-        local mt; mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+        local mt; mt=$(av_stat_mtime "$d" || echo 0)
         local age_h=$(( (now - mt) / 3600 ))
         local sz; sz=$(du -sm "$d" 2>/dev/null | cut -f1); [[ -z "$sz" ]] && sz=0
         local age_str="${age_h}h"
@@ -52,7 +336,7 @@ tc_scan_leftover_temp() {
     [[ -z "$tc_ch" ]] && tc_ch=2
     case "$tc_ch" in
         2) for d in "${leftover[@]}"; do
-               local mt; mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+               local mt; mt=$(av_stat_mtime "$d" || echo 0)
                if (( (now - mt) >= 86400 )); then
                    rm -rf "$d" && echo "  sters: $(basename "$d")"
                fi
@@ -115,7 +399,7 @@ setup_trap() { trap '_cleanup_on_exit' INT TERM; }
 
 _cleanup_on_exit() {
     [ -n "${PROGRESS_FILE:-}" ] && rm -f "$PROGRESS_FILE"
-    termux-wake-unlock 2>/dev/null
+    av_wake_unlock
     echo ""; log "  INTRERUPT de utilizator."; exit 1
 }
 
@@ -480,7 +764,7 @@ handle_dv_with_stats() {
     local dv_rc=$?
     if [ $dv_rc -eq 0 ]; then
         # Stream copy OK — raportam stats si marcam done
-        NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
         ENCODE_TIME=$(( $(date +%s) - START_TIME ))
@@ -759,7 +1043,7 @@ _check_hdr10plus_tool() {
 extract_hdr10plus_metadata() {
     local file="$1"
     local json_file src_codec
-    json_file=$(mktemp --suffix=.json)
+    json_file=$(av_mktemp_ext json)
     # Detectam codec-ul sursa pentru a alege bitstream filter-ul corect
     src_codec=$(ffprobe -v error -select_streams v:0 \
         -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
@@ -893,11 +1177,11 @@ _check_dovi_tool() {
 generate_dv_rpu_from_hdr10plus() {
     local hdr10plus_json="$1"
     local rpu_file
-    rpu_file=$(mktemp --suffix=.bin)
+    rpu_file=$(av_mktemp_ext bin)
 
     # Config JSON minimal pentru Profile 8.1 CMv4.0
     local config_file
-    config_file=$(mktemp --suffix=.json)
+    config_file=$(av_mktemp_ext json)
     cat > "$config_file" << 'DVCONF'
 {
     "cm_version": "V40",
@@ -970,7 +1254,7 @@ do_stream_copy() {
     sc_pid=$!; _show_progress "$sc_pid" "$sc_pf" "$file" "Stream copy"; wait "$sc_pid"
     local sc_rc=$?; PROGRESS_FILE=""
     if [ $sc_rc -eq 0 ]; then
-        NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
         ENCODE_TIME=$(( $(date +%s) - START_TIME )); TOTAL_DONE=$((TOTAL_DONE+1))
@@ -1244,7 +1528,7 @@ repair_hdr10_signaling() {
     [[ -z "$cll_str" ]] && cll_str="1000,400"
 
     local tmp_out
-    tmp_out=$(mktemp --suffix=".${encoded##*.}")
+    tmp_out=$(av_mktemp_ext "${encoded##*.}")
     log "  HDR10 signaling repair: injectez mastering_display + max_cll..."
     ffmpeg -v error -i "$encoded" -c copy \
         -bsf:v "hevc_metadata=mastering_display=${md_str}:max_content=${cll_str%,*}:max_average=${cll_str#*,}:colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9" \
@@ -1687,7 +1971,7 @@ _apply_log_filters() {
 # VIDSTAB + LOUDNORM
 # ══════════════════════════════════════════════════════════════════════
 vidstab_analyze() {
-    local file="$1" trf_file; trf_file=$(mktemp --suffix=.trf)
+    local file="$1" trf_file; trf_file=$(av_mktemp_ext trf)
     log "  Vidstab: Trecerea 1/2 — analiza miscare..."
     ffmpeg -threads "$THREADS" -i "$file" \
         -vf "vidstabdetect=shakiness=5:accuracy=15:result=$trf_file" \
@@ -2013,7 +2297,7 @@ build_mediacodec_cmd() {
 # ══════════════════════════════════════════════════════════════════════
 dry_run_report() {
     local file="$1" output="$2" enc_label="$3" width="$4" dur="$5" src_fmt="$6"
-    local orig_mb=$(( $(stat -c%s "$file") / 1024 / 1024 ))
+    local orig_mb=$(( $(av_stat_size "$file") / 1024 / 1024 ))
     echo ""; echo "  ╔══════════════════════════════════════════════════════╗"
     echo "  ║  DRY-RUN — $(basename "$file")"
     echo "  ╠══════════════════════════════════════════════════════╣"
@@ -2164,7 +2448,7 @@ show_batch_queue() {
         for ((i=0; i<total; i++)); do
             local fn
             fn=$(basename "${FILES[$i]}")
-            local sz_mb=$(( $(stat -c%s "${FILES[$i]}" 2>/dev/null || echo 0) / 1024 / 1024 ))
+            local sz_mb=$(( $(av_stat_size "${FILES[$i]}" 2>/dev/null || echo 0) / 1024 / 1024 ))
             if [[ "${included[$i]}" -eq 1 ]]; then
                 printf "  %2d) [✓] %-32s (%d MB)\n" $((i+1)) "$fn" "$sz_mb"
                 incl_count=$((incl_count+1))
@@ -2246,8 +2530,8 @@ show_batch_queue() {
 }
 
 run_encode_loop() {
-    echo "Activez wake lock..."; termux-wake-lock
-    [ $? -ne 0 ] && echo "AVERTISMENT: termux-wake-lock a esuat."
+    echo "Activez wake lock..."; av_wake_lock
+    [ $? -ne 0 ] && echo "AVERTISMENT: av_wake_lock a esuat."
     CONTAINER_FLAGS=$(get_container_flags)
     local enc_suffix enc_label
     enc_suffix=$(encoder_get_suffix); enc_label=$(encoder_get_label)
@@ -2288,7 +2572,7 @@ run_encode_loop() {
         shopt -u nocaseglob nullglob
     fi
     TOTAL=${#FILES[@]}
-    [ "$TOTAL" -eq 0 ] && { log "Nu am gasit fisiere video!"; termux-wake-unlock; exit 1; }
+    [ "$TOTAL" -eq 0 ] && { log "Nu am gasit fisiere video!"; av_wake_unlock; exit 1; }
 
     # Afiseaza subfoldere gasite (doar daca recursiv)
     if [[ "$PRESERVE_FOLDER_STRUCTURE" == "1" ]]; then
@@ -2300,7 +2584,7 @@ run_encode_loop() {
     # Batch Queue — editare ordine/excludere (optional)
     show_batch_queue
     TOTAL=${#FILES[@]}
-    [ "$TOTAL" -eq 0 ] && { log "Toate fisierele au fost excluse!"; termux-wake-unlock; exit 1; }
+    [ "$TOTAL" -eq 0 ] && { log "Toate fisierele au fost excluse!"; av_wake_unlock; exit 1; }
 
     COUNT=0; TOTAL_SAVED=0; TOTAL_ERRORS=0; TOTAL_SKIPPED=0; TOTAL_DONE=0
     GRAND_START=$(date +%s); PROGRESS_FILE=""; BATCH_STOP=0
@@ -2339,7 +2623,7 @@ run_encode_loop() {
         hint_source_format "$ext_lower"
 
         if [ -f "$output" ]; then
-            OUT_SIZE=$(stat -c%s "$output")
+            OUT_SIZE=$(av_stat_size "$output")
             if [ "$OUT_SIZE" -gt 1048576 ]; then
                 log "  Sarit (deja encodat, $(( OUT_SIZE/1024/1024 )) MB)"
                 TOTAL_SKIPPED=$((TOTAL_SKIPPED+1)); continue
@@ -2349,7 +2633,7 @@ run_encode_loop() {
             log "  Sarit (resume)"; TOTAL_SKIPPED=$((TOTAL_SKIPPED+1)); continue
         fi
 
-        ORIGINAL_SIZE=$(stat -c%s "$file")
+        ORIGINAL_SIZE=$(av_stat_size "$file")
         # v38: reset MediaCodec per-file flags pentru a evita leak intre iteratii
         MC_NEEDS_REPAIR=0
         MC_HDR_MODE=""
@@ -2455,16 +2739,16 @@ run_encode_loop() {
         if [[ "${TRIPLE_LAYER_MODE:-0}" == "1" ]] && [[ -n "${DOVI_RPU_FILE:-}" ]]; then
             log "  Triple-layer: Injectez DV RPU in output..."
             local hevc_temp
-            hevc_temp=$(mktemp --suffix=.hevc)
+            hevc_temp=$(av_mktemp_ext hevc)
             # Extrage HEVC raw din container
             ffmpeg -v error -i "$output" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$hevc_temp" 2>>"$LOG_FILE"
             if [ $? -eq 0 ]; then
                 local injected_temp
-                injected_temp=$(mktemp --suffix=.hevc)
+                injected_temp=$(av_mktemp_ext hevc)
                 if inject_dv_rpu "$hevc_temp" "$DOVI_RPU_FILE" "$injected_temp"; then
                     # Re-mux: HEVC cu DV + audio original din output
                     local final_temp
-                    final_temp=$(mktemp --suffix=".$CONTAINER")
+                    final_temp=$(av_mktemp_ext "$CONTAINER")
                     local cont_flags
                     cont_flags=$(get_container_flags)
                     ffmpeg -v error -i "$injected_temp" -i "$output" \
@@ -2490,7 +2774,7 @@ run_encode_loop() {
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0
 
-        NEW_SIZE=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
         ENCODE_TIME=$(( $(date +%s) - START_TIME )); TOTAL_DONE=$((TOTAL_DONE+1))
@@ -2511,7 +2795,7 @@ run_encode_loop() {
         echo ""; log "======================================="
         log "DRY-RUN COMPLET — $enc_label [$ORIG_CONTAINER]"
         log "Fisiere analizate: $TOTAL_DONE | Sarite: $TOTAL_SKIPPED"
-        log "======================================="; termux-wake-unlock 2>/dev/null; exit 0
+        log "======================================="; av_wake_unlock; exit 0
     fi
     batch_clear_progress
     GRAND_ELAPSED=$(( $(date +%s) - GRAND_START )); echo ""
@@ -2523,10 +2807,9 @@ run_encode_loop() {
     log "Incheiat   : $(date '+%Y-%m-%d %H:%M:%S')"
     print_batch_summary
     log "======================================="
-    termux-notification --title "✅ Encode $enc_label finalizat" \
-        --content "Procesate: $TOTAL_DONE | Erori: $TOTAL_ERRORS | Salvat: $(( TOTAL_SAVED/1024/1024 )) MB" \
-        --icon video 2>/dev/null
-    echo "Dezactivez wake lock..."; termux-wake-unlock
+    av_notify_done "✅ Encode $enc_label finalizat" \
+        "Procesate: $TOTAL_DONE | Erori: $TOTAL_ERRORS | Salvat: $(( TOTAL_SAVED/1024/1024 )) MB"
+    echo "Dezactivez wake lock..."; av_wake_unlock
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2710,7 +2993,7 @@ trimconcat_flow_trim() {
     local total_s; total_s=$(get_duration_seconds "$src")
 
     mkdir -p "$OUTPUT_DIR" 2>/dev/null
-    termux-wake-lock 2>/dev/null
+    av_wake_lock
 
     local cut_idx=1
     while true; do
@@ -2776,7 +3059,7 @@ trimconcat_flow_trim() {
         fi
 
         if [[ -f "$out_path" && -s "$out_path" ]]; then
-            local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+            local osize; osize=$(av_stat_size "$out_path" 2>/dev/null || echo 0)
             echo ""
             echo "  ✓ Output: $out_path"
             echo "  ✓ Size: $(( osize/1024/1024 )) MB"
@@ -2790,7 +3073,7 @@ trimconcat_flow_trim() {
         cut_idx=$((cut_idx+1))
     done
 
-    termux-wake-unlock 2>/dev/null
+    av_wake_unlock
     echo ""
     echo "  Trim terminat. $((cut_idx)) clip-uri generate."
 }
@@ -2871,7 +3154,7 @@ trimconcat_flow_batch_trim() {
     fi
 
     mkdir -p "$OUTPUT_DIR" 2>/dev/null
-    termux-wake-lock 2>/dev/null
+    av_wake_lock
 
     # Loop: pentru fiecare fisier × fiecare segment
     local total_ops=$(( ${#selected[@]} * ${#cuts[@]} ))
@@ -2922,7 +3205,7 @@ trimconcat_flow_batch_trim() {
         done
     done
 
-    termux-wake-unlock 2>/dev/null
+    av_wake_unlock
     echo ""
     echo "╔══════════════════════════════════════════════╗"
     echo "║  BATCH TRIM — Sumar                          ║"
@@ -3040,12 +3323,12 @@ trimconcat_flow_concat() {
             ;;
         2) # date
             local IFS=$'\n'
-            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(stat -c %Y "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(av_stat_mtime "$f")" "$f"; done | sort -n | cut -f2-))
             unset IFS
             ;;
         3) # size
             local IFS=$'\n'
-            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(stat -c %s "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+            selected=($(for f in "${selected[@]}"; do printf "%s\t%s\n" "$(av_stat_size "$f")" "$f"; done | sort -n | cut -f2-))
             unset IFS
             ;;
         4) # manual — afiseaza si cere ordinea
@@ -3130,7 +3413,7 @@ trimconcat_flow_concat() {
 
     # Create temp subdir pt concat.txt
     local subdir; subdir=$(create_temp_subdir "concat")
-    termux-wake-lock 2>/dev/null
+    av_wake_lock
 
     if (( use_filter == 0 )); then
         # Stream copy concat demuxer
@@ -3180,13 +3463,13 @@ trimconcat_flow_concat() {
             "$out_path"
     fi
 
-    termux-wake-unlock 2>/dev/null
+    av_wake_unlock
 
     # Cleanup
     cleanup_temp_subdir "$subdir" "$out_path"
 
     if [[ -f "$out_path" && -s "$out_path" ]]; then
-        local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+        local osize; osize=$(av_stat_size "$out_path" 2>/dev/null || echo 0)
         echo ""
         echo "  ✓ Output: $out_path"
         echo "  ✓ Size: $(( osize/1024/1024 )) MB"
@@ -3239,10 +3522,10 @@ trimconcat_flow_pipeline() {
            chosen=($(for f in "${chosen[@]}"; do echo "$f"; done | sort))
            unset IFS ;;
         2) local IFS=$'\n'
-           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(stat -c %Y "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(av_stat_mtime "$f")" "$f"; done | sort -n | cut -f2-))
            unset IFS ;;
         3) local IFS=$'\n'
-           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(stat -c %s "$f" 2>/dev/null)" "$f"; done | sort -n | cut -f2-))
+           chosen=($(for f in "${chosen[@]}"; do printf "%s\t%s\n" "$(av_stat_size "$f")" "$f"; done | sort -n | cut -f2-))
            unset IFS ;;
         4) echo ""
            for ((i=0; i<${#chosen[@]}; i++)); do
@@ -3394,7 +3677,7 @@ trimconcat_flow_pipeline() {
     local pipeline_total_s=0
     for ((i=0; i<${#chosen[@]}; i++)); do
         local f="${chosen[$i]}" segs="${segments[$i]}"
-        local fsize; fsize=$(stat -c%s "$f" 2>/dev/null || echo 0)
+        local fsize; fsize=$(av_stat_size "$f" 2>/dev/null || echo 0)
         local fdur; fdur=$(get_duration_seconds "$f")
         if [[ -z "$segs" ]]; then
             # FULL file — referinta directa in concat.txt, nu ocupa temp
@@ -3461,7 +3744,7 @@ trimconcat_flow_pipeline() {
 
     # Pas 6: executie
     local subdir; subdir=$(create_temp_subdir "pipeline")
-    termux-wake-lock 2>/dev/null
+    av_wake_lock
 
     # Pass 1/3: trim fiecare fisier ce are segmente → $subdir/NN_segM.ext
     echo ""
@@ -3499,7 +3782,7 @@ trimconcat_flow_pipeline() {
                 else
                     echo "  ✗ EROARE trim: $seg_out"
                     cleanup_temp_subdir "$subdir" ""
-                    termux-wake-unlock 2>/dev/null
+                    av_wake_unlock
                     return 1
                 fi
                 si=$((si+1))
@@ -3510,7 +3793,7 @@ trimconcat_flow_pipeline() {
     if (( ${#trimmed_files[@]} == 0 )); then
         echo "Nu s-au generat fisiere pentru concat."
         cleanup_temp_subdir "$subdir" ""
-        termux-wake-unlock 2>/dev/null
+        av_wake_unlock
         return 1
     fi
 
@@ -3717,17 +4000,17 @@ trimconcat_flow_pipeline() {
             "$out_path"
     fi
 
-    termux-wake-unlock 2>/dev/null
+    av_wake_unlock
 
     # Cleanup
     cleanup_temp_subdir "$subdir" "$out_path"
 
     # Stats finale
     if [[ -f "$out_path" && -s "$out_path" ]]; then
-        local osize; osize=$(stat -c%s "$out_path" 2>/dev/null || echo 0)
+        local osize; osize=$(av_stat_size "$out_path" 2>/dev/null || echo 0)
         local tot_in=0
         for ((i=0; i<${#chosen[@]}; i++)); do
-            local fs; fs=$(stat -c%s "${chosen[$i]}" 2>/dev/null || echo 0)
+            local fs; fs=$(av_stat_size "${chosen[$i]}" 2>/dev/null || echo 0)
             tot_in=$(( tot_in + fs ))
         done
         local ratio=0

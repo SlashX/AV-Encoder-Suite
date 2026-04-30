@@ -1,26 +1,22 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_apv.sh — Encoder APV (Samsung Advanced Professional Video)
 # Necesita: ffmpeg 8.1+ compilat cu --enable-libopenapv
 # v28: Doar logica specifica — loop-ul e in av_common.sh
 # ══════════════════════════════════════════════════════════════════════
 
-THREADS=$(nproc)
 ENCODER_TYPE="apv"
-
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
 
 AUDIO_CODEC_ARG="${1:-aac:192k}"
 APV_PRESET="${2:-standard}"; CONTAINER="${3:-mp4}"; SCALE_WIDTH="${4}"
 TARGET_FPS="${5}"; FPS_METHOD="${6}"; VIDEO_FILTER_PRESET="${7}"
 AUDIO_NORMALIZE="${8:-0}"
 
-LOG_FILE="$OUTPUT_DIR/av_encode_log_apv.txt"
-mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
+THREADS=$(av_nproc)
+LOG_FILE="$OUTPUT_DIR/av_encode_log_apv.txt"
+mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 setup_trap
 
 # ── Runtime check: libopenapv disponibil? ─────────────────────────────

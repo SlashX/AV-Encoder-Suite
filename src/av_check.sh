@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_check.sh — Analiza completa fisiere video + audio, export CSV
 #
@@ -8,11 +8,14 @@
 # este intentionata; modificarile in comun trebuie replicate manual.
 # ══════════════════════════════════════════════════════════════════════
 
-INPUT_DIR="/storage/emulated/0/Media/InputVideos"
-OUTPUT_DIR="/storage/emulated/0/Media/OutputVideos"
+# v41: Source av_common.sh pentru detect_platform + paths cross-platform + wrappere.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/av_common.sh"
+
 CSV_FILE="$OUTPUT_DIR/av_check_report.csv"
 
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 
 echo "Folder input: $INPUT_DIR"
 echo "─────────────────────────────────────"
@@ -305,7 +308,7 @@ for file in "${FILES[@]}"; do
     echo "Analizam ($COUNT/$TOTAL): $filename"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    FILE_SIZE=$(stat -c%s "$file")
+    FILE_SIZE=$(av_stat_size "$file")
 
     IFS=',' read -r SRC_CODEC WIDTH HEIGHT PIX_FMT TRANSFER FPS_RAW BITRATE \
         <<< "$VIDEO_INFO"
@@ -539,8 +542,8 @@ if [ -d "$OUTPUT_DIR" ]; then
 
             if [ -n "$orig_found" ]; then
                 COMP_COUNT=$((COMP_COUNT+1))
-                orig_size=$(stat -c%s "$orig_found")
-                new_size=$(stat -c%s "$out_file")
+                orig_size=$(av_stat_size "$orig_found")
+                new_size=$(av_stat_size "$out_file")
                 orig_mb=$((orig_size / 1024 / 1024))
                 new_mb=$((new_size / 1024 / 1024))
                 COMP_TOTAL_ORIG=$((COMP_TOTAL_ORIG + orig_size))
