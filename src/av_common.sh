@@ -2198,6 +2198,529 @@ mediacodec_print_banner() {
 }
 
 # ══════════════════════════════════════════════════════════════════════
+# v42: HW Backend Detection — VAAPI / QSV / NVENC / VideoToolbox / AMF
+# Paralel cu detect_mediacodec_caps. Fiecare seteaza:
+#   XX_AVAILABLE     0|1 — backend utilizabil (binary + GPU prezent)
+#   XX_ENCODERS      lista encodere ffmpeg (h264/hevc/av1)
+#   XX_GPU_VENDOR    string vendor (NVIDIA / Intel / AMD / Apple)
+#   XX_GPU_MODEL     string model (RTX 4070 / Arc A770 / M2 / RX 7900)
+#   XX_CAP_HDR10     0|1 — HDR10 native pe acest backend
+#   XX_CAP_10BIT     0|1 — encode 10-bit (main10) suportat
+#   XX_CAP_AV1       0|1 — AV1 encode HW disponibil
+#   XX_DEVICE        path device (Linux: /dev/dri/renderD128) sau -
+# ══════════════════════════════════════════════════════════════════════
+
+# ── VAAPI (Linux Intel iGPU + AMD Mesa) ───────────────────────────────
+detect_vaapi_caps() {
+    VAAPI_AVAILABLE=0
+    VAAPI_ENCODERS=""
+    VAAPI_GPU_VENDOR=""
+    VAAPI_GPU_MODEL=""
+    VAAPI_CAP_HDR10=0
+    VAAPI_CAP_10BIT=0
+    VAAPI_CAP_AV1=0
+    VAAPI_DEVICE=""
+
+    # Doar Linux non-Termux (Termux Android nu are /dev/dri uzual accesibil)
+    [[ "$AV_PLATFORM" != "linux" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+
+    # Device check
+    local dev
+    for dev in /dev/dri/renderD128 /dev/dri/renderD129; do
+        [ -e "$dev" ] && [ -r "$dev" ] && { VAAPI_DEVICE="$dev"; break; }
+    done
+    [[ -z "$VAAPI_DEVICE" ]] && return 1
+
+    # Encoders ffmpeg
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1)_vaapi" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+    VAAPI_ENCODERS="$enc_list"
+
+    # GPU vendor/model — citim din /sys/class/drm sau lspci
+    local card_info=""
+    if command -v lspci >/dev/null 2>&1; then
+        card_info=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | head -1)
+    fi
+    if [[ "$card_info" =~ [Ii]ntel ]]; then
+        VAAPI_GPU_VENDOR="Intel"
+        VAAPI_GPU_MODEL=$(echo "$card_info" | sed -E 's/.*: //;s/\(rev .*//' | head -1)
+        # Intel Skylake+ suporta HEVC 10-bit; HDR10 fragil (Mesa >=23)
+        VAAPI_CAP_10BIT=1
+        VAAPI_CAP_HDR10=1
+        # AV1 encode VAAPI: doar Intel Arc (DG2) si Core Ultra (Meteor Lake+)
+        if [[ "$VAAPI_ENCODERS" == *"av1_vaapi"* ]]; then
+            VAAPI_CAP_AV1=1
+        fi
+    elif [[ "$card_info" =~ [Aa][Mm][Dd]|[Rr]adeon|[Aa][Tt][Ii] ]]; then
+        VAAPI_GPU_VENDOR="AMD"
+        VAAPI_GPU_MODEL=$(echo "$card_info" | sed -E 's/.*: //;s/\(rev .*//' | head -1)
+        VAAPI_CAP_10BIT=1
+        # AMD VAAPI HDR10: experimental pe Mesa recent
+        VAAPI_CAP_HDR10=1
+    else
+        VAAPI_GPU_VENDOR="${VAAPI_GPU_VENDOR:-Unknown}"
+        VAAPI_GPU_MODEL="${card_info:-VAAPI device}"
+    fi
+
+    # vainfo verification (optional, mai detaliat dar lent)
+    if command -v vainfo >/dev/null 2>&1; then
+        local vainfo_out; vainfo_out=$(vainfo --display drm --device "$VAAPI_DEVICE" 2>/dev/null)
+        # Daca vainfo arata explicit profile-uri 10-bit, confirm
+        echo "$vainfo_out" | grep -q "Profile.*10" && VAAPI_CAP_10BIT=1
+    fi
+
+    VAAPI_AVAILABLE=1
+    return 0
+}
+
+# ── QSV (Intel Quick Sync, discret + iGPU recente) ────────────────────
+detect_qsv_caps() {
+    QSV_AVAILABLE=0
+    QSV_ENCODERS=""
+    QSV_GPU_VENDOR=""
+    QSV_GPU_MODEL=""
+    QSV_CAP_HDR10=0
+    QSV_CAP_10BIT=0
+    QSV_CAP_AV1=0
+    QSV_DEVICE=""
+
+    [[ "$AV_PLATFORM" != "linux" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+
+    # QSV foloseste /dev/dri/renderD128 (Intel) — implicit acelasi device
+    local dev
+    for dev in /dev/dri/renderD128 /dev/dri/renderD129; do
+        [ -e "$dev" ] && [ -r "$dev" ] && { QSV_DEVICE="$dev"; break; }
+    done
+    [[ -z "$QSV_DEVICE" ]] && return 1
+
+    # Confirma ca e Intel — QSV nu functioneaza pe AMD/NVIDIA
+    if command -v lspci >/dev/null 2>&1; then
+        local intel_check; intel_check=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | grep -i intel | head -1)
+        [[ -z "$intel_check" ]] && return 1
+        QSV_GPU_VENDOR="Intel"
+        QSV_GPU_MODEL=$(echo "$intel_check" | sed -E 's/.*: //;s/\(rev .*//' | head -1)
+    fi
+
+    # Encoders ffmpeg
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1)_qsv" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+    QSV_ENCODERS="$enc_list"
+
+    QSV_CAP_10BIT=1
+    QSV_CAP_HDR10=1  # Arc + Core Ultra
+    [[ "$QSV_ENCODERS" == *"av1_qsv"* ]] && QSV_CAP_AV1=1
+
+    QSV_AVAILABLE=1
+    return 0
+}
+
+# ── NVENC (NVIDIA Linux) ──────────────────────────────────────────────
+detect_nvenc_caps() {
+    NVENC_AVAILABLE=0
+    NVENC_ENCODERS=""
+    NVENC_GPU_VENDOR=""
+    NVENC_GPU_MODEL=""
+    NVENC_CAP_HDR10=0
+    NVENC_CAP_10BIT=0
+    NVENC_CAP_AV1=0
+    NVENC_DEVICE=""
+
+    [[ "$AV_PLATFORM" != "linux" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+
+    # Encoders ffmpeg
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1)_nvenc" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+
+    # GPU prezent fizic? nvidia-smi e cea mai sigura verificare
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        NVENC_GPU_MODEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//')
+        [[ -z "$NVENC_GPU_MODEL" ]] && return 1
+        NVENC_GPU_VENDOR="NVIDIA"
+    elif command -v lspci >/dev/null 2>&1; then
+        local nvidia_check; nvidia_check=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | grep -i nvidia | head -1)
+        [[ -z "$nvidia_check" ]] && return 1
+        NVENC_GPU_VENDOR="NVIDIA"
+        NVENC_GPU_MODEL=$(echo "$nvidia_check" | sed -E 's/.*: //;s/\(rev .*//')
+    else
+        return 1
+    fi
+
+    NVENC_ENCODERS="$enc_list"
+    NVENC_CAP_10BIT=1   # Maxwell+ suporta HEVC 10-bit
+    NVENC_CAP_HDR10=1   # Turing+ HDR10 solid
+    # AV1 NVENC: doar RTX 40+ (Ada Lovelace, AD102/AD103/AD104/AD106/AD107)
+    if [[ "$NVENC_ENCODERS" == *"av1_nvenc"* ]]; then
+        if [[ "$NVENC_GPU_MODEL" =~ RTX[[:space:]]*(40|50)[0-9]{2} ]] || [[ "$NVENC_GPU_MODEL" =~ Ada|Blackwell ]]; then
+            NVENC_CAP_AV1=1
+        fi
+    fi
+
+    NVENC_AVAILABLE=1
+    return 0
+}
+
+# ── VideoToolbox (macOS Intel + Apple Silicon) ────────────────────────
+detect_videotoolbox_caps() {
+    VT_AVAILABLE=0
+    VT_ENCODERS=""
+    VT_GPU_VENDOR=""
+    VT_GPU_MODEL=""
+    VT_CAP_HDR10=0
+    VT_CAP_HLG=0
+    VT_CAP_10BIT=0
+    VT_CAP_AV1=0
+    VT_CAP_PRORES=0
+    VT_DEVICE=""
+    VT_IS_APPLE_SILICON=0
+
+    [[ "$AV_PLATFORM" != "macos" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+
+    # Encoders ffmpeg (videotoolbox)
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1|prores)_videotoolbox" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+    VT_ENCODERS="$enc_list"
+
+    # Apple Silicon vs Intel detection
+    local arch; arch=$(uname -m 2>/dev/null)
+    if [[ "$arch" == "arm64" ]]; then
+        VT_IS_APPLE_SILICON=1
+        VT_GPU_VENDOR="Apple"
+        # Model identifier: M1 / M2 / M3 / M4 etc. via sysctl
+        local chip; chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
+        VT_GPU_MODEL="${chip:-Apple Silicon}"
+        VT_CAP_10BIT=1
+        VT_CAP_HDR10=1
+        VT_CAP_HLG=1
+        VT_CAP_PRORES=1   # Apple Silicon are HW ProRes (foarte rapid)
+        # AV1 VideoToolbox: doar M3 si mai noi
+        if [[ "$VT_ENCODERS" == *"av1_videotoolbox"* ]]; then
+            if [[ "$chip" =~ M[3-9] ]] || [[ "$chip" =~ M[1-9][0-9] ]]; then
+                VT_CAP_AV1=1
+            fi
+        fi
+    else
+        VT_GPU_VENDOR="Intel"
+        VT_GPU_MODEL="Intel Mac"
+        # Intel Mac VideoToolbox — H.264 8-bit, HEVC 8-bit (10-bit unstable)
+        VT_CAP_10BIT=0
+        VT_CAP_HDR10=0    # Tonemap recomandat
+        VT_CAP_HLG=0
+        VT_CAP_PRORES=1   # ProRes functioneaza si pe Intel (mai lent)
+    fi
+
+    VT_AVAILABLE=1
+    return 0
+}
+
+# ── AMF (AMD Linux RDNA3+) — experimental ─────────────────────────────
+detect_amf_caps() {
+    AMF_AVAILABLE=0
+    AMF_ENCODERS=""
+    AMF_GPU_VENDOR=""
+    AMF_GPU_MODEL=""
+    AMF_CAP_HDR10=0
+    AMF_CAP_10BIT=0
+    AMF_CAP_AV1=0
+    AMF_DEVICE=""
+    AMF_EXPERIMENTAL=1   # Marcat experimental in UI
+
+    [[ "$AV_PLATFORM" != "linux" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+
+    # Encoders ffmpeg
+    local enc_list
+    enc_list=$(ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(h264|hevc|av1)_amf" | awk '{print $2}')
+    [[ -z "$enc_list" ]] && return 1
+
+    # GPU AMD prezent?
+    if command -v lspci >/dev/null 2>&1; then
+        local amd_check; amd_check=$(lspci 2>/dev/null | grep -iE "vga|display|3d" | grep -iE "amd|radeon|ati" | head -1)
+        [[ -z "$amd_check" ]] && return 1
+        AMF_GPU_VENDOR="AMD"
+        AMF_GPU_MODEL=$(echo "$amd_check" | sed -E 's/.*: //;s/\(rev .*//')
+    else
+        return 1
+    fi
+
+    AMF_ENCODERS="$enc_list"
+    AMF_CAP_10BIT=1
+    AMF_CAP_HDR10=1
+    # AV1 AMF: RDNA3+ (RX 7000 series + iGPU 740M-890M)
+    if [[ "$AMF_ENCODERS" == *"av1_amf"* ]]; then
+        if [[ "$AMF_GPU_MODEL" =~ RX.7[0-9]{3}|RX.8[0-9]{3}|RDNA3 ]]; then
+            AMF_CAP_AV1=1
+        fi
+    fi
+
+    AMF_AVAILABLE=1
+    return 0
+}
+
+# ── Unified detection (apeleaza pe cele relevante platformei) ─────────
+# Apeleaza la incepul flow-ului encode pentru a avea toate capabilitatile.
+detect_all_hw_caps() {
+    case "$AV_PLATFORM" in
+        termux)
+            detect_mediacodec_caps
+            ;;
+        linux)
+            detect_nvenc_caps
+            detect_qsv_caps
+            detect_vaapi_caps
+            detect_amf_caps
+            ;;
+        macos)
+            detect_videotoolbox_caps
+            ;;
+    esac
+}
+
+# ── Lista backend-urilor disponibile pentru un codec dat ──────────────
+# Args: $1 = codec target (h264|hevc|av1|prores)
+# Output: lista (separate prin newline) de backends valide pentru codecul cerut.
+hw_list_backends_for_codec() {
+    local target="$1"
+    local out=()
+    case "$target" in
+        h264|hevc|av1)
+            [[ "${MC_AVAILABLE:-0}" == "1" ]]    && [[ "$MC_ENCODERS"    == *"${target}_mediacodec"*   ]] && out+=("mediacodec")
+            [[ "${NVENC_AVAILABLE:-0}" == "1" ]] && [[ "$NVENC_ENCODERS" == *"${target}_nvenc"*        ]] && out+=("nvenc")
+            [[ "${QSV_AVAILABLE:-0}" == "1" ]]   && [[ "$QSV_ENCODERS"   == *"${target}_qsv"*          ]] && out+=("qsv")
+            [[ "${VAAPI_AVAILABLE:-0}" == "1" ]] && [[ "$VAAPI_ENCODERS" == *"${target}_vaapi"*        ]] && out+=("vaapi")
+            [[ "${AMF_AVAILABLE:-0}" == "1" ]]   && [[ "$AMF_ENCODERS"   == *"${target}_amf"*          ]] && out+=("amf")
+            [[ "${VT_AVAILABLE:-0}" == "1" ]]    && [[ "$VT_ENCODERS"    == *"${target}_videotoolbox"* ]] && out+=("videotoolbox")
+            ;;
+        prores)
+            [[ "${VT_AVAILABLE:-0}" == "1" ]] && [[ "${VT_CAP_PRORES:-0}" == "1" ]] && out+=("videotoolbox")
+            ;;
+    esac
+    printf '%s\n' "${out[@]}"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v42 Chunk 2: UX uniform — preset table + backend menu
+# Slot 1=Ultrafast .. 7=Veryslow ; default 4=Quality
+# Mapping per backend:
+#   NVENC: p1..p7        | VAAPI: q1..q7 (1=fast, 7=slow)
+#   QSV: veryfast..veryslow
+#   VideoToolbox: q:v 80..50 (mai mic = mai bun)
+#   AMF: speed/balanced/quality (3-tier mapped pe 1-7)
+#   MediaCodec: scalare bitrate 60%..150%
+# ══════════════════════════════════════════════════════════════════════
+HW_PRESET_NAMES=(Ultrafast Faster Fast Quality Slow Slower Veryslow)
+
+# Eticheta per backend pentru un slot dat (folosita in tabel + build cmd)
+# Args: $1 = backend ; $2 = slot (1-7)
+hw_preset_label() {
+    local backend="$1" slot="$2"
+    case "$backend" in
+        nvenc)        echo "p${slot}" ;;
+        vaapi)        echo "q${slot}" ;;
+        qsv)
+            local qsv_n=(veryfast faster fast medium slow slower veryslow)
+            echo "${qsv_n[$((slot-1))]}"
+            ;;
+        videotoolbox)
+            local vt_q=(80 75 70 65 60 55 50)
+            echo "q:v ${vt_q[$((slot-1))]}"
+            ;;
+        amf)
+            case "$slot" in
+                1|2)   echo "speed"    ;;
+                3|4|5) echo "balanced" ;;
+                6|7)   echo "quality"  ;;
+            esac
+            ;;
+        mediacodec)
+            local mc_pct=(60 75 90 100 115 130 150)
+            echo "${mc_pct[$((slot-1))]}%"
+            ;;
+        *) echo "—" ;;
+    esac
+}
+
+# Determina ce coloane backend afisam in tabel pentru platforma curenta
+# Output: HW_TABLE_COLS (array global)
+hw_table_columns() {
+    HW_TABLE_COLS=()
+    case "$AV_PLATFORM" in
+        termux) HW_TABLE_COLS+=("mediacodec") ;;
+        macos)  HW_TABLE_COLS+=("videotoolbox") ;;
+        linux)  HW_TABLE_COLS+=("nvenc" "vaapi" "qsv" "amf") ;;
+    esac
+}
+
+# Header + width pentru o coloana backend
+# Args: $1 = backend ; output: HW_COL_HEADER + HW_COL_WIDTH (globale temporare)
+_hw_col_meta() {
+    case "$1" in
+        nvenc)        HW_COL_HEADER="NVENC"        ; HW_COL_WIDTH=10 ;;
+        vaapi)        HW_COL_HEADER="VAAPI"        ; HW_COL_WIDTH=10 ;;
+        qsv)          HW_COL_HEADER="QSV"          ; HW_COL_WIDTH=10 ;;
+        videotoolbox) HW_COL_HEADER="VideoToolbox" ; HW_COL_WIDTH=14 ;;
+        amf)          HW_COL_HEADER="AMF"          ; HW_COL_WIDTH=10 ;;
+        mediacodec)   HW_COL_HEADER="MediaCodec"   ; HW_COL_WIDTH=12 ;;
+        *)            HW_COL_HEADER="$1"           ; HW_COL_WIDTH=10 ;;
+    esac
+}
+
+# Afiseaza tabelul preset 1-7 cu coloana activa highlighted
+# Args: $1 = active_backend (numele backend-ului ales — coloana cu '>')
+hw_show_preset_table() {
+    local active="$1"
+    hw_table_columns
+
+    local YEL=$'\033[1;33m' DIM=$'\033[2m' NC=$'\033[0m'
+    local cols=80
+    if command -v tput >/dev/null 2>&1; then
+        cols=$(tput cols 2>/dev/null) || cols=80
+    fi
+
+    # Estimeaza latimea totala (#=4, Nume=12, fiecare backend+separator=width+3)
+    local total=$((4+12))
+    local b
+    for b in "${HW_TABLE_COLS[@]}"; do
+        _hw_col_meta "$b"
+        total=$((total + HW_COL_WIDTH + 3))
+    done
+
+    # Daca terminalul e prea ingust, afiseaza doar coloana activa (+ # + Nume)
+    local cols_to_show=("${HW_TABLE_COLS[@]}")
+    if (( cols < total )); then
+        cols_to_show=()
+        for b in "${HW_TABLE_COLS[@]}"; do
+            [[ "$b" == "$active" ]] && cols_to_show+=("$b")
+        done
+        # daca activul nu e in lista (cazul SW), pastram primul
+        [[ ${#cols_to_show[@]} -eq 0 ]] && cols_to_show=("${HW_TABLE_COLS[0]}")
+    fi
+
+    # Header row
+    printf "  %-3s %-12s" "#" "Nume"
+    for b in "${cols_to_show[@]}"; do
+        _hw_col_meta "$b"
+        if [[ "$b" == "$active" ]]; then
+            printf " %s> %-*s%s" "$YEL" "$HW_COL_WIDTH" "$HW_COL_HEADER" "$NC"
+        else
+            printf "   %s%-*s%s" "$DIM" "$HW_COL_WIDTH" "$HW_COL_HEADER" "$NC"
+        fi
+    done
+    echo ""
+
+    # Separator
+    printf "  --- ------------"
+    for b in "${cols_to_show[@]}"; do
+        _hw_col_meta "$b"
+        local sep=""
+        local k
+        for ((k=0; k<HW_COL_WIDTH; k++)); do sep+="-"; done
+        printf "   %s" "$sep"
+    done
+    echo ""
+
+    # Rows
+    local slot
+    for slot in 1 2 3 4 5 6 7; do
+        local name="${HW_PRESET_NAMES[$((slot-1))]}"
+        printf "  %-3d %-12s" "$slot" "$name"
+        for b in "${cols_to_show[@]}"; do
+            _hw_col_meta "$b"
+            local lbl; lbl=$(hw_preset_label "$b" "$slot")
+            if [[ "$b" == "$active" ]]; then
+                printf " %s> %-*s%s" "$YEL" "$HW_COL_WIDTH" "$lbl" "$NC"
+            else
+                printf "   %s%-*s%s" "$DIM" "$HW_COL_WIDTH" "$lbl" "$NC"
+            fi
+        done
+        echo ""
+    done
+}
+
+# Eticheta umana pentru un backend (folosita in meniu)
+hw_backend_label() {
+    case "$1" in
+        sw)           echo "SW (CPU — libx265/libx264/libsvtav1)" ;;
+        nvenc)        echo "NVENC (NVIDIA GPU${NVENC_GPU_MODEL:+ — $NVENC_GPU_MODEL})" ;;
+        vaapi)        echo "VAAPI (${VAAPI_GPU_VENDOR:-Linux}${VAAPI_GPU_MODEL:+ — $VAAPI_GPU_MODEL})" ;;
+        qsv)          echo "QSV (Intel Quick Sync${QSV_GPU_MODEL:+ — $QSV_GPU_MODEL})" ;;
+        videotoolbox) echo "VideoToolbox (${VT_CHIP:-macOS})" ;;
+        amf)          echo "AMF [experimental] (AMD GPU${AMF_GPU_MODEL:+ — $AMF_GPU_MODEL})" ;;
+        mediacodec)   echo "MediaCodec (Android HW${MC_SOC_LABEL:+ — $MC_SOC_LABEL})" ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+# Meniu interactiv backend pentru codecul tinta. Adauga mereu SW + HW disponibile.
+# Args: $1 = target codec (h264|hevc|av1|prores)
+# Set: HW_BACKEND ("sw" sau numele backend-ului HW). Returns 0.
+hw_pick_backend() {
+    local target="$1"
+    local avail; avail=$(hw_list_backends_for_codec "$target")
+
+    local opts=("sw")
+    local b
+    while IFS= read -r b; do
+        [[ -n "$b" ]] && opts+=("$b")
+    done <<< "$avail"
+
+    # Daca nu exista HW pentru codecul tinta, salt direct la SW
+    if [[ ${#opts[@]} -eq 1 ]]; then
+        HW_BACKEND="sw"
+        return 0
+    fi
+
+    echo ""
+    echo "  Backend de encodare:"
+    local i=1
+    for b in "${opts[@]}"; do
+        printf "    %d) %s\n" "$i" "$(hw_backend_label "$b")"
+        ((i++))
+    done
+
+    local choice
+    read -p "  Alege [1-${#opts[@]}, default 1]: " choice
+    choice="${choice:-1}"
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#opts[@]} )); then
+        echo "  Selectie invalida — folosesc SW."
+        HW_BACKEND="sw"
+    else
+        HW_BACKEND="${opts[$((choice-1))]}"
+    fi
+    return 0
+}
+
+# Selectie slot preset 1-7 cu afisarea tabelului. Default 4 (Quality).
+# Args: $1 = backend (daca == "sw" sau gol, returneaza fara prompt)
+# Set: HW_PRESET_SLOT (1-7)
+hw_pick_preset() {
+    local backend="$1"
+    [[ -z "$backend" || "$backend" == "sw" ]] && { HW_PRESET_SLOT=""; return 0; }
+
+    echo ""
+    echo "  Tabel preset HW (1=cel mai rapid, 7=calitate max):"
+    echo ""
+    hw_show_preset_table "$backend"
+    echo ""
+    local choice
+    read -p "  Alege slot preset [1-7, default 4]: " choice
+    choice="${choice:-4}"
+    if ! [[ "$choice" =~ ^[1-7]$ ]]; then
+        echo "  Slot invalid — folosesc 4 (Quality)."
+        choice=4
+    fi
+    HW_PRESET_SLOT="$choice"
+    echo "  → Selectat: slot $choice (${HW_PRESET_NAMES[$((choice-1))]}) pe backend $backend = $(hw_preset_label "$backend" "$choice")"
+}
+
+# ══════════════════════════════════════════════════════════════════════
 # v38: BUILD MEDIACODEC FFMPEG_CMD
 # Args: $1 = file ; $2 = enc_codec (hevc|h264|av1)
 # Citeste env: WIDTH, MC_HDR_MODE, MC_CAP_HEVC10, AUDIO_PARAMS, MAP_FLAGS, THREADS
@@ -2230,6 +2753,16 @@ build_mediacodec_cmd() {
     else
         bitrate=$(get_adaptive_bitrate "$enc_name" "$WIDTH")
         maxrate=$(( bitrate * 3 / 2 ))
+    fi
+    # v42: HW_PRESET_SLOT scaleaza bitrate-ul (60%..150%) — paralel cu p1..p7 pe NVENC
+    # Aplicat doar pentru CRF mode (ENCODE_MODE=1); VBR custom pastreaza target user
+    if [[ "${ENCODE_MODE:-1}" != "2" ]] && [[ -n "${HW_PRESET_SLOT:-}" ]]; then
+        local mc_pct=(60 75 90 100 115 130 150)
+        local pct="${mc_pct[$((HW_PRESET_SLOT-1))]}"
+        if [[ -n "$pct" ]]; then
+            bitrate=$(( bitrate * pct / 100 ))
+            maxrate=$(( bitrate * 3 / 2 ))
+        fi
     fi
     bufsize=$(( bitrate * 2 ))
     rate_flags="-b:v ${bitrate}k -maxrate ${maxrate}k -bufsize ${bufsize}k"
@@ -2290,6 +2823,392 @@ build_mediacodec_cmd() {
         $profile_flag -pix_fmt $pix_fmt $color_flags $VIDEO_FILTER $AUDIO_PARAMS"
 
     return 0
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v42 Chunk 3: Build commands per backend (NVENC/VAAPI/QSV/VT/AMF)
+# Toate citesc: WIDTH, HW_PRESET_SLOT, ENCODE_MODE, VBR_TARGET, VBR_MAXRATE,
+#   CUSTOM_CRF, AUDIO_PARAMS, MAP_FLAGS, VIDEO_FILTER, THREADS, HW_HDR_MODE
+# Toate seteaza: FFMPEG_CMD (string)
+# HW_HDR_MODE valori: ""/sdr | hw_hdr10 | hw_hlg | hw_sdr (tonemap)
+# ══════════════════════════════════════════════════════════════════════
+
+# Helper comun: returneaza color_flags + pix_fmt + profile pe baza HW_HDR_MODE
+# Args: $1 = enc_codec ; output via globals _HW_PIX_FMT / _HW_COLOR_FLAGS / _HW_PROFILE
+_hw_hdr_setup() {
+    local enc_codec="$1"
+    _HW_PIX_FMT="yuv420p"
+    _HW_COLOR_FLAGS=""
+    _HW_PROFILE=""
+    case "${HW_HDR_MODE:-}" in
+        hw_hdr10|hw_repair)
+            _HW_PIX_FMT="p010le"
+            [[ "$enc_codec" == "hevc" ]] && _HW_PROFILE="-profile:v main10"
+            _HW_COLOR_FLAGS="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+            ;;
+        hw_hlg)
+            _HW_PIX_FMT="p010le"
+            [[ "$enc_codec" == "hevc" ]] && _HW_PROFILE="-profile:v main10"
+            _HW_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+            ;;
+        hw_sdr)
+            _HW_PIX_FMT="yuv420p"
+            _HW_COLOR_FLAGS="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+            local sdr_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
+            if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == "-vf "* ]]; then
+                VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${sdr_vf},}"
+            else
+                VIDEO_FILTER="-vf $sdr_vf"
+            fi
+            ;;
+    esac
+}
+
+# ── NVENC (NVIDIA) ────────────────────────────────────────────────────
+build_nvenc_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name="${enc_codec}_nvenc"
+    local slot="${HW_PRESET_SLOT:-4}"
+    local preset="p${slot}"
+
+    local rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        rate_flags="-rc vbr -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}} -bufsize ${VBR_TARGET}"
+    else
+        local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
+        rate_flags="-rc vbr -cq $crf -b:v 0"
+    fi
+
+    _hw_hdr_setup "$enc_codec"
+
+    log "  NVENC: $enc_name | preset $preset | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name -preset $preset -tune hq $rate_flags \
+        -spatial_aq 1 -temporal_aq 1 \
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+    return 0
+}
+
+# ── QSV (Intel Quick Sync) ────────────────────────────────────────────
+build_qsv_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name="${enc_codec}_qsv"
+    local slot="${HW_PRESET_SLOT:-4}"
+    local qsv_n=(veryfast faster fast medium slow slower veryslow)
+    local preset="${qsv_n[$((slot-1))]}"
+
+    local rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        rate_flags="-b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
+    else
+        local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
+        rate_flags="-global_quality $crf -look_ahead 1"
+    fi
+
+    _hw_hdr_setup "$enc_codec"
+    # QSV foloseste nv12 pentru SDR (nu yuv420p)
+    [[ "$_HW_PIX_FMT" == "yuv420p" ]] && _HW_PIX_FMT="nv12"
+
+    log "  QSV: $enc_name | preset $preset | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name -preset $preset $rate_flags \
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+    return 0
+}
+
+# ── VAAPI (Linux Intel iGPU + AMD) ────────────────────────────────────
+# VAAPI necesita hwupload la finalul lantului SW (-vf '...,format=X,hwupload')
+build_vaapi_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name="${enc_codec}_vaapi"
+    local slot="${HW_PRESET_SLOT:-4}"
+
+    local rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        rate_flags="-rc_mode VBR -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
+    else
+        local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
+        rate_flags="-rc_mode CQP -qp $crf"
+    fi
+
+    _hw_hdr_setup "$enc_codec"
+    local upload_fmt="nv12"
+    [[ "$_HW_PIX_FMT" == "p010le" ]] && upload_fmt="p010"
+
+    # Append format+hwupload la finalul lantului VF (sau creeaza unul nou)
+    local va_tail="format=${upload_fmt},hwupload"
+    if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == "-vf "* ]]; then
+        VIDEO_FILTER="${VIDEO_FILTER},${va_tail}"
+    else
+        VIDEO_FILTER="-vf ${va_tail}"
+    fi
+
+    log "  VAAPI: $enc_name | quality $slot | device $VAAPI_DEVICE${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -vaapi_device $VAAPI_DEVICE -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name -quality $slot $rate_flags \
+        $_HW_PROFILE $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+    return 0
+}
+
+# ── VideoToolbox (macOS) ──────────────────────────────────────────────
+build_videotoolbox_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name
+    case "$enc_codec" in
+        prores) enc_name="prores_videotoolbox" ;;
+        *)      enc_name="${enc_codec}_videotoolbox" ;;
+    esac
+    local slot="${HW_PRESET_SLOT:-4}"
+    local vt_q=(80 75 70 65 60 55 50)
+    local q="${vt_q[$((slot-1))]}"
+
+    local rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        rate_flags="-b:v ${VBR_TARGET}"
+    else
+        rate_flags="-q:v $q"
+    fi
+
+    _hw_hdr_setup "$enc_codec"
+
+    log "  VideoToolbox: $enc_name | q $q (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name $rate_flags -allow_sw 0 \
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+    return 0
+}
+
+# ── AMF (AMD Linux — experimental) ────────────────────────────────────
+build_amf_cmd() {
+    local file="$1" enc_codec="$2"
+    local enc_name="${enc_codec}_amf"
+    local slot="${HW_PRESET_SLOT:-4}"
+    local quality
+    case "$slot" in
+        1|2)   quality="speed"    ;;
+        3|4|5) quality="balanced" ;;
+        6|7)   quality="quality"  ;;
+    esac
+
+    local rate_flags
+    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+        rate_flags="-rc vbr_peak -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
+    else
+        local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
+        rate_flags="-rc cqp -qp_i $crf -qp_p $crf -qp_b $crf"
+    fi
+
+    _hw_hdr_setup "$enc_codec"
+
+    log "  AMF: $enc_name | quality $quality (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+
+    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+        -c:v $enc_name -quality $quality $rate_flags \
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+    return 0
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v42 Chunk 5: HDR generalizat peste backend-uri HW
+# Generalizare a show_hdr_mediacodec_dialog pentru NVENC/VAAPI/QSV/VT/AMF.
+# Sets HW_HDR_MODE: sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr
+# Returns: 0 mode set | 98 user skip
+# Profile bypass via HW_HDR_POLICY env (sau MEDIACODEC_HDR_POLICY pentru MC).
+# ══════════════════════════════════════════════════════════════════════
+show_hdr_hw_dialog() {
+    local backend="$1" src_type="$2" dv_p="${3:-}"
+    HW_HDR_MODE=""
+
+    local policy="${HW_HDR_POLICY:-}"
+    [[ "$backend" == "mediacodec" ]] && [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]] && policy="$MEDIACODEC_HDR_POLICY"
+    if [[ -n "$policy" ]]; then
+        case "$policy" in
+            sw_full|sw_degraded|hw_hdr10|hw_hlg|hw_sdr|hw_repair)
+                HW_HDR_MODE="$policy"
+                [[ "$policy" == "hw_repair" ]] && HW_HDR_MODE="hw_hdr10"
+                log "  HW HDR policy din profil: $HW_HDR_MODE"
+                return 0 ;;
+            skip)
+                log "  HW HDR policy din profil: skip"; return 98 ;;
+        esac
+    fi
+
+    local bl="$backend"
+    echo ""
+    echo "  +======================================================+"
+    case "$src_type" in
+        dv)
+            echo "  |  ! Sursa este Dolby Vision (profil ${dv_p:-?})"
+            echo "  |  $bl nu poate produce DV nativ. Optiuni:"
+            echo "  +------------------------------------------------------+"
+            echo "  |  1) SW - pastreaza DV complet (recomandat)"
+            echo "  |  2) SW - strip DV, pastreaza HDR10 BL"
+            echo "  |  3) $bl - strip DV -> HDR10 10-bit"
+            echo "  |  4) $bl - strip DV -> SDR tonemap 8-bit"
+            echo "  |  5) Skip fisier"
+            echo "  +======================================================+"
+            read -p "  Alege 1-5 [implicit: 1]: " _ch
+            case "${_ch:-1}" in
+                2) HW_HDR_MODE="sw_degraded" ;;
+                3) HW_HDR_MODE="hw_hdr10"    ;;
+                4) HW_HDR_MODE="hw_sdr"      ;;
+                5) return 98 ;;
+                *) HW_HDR_MODE="sw_full"     ;;
+            esac ;;
+        hdr10plus)
+            echo "  |  ! Sursa este HDR10+ (cu dynamic metadata)"
+            echo "  |  $bl nu transmite dynamic metadata. Optiuni:"
+            echo "  +------------------------------------------------------+"
+            echo "  |  1) SW - pastreaza HDR10+ complet (recomandat)"
+            echo "  |  2) SW - encode ca HDR10 static (drop dynamic)"
+            echo "  |  3) $bl - HDR10 10-bit (drop dynamic)"
+            echo "  |  4) $bl - SDR tonemap 8-bit"
+            echo "  |  5) Skip fisier"
+            echo "  +======================================================+"
+            read -p "  Alege 1-5 [implicit: 1]: " _ch
+            case "${_ch:-1}" in
+                2) HW_HDR_MODE="sw_degraded" ;;
+                3) HW_HDR_MODE="hw_hdr10"    ;;
+                4) HW_HDR_MODE="hw_sdr"      ;;
+                5) return 98 ;;
+                *) HW_HDR_MODE="sw_full"     ;;
+            esac ;;
+        hlg)
+            echo "  |  ! Sursa este HLG (BT.2100 HLG)"
+            echo "  |  $bl suporta signaling HLG nativ. Optiuni:"
+            echo "  +------------------------------------------------------+"
+            echo "  |  1) $bl - HLG nativ 10-bit (recomandat)"
+            echo "  |  2) SW - HLG nativ 10-bit"
+            echo "  |  3) $bl - HLG -> HDR10 (PQ)"
+            echo "  |  4) $bl - HLG -> SDR tonemap 8-bit"
+            echo "  |  5) Skip fisier"
+            echo "  +======================================================+"
+            read -p "  Alege 1-5 [implicit: 1]: " _ch
+            case "${_ch:-1}" in
+                2) HW_HDR_MODE="sw_full"  ;;
+                3) HW_HDR_MODE="hw_hdr10" ;;
+                4) HW_HDR_MODE="hw_sdr"   ;;
+                5) return 98 ;;
+                *) HW_HDR_MODE="hw_hlg"   ;;
+            esac ;;
+        hdr10|*)
+            echo "  |  ! Sursa este HDR10"
+            echo "  |  $bl suporta HDR10 nativ. Optiuni:"
+            echo "  +------------------------------------------------------+"
+            echo "  |  1) $bl - HDR10 10-bit nativ (recomandat)"
+            echo "  |  2) SW - HDR10 nativ"
+            echo "  |  3) $bl - SDR tonemap 8-bit"
+            echo "  |  4) Skip fisier"
+            echo "  +======================================================+"
+            read -p "  Alege 1-4 [implicit: 1]: " _ch
+            case "${_ch:-1}" in
+                2) HW_HDR_MODE="sw_full"  ;;
+                3) HW_HDR_MODE="hw_sdr"   ;;
+                4) return 98 ;;
+                *) HW_HDR_MODE="hw_hdr10" ;;
+            esac ;;
+    esac
+    log "  Ales: $HW_HDR_MODE pe backend $bl"
+    return 0
+}
+
+# ── Helper: sursa este HDR/LOG (orice fel) ───────────────────────────
+# Returns 0 daca sursa necesita tratament HDR (HDR10/HDR10+/DV/HLG/LOG)
+hw_source_needs_hdr_handling() {
+    [[ -n "${DOVI:-}" ]] && return 0
+    [[ "${HDR_PLUS:-}" == *"HDR10+"* ]] && return 0
+    [[ "${HDR_TYPE:-}" == *"smpte2084"* ]] && return 0
+    [[ "${IS_HLG:-0}" == "1" ]] && return 0
+    [[ -n "${LOG_PROFILE:-}" ]] && return 0
+    return 1
+}
+
+# ── Dispatch HW unificat (Chunk 4 + Chunk 5) ─────────────────────────
+# Pentru SDR: build HW direct.
+# Pentru HDR/LOG: cheama show_hdr_hw_dialog si dispatch pe HW_HDR_MODE.
+# Args: $1 = file ; $2 = enc_codec (h264|hevc|av1|prores)
+# Returns: 0 = HW dispatched ; 1 = continua cu SW path ; 98 = user skip
+hw_dispatch_sdr() {
+    local file="$1" enc_codec="$2"
+    case "${HW_BACKEND:-sw}" in
+        nvenc|vaapi|qsv|videotoolbox|amf) ;;
+        *) return 1 ;;
+    esac
+
+    if hw_source_needs_hdr_handling; then
+        # LOG sources nu sunt suportate pe HW (necesita LUT/tonemap dialog SW)
+        if [[ -n "${LOG_PROFILE:-}" ]]; then
+            log "  Sursa LOG ($LOG_PROFILE) — backend $HW_BACKEND nu suporta LUT/tonemap; fallback SW"
+            return 1
+        fi
+
+        local src_type="" dv_p=""
+        if [[ -n "${DOVI:-}" ]]; then src_type="dv"; dv_p="$DOVI"
+        elif [[ "${HDR_PLUS:-}" == *"HDR10+"* ]]; then src_type="hdr10plus"
+        elif [[ "${IS_HLG:-0}" == "1" ]]; then src_type="hlg"
+        elif [[ "${HDR_TYPE:-}" == *"smpte2084"* ]]; then src_type="hdr10"
+        fi
+
+        show_hdr_hw_dialog "$HW_BACKEND" "$src_type" "$dv_p"
+        local dlg_rc=$?
+        [ $dlg_rc -eq 98 ] && return 98
+
+        case "$HW_HDR_MODE" in
+            sw_full)
+                return 1
+                ;;
+            sw_degraded)
+                # Strip enhancement: HDR10+ → HDR10 static, DV → HDR10 BL
+                HDR_PLUS=""
+                if [[ -n "${DOVI:-}" ]]; then DOVI=""; HDR_TYPE="smpte2084"; fi
+                return 1
+                ;;
+            hw_hdr10|hw_hlg|hw_sdr)
+                if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                    dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} ($HW_HDR_MODE)" \
+                        "$WIDTH" "$DURATION" "$src_type"
+                    return 0
+                fi
+                hw_build_cmd "$file" "$enc_codec"
+                return 0
+                ;;
+            *)
+                log "  Mod HDR necunoscut: $HW_HDR_MODE — fallback SW"
+                return 1
+                ;;
+        esac
+    fi
+
+    # SDR path
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} (slot ${HW_PRESET_SLOT:-4})" \
+            "$WIDTH" "$DURATION" "SDR"
+        return 0
+    fi
+    HW_HDR_MODE=""
+    hw_build_cmd "$file" "$enc_codec"
+}
+
+# ── Dispatcher unificat ──────────────────────────────────────────────
+# Construieste FFMPEG_CMD pe baza HW_BACKEND ales.
+# Args: $1 = file ; $2 = enc_codec (h264|hevc|av1|prores)
+# Returns: 0 dispatched HW build ; 1 backend SW (encoder script construieste cmd direct)
+hw_build_cmd() {
+    local file="$1" enc_codec="$2"
+    case "${HW_BACKEND:-sw}" in
+        nvenc)        build_nvenc_cmd        "$file" "$enc_codec" ;;
+        vaapi)        build_vaapi_cmd        "$file" "$enc_codec" ;;
+        qsv)          build_qsv_cmd          "$file" "$enc_codec" ;;
+        videotoolbox) build_videotoolbox_cmd "$file" "$enc_codec" ;;
+        amf)          build_amf_cmd          "$file" "$enc_codec" ;;
+        mediacodec)   build_mediacodec_cmd   "$file" "$enc_codec" ;;
+        sw|"")        return 1 ;;
+        *)            return 1 ;;
+    esac
 }
 
 # ══════════════════════════════════════════════════════════════════════

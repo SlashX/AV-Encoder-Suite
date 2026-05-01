@@ -357,44 +357,58 @@ case "$ENCODER" in
         ;;
 esac
 
-# ── v38: HW MediaCodec menu (Termux/Android only, doar pe x265/x264/av1) ──
+# ── v42: HW backend menu — cross-platform (NVENC/VAAPI/QSV/VT/AMF/MediaCodec) ──
+# Profile-friendly: dacă HW_BACKEND e deja setat (din .conf), sare peste prompt.
+HW_BACKEND="${HW_BACKEND:-sw}"
+HW_PRESET_SLOT="${HW_PRESET_SLOT:-}"
 USE_MEDIACODEC=0
 MC_CODEC=""
-if [[ "$ENCODER_NAME" =~ ^(libx265|libx264|av1)$ ]]; then
-    # Source minimal pentru detect (av_common.sh nu schimba state global periculos)
+if [[ "$ENCODER_NAME" =~ ^(libx265|libx264|av1|prores)$ ]]; then
     if [[ -f "$SCRIPT_DIR/av_common.sh" ]]; then
         # shellcheck disable=SC1091
         source "$SCRIPT_DIR/av_common.sh" 2>/dev/null
-        if declare -f detect_mediacodec_caps >/dev/null 2>&1; then
-            detect_mediacodec_caps
-            case "$ENCODER_NAME" in
-                libx265) MC_CODEC="hevc"; SW_LABEL="libx265 (SW)" ;;
-                libx264) MC_CODEC="h264"; SW_LABEL="libx264 (SW)" ;;
-                av1)     MC_CODEC="av1";  SW_LABEL="${AV1_ENCODER_NAME:-av1} (SW)" ;;
-            esac
-            if [[ "${MC_AVAILABLE:-0}" == "1" ]] && [[ "$MC_ENCODERS" == *"${MC_CODEC}_mediacodec"* ]]; then
-                mediacodec_print_banner
-                mc_label=$(mediacodec_menu_label "$MC_CODEC")
-                echo ""
-                echo "Mod encoding pentru $ENCODER_NAME:"
-                echo "  1) $SW_LABEL — calitate maxima (recomandat)"
-                echo "  2) $mc_label — viteza + baterie (HW Android)"
-                read -p "Alege 1-2 [implicit: 1]: " hw_choice
-                if [[ "${hw_choice:-1}" == "2" ]]; then
-                    if mediacodec_confirm_unknown_soc; then
-                        USE_MEDIACODEC=1
-                        echo "  HW selectat: ${MC_CODEC}_mediacodec"
-                    else
-                        echo "  Anulat — folosesc SW"
-                    fi
+        declare -f detect_all_hw_caps >/dev/null 2>&1 && detect_all_hw_caps
+        case "$ENCODER_NAME" in
+            libx265) MC_CODEC="hevc" ;;
+            libx264) MC_CODEC="h264" ;;
+            av1)     MC_CODEC="av1"  ;;
+            prores)  MC_CODEC="prores" ;;
+        esac
+        if [[ "${MC_AVAILABLE:-0}" == "1" ]] && declare -f mediacodec_print_banner >/dev/null 2>&1; then
+            mediacodec_print_banner
+        fi
+        # Profile bypass: HW_BACKEND deja setat din .conf (non-sw, valid)?
+        if [[ "$HW_BACKEND" =~ ^(nvenc|vaapi|qsv|videotoolbox|amf|mediacodec)$ ]]; then
+            HW_PRESET_SLOT="${HW_PRESET_SLOT:-4}"
+            echo "  Profile: HW_BACKEND=$HW_BACKEND, slot=$HW_PRESET_SLOT (skip prompt)"
+            [[ "$HW_BACKEND" == "mediacodec" ]] && USE_MEDIACODEC=1
+        elif declare -f hw_pick_backend >/dev/null 2>&1; then
+            hw_pick_backend "$MC_CODEC"
+            hw_pick_preset "$HW_BACKEND"
+            if [[ "$HW_BACKEND" == "mediacodec" ]]; then
+                if declare -f mediacodec_confirm_unknown_soc >/dev/null 2>&1 \
+                   && ! mediacodec_confirm_unknown_soc; then
+                    echo "  Anulat — folosesc SW"
+                    HW_BACKEND="sw"
+                    HW_PRESET_SLOT=""
+                else
+                    USE_MEDIACODEC=1
                 fi
             fi
         fi
     fi
 fi
-export USE_MEDIACODEC MC_CODEC MC_AVAILABLE MC_ENCODERS \
+export HW_BACKEND HW_PRESET_SLOT \
+       USE_MEDIACODEC MC_CODEC MC_AVAILABLE MC_ENCODERS \
        MC_SOC_VENDOR MC_SOC_MODEL MC_ANDROID_VER \
        MC_SOC_VERIFIED MC_CAP_HEVC10 MC_CAP_AV1 \
+       NVENC_AVAILABLE NVENC_ENCODERS NVENC_GPU_MODEL NVENC_CAP_AV1 NVENC_CAP_HDR10 \
+       VAAPI_AVAILABLE VAAPI_ENCODERS VAAPI_GPU_VENDOR VAAPI_GPU_MODEL VAAPI_DEVICE \
+       VAAPI_CAP_AV1 VAAPI_CAP_HDR10 VAAPI_CAP_10BIT \
+       QSV_AVAILABLE QSV_ENCODERS QSV_GPU_MODEL QSV_CAP_AV1 QSV_CAP_HDR10 \
+       VT_AVAILABLE VT_ENCODERS VT_CHIP VT_IS_APPLE_SILICON VT_CAP_PRORES \
+       VT_CAP_AV1 VT_CAP_HDR10 VT_CAP_HLG \
+       AMF_AVAILABLE AMF_ENCODERS AMF_GPU_MODEL AMF_CAP_AV1 AMF_CAP_HDR10 AMF_EXPERIMENTAL \
        MEDIACODEC_HDR_POLICY HW_FORCE
 
 # ── Profil x264 ───────────────────────────────────────────────────────

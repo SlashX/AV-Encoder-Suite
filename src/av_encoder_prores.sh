@@ -43,6 +43,14 @@ get_container_flags() {
 encoder_setup_file() {
     local file="$1"
 
+    # ── v42: HW dispatch ProRes — doar VideoToolbox pe macOS ──────────
+    # ProRes HW e ne-HDR; LOG sources merg prin SW (pastreaza Log intact)
+    if [[ "${HW_BACKEND:-sw}" == "videotoolbox" ]] && [[ -z "${LOG_PROFILE:-}" ]]; then
+        hw_dispatch_sdr "$file" "prores"; _hw_rc=$?
+        [ $_hw_rc -eq 0 ]  && return 0
+        [ $_hw_rc -eq 98 ] && return 98
+    fi
+
     # ── LOG format — ProRes pastreaza Log-ul intact automat ───────────
     if [[ -n "$LOG_PROFILE" ]]; then
         local profile_label

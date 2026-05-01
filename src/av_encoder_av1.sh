@@ -86,6 +86,11 @@ encoder_log_header() {
 encoder_setup_file() {
     local file="$1"
 
+    # ── v42: HW backend dispatch (NVENC/VAAPI/QSV/VT/AMF) — SDR + HDR ──
+    hw_dispatch_sdr "$file" "av1"; _hw_rc=$?
+    [ $_hw_rc -eq 0 ]  && return 0
+    [ $_hw_rc -eq 98 ] && return 98
+
     # ── v38: MediaCodec branch (Termux HW AV1) ────────────────────────
     if [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
         # Pre-check: AV1 hw encode disponibil pe SoC? (capabilitate SoC, nu per-fisier)

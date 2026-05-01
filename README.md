@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android), Linux, macOS and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing and profile system — v41
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system, and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v42
 
 ---
 
@@ -221,6 +221,21 @@ cd src
 - **MediaCodec** (Termux Android only) auto-skipped on Linux/macOS — silent fallback to SW encode.
 - **HDR10+/DV tools**: `tools/hdr10plus_parser.sh` and `tools/dovi_parser.sh` build from source on Termux; on macOS hint to `brew install hdr10plus_tool` / `brew install dovi_tool`; on Linux hint to `cargo install`.
 
+### HW encoding generalizat (v42)
+
+- **5 backend-uri HW** (în plus față de MediaCodec Termux v38 și HW PowerShell v35):
+  - **NVENC** (NVIDIA, Linux) — h264/hevc/av1; AV1 doar RTX 40+/Ada
+  - **VAAPI** (Intel iGPU + AMD, Linux) — via `/dev/dri/renderD*`
+  - **QSV** (Intel, Linux) — HDR10 pe Tiger Lake+/Alchemist+
+  - **VideoToolbox** (macOS) — h264/hevc/av1/prores; AV1 doar Apple Silicon M3+; HDR10+HLG full pe AS
+  - **AMF** (AMD, Linux experimental) — AV1 doar RDNA3+
+- **Detection cross-platform**: `detect_all_hw_caps()` în `av_common.sh` apelează detector-ul corect per platformă (lspci/nvidia-smi/sysctl/getprop)
+- **UX uniform — preset table 1-7**: Ultrafast / Faster / Fast / **Quality (default 4)** / Slow / Slower / Veryslow. Tabelul afișează coloane filtrate per platformă (Termux→MediaCodec; macOS→VideoToolbox; Linux→NVENC+VAAPI+QSV+AMF), coloana activă highlighted cu `>` + galben, restul dim. Pe terminale înguste (`tput cols`) se afișează doar coloana activă.
+- **Preset mapping**: NVENC `p1..p7` | VAAPI `q1..q7` | QSV `veryfast..veryslow` | VideoToolbox `q:v 80..50` | AMF `speed/balanced/quality` | MediaCodec `60%..150%` bitrate
+- **HDR generalizat** (`show_hdr_hw_dialog`): mirror al dialogului MediaCodec pentru toate backend-urile, 4 source types (DV / HDR10+ / HLG / HDR10) cu opțiuni `sw_full` (recomandat DV/HDR10+) / `sw_degraded` (strip enhancement) / `hw_hdr10` (10-bit BT.2020 PQ) / `hw_hlg` (HLG nativ) / `hw_sdr` (tonemap) / skip
+- **Profile fields noi**: `HW_BACKEND` (sw/nvenc/vaapi/qsv/videotoolbox/amf/mediacodec) + `HW_PRESET_SLOT` (1-7) + `HW_HDR_POLICY` (bypass dialog) + `HW_FORCE` (bypass detection pentru GPU-uri ne-detectate)
+- **Back-compat**: MediaCodec păstrează dialog-ul HDR dedicat v38/v39 (HDR10+/DV degraded specifice); USE_MEDIACODEC=1 setat automat când HW_BACKEND=mediacodec
+
 ### Trim & Concat (v36/v37)
 - **Trim** — cut a single file with stream copy (instant, ±1-2s keyframe accuracy) or re-encode (frame-accurate); multi-cut loop per file
 - **Concat** — concatenate multiple files; auto compat check (codec/resolution/fps/pix_fmt) picks demuxer (stream copy, lossless) or filter (re-encode); sort by name/date/size/manual
@@ -310,4 +325,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v41** — 49 bugs fixed | 150+ features | ~15500 lines of code
+Current: **v42** — 49 bugs fixed | 160+ features | ~16500 lines of code

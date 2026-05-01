@@ -3,9 +3,87 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v41 | 49 bug-uri fixate | 150+ features
-  29 fisiere | ~15500 linii cod | ~3650 linii documentatie
+  TOTAL: v42 | 49 bug-uri fixate | 160+ features
+  29 fisiere | ~16500 linii cod | ~3750 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v42 — HW encoding generalizat (NVENC/VAAPI/QSV/VideoToolbox/AMF)
+═══════════════════════════════════════════════════════════════
+
+  ADD Detection layer pentru 5 backend-uri HW (av_common.sh)
+        detect_nvenc_caps  — Linux NVIDIA via nvidia-smi sau lspci grep nvidia,
+            AV1 detectat doar pe RTX 40+/Ada (regex generation gen)
+        detect_vaapi_caps  — Linux Intel iGPU + AMD via /dev/dri/renderD128/129,
+            ffmpeg -encoders cross-check, vainfo verification cand disponibil
+        detect_qsv_caps    — Linux Intel via /dev/dri + lspci grep "intel",
+            ffmpeg -encoders pentru hevc/h264/av1_qsv
+        detect_videotoolbox_caps — macOS via uname -m (arm64=Apple Silicon),
+            sysctl machdep.cpu.brand_string pentru chip M1/M2/M3, AV1 doar M3+,
+            ProRes mereu disponibil, HDR10+HLG full pe Apple Silicon
+        detect_amf_caps    — Linux AMD via lspci grep "amd|radeon", marker
+            [experimental] AMF_EXPERIMENTAL=1, AV1 doar pe RDNA3+ (RX 7000/8000)
+        detect_all_hw_caps — dispatcher per platforma (termux→MC, linux→4 backends,
+            macos→VT) ; hw_list_backends_for_codec(codec) returneaza lista valida
+  ADD UX uniform — preset table 1-7 + meniu backend (av_common.sh)
+        HW_PRESET_NAMES: Ultrafast/Faster/Fast/Quality(default 4)/Slow/Slower/Veryslow
+        hw_preset_label(backend, slot) — eticheta per backend pentru un slot:
+            NVENC p1..p7 | VAAPI q1..q7 | QSV veryfast..veryslow
+            VideoToolbox q:v 80..50 | AMF speed/balanced/quality (3-tier)
+            MediaCodec scalare bitrate 60%..150%
+        hw_show_preset_table(active_backend) — afisaj coloane filtrate per platforma
+            (termux→MC ; macos→VT ; linux→nvenc+vaapi+qsv+amf), coloana activa
+            highlighted galben + marker '>', restul dim. Daca tput cols < total,
+            afiseaza doar coloana activa pentru terminale inguste
+        hw_pick_backend(codec) — meniu interactiv SW + backends HW disponibile
+        hw_pick_preset(backend) — afiseaza tabelul + prompt slot 1-7 (default 4)
+        hw_backend_label — eticheta umana pentru fiecare backend in meniu
+  ADD Build commands per backend (av_common.sh)
+        build_nvenc_cmd  — preset p1..p7, -tune hq, -rc vbr -cq, spatial+temporal_aq
+        build_vaapi_cmd  — -vaapi_device, -quality 1..7, -rc_mode CQP/VBR,
+            append automat 'format=nv12/p010,hwupload' la finalul lantului VF
+        build_qsv_cmd    — -preset veryfast..veryslow, -global_quality, -look_ahead
+        build_videotoolbox_cmd — -q:v 50..80, -allow_sw 0, ProRes via prores_videotoolbox
+        build_amf_cmd    — -quality speed/balanced/quality, -rc cqp/vbr_peak
+        _hw_hdr_setup(codec) — helper comun pentru pix_fmt + color_flags + profile
+            (HW_HDR_MODE: hw_hdr10/hw_hlg/hw_sdr/sdr); hw_sdr injecteaza tonemap VF
+        hw_build_cmd(file, codec) — dispatcher unificat pe HW_BACKEND
+  ADD Encoder integration (x265/x264/av1/prores)
+        encoder_setup_file: hw_dispatch_sdr la inceput, return 0/98 daca dispatchat,
+            altfel continua spre SW path. Prores doar pe VideoToolbox + non-LOG
+        Per-platforma: x265/x264/av1 → toate 5 backends + MC ; prores → doar VT
+  ADD HDR generalizat peste backend-uri HW (av_common.sh)
+        show_hdr_hw_dialog(backend, src_type, dv_profile) — generalizare a
+            show_hdr_mediacodec_dialog pentru NVENC/VAAPI/QSV/VT/AMF
+        4 tipuri sursa: dv / hdr10plus / hlg / hdr10 — fiecare cu 4-5 optiuni:
+            sw_full (recomandat pt DV/HDR10+) | sw_degraded (strip enhancement) |
+            hw_hdr10 (10-bit + signaling PQ) | hw_hlg (10-bit + arib-std-b67) |
+            hw_sdr (tonemap 8-bit) | skip
+        HW_HDR_MODE setat de dialog ; hw_dispatch_sdr ramifica cmd:
+            sw_full → return 1 (SW path) | sw_degraded → strip DV/HDR10+ + return 1 |
+            hw_* → hw_build_cmd cu p010le + main10 + color flags BT.2020
+        Profile bypass HW_HDR_POLICY (paralel cu MEDIACODEC_HDR_POLICY existent)
+            valori: sw_full / sw_degraded / hw_hdr10 / hw_hlg / hw_sdr / skip
+  ADD HW_BACKEND si HW_PRESET_SLOT in profile (.conf)
+        Salvate de hw_pick_backend / hw_pick_preset, exportate global
+        Profile cu HW_BACKEND=nvenc + HW_PRESET_SLOT=4 sar peste prompt-uri
+  UPDATE av_launcher.sh — meniu HW unificat
+        Vechi: meniu MediaCodec-only doar pe Termux (1=SW, 2=MC)
+        Nou: detect_all_hw_caps + hw_pick_backend + hw_pick_preset cross-platform
+        Back-compat: USE_MEDIACODEC=1 setat automat cand HW_BACKEND=mediacodec
+            (branch-urile v38/v39 din encodere raman intacte pentru MC HDR dialog)
+        Export 30+ env vars HW_* pentru downstream (NVENC_AVAILABLE, VAAPI_DEVICE,
+            VT_IS_APPLE_SILICON, AMF_EXPERIMENTAL, etc.)
+  UPDATE Profile fields noi (Profil exemplu + DJI presets)
+        HW_BACKEND     = nvenc | vaapi | qsv | videotoolbox | amf | mediacodec | sw
+        HW_PRESET_SLOT = 1..7 (default 4 = Quality)
+        HW_HDR_POLICY  = sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr | skip
+        HW_FORCE       = 1 (bypass detection — pentru SoC/GPU ne-detectate)
+  FIX VAAPI VIDEO_FILTER append corect la lantul SW existent
+        Inainte: Pierdea filtrele user (scale/crop) la HW dispatch
+        Acum: append 'format=<fmt>,hwupload' la finalul VF chain dac exista,
+            sau creeaza '-vf format=<fmt>,hwupload' standalone
 
 
 ═══════════════════════════════════════════════════════════════
