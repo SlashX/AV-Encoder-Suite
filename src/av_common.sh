@@ -2421,11 +2421,13 @@ detect_videotoolbox_caps() {
 }
 
 # ── AMF (AMD Linux RDNA3+) — experimental ─────────────────────────────
+# v42.1: iGPU detection extinsa (Phoenix/Hawk Point/Strix Point — Radeon 740M..890M)
 detect_amf_caps() {
     AMF_AVAILABLE=0
     AMF_ENCODERS=""
     AMF_GPU_VENDOR=""
     AMF_GPU_MODEL=""
+    AMF_GPU_ARCH=""        # v42.1: rdna2/rdna3/rdna4/older
     AMF_CAP_HDR10=0
     AMF_CAP_10BIT=0
     AMF_CAP_AV1=0
@@ -2453,11 +2455,33 @@ detect_amf_caps() {
     AMF_ENCODERS="$enc_list"
     AMF_CAP_10BIT=1
     AMF_CAP_HDR10=1
-    # AV1 AMF: RDNA3+ (RX 7000 series + iGPU 740M-890M)
+
+    # v42.1: detectie arhitectura GPU AMD (dGPU + iGPU)
+    # RDNA4: RX 9000 series (Navi 4x)
+    # RDNA3: RX 7000 series (Navi 31/32/33), RX 8000, iGPU Radeon 740M-890M
+    #         (Phoenix/Hawk Point/Strix Point — Ryzen 7040/8040/AI 300)
+    # RDNA2: RX 6000 series, iGPU 660M/680M (Rembrandt/Ryzen 6000)
+    # iGPU AV1 encode: doar RDNA3+ (Phoenix+); RDNA2 iGPU = doar AV1 decode
+    local model_lc; model_lc=$(echo "$AMF_GPU_MODEL" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$model_lc" =~ rx.?9[0-9]{3}|navi.4 ]]; then
+        AMF_GPU_ARCH="rdna4"
+    elif [[ "$model_lc" =~ rx.?7[0-9]{3}|rx.?8[0-9]{3}|navi.3|rdna3 ]]; then
+        AMF_GPU_ARCH="rdna3"
+    elif [[ "$model_lc" =~ (radeon[[:space:]]+)?(graphics).*7[4-9]0m|(radeon[[:space:]]+)?(graphics).*8[0-9]0m|780m|760m|740m|880m|890m|phoenix|hawk[[:space:]]*point|strix ]]; then
+        # iGPU RDNA3: Phoenix (740M/760M/780M), Hawk Point (refresh), Strix Point (880M/890M)
+        AMF_GPU_ARCH="rdna3"
+    elif [[ "$model_lc" =~ rx.?6[0-9]{3}|navi.2|rdna2|6[6-8]0m|rembrandt ]]; then
+        AMF_GPU_ARCH="rdna2"
+    else
+        AMF_GPU_ARCH="older"
+    fi
+
+    # AV1 AMF: doar RDNA3+
     if [[ "$AMF_ENCODERS" == *"av1_amf"* ]]; then
-        if [[ "$AMF_GPU_MODEL" =~ RX.7[0-9]{3}|RX.8[0-9]{3}|RDNA3 ]]; then
-            AMF_CAP_AV1=1
-        fi
+        case "$AMF_GPU_ARCH" in
+            rdna3|rdna4) AMF_CAP_AV1=1 ;;
+        esac
     fi
 
     AMF_AVAILABLE=1
@@ -2652,7 +2676,7 @@ hw_backend_label() {
         vaapi)        echo "VAAPI (${VAAPI_GPU_VENDOR:-Linux}${VAAPI_GPU_MODEL:+ — $VAAPI_GPU_MODEL})" ;;
         qsv)          echo "QSV (Intel Quick Sync${QSV_GPU_MODEL:+ — $QSV_GPU_MODEL})" ;;
         videotoolbox) echo "VideoToolbox (${VT_CHIP:-macOS})" ;;
-        amf)          echo "AMF [experimental] (AMD GPU${AMF_GPU_MODEL:+ — $AMF_GPU_MODEL})" ;;
+        amf)          echo "AMF [experimental] (AMD ${AMF_GPU_ARCH:-?}${AMF_GPU_MODEL:+ — $AMF_GPU_MODEL})" ;;
         mediacodec)   echo "MediaCodec (Android HW${MC_SOC_LABEL:+ — $MC_SOC_LABEL})" ;;
         *)            echo "$1" ;;
     esac
@@ -2983,6 +3007,7 @@ build_videotoolbox_cmd() {
 }
 
 # ── AMF (AMD Linux — experimental) ────────────────────────────────────
+# v42.1: AV1-specific tuning, VBR_BUFSIZE fix, usage transcoding default
 build_amf_cmd() {
     local file="$1" enc_codec="$2"
     local enc_name="${enc_codec}_amf"
@@ -2994,20 +3019,36 @@ build_amf_cmd() {
         6|7)   quality="quality"  ;;
     esac
 
+    # v42.1: VBR_BUFSIZE propagat (lipsea); AV1 AMF nu suporta B-frames -> fara -qp_b
     local rate_flags
     if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
-        rate_flags="-rc vbr_peak -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
+        local maxrate="${VBR_MAXRATE:-${VBR_TARGET}}"
+        local bufsize="${VBR_BUFSIZE:-${maxrate}}"
+        rate_flags="-rc vbr_peak -b:v ${VBR_TARGET} -maxrate ${maxrate} -bufsize ${bufsize}"
     else
         local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
-        rate_flags="-rc cqp -qp_i $crf -qp_p $crf -qp_b $crf"
+        if [[ "$enc_codec" == "av1" ]]; then
+            rate_flags="-rc cqp -qp_i $crf -qp_p $crf"
+        else
+            rate_flags="-rc cqp -qp_i $crf -qp_p $crf -qp_b $crf"
+        fi
     fi
 
     _hw_hdr_setup "$enc_codec"
 
-    log "  AMF: $enc_name | quality $quality (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+    # v42.1: -usage transcoding (default AMF e "ultralowlatency" — gresit pentru offline)
+    local usage_flags="-usage transcoding"
+
+    # v42.1: AV1-specific — profile main (8/10-bit), level auto
+    local codec_flags=""
+    if [[ "$enc_codec" == "av1" ]]; then
+        codec_flags="-profile:v main"
+    fi
+
+    log "  AMF: $enc_name | quality $quality (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}${AMF_GPU_ARCH:+ | arch=$AMF_GPU_ARCH}"
 
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-        -c:v $enc_name -quality $quality $rate_flags \
+        -c:v $enc_name $usage_flags -quality $quality $rate_flags $codec_flags \
         $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
     return 0
 }

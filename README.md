@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android), Linux, macOS and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system, and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v42
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system, and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v42.1
 
 ---
 
@@ -228,7 +228,7 @@ cd src
   - **VAAPI** (Intel iGPU + AMD, Linux) — via `/dev/dri/renderD*`
   - **QSV** (Intel, Linux) — HDR10 pe Tiger Lake+/Alchemist+
   - **VideoToolbox** (macOS) — h264/hevc/av1/prores; AV1 doar Apple Silicon M3+; HDR10+HLG full pe AS
-  - **AMF** (AMD, Linux experimental) — AV1 doar RDNA3+
+  - **AMF** (AMD, Linux experimental, v42.1) — h264/hevc/av1; AV1 pe RDNA3+ (RX 7000/8000 + iGPU Phoenix/Hawk Point/Strix Point — Radeon 740M-890M); `-usage transcoding` + `-profile:v main` pentru av1_amf; confirm prompt în launcher (bypass cu `HW_FORCE=1`); `AMF_GPU_ARCH` afișat în eticheta meniului
 - **Detection cross-platform**: `detect_all_hw_caps()` în `av_common.sh` apelează detector-ul corect per platformă (lspci/nvidia-smi/sysctl/getprop)
 - **UX uniform — preset table 1-7**: Ultrafast / Faster / Fast / **Quality (default 4)** / Slow / Slower / Veryslow. Tabelul afișează coloane filtrate per platformă (Termux→MediaCodec; macOS→VideoToolbox; Linux→NVENC+VAAPI+QSV+AMF), coloana activă highlighted cu `>` + galben, restul dim. Pe terminale înguste (`tput cols`) se afișează doar coloana activă.
 - **Preset mapping**: NVENC `p1..p7` | VAAPI `q1..q7` | QSV `veryfast..veryslow` | VideoToolbox `q:v 80..50` | AMF `speed/balanced/quality` | MediaCodec `60%..150%` bitrate

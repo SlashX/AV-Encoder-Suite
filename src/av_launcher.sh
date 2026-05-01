@@ -394,6 +394,18 @@ if [[ "$ENCODER_NAME" =~ ^(libx265|libx264|av1|prores)$ ]]; then
                 else
                     USE_MEDIACODEC=1
                 fi
+            elif [[ "$HW_BACKEND" == "amf" ]] && [[ "${HW_FORCE:-0}" != "1" ]]; then
+                # v42.1: confirm prompt pentru AMF (marcat experimental)
+                echo ""
+                echo "  ! AMF este marcat [experimental] — driver AMD Linux (Mesa/AMDGPU-PRO)"
+                echo "    poate produce artefacte HDR sau bitrate instabil pe RDNA2."
+                echo "    Setati HW_FORCE=1 in .conf pentru a sari peste acest prompt."
+                read -p "  Continui cu AMF? [y/N]: " _amf_ok
+                if [[ ! "${_amf_ok,,}" =~ ^(y|yes|d|da)$ ]]; then
+                    echo "  Anulat — folosesc SW"
+                    HW_BACKEND="sw"
+                    HW_PRESET_SLOT=""
+                fi
             fi
         fi
     fi
@@ -408,7 +420,7 @@ export HW_BACKEND HW_PRESET_SLOT \
        QSV_AVAILABLE QSV_ENCODERS QSV_GPU_MODEL QSV_CAP_AV1 QSV_CAP_HDR10 \
        VT_AVAILABLE VT_ENCODERS VT_CHIP VT_IS_APPLE_SILICON VT_CAP_PRORES \
        VT_CAP_AV1 VT_CAP_HDR10 VT_CAP_HLG \
-       AMF_AVAILABLE AMF_ENCODERS AMF_GPU_MODEL AMF_CAP_AV1 AMF_CAP_HDR10 AMF_EXPERIMENTAL \
+       AMF_AVAILABLE AMF_ENCODERS AMF_GPU_VENDOR AMF_GPU_MODEL AMF_GPU_ARCH AMF_CAP_AV1 AMF_CAP_HDR10 AMF_EXPERIMENTAL \
        MEDIACODEC_HDR_POLICY HW_FORCE
 
 # ── Profil x264 ───────────────────────────────────────────────────────

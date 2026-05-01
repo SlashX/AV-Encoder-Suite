@@ -3,9 +3,36 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v42 | 49 bug-uri fixate | 160+ features
-  29 fisiere | ~16500 linii cod | ~3750 linii documentatie
+  TOTAL: v42.1 | 49 bug-uri fixate | 160+ features
+  29 fisiere | ~16550 linii cod | ~3760 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v42.1 — AMF (AMD) maturat: iGPU RDNA3 + AV1 tuning + UX
+═══════════════════════════════════════════════════════════════
+
+  UPDATE detect_amf_caps — AMF_GPU_ARCH (rdna2/rdna3/rdna4/older)
+        Detectie iGPU RDNA3 (Phoenix/Hawk Point/Strix Point — Ryzen 7040/
+        8040/AI 300, Radeon 740M/760M/780M/880M/890M); regex extins peste
+        modelele dGPU clasice (RX 6000/7000/8000/9000). AV1 AMF se
+        activeaza acum corect si pe iGPU RDNA3+, nu doar pe dGPU RX 7000+.
+  UPDATE build_amf_cmd — AV1-specific tuning + fix VBR_BUFSIZE
+        Adaugat -usage transcoding (default AMF era ultralowlatency, gresit
+        pentru offline encode); av1_amf primeste -profile:v main si renunta
+        la -qp_b (AV1 AMF nu suporta B-frames pe stack-ul curent); hevc/h264
+        raman pe cqp clasic. VBR_BUFSIZE propagat din profil (lipsea inainte;
+        fallback la maxrate cand neset).
+  ADD AMF experimental confirm prompt (av_launcher.sh)
+        Cand utilizatorul alege AMF din meniu (nu via .conf), apare prompt
+        "Continui cu AMF? [y/N]" cu warning despre artefacte HDR/bitrate
+        instabil pe RDNA2. Bypass prin HW_FORCE=1 in profil, paralel cu
+        mediacodec_confirm_unknown_soc. Profilurile cu HW_BACKEND=amf nu
+        primesc prompt (deja decizie utilizator).
+  UPDATE hw_backend_label — afiseaza AMF_GPU_ARCH in eticheta
+        "AMF [experimental] (AMD rdna3 — Radeon 780M Graphics)" in loc de
+        eticheta generica anterioara; util pentru diagnoza pe laptopuri
+        Ryzen unde modelul lspci e ambiguu.
 
 
 ═══════════════════════════════════════════════════════════════
