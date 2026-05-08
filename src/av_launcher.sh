@@ -167,7 +167,13 @@ if [ ${#PROFILES[@]} -gt 0 ]; then
     if [[ "$prof_load" =~ ^[0-9]+$ ]] && [ "$prof_load" -ge 1 ] && [ "$prof_load" -le ${#PROFILES[@]} ]; then
         LOAD_FILE="${PROFILES[$((prof_load-1))]}"
         echo "  Incarc profil: $(basename "$LOAD_FILE" .conf)"
-        source "$LOAD_FILE"
+        # v43: validare schema inainte de source
+        if ! load_profile_validated "$LOAD_FILE"; then
+            echo "  Profil anulat — continuam cu meniu normal."
+            LOAD_FILE=""
+        fi
+    fi
+    if [[ -n "${LOAD_FILE:-}" ]]; then
 
         # Verifica LUT daca profilul necesita unul
         if [[ -n "${LUT_PATH:-}" ]]; then
@@ -1045,7 +1051,16 @@ if [[ "${save_prof,,}" == "d" ]]; then
     read -p "  Nume profil (ex: drone_4k, film_hdr): " prof_name
     if [[ -n "$prof_name" ]]; then
         PROF_FILE="$USER_PROFILES_DIR/${prof_name}.conf"
-        cat > "$PROF_FILE" <<PROFEOF
+        # v43: confirm overwrite
+        if [[ -f "$PROF_FILE" ]]; then
+            read -p "  Profilul exista deja. Suprascriu? (d/N): " _ow
+            if [[ "${_ow,,}" != "d" ]]; then
+                echo "  Anulat — profilul nu a fost suprascris."
+                PROF_FILE=""
+            fi
+        fi
+        if [[ -n "$PROF_FILE" ]]; then
+            cat > "$PROF_FILE" <<PROFEOF
 # AV Encoder Suite — Profil salvat: $prof_name
 # Generat: $(date '+%Y-%m-%d %H:%M:%S')
 ENCODER_NAME="$ENCODER_NAME"
@@ -1070,8 +1085,22 @@ VBR_PARAM="${VBR_PARAM:-}"
 VBR_MAXRATE="${VBR_MAXRATE:-}"
 VBR_BUFSIZE="${VBR_BUFSIZE:-}"
 FORCE_LOG_DETECTION="${FORCE_LOG_DETECTION:-0}"
+LOG_PROFILE="${LOG_PROFILE:-}"
+LUT_PATH="${LUT_PATH:-}"
+HW_BACKEND="${HW_BACKEND:-}"
+HW_PRESET_SLOT="${HW_PRESET_SLOT:-}"
+HW_HDR_POLICY="${HW_HDR_POLICY:-}"
+HW_FORCE="${HW_FORCE:-0}"
+MEDIACODEC_HDR_POLICY="${MEDIACODEC_HDR_POLICY:-}"
 PROFEOF
-        echo "  Profil salvat: $PROF_FILE"
+            echo "  Profil salvat: $PROF_FILE"
+            # v43: post-save validation feedback
+            if validate_profile "$PROF_FILE" >/dev/null 2>&1; then
+                echo "  Validare schema: OK"
+            else
+                echo "  Validare schema: AVERTISMENT (verifica setarile cu 'bash $PROF_FILE')"
+            fi
+        fi
     fi
 fi
 

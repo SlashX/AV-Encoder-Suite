@@ -42,3 +42,7 @@ desktop.ini
 CLAUDE.md
 
 .claude/
+
+# v43: test results + synthetic samples (regenerable)
+tests/results/
+tests/fixtures/samples/

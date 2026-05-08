@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android), Linux, macOS and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system, and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v42.1
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system (v43: schema validation + EXTENDS inheritance + diff CLI), and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v43
 
 ---
 
@@ -80,10 +80,34 @@ AV-Encoder-Suite/
 ├── docs/
 │   ├── av_info.txt             # Full setup & usage documentation
 │   └── av_changelog.txt        # Version history
+├── tests/                      # v43 — bash/PS1 test framework
+│   ├── framework.sh / .ps1     # Assertion library (assert_eq, _match, _file_exists, ...)
+│   ├── run_tests.sh / .ps1     # Discover + run test_*.{sh,ps1}; per-test log + summary
+│   ├── _helpers.ps1            # AST-based function importer for PS1 tests
+│   ├── fixtures/
+│   │   ├── generate_samples.sh / .ps1   # ffmpeg-driven synthetic samples (idempotent)
+│   │   └── samples/            # Generated samples (gitignored)
+│   ├── unit/                   # Pure-logic tests (no ffmpeg required)
+│   ├── integration/            # ffmpeg/ffprobe/python-dependent (auto-skip on missing deps)
+│   └── results/                # Per-test logs (gitignored)
 ├── .gitignore
 ├── LICENSE
 └── README.md
 ```
+
+### Running tests
+
+```bash
+# bash — Termux / Linux / macOS
+bash tests/fixtures/generate_samples.sh   # one-time, requires ffmpeg
+bash tests/run_tests.sh                   # discovers test_*.sh
+
+# PowerShell — Windows
+.\tests\fixtures\generate_samples.ps1
+.\tests\run_tests.ps1
+```
+
+Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip cleanly when the binary is missing — the runner reports them as `~ skip: <reason>`.
 
 ---
 
@@ -193,6 +217,9 @@ cd src
 - **Built-in profiles** for DJI Osmo Action 6 (airsoft, moto, cinematic, D-Log M)
 - D-Log M profiles include automatic LUT validation — warns if `.cube` file missing
 - Cross-platform format: `KEY=VALUE` (bash `source` / PS1 `Get-Content`)
+- **v43 — Schema validation**: per-key type/constraint check (enum, regex, int, path) before load; unknown keys are forward-compat warnings; user prompted on errors
+- **v43 — EXTENDS inheritance**: `EXTENDS=parent_name` field in a child profile resolves through sibling dir → `UserProfiles/` → `src/profiles/*/`; root→leaf override semantics (leaf wins); cycle detection + depth limit 5
+- **v43 — `profile_diff` CLI**: `src/tools/profile_diff.{sh,ps1} <A.conf> <B.conf>` — reports "only in A", "only in B", value differences; exit 0 identical / 1 different / 2 invalid args
 
 ### Video Filters
 - **4K Upscale** — Lanczos algorithm (`scale=3840:-2:flags=lanczos`)

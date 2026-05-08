@@ -3,9 +3,83 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v42.1 | 49 bug-uri fixate | 160+ features
-  29 fisiere | ~16550 linii cod | ~3760 linii documentatie
+  TOTAL: v43 | 49 bug-uri fixate | 165+ features
+  44 fisiere | ~17400 linii cod | ~3760 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v43 — Profile audit + Test suite (framework bash/PS1)
+═══════════════════════════════════════════════════════════════
+
+  ADD Schema & validation profile (av_common.sh / av_encode.ps1)
+        profile_schema_get / Get-ProfileSchema — schema declarativa
+        KEY → "TYPE:CONSTRAINT" (enum / regex / int / intrange / string /
+        path) acoperind toate campurile profile, inclusiv aliasuri PS1
+        native (ENCODER, VF_PRESET, AUDIO_COPY, CUSTOM_CRF, etc.).
+        validate_profile / Test-ProfileFile — verifica fiecare KEY=VALUE
+        si afiseaza erori per linie; cheile necunoscute sunt warning
+        (nu eroare) pentru forward-compat. Inainte de source/load,
+        utilizatorul primeste prompt daca profilul are erori.
+  ADD Profile inheritance via EXTENDS (av_common.sh / av_encode.ps1)
+        Camp nou EXTENDS=parent_name — un profil poate mosteni de la
+        altul (lant single-parent). Rezolutia parinte: sibling dir →
+        UserProfiles/ → src/profiles/*/. Cycle detection + depth
+        limit 5 + override semantics root→leaf (leaf wins). Helpers:
+        _resolve_extends_path / _get_extends_field / build_extends_chain
+        (bash) si Resolve-ExtendsPath / Get-ExtendsField /
+        Build-ExtendsChain (PS1).
+  ADD profile_diff.sh / .ps1 (src/tools/)
+        Utilitar CLI care compara doua profile .conf; raport cu
+        sectiuni "Doar in A", "Doar in B", "Valori diferite" + sumar.
+        Exit 0 daca identice, 1 daca diferente, 2 pentru argumente
+        invalide. Util pentru regression check inter-versiuni de
+        profile sau revizuiri inainte de commit.
+  UPDATE Save profile (launcher / av_encode.ps1)
+        Block-ul de salvare profil include acum toate campurile v42+
+        (HW_BACKEND, HW_PRESET_SLOT, HW_HDR_POLICY, HW_FORCE,
+        MEDIACODEC_HDR_POLICY, LOG_PROFILE, LUT_PATH); prompt
+        confirmare la suprascriere; validare automata post-save cu
+        feedback imediat. Comentariu header schimbat din "::" in "#"
+        pentru compat bash↔PS1.
+  ADD Test framework (tests/)
+        framework.sh / framework.ps1 — biblioteca de assertion
+        helpers (assert_eq, assert_match, assert_contains,
+        assert_file_exists, assert_zero, skip_test, etc.) cu auto-
+        summary la exit. run_tests.sh / run_tests.ps1 — discover
+        + run pe sub-directoarele unit/, integration/, hw/ cu
+        captura per-test log, exit codes 0/77/* (pass/skip/fail) si
+        afisare tail-15 pe esec. PS1 runner foloseste -NonInteractive
+        ca prompt-urile param-mandatory sa nu blocheze.
+  ADD Synthetic samples (tests/fixtures/generate_samples.sh / .ps1)
+        Generator idempotent ffmpeg-based pentru 7 sample-uri:
+        sdr_320p.mp4, hdr10_320p.mkv, hlg_320p.mkv, audio_440hz.wav,
+        sdr_4s.mp4, sample.gpx, sample.kml. Auto-skip pentru
+        sample-urile video cand ffmpeg lipseste (GPX/KML raman
+        intotdeauna disponibile pentru test-urile de extractor GPS).
+  ADD Test-uri unit + integration (tests/unit/, tests/integration/)
+        14 fisiere de test bash + 6 PS1 acoperind: framework smoke,
+        profile schema/validation/EXTENDS/diff, helpers pure
+        (get_adaptive_crf, parse_time_flexible, expand_range_selection),
+        HW backend table + preset label + list-for-codec, trim/concat
+        helpers, pipeline HDR detection, concat compat, telemetry brand
+        detection, GPS extractor end-to-end (GPX/KML → CSV).
+        Test-urile dependente de ffprobe/ffmpeg/exiftool se auto-
+        skipueaza cand binarele lipsesc.
+  ADD tests/_helpers.ps1 — AST-based function importer pentru PS1
+        Extrage selectiv functii din av_encode.ps1 / av_telemetry.ps1
+        prin parse AST + Set-Item function:Global, evitand executia
+        side-effects la nivel de script. Util pentru testarea
+        functiilor care altfel nu pot fi izolate.
+  FIX EXTENDS chain — canonicalization + non-interactive guard
+        build_extends_chain / Build-ExtendsChain canonicalizeaza path-urile
+        inainte de cycle check (helper _canon_path bash, Get-CanonicalPath
+        PS1) — cazuri ca "/dir/./profile.conf" sau diferente de case pe
+        Windows/macOS sunt acum detectate corect ca cicluri. Build-
+        ExtendsChain (PS1) refuza explicit leaf-uri inexistente cu mesaj
+        clar in loc sa arunce exceptie. load_profile_validated detecteaza
+        modul non-interactiv (stdin redirectat sau AV_NONINTERACTIVE=1) si
+        face fail-fast in loc sa blocheze pe prompt — sigur pentru CI.
 
 
 ═══════════════════════════════════════════════════════════════

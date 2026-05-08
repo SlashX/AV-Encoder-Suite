@@ -2815,6 +2815,204 @@ if ($gpuCaps.gpus.Count -eq 0) {
 }
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
 
+# ══════════════════════════════════════════════════════════════════════
+# v43 — Profile schema + validation (mirror al av_common.sh::validate_profile)
+# ══════════════════════════════════════════════════════════════════════
+function Get-ProfileSchema {
+    param([string]$Key)
+    switch ($Key) {
+        'ENCODER_NAME'         { 'enum:libx265,libx264,av1,dnxhr,prores,apv,hwenc'; return }
+        'ENCODER'              { 'enum:libx265,libx264,av1,dnxhr,prores,apv,hwenc'; return }
+        'AV1_ENCODER_NAME'     { 'enum:,libsvtav1,libaom-av1'; return }
+        'AV1_IMPL'             { 'enum:,libsvtav1,libaom-av1'; return }
+        'DNXHR_PROFILE'        { 'enum:,lb,sq,hq,hqx,444'; return }
+        'APV_PROFILE'          { 'enum:,light,standard,high,422_10,444_10'; return }
+        'PRORES_PROFILE'       { 'enum:,proxy,lt,standard,hq,4444,4444xq'; return }
+        'X264_PROFILE'         { 'enum:,auto,high,high10,high422'; return }
+        'CONTAINER'            { 'enum:mkv,mp4,mov,mxf,webm'; return }
+        'HW_ENC_CODEC'         { 'enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf'; return }
+        'HW_BACKEND'           { 'enum:,sw,nvenc,vaapi,qsv,videotoolbox,amf,mediacodec'; return }
+        'HW_PRESET_SLOT'       { 'enum:,1,2,3,4,5,6,7'; return }
+        'HW_HDR_POLICY'        { 'enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip'; return }
+        'MEDIACODEC_HDR_POLICY'{ 'enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip'; return }
+        'HW_FORCE'             { 'enum:0,1'; return }
+        'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
+        'ENCODE_MODE'          { 'enum:1,2'; return }
+        'FORCE_LOG_DETECTION'  { 'enum:0,1'; return }
+        'INTERACTIVE_MODE'     { 'enum:0,1'; return }
+        'LOG_PROFILE'          { 'enum:,apple_log,samsung_log,dlog_m'; return }
+        'FPS_METHOD'           { 'enum:,drop,minterpolate'; return }
+        'VIDEO_FILTER_PRESET'  { 'regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*)?$'; return }
+        'VF_PRESET'            { 'regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*|scale=.*)?$'; return }
+        'AUDIO_CODEC_ARG'      { 'regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k)?$'; return }
+        'AUDIO_CODEC'          { 'enum:,aac,opus,flac,eac3,ac3,pcm,copy'; return }
+        'AUDIO_BITRATE'        { 'regex:^([0-9]+k)?$'; return }
+        'AUDIO_COPY'           { 'enum:0,1'; return }
+        'AUDIO_FLAC_LEVEL'     { 'regex:^([0-9]{1,2})?$'; return }
+        'PCM_DEPTH'            { 'enum:,16le,24le,32le,16be,24be,32be'; return }
+        'SCALE_WIDTH'          { 'regex:^([0-9]{2,5})?$'; return }
+        'TARGET_FPS'           { 'regex:^([0-9]+(\.[0-9]+)?|[0-9]+/[0-9]+)?$'; return }
+        'CRF_PARAM'            { 'regex:^([0-9]+)?$'; return }
+        'CUSTOM_CRF'           { 'regex:^([0-9]+)?$'; return }
+        'PRESET_PARAM'         { 'regex:^(ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow|[1-9])?$'; return }
+        'PRESET'               { 'regex:^(ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow|[1-9])?$'; return }
+        'TUNE_PARAM'           { 'regex:^(animation|grain|film|stillimage|fastdecode|[0-9]{1,2})?$'; return }
+        'TUNE'                 { 'regex:^(animation|grain|film|stillimage|fastdecode|[0-9]{1,2})?$'; return }
+        'VBR_PARAM'            { 'regex:^([0-9]+[kMmKgG]?)?$'; return }
+        'VBR_TARGET'           { 'regex:^([0-9]+[kMmKgG]?)?$'; return }
+        'VBR_MAXRATE'          { 'regex:^([0-9]+[kMmKgG]?)?$'; return }
+        'VBR_BUFSIZE'          { 'regex:^([0-9]+[kMmKgG]?)?$'; return }
+        'HW_ENC_QP'            { 'regex:^([0-9]+)?$'; return }
+        'HW_ENC_PRESET'        { 'string:'; return }
+        'EXTRA_PARAM'          { 'string:'; return }
+        'EXTRA_PARAMS'         { 'string:'; return }
+        'LUT_PATH'             { 'path:'; return }
+        'EXTENDS'              { 'path:'; return }
+        default                { ''; return }
+    }
+}
+
+function Test-ProfileFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        Write-Host "  X Profil inexistent: $Path" -ForegroundColor Red
+        return @{ ok = $false; errors = 1 }
+    }
+    $errors = 0
+    $lineno = 0
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        $lineno++
+        if ($line -match '^\s*#') { continue }
+        if ($line -match '^\s*$') { continue }
+        if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*"?([^"]*)"?\s*$') {
+            $key = $Matches[1]
+            $value = $Matches[2]
+            $schema = Get-ProfileSchema -Key $key
+            if (-not $schema) {
+                Write-Host "  ! [linia $lineno] cheie necunoscuta: $key (ignor)" -ForegroundColor DarkYellow
+                continue
+            }
+            $stype = ($schema -split ':',2)[0]
+            $sconstraint = ($schema -split ':',2)[1]
+            switch ($stype) {
+                'enum' {
+                    $allowed = $sconstraint -split ','
+                    if ($allowed -notcontains $value) {
+                        Write-Host "  X [linia $lineno] $key=`"$value`" - valori permise: $sconstraint" -ForegroundColor Red
+                        $errors++
+                    }
+                }
+                'regex' {
+                    if ($value -notmatch $sconstraint) {
+                        Write-Host "  X [linia $lineno] $key=`"$value`" - nu corespunde pattern: $sconstraint" -ForegroundColor Red
+                        $errors++
+                    }
+                }
+                default { }
+            }
+        }
+    }
+    return @{ ok = ($errors -eq 0); errors = $errors }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# v43 - EXTENDS chain helpers (single-parent inheritance)
+# ──────────────────────────────────────────────────────────────────────
+function Resolve-ExtendsPath {
+    param(
+        [string]$Ref,
+        [string]$ChildDir
+    )
+    if ([string]::IsNullOrEmpty($Ref)) { return $null }
+    $base = $Ref -replace '\.conf$',''
+
+    # Absolute path
+    if ([System.IO.Path]::IsPathRooted($Ref)) {
+        foreach ($cand in @($Ref, "$Ref.conf")) {
+            if (Test-Path -LiteralPath $cand -PathType Leaf) { return (Resolve-Path -LiteralPath $cand).Path }
+        }
+        return $null
+    }
+
+    # 1) Sibling
+    if ($ChildDir -and (Test-Path -LiteralPath (Join-Path $ChildDir "$base.conf") -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath (Join-Path $ChildDir "$base.conf")).Path
+    }
+    # 2) UserProfiles
+    if ($script:UserProfilesDir -and (Test-Path -LiteralPath (Join-Path $script:UserProfilesDir "$base.conf") -PathType Leaf)) {
+        return (Resolve-Path -LiteralPath (Join-Path $script:UserProfilesDir "$base.conf")).Path
+    }
+    # 3) Builtin (root + 1-level subdirs)
+    if ($script:ProfilesDir -and (Test-Path -LiteralPath $script:ProfilesDir)) {
+        $rootCand = Join-Path $script:ProfilesDir "$base.conf"
+        if (Test-Path -LiteralPath $rootCand -PathType Leaf) { return (Resolve-Path -LiteralPath $rootCand).Path }
+        $sub = Get-ChildItem -LiteralPath $script:ProfilesDir -Directory -ErrorAction SilentlyContinue
+        foreach ($d in $sub) {
+            $cand = Join-Path $d.FullName "$base.conf"
+            if (Test-Path -LiteralPath $cand -PathType Leaf) { return (Resolve-Path -LiteralPath $cand).Path }
+        }
+    }
+    return $null
+}
+
+function Get-ExtendsField {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        if ($line -match '^\s*#') { continue }
+        if ($line -match '^\s*EXTENDS\s*=\s*"?([^"]*)"?\s*$') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+function Get-CanonicalPath {
+    param([string]$Path)
+    if ([string]::IsNullOrEmpty($Path)) { return "" }
+    try { $abs = [System.IO.Path]::GetFullPath($Path) } catch { $abs = $Path }
+    # Windows + macOS APFS default = case-insensitive: normalize for cycle compare.
+    return $abs.ToLowerInvariant()
+}
+
+# Returns @{ ok = $true/$false; chain = @(root..leaf); error = "..." }
+function Build-ExtendsChain {
+    param([string]$LeafPath)
+    if ([string]::IsNullOrEmpty($LeafPath) -or -not (Test-Path -LiteralPath $LeafPath -PathType Leaf)) {
+        $shown = if ([string]::IsNullOrEmpty($LeafPath)) { "<empty>" } else { $LeafPath }
+        return @{ ok = $false; chain = @(); error = "EXTENDS: profil leaf inexistent: $shown" }
+    }
+    $chain = New-Object System.Collections.Generic.List[string]
+    $visited = New-Object System.Collections.Generic.List[string]
+    $current = [System.IO.Path]::GetFullPath($LeafPath)
+    $depth = 0; $maxDepth = 5
+
+    while ($current) {
+        if ($depth -ge $maxDepth) {
+            return @{ ok = $false; chain = @(); error = "EXTENDS: depasire adancime maxima ($maxDepth) - verifica $current" }
+        }
+        $canon = Get-CanonicalPath $current
+        if ($visited -contains $canon) {
+            return @{ ok = $false; chain = @(); error = "EXTENDS: ciclu detectat la $current" }
+        }
+        $visited.Add($canon) | Out-Null
+        $chain.Insert(0, $current)  # prepend → root first
+
+        $parentRef = Get-ExtendsField -Path $current
+        if ([string]::IsNullOrEmpty($parentRef)) { break }
+
+        $childDir = Split-Path -Parent $current
+        $parentPath = Resolve-ExtendsPath -Ref $parentRef -ChildDir $childDir
+        if (-not $parentPath) {
+            return @{ ok = $false; chain = @(); error = "EXTENDS: parinte negasit '$parentRef' (referit din $([System.IO.Path]::GetFileName($current)))" }
+        }
+        $current = $parentPath
+        $depth++
+    }
+
+    return @{ ok = $true; chain = @($chain); error = $null }
+}
+
 # ── Profil salvat (load) ─────────────────────────────────────────────
 if (-not (Test-Path $UserProfilesDir)) { New-Item -ItemType Directory -Force -Path $UserProfilesDir | Out-Null }
 
@@ -2850,12 +3048,56 @@ if ($profiles.Count -gt 0) {
     if ($profChoice -match '^\d+$' -and [int]$profChoice -ge 1 -and [int]$profChoice -le $profiles.Count) {
         $loadFile = $profiles[[int]$profChoice - 1].FullName
         Write-Host "  Incarc profil: $($profiles[[int]$profChoice - 1].BaseName)" -ForegroundColor Green
-        # Parse .conf (key=value)
-        Get-Content $loadFile | ForEach-Object {
-            if ($_ -match '^([A-Za-z_]\w*)=(.*)$') {
-                Set-Variable -Name $Matches[1] -Value $Matches[2] -Scope Script
+
+        # v43: rezolva lant EXTENDS (root -> leaf)
+        $chainRes = Build-ExtendsChain -LeafPath $loadFile
+        if (-not $chainRes.ok) {
+            Write-Host "  X $($chainRes.error)" -ForegroundColor Red
+            Write-Host "  Profil anulat - continuam cu meniu normal." -ForegroundColor Yellow
+            $loadFile = $null
+        }
+        if ($loadFile) {
+            $loadChain = $chainRes.chain
+
+            # v43: validare schema pentru fiecare link
+            $totalErrors = 0
+            foreach ($link in $loadChain) {
+                $vr = Test-ProfileFile -Path $link
+                if (-not $vr.ok) { $totalErrors += $vr.errors }
+            }
+            if ($totalErrors -gt 0) {
+                Write-Host ""
+                # Non-interactive guard: fail-fast in scripts/CI.
+                $isNonInteractive = ($env:AV_NONINTERACTIVE -eq '1') -or [Console]::IsInputRedirected
+                if ($isNonInteractive) {
+                    Write-Host "  X Erori in profil/parinti - abort (mod non-interactiv)." -ForegroundColor Red
+                    $loadFile = $null
+                } else {
+                    $cont = Read-Host "  Profilul (sau parintii) au erori. Continui oricum? (d/N)"
+                    if ($cont -ine "d") {
+                        Write-Host "  Profil anulat - continuam cu meniu normal." -ForegroundColor Yellow
+                        $loadFile = $null
+                    }
+                }
             }
         }
+        if ($loadFile) {
+            if ($loadChain.Count -gt 1) {
+                Write-Host "  Lant EXTENDS (root -> leaf):" -ForegroundColor Cyan
+                $i = 1
+                foreach ($link in $loadChain) {
+                    Write-Host "    $i) $([System.IO.Path]::GetFileNameWithoutExtension($link))" -ForegroundColor White
+                    $i++
+                }
+            }
+            # Parse .conf (key=value) — root..leaf, leaf overrides parent
+            foreach ($link in $loadChain) {
+                Get-Content -LiteralPath $link | ForEach-Object {
+                    if ($_ -match '^([A-Za-z_]\w*)=(.*)$') {
+                        Set-Variable -Name $Matches[1] -Value $Matches[2] -Scope Script
+                    }
+                }
+            }
 
         # Map ENCODER_NAME to ENCODER (bash profiles use ENCODER_NAME, ps1 uses ENCODER)
         if ($ENCODER_NAME -and -not $ENCODER) { $script:ENCODER = $ENCODER_NAME }
@@ -2978,6 +3220,7 @@ if ($profiles.Count -gt 0) {
         } else {
             Write-Host "  Profil anulat — continuam cu meniu normal." -ForegroundColor Yellow
         }
+        }  # if ($loadFile)
     }
 }
 
@@ -3613,10 +3856,22 @@ if ($saveProf -ieq "d") {
     $profName = Read-Host "  Nume profil (ex: drone_4k, film_hdr)"
     if ($profName) {
         $profFile = Join-Path $UserProfilesDir "$profName.conf"
+        # v43: confirm overwrite
+        if (Test-Path -LiteralPath $profFile) {
+            $ow = Read-Host "  Profilul exista deja. Suprascriu? (d/N)"
+            if ($ow -ine "d") {
+                Write-Host "  Anulat - profilul nu a fost suprascris." -ForegroundColor Yellow
+                $profFile = $null
+            }
+        }
+        if ($profFile) {
         $encShort = if ($useX264) { "libx264" } elseif ($useAV1) { "av1" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores" } elseif ($useHWEnc) { "hwenc" } else { "libx265" }
         $vfSave = if ($vfIsVidstab) { "vidstab" } elseif ($vfPreset) { $vfPreset } else { "" }
+        $logProfileSave = if ($script:LOG_PROFILE) { $script:LOG_PROFILE } else { "" }
+        $lutPathSave = if ($script:LUT_PATH) { $script:LUT_PATH } else { "" }
         @(
-            ":: AV Encoder Suite — Profil salvat: $profName"
+            "# AV Encoder Suite - Profil salvat: $profName"
+            "# Generat: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
             "ENCODER=$encShort"
             "AV1_IMPL=$av1Impl"
             "DNXHR_PROFILE=$dnxhrProfile"
@@ -3646,9 +3901,19 @@ if ($saveProf -ieq "d") {
             "VBR_MAXRATE=$vbrMaxrate"
             "VBR_BUFSIZE=$vbrBufsize"
             "FORCE_LOG_DETECTION=$(if ($forceLogDetection) { '1' } else { '0' })"
+            "LOG_PROFILE=$logProfileSave"
+            "LUT_PATH=$lutPathSave"
             "INTERACTIVE_MODE=$(if ($interactiveMode) { '1' } else { '0' })"
         ) | Out-File $profFile -Encoding UTF8
         Write-Host "  Profil salvat: $profFile" -ForegroundColor Green
+        # v43: post-save validation feedback
+        $valRes = Test-ProfileFile -Path $profFile
+        if ($valRes.ok) {
+            Write-Host "  Validare schema: OK" -ForegroundColor Green
+        } else {
+            Write-Host "  Validare schema: AVERTISMENT ($($valRes.errors) erori)" -ForegroundColor Yellow
+        }
+        }
     }
 }
 

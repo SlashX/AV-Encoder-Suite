@@ -4988,3 +4988,300 @@ trimconcat_flow_pipeline() {
         echo "  ✗ EROARE: output final lipsa sau 0 bytes."
     fi
 }
+
+# ══════════════════════════════════════════════════════════════════════
+# v43 — Profile schema + validation
+# ══════════════════════════════════════════════════════════════════════
+# profile_schema_get KEY -> echo "TYPE|CONSTRAINT" or empty if unknown
+#   TYPE: enum / int / intrange / string / path / regex
+#   CONSTRAINT depends on TYPE:
+#     enum:val1,val2,val3
+#     intrange:min,max
+#     regex:pattern
+#     int:    (no constraint)
+#     string: (no constraint, accepts anything)
+#     path:   (validated only when LUT_PATH — file existence checked separately)
+profile_schema_get() {
+    case "$1" in
+        ENCODER_NAME)         echo "enum:libx265,libx264,av1,dnxhr,prores,apv,hwenc" ;;
+        AV1_ENCODER_NAME)     echo "enum:,libsvtav1,libaom-av1" ;;
+        DNXHR_PROFILE)        echo "enum:,lb,sq,hq,hqx,444" ;;
+        APV_PROFILE)          echo "enum:,light,standard,high,422_10,444_10" ;;
+        PRORES_PROFILE)       echo "enum:,proxy,lt,standard,hq,4444,4444xq" ;;
+        X264_PROFILE)         echo "enum:,auto,high,high10,high422" ;;
+        CONTAINER)            echo "enum:mkv,mp4,mov,mxf,webm" ;;
+        HW_ENC_CODEC)         echo "enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf" ;;
+        HW_BACKEND)           echo "enum:,sw,nvenc,vaapi,qsv,videotoolbox,amf,mediacodec" ;;
+        HW_PRESET_SLOT)       echo "enum:,1,2,3,4,5,6,7" ;;
+        HW_HDR_POLICY)        echo "enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip" ;;
+        MEDIACODEC_HDR_POLICY) echo "enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip" ;;
+        HW_FORCE)             echo "enum:0,1" ;;
+        AUDIO_NORMALIZE)      echo "enum:0,1" ;;
+        ENCODE_MODE)          echo "enum:1,2" ;;
+        FORCE_LOG_DETECTION)  echo "enum:0,1" ;;
+        INTERACTIVE_MODE)     echo "enum:0,1" ;;
+        LOG_PROFILE)          echo "enum:,apple_log,samsung_log,dlog_m" ;;
+        FPS_METHOD)           echo "enum:,drop,minterpolate" ;;
+        VIDEO_FILTER_PRESET)  echo "regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*)?$" ;;
+        AUDIO_CODEC_ARG)      echo "regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k)?$" ;;
+        SCALE_WIDTH)          echo "regex:^([0-9]{2,5})?$" ;;
+        TARGET_FPS)           echo "regex:^([0-9]+(\.[0-9]+)?|[0-9]+/[0-9]+)?$" ;;
+        CRF_PARAM)            echo "regex:^([0-9]+)?$" ;;
+        PRESET_PARAM)         echo "regex:^(ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow|[1-9])?$" ;;
+        TUNE_PARAM)           echo "regex:^(animation|grain|film|stillimage|fastdecode|[0-9]{1,2})?$" ;;
+        VBR_PARAM|VBR_MAXRATE|VBR_BUFSIZE) echo "regex:^([0-9]+[kMmKgG]?)?$" ;;
+        HW_ENC_QP)            echo "regex:^([0-9]+)?$" ;;
+        HW_ENC_PRESET)        echo "string:" ;;
+        EXTRA_PARAM)          echo "string:" ;;
+        LUT_PATH)             echo "path:" ;;
+        EXTENDS)              echo "path:" ;;
+        *)                    echo "" ;;
+    esac
+}
+
+# validate_profile <file>
+# Echoes errors to stderr (one per line, prefixed "  ✗ ...").
+# Returns 0 on success, 1 on any error.
+validate_profile() {
+    local pf="$1"
+    [[ ! -f "$pf" ]] && { echo "  ✗ Profil inexistent: $pf" >&2; return 1; }
+
+    local errors=0
+    local lineno=0
+    local key value schema stype sconstraint
+    local IFS_BAK="$IFS"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno+1))
+        # Skip comments + empty
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        # Match KEY=VALUE or KEY="VALUE"
+        if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)[[:space:]]*=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            schema=$(profile_schema_get "$key")
+            if [[ -z "$schema" ]]; then
+                # Unknown key: warning, not error (forward-compat)
+                echo "  ! [linia $lineno] cheie necunoscuta: $key (ignor)" >&2
+                continue
+            fi
+            stype="${schema%%:*}"
+            sconstraint="${schema#*:}"
+            case "$stype" in
+                enum)
+                    # sconstraint = comma-separated; empty values allowed if "" in list
+                    local IFS=','
+                    local allowed=($sconstraint)
+                    IFS="$IFS_BAK"
+                    local ok=0
+                    local a
+                    for a in "${allowed[@]}"; do
+                        [[ "$value" == "$a" ]] && { ok=1; break; }
+                    done
+                    if [[ $ok -eq 0 ]]; then
+                        echo "  ✗ [linia $lineno] $key=\"$value\" — valori permise: $sconstraint" >&2
+                        errors=$((errors+1))
+                    fi
+                    ;;
+                regex)
+                    if ! [[ "$value" =~ $sconstraint ]]; then
+                        echo "  ✗ [linia $lineno] $key=\"$value\" — nu corespunde pattern: $sconstraint" >&2
+                        errors=$((errors+1))
+                    fi
+                    ;;
+                int)
+                    if [[ -n "$value" ]] && ! [[ "$value" =~ ^[0-9]+$ ]]; then
+                        echo "  ✗ [linia $lineno] $key=\"$value\" — astept intreg" >&2
+                        errors=$((errors+1))
+                    fi
+                    ;;
+                intrange)
+                    local rmin rmax
+                    rmin="${sconstraint%,*}"; rmax="${sconstraint#*,}"
+                    if [[ -n "$value" ]]; then
+                        if ! [[ "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt "$rmin" ]] || [[ "$value" -gt "$rmax" ]]; then
+                            echo "  ✗ [linia $lineno] $key=\"$value\" — astept $rmin..$rmax" >&2
+                            errors=$((errors+1))
+                        fi
+                    fi
+                    ;;
+                path|string)
+                    : # no validation here; LUT/EXTENDS path resolution e externa
+                    ;;
+            esac
+        fi
+    done < "$pf"
+
+    [[ $errors -gt 0 ]] && return 1
+    return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# v43 — EXTENDS chain helpers (single-parent inheritance)
+# ──────────────────────────────────────────────────────────────────────
+# _resolve_extends_path <name_or_path> <child_dir>
+# Resolves a parent reference to an absolute .conf path.
+# Search order: absolute → sibling dir → UserProfiles → builtin profiles/*.
+# Accepts name with or without ".conf" suffix.
+# Echoes resolved path on success; empty + return 1 on miss.
+_resolve_extends_path() {
+    local ref="$1" child_dir="$2"
+    [[ -z "$ref" ]] && return 1
+    local base="${ref%.conf}"
+    local cand
+
+    # Absolute path (POSIX or Windows-style)
+    if [[ "$ref" == /* ]] || [[ "$ref" =~ ^[A-Za-z]:[\\/] ]]; then
+        for cand in "$ref" "$ref.conf"; do
+            [[ -f "$cand" ]] && { echo "$cand"; return 0; }
+        done
+        return 1
+    fi
+
+    # 1) Sibling (same directory as child)
+    if [[ -n "$child_dir" && -f "$child_dir/$base.conf" ]]; then
+        echo "$child_dir/$base.conf"; return 0
+    fi
+    # 2) User profiles
+    if [[ -n "${USER_PROFILES_DIR:-}" && -f "$USER_PROFILES_DIR/$base.conf" ]]; then
+        echo "$USER_PROFILES_DIR/$base.conf"; return 0
+    fi
+    # 3) Builtin (root + 1-level subdirs)
+    if [[ -n "${PROFILES_DIR:-}" ]]; then
+        [[ -f "$PROFILES_DIR/$base.conf" ]] && { echo "$PROFILES_DIR/$base.conf"; return 0; }
+        shopt -s nullglob
+        for cand in "$PROFILES_DIR"/*/"$base.conf"; do
+            [[ -f "$cand" ]] && { shopt -u nullglob; echo "$cand"; return 0; }
+        done
+        shopt -u nullglob
+    fi
+    return 1
+}
+
+# _get_extends_field <file>
+# Greps the EXTENDS=... line without sourcing. Echoes value (may be empty).
+_get_extends_field() {
+    local pf="$1" line
+    [[ ! -f "$pf" ]] && return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" =~ ^[[:space:]]*EXTENDS[[:space:]]*=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < "$pf"
+    return 0
+}
+
+# _canon_path <path>
+# Returns canonical absolute path (resolves .. and symlinks). On
+# case-insensitive filesystems (macOS APFS default, Windows MSYS) we
+# additionally lowercase the result so that duplicate refs differing only
+# in case are caught by cycle detection. On Linux paths stay case-sensitive.
+_canon_path() {
+    local p="$1" abs
+    [[ -z "$p" ]] && { echo ""; return 0; }
+    abs=$(av_readlink_f "$p" 2>/dev/null)
+    [[ -z "$abs" ]] && abs="$p"
+    case "$AV_PLATFORM" in
+        macos) printf '%s' "$abs" | tr '[:upper:]' '[:lower:]' ;;
+        *)
+            # MSYS/Git Bash on Windows reports linux-y but FS is case-insensitive.
+            if [[ -n "${OS:-}" && "$OS" == "Windows_NT" ]]; then
+                printf '%s' "$abs" | tr '[:upper:]' '[:lower:]'
+            else
+                printf '%s' "$abs"
+            fi
+            ;;
+    esac
+}
+
+# build_extends_chain <leaf_file>
+# Echoes the resolved chain root-first, leaf-last (one absolute path per line).
+# Cycle detection via visited list of canonicalized paths; depth limit 5.
+# Returns 1 on missing leaf, cycle, missing parent, or depth overflow.
+build_extends_chain() {
+    local leaf="$1"
+    if [[ -z "$leaf" || ! -f "$leaf" ]]; then
+        echo "  ✗ EXTENDS: profil leaf inexistent: ${leaf:-<empty>}" >&2
+        return 1
+    fi
+    local -a chain=() visited=()
+    local current="$leaf" current_canon parent_ref parent_path child_dir v
+    local depth=0 MAX_DEPTH=5
+
+    while [[ -n "$current" ]]; do
+        if [[ $depth -ge $MAX_DEPTH ]]; then
+            echo "  ✗ EXTENDS: depasire adancime maxima ($MAX_DEPTH) — verifica $current" >&2
+            return 1
+        fi
+        current_canon=$(_canon_path "$current")
+        for v in "${visited[@]}"; do
+            if [[ "$v" == "$current_canon" ]]; then
+                echo "  ✗ EXTENDS: ciclu detectat la $current" >&2
+                return 1
+            fi
+        done
+        visited+=("$current_canon")
+        chain=("$current" "${chain[@]}")  # prepend → root ends up first
+
+        parent_ref=$(_get_extends_field "$current")
+        [[ -z "$parent_ref" ]] && break
+
+        child_dir=$(dirname "$current")
+        parent_path=$(_resolve_extends_path "$parent_ref" "$child_dir")
+        if [[ -z "$parent_path" ]]; then
+            echo "  ✗ EXTENDS: parinte negasit '$parent_ref' (referit din $(basename "$current"))" >&2
+            return 1
+        fi
+        current="$parent_path"
+        depth=$((depth+1))
+    done
+
+    printf '%s\n' "${chain[@]}"
+    return 0
+}
+
+# load_profile_validated <file>
+# Resolves EXTENDS chain, validates each link, sources root→leaf (leaf wins).
+# Returns 0 on success, 1 on abort.
+load_profile_validated() {
+    local pf="$1"
+    local chain_str
+    chain_str=$(build_extends_chain "$pf") || return 1
+    local -a chain
+    mapfile -t chain <<< "$chain_str"
+    [[ ${#chain[@]} -eq 0 ]] && chain=("$pf")
+
+    local errors=0 link
+    for link in "${chain[@]}"; do
+        validate_profile "$link" || errors=$((errors+1))
+    done
+    if [[ $errors -gt 0 ]]; then
+        echo ""
+        # Non-interactive guard: fail-fast in scripts/CI; only prompt when stdin is a tty.
+        if [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+            echo "  ✗ Erori in profil/parinti — abort (mod non-interactiv)." >&2
+            return 1
+        fi
+        local _cont
+        read -p "  Profilul (sau parintii) au erori. Continui oricum? (d/N): " _cont
+        [[ "${_cont,,}" != "d" ]] && return 1
+    fi
+
+    if [[ ${#chain[@]} -gt 1 ]]; then
+        echo "  Lant EXTENDS (root → leaf):"
+        local i=1
+        for link in "${chain[@]}"; do
+            echo "    $i) $(basename "$link" .conf)"
+            i=$((i+1))
+        done
+    fi
+
+    for link in "${chain[@]}"; do
+        # shellcheck disable=SC1090
+        source "$link"
+    done
+    return 0
+}

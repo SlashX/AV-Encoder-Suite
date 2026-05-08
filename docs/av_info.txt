@@ -62,6 +62,7 @@ CUPRINS
   tools/hdr10plus_parser.sh     — Installer hdr10plus_tool (Termux, compilare Rust)
   tools/dovi_parser.sh          — Installer dovi_tool (Termux, compilare Rust)
   tools/exiftool_update.sh      — Smart updater ExifTool (pkg sau build manual din sursa)
+  tools/profile_diff.sh         — v43: compara doua profile .conf (sectiuni "Doar in A/B" + "Valori diferite"; exit 0/1/2)
 
   WINDOWS (PowerShell)
   ────────────────────
@@ -70,6 +71,17 @@ CUPRINS
   tools/hdr10plus_parser.ps1    — Installer hdr10plus_tool (Windows, descarca release)
   tools/dovi_parser.ps1         — Installer dovi_tool (Windows, descarca release)
   tools/exiftool_update.ps1     — Smart updater ExifTool (descarca .exe de pe exiftool.org)
+  tools/profile_diff.ps1        — v43: compara doua profile .conf (mirror PS1 al profile_diff.sh)
+
+  TESTS (tests/) — Test framework v43
+  ───────────────────────────────────
+  framework.sh / framework.ps1   — Biblioteca assertion (assert_eq, assert_match, assert_file_exists, ...)
+  run_tests.sh / run_tests.ps1   — Discover + run test_*.{sh,ps1}; exit 0=pass / 77=skip / *=fail
+  fixtures/generate_samples.sh   — Generator idempotent ffmpeg (sdr/hdr10/hlg/audio + GPX/KML)
+  unit/                          — Pure logic tests (profile schema/validation/EXTENDS/diff, helpers, HW preset)
+  integration/                   — ffmpeg/python-dependent (auto-skip cand binar lipseste)
+  Rulare: bash tests/run_tests.sh   (Termux/Linux/macOS)
+          .\tests\run_tests.ps1     (Windows)
 
 Nota: Scriptul Windows (ps1) este complet independent de cele bash.
       Contine toata logica intern, nu depinde de av_common.sh.
