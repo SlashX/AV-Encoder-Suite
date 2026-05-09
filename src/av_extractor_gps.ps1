@@ -22,7 +22,7 @@ $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutputDir = Join-Path $InputDir "output"
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
 
-$gpsFiles = Get-ChildItem -Path $InputDir -Include "*.gpx","*.fit","*.kml" -File -ErrorAction SilentlyContinue
+$gpsFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.gpx","*.fit","*.kml" -File -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║  GPS EXTRACTOR (GPX/FIT/KML)                 ║" -ForegroundColor Cyan

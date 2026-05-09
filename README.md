@@ -2,7 +2,7 @@
 
 **Cross-platform video encoding suite (bash/PS1) for Termux (Android), Linux, macOS and Windows**
 
-> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system (v43: schema validation + EXTENDS inheritance + diff CLI), and unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec — v43
+> FFmpeg Smart Adaptive Encoder with HDR/DV/HLG detection, unified telemetry extraction (DJI/GoPro/Sony/Garmin/QuickTime), batch processing, profile system (v43: schema validation + EXTENDS inheritance + diff CLI), unified HW encoding across NVENC/VAAPI/QSV/VideoToolbox/AMF/MediaCodec, and v44 HDR/DV tools (AV1 DV Profile 10 via sven-pke fork + transform-only RPU convert + container remux with preflight) — v44
 
 ---
 
@@ -12,6 +12,8 @@
 - **Hardware encoding (Windows)**: NVENC, QSV, AMF for H.264/H.265/AV1 with GPU capability detection (RTX 40+, Intel Arc, AMD RDNA3+)
 - **Hardware encoding (Termux/Android, v38)**: MediaCodec for H.264/H.265/AV1 with SoC whitelist (Snapdragon 8xx 8 Gen 1+, Exynos 21xx-24xx, Tensor G2+, Dimensity 9xxx); HDR10 supported via signaling repair (mastering display + max_cll injected post-encode); unified HDR dialog (DV/HDR10+/HDR10) with SW fallback options per file; HDR10+ dynamic and DV native preservation are SW-only
 - **Trim & Concat pipeline** (v36/v37): cut single files, concatenate multiple files (auto demuxer/filter), full trim→concat→encode pipeline + **batch trim** (v37: same cuts on N files), **smart stream copy**, **audio-only mode**, **chapter markers**, **preview thumbnails**, **HDR-aware** (v37: HDR10 auto + HDR10+ opt-in)
+- **HDR/DV Tools (v44)**: dedicated submenu for metadata-only / container-only operations — Transform RPU profile (DV 7/8.1/10 cross-codec convert, no re-encode), Remux container (MKV ↔ MP4/MOV with `tag:v hvc1/av01/avc1` + faststart + preflight check for E-AC3/SRT/DJI track compatibility), Inspect metadata (read-only RPU + HDR10+ dump)
+- **AV1 DV/HDR10+ (v44)**: full Dolby Vision Profile 10 support via sven-pke forks of `dovi_tool`/`hdr10plus_tool` (binaries renamed `av1dovi_tool`/`av1hdr10plus_tool` to coexist with HEVC upstream); HDR10+ inline via `svtav1-params hdr10plus-json=` with `_check_svtav1_hdr10plus_caps` gate (libsvtav1 v1.5+) and libaom-av1 fallback; AV1 triple-layer (DV P10 + HDR10 + HDR10+) parallel to HEVC v43 hybrid
 - **Automatic HDR detection**: HDR10, HDR10+, Dolby Vision, **HLG (BT.2100 HLG, v39)**, LOG (Apple Log, D-Log M, Samsung Log)
 - **HLG end-to-end (v39)**: native HLG signaling preserved across SW (libx265/x264/AV1), HW Windows (NVENC/QSV/AMF), and MediaCodec (Termux); dialog with HLG nativ / HLG→HDR10 / HLG→SDR / Stream copy / Skip; LOG → HLG via dedicated LUT category (`Luts/hlg_<brand>_*.cube`)
 - **Telemetry Unified (v40)**: multi-brand telemetry extraction (DJI / GoPro GPMF / Sony NMEA / Garmin VIRB FIT / QuickTime ISO 6709) with auto brand detection and **normalized cross-brand CSV** (18-column schema: timestamp, lat/lon, alt_m, speed_mps/kmh, heading, gforce/gyro, temp, hr, cadence, power, source_brand)
@@ -55,6 +57,7 @@ AV-Encoder-Suite/
 │   ├── av_encoder_apv.sh       # APV encoder (Samsung, ffmpeg 8.1+)
 │   ├── av_encoder_audio.sh     # Audio-only re-encode (video stream copy)
 │   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36: trim / concat / full pipeline)
+│   ├── av_hdr_dv_tools.sh      # v44 — HDR/DV tools submenu (transform RPU / remux / inspect)
 │   ├── av_check.sh             # Media analysis + CSV export (Termux)
 │   ├── av_check.ps1            # Media analysis + CSV export (Windows)
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows; encode + Trim/Concat)
@@ -71,12 +74,18 @@ AV-Encoder-Suite/
 │   │       ├── DJI_Action6_Moto_Cinematic.conf   # D-Log M + LUT
 │   │       └── DJI_Action6_DLogM_Outdoor.conf    # D-Log M + LUT
 │   └── tools/
-│       ├── hdr10plus_parser.sh     # hdr10plus_tool installer (Termux, Rust)
-│       ├── hdr10plus_parser.ps1    # hdr10plus_tool installer (Windows)
-│       ├── dovi_parser.sh          # dovi_tool installer (Termux, Rust)
-│       ├── dovi_parser.ps1         # dovi_tool installer (Windows)
+│       ├── hdr10plus_parser.sh     # hdr10plus_tool HEVC installer (quietvoid; Termux/Linux/macOS, Rust)
+│       ├── hdr10plus_parser.ps1    # hdr10plus_tool HEVC installer (Windows, prebuilt)
+│       ├── av1hdr10plus_parser.sh  # v44 — sven-pke fork installer (AV1 OBU); binar `av1hdr10plus_tool`
+│       ├── av1hdr10plus_parser.ps1 # v44 — sven-pke fork installer (Windows, cargo build)
+│       ├── dovi_parser.sh          # dovi_tool HEVC installer (quietvoid; Termux/Linux/macOS, Rust)
+│       ├── dovi_parser.ps1         # dovi_tool HEVC installer (Windows, prebuilt)
+│       ├── av1dovi_parser.sh       # v44 — sven-pke fork installer (AV1 RPU); binar `av1dovi_tool`
+│       ├── av1dovi_parser.ps1      # v44 — sven-pke fork installer (Windows, cargo build)
 │       ├── exiftool_update.sh      # ExifTool smart updater (Termux)
-│       └── exiftool_update.ps1     # ExifTool smart updater (Windows)
+│       ├── exiftool_update.ps1     # ExifTool smart updater (Windows)
+│       ├── profile_diff.sh         # v43 — compare two .conf profiles (bash)
+│       └── profile_diff.ps1        # v43 — compare two .conf profiles (PS1 mirror)
 ├── docs/
 │   ├── av_info.txt             # Full setup & usage documentation
 │   └── av_changelog.txt        # Version history
@@ -166,23 +175,25 @@ cd src
 
 ## Menu Options
 
-### Termux — `av_launcher.sh` (7 options)
+### Termux / Linux / macOS — `av_launcher.sh` (8 options)
 1. Encode video + audio
 2. Encode audio only (video stream copy)
 3. Analyze media files (analysis + CSV export)
 4. Telemetry video *(v40 — DJI / GoPro / Sony / Garmin / QuickTime)*
 5. Import external GPS — GPX/FIT/KML
 6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
-7. Exit
+7. **HDR/DV tools** *(v44 — transform RPU profile / remux container / inspect metadata, no re-encode)*
+8. Exit
 
-### Windows — `av_encode.ps1` (7 options)
+### Windows — `av_encode.ps1` (8 options)
 1. Encode video + audio
 2. Encode audio only (video stream copy)
 3. Analyze media files (analysis + CSV 30 fields)
 4. Telemetry video *(v40 — DJI / GoPro / Sony / Garmin / QuickTime)*
 5. Import external GPS — GPX/FIT/KML *(requires Python3)*
 6. Trim & Concat *(v36/v37 — trim / concat / pipeline / batch trim)*
-7. Exit
+7. **HDR/DV tools** *(v44 — transform RPU profile / remux container / inspect metadata, no re-encode)*
+8. Exit
 
 ---
 
@@ -190,8 +201,9 @@ cd src
 
 ### HDR / Color Science
 - **HDR10** — 10-bit encode with static metadata
-- **HDR10+** — dynamic metadata preserved via `hdr10plus_tool`
-- **Dolby Vision** — stream copy or HDR10 fallback on re-encode
+- **HDR10+** — dynamic metadata preserved via `hdr10plus_tool` (HEVC) or `av1hdr10plus_tool` (AV1, v44 sven-pke fork); SVT-AV1 inline `hdr10plus-json=` (v1.5+ required)
+- **Dolby Vision** — Profile 8.1 (HEVC) and Profile 10 (AV1, v44) supported through post-encode RPU injection (`dovi_tool` / `av1dovi_tool`); v43 triple-layer (DV 8.1 + HDR10 + HDR10+ from synthesized RPU) extended in v44 to AV1 with the same hybrid concept
+- **Cross-codec metadata** (v44) — transform-only RPU convert via `convert_rpu_profile` / `Convert-RpuProfile` (modes 1/2/3/4 ↔ DV5→8.1, DV7→8.1 MEL, force 8.1, AV1 P10) without re-encoding video
 - **HLG (v39)** — native BT.2100 HLG (transfer=arib-std-b67) across SW + HW + MediaCodec; per-file dialog (HLG nativ / HLG→HDR10 / HLG→SDR / Stream copy / Skip)
 - **LOG formats** — Apple Log, D-Log M (DJI), Samsung Log with LUT support (`.cube`) or best-effort tonemap; v39 adds Log → HLG conversion via `Luts/hlg_<brand>_*.cube` category
 - **SDR tonemap** — zscale linearization + Hable tonemap → Rec.709
@@ -246,7 +258,7 @@ cd src
 - **Open output folder**: `av_open_path` (Termux: `termux-open`; Linux: `xdg-open`; macOS: `open`).
 - **Bash 4+ enforced** at startup with platform-specific install hint (macOS default 3.2 refused; `brew install bash` required).
 - **MediaCodec** (Termux Android only) auto-skipped on Linux/macOS — silent fallback to SW encode.
-- **HDR10+/DV tools**: `tools/hdr10plus_parser.sh` and `tools/dovi_parser.sh` build from source on Termux; on macOS hint to `brew install hdr10plus_tool` / `brew install dovi_tool`; on Linux hint to `cargo install`.
+- **HDR10+/DV tools**: `tools/hdr10plus_parser.sh` and `tools/dovi_parser.sh` build from source on Termux; on macOS hint to `brew install hdr10plus_tool` / `brew install dovi_tool`; on Linux hint to `cargo install`. **v44**: parallel `tools/av1hdr10plus_parser.{sh,ps1}` and `tools/av1dovi_parser.{sh,ps1}` build sven-pke forks for AV1 (no prebuilt releases — cargo build mandatory; rustup recommended on Windows).
 
 ### HW encoding generalizat (v42)
 
@@ -278,6 +290,16 @@ cd src
 - **Range selection** — `all` / `1,3,5` / `1-5` / `1-3,7,10-12`
 - **Temp management** — lazy-created `Temp/` folder with per-run subdirs (`trim_*` / `concat_*` / `pipeline_*` / `preview_*`); residual cleanup prompt on submenu entry (>24h default)
 
+### HDR/DV Tools (v44)
+
+Standalone submenu (launcher main menu opt 7) for metadata-only / container-only operations — **no re-encode**.
+
+- **Transform RPU profile** — convert Dolby Vision RPU between profiles, lossless on video. Pipeline (3 passes): extract source RPU (codec-aware: HEVC `bsf hevc_mp4toannexb` / AV1 `-f ivf`) → `dovi_tool convert -m N` (or `av1dovi_tool` for AV1 target) → re-build by extracting raw video + injecting converted RPU + re-muxing with original audio/subs/tracks. Modes: 1=force 8.1 single-layer, 2=DV5→8.1, 3=DV7→8.1 (drop EL, MEL only), 4=AV1 Profile 10 (sven-pke fork).
+- **Remux container** — MKV ↔ MP4/MOV with proper `tag:v` (hvc1/av01/avc1) + `+faststart`. Preflight check rules: E-AC3+`.mov`→FAIL; SRT/ASS subs+`.mp4/.mov`→WARN (converted to mov_text or stripped); DJI tracks djmd/dbgi+`.mp4`→WARN (stripped); MKV permissive→OK. Auto retry without subs on SRT/ASS failure.
+- **Inspect metadata** (read-only) — ffprobe summary + `dovi_tool info` RPU dump + HDR10+ scene descriptor count. Useful for diagnosis before transform/remux.
+- **Codec-aware tool dispatchers** — `tool_for_extract(codec, kind)` / `Get-ToolForExtract` route to `dovi_tool`/`hdr10plus_tool` (HEVC) or `av1dovi_tool`/`av1hdr10plus_tool` (AV1 sven-pke fork). Cache helpers `_check_dovi_tool_for(codec)` / `Test-DoviToolFor`.
+- **Sven-pke forks** — installer scripts `tools/av1dovi_parser.{sh,ps1}` + `tools/av1hdr10plus_parser.{sh,ps1}` clone GitHub source and `cargo build --release` (no prebuilt releases); binaries renamed at install (`av1dovi_tool`, `av1hdr10plus_tool`) to coexist with HEVC upstream.
+
 ---
 
 ## Output Locations
@@ -291,22 +313,42 @@ cd src
 
 ## Optional Tools — `src/tools/`
 
-### hdr10plus_tool (HDR10+ metadata)
+### hdr10plus_tool — HDR10+ metadata (HEVC)
 ```bash
-# Termux (compiles from Rust source)
+# Termux / Linux / macOS (compiles from Rust source)
 ./tools/hdr10plus_parser.sh
 
 # Windows (downloads release binary)
 .\tools\hdr10plus_parser.ps1
 ```
 
-### dovi_tool (Dolby Vision)
+### av1hdr10plus_tool — HDR10+ metadata (AV1, v44, sven-pke fork)
+Required for AV1 HDR10+ inline (`svtav1-params hdr10plus-json=`) and AV1 triple-layer flows. No GitHub releases — built from source with cargo. Installs as `av1hdr10plus_tool` (renamed) so HEVC `hdr10plus_tool` upstream stays untouched.
 ```bash
-# Termux
+# Termux / Linux / macOS
+./tools/av1hdr10plus_parser.sh
+
+# Windows (requires rustup + git)
+.\tools\av1hdr10plus_parser.ps1
+```
+
+### dovi_tool — Dolby Vision (HEVC)
+```bash
+# Termux / Linux / macOS
 ./tools/dovi_parser.sh
 
-# Windows
+# Windows (downloads release binary)
 .\tools\dovi_parser.ps1
+```
+
+### av1dovi_tool — Dolby Vision Profile 10 (AV1, v44, sven-pke fork)
+Required for AV1 DV inject (post-encode) and v44 transform-only flow targeting AV1. Installs as `av1dovi_tool` (renamed) parallel to HEVC `dovi_tool`.
+```bash
+# Termux / Linux / macOS
+./tools/av1dovi_parser.sh
+
+# Windows (requires rustup + git)
+.\tools\av1dovi_parser.ps1
 ```
 
 ### ExifTool updater
@@ -352,4 +394,4 @@ If you find this project useful, consider a small donation — it helps keep the
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v42** — 49 bugs fixed | 160+ features | ~16500 lines of code
+Current: **v44** — 49 bugs fixed | 175+ features | ~18200 lines of code | 47 files

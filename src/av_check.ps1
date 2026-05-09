@@ -146,7 +146,7 @@ Write-Host "╔═════════════════════�
 Write-Host "║     AV CHECK — ANALIZA FISIERE MEDIA     ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 
-$inputFiles = Get-ChildItem -Path $InputDir -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File
+$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File
 $fileCount  = $inputFiles.Count
 $totalSz    = ($inputFiles | Measure-Object -Property Length -Sum).Sum
 Write-Host "INPUT: $InputDir | Fisiere: $fileCount | $(Format-Bytes $totalSz)" -ForegroundColor Yellow
@@ -287,7 +287,7 @@ Write-Host "CSV: $csvPath" -ForegroundColor White
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
 # ── Comparatie Input vs Output ────────────────────────────────────────
-$outFiles = Get-ChildItem -Path $OutputDir -Include "*.mp4","*.mov","*.mkv","*.mxf","*.webm" -File -ErrorAction SilentlyContinue
+$outFiles = Get-ChildItem -Path (Join-Path $OutputDir '*') -Include "*.mp4","*.mov","*.mkv","*.mxf","*.webm" -File -ErrorAction SilentlyContinue
 if ($outFiles -and $outFiles.Count -gt 0) {
     Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     Write-Host "COMPARATIE INPUT vs OUTPUT" -ForegroundColor Cyan

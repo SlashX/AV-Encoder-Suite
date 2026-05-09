@@ -146,21 +146,55 @@ encoder_setup_file() {
         fi
     fi
 
-    # ── Dolby Vision — AV1 nu suporta DV nativ ───────────────────────
+    # ── Dolby Vision — AV1 Profile 10 via sven-pke fork (post-encode inject) ──
     if [[ -n "$DOVI" ]]; then
         echo ""
         echo "  ╔══════════════════════════════════════════════╗"
-        echo "  ║  DOLBY VISION DETECTAT                       ║"
-        echo "  ║  AV1 nu suporta Dolby Vision nativ.          ║"
+        echo "  ║  DOLBY VISION DETECTAT (sursa Profile $DOVI)"
         echo "  ╠══════════════════════════════════════════════╣"
         echo "  ║  1) Converteste la HDR10 (pierde layer DV)   ║"
         echo "  ║  2) Sari acest fisier                        ║"
-        echo "  ╚══════════════════════════════════════════════╝"
-        read -p "  Alege 1 sau 2 [implicit: 2]: " dv_choice
-        if [[ "${dv_choice:-2}" != "1" ]]; then
-            log "  DV: sarit (AV1 incompatibil)"; return 98
+        if _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+            echo "  ║  3) DV Profile 10 (AV1) — re-encode + inject ║"
+            echo "  ║     extrage RPU sursa → encode AV1 → inject  ║"
+            echo "  ║     necesita: av1dovi_tool (sven-pke fork)   ║"
         fi
-        log "  DV: conversie la HDR10 (AV1)"
+        echo "  ╚══════════════════════════════════════════════╝"
+        local _max_dv_opt=2
+        _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]] && _max_dv_opt=3
+        read -p "  Alege 1-$_max_dv_opt [implicit: 2]: " dv_choice
+        case "${dv_choice:-2}" in
+            3)
+                if _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+                    # Detect source codec si foloseste extract_dv_rpu codec-aware
+                    # (dovi_tool pt HEVC, av1dovi_tool pt AV1)
+                    local _src_codec
+                    _src_codec=$(detect_source_codec "$file")
+                    if ! _check_dovi_tool_for "$_src_codec"; then
+                        log "  DV: tool DV pt sursa $_src_codec negasit — Fallback HDR10."
+                    else
+                        local _src_rpu
+                        _src_rpu=$(av_mktemp_ext bin)
+                        log "  DV (AV1 P10): Extrag RPU din sursa ($_src_codec)..."
+                        if extract_dv_rpu "$file" "$_src_rpu" "$_src_codec"; then
+                            DOVI_RPU_FILE="$_src_rpu"
+                            TRIPLE_LAYER_MODE=1
+                            TRIPLE_LAYER_TARGET_CODEC="av1"
+                            log "  DV (AV1 P10): RPU sursa extras — re-encode + inject post-encode"
+                        else
+                            log "  DV (AV1 P10): Extract RPU esuat — fallback HDR10"
+                            rm -f "$_src_rpu"
+                        fi
+                    fi
+                fi
+                ;;
+            1)
+                log "  DV: conversie la HDR10 (AV1)"
+                ;;
+            *)
+                log "  DV: sarit (user choice)"; return 98
+                ;;
+        esac
     fi
 
     # ── Rate control ──────────────────────────────────────────────────
@@ -179,8 +213,19 @@ encoder_setup_file() {
     # ── HDR color params ──────────────────────────────────────────────
     local color_params="" hdr10plus_av1_param=""
     if [[ -n "$HDR_PLUS" ]]; then
-        log "  HDR10+ detectat"
-        handle_hdr10plus_dialog "$file"
+        log "  HDR10+ detectat (target=$AV1_ENCODER)"
+        # Caps check pentru hdr10plus-json inline (svtav1-params); afecteaza
+        # doar injectarea metadatei dinamice la encode — dialog ruleaza intotdeauna
+        # ca user-ul sa pastreze stream copy / skip / Triple-layer (DV RPU post-encode).
+        local _hdr10p_inline_ok=1
+        if [[ "$AV1_ENCODER" != "libsvtav1" ]]; then
+            log "  ⚠ HDR10+: libaom-av1 nu suporta hdr10plus-json inline"
+            _hdr10p_inline_ok=0
+        elif ! _check_svtav1_hdr10plus_caps; then
+            log "  ⚠ HDR10+: SVT-AV1 curent nu suporta hdr10plus-json (necesita v1.5+)"
+            _hdr10p_inline_ok=0
+        fi
+        handle_hdr10plus_dialog "$file" "av1"
         local hdr10p_rc=$?
         if [ $hdr10p_rc -eq 98 ]; then
             # Stream copy
@@ -207,12 +252,13 @@ encoder_setup_file() {
             fi
             return 98
         fi
-        # hdr10p_rc=0: metadata extrasa → injectam via svtav1-params
-        if [[ -n "${HDR10PLUS_JSON:-}" ]] && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+        # hdr10p_rc=0: metadata extrasa → injectam via svtav1-params doar daca caps OK
+        if [[ -n "${HDR10PLUS_JSON:-}" ]] && [ "$_hdr10p_inline_ok" -eq 1 ]; then
             hdr10plus_av1_param=":hdr10plus-json=${HDR10PLUS_JSON}"
-            log "  HDR10+: Metadata va fi injectata (hdr10plus-json)"
+            log "  HDR10+: Metadata va fi injectata inline (hdr10plus-json)"
         elif [[ -n "${HDR10PLUS_JSON:-}" ]]; then
-            log "  HDR10+: libaom nu suporta hdr10plus-json — metadata pierduta"
+            log "  HDR10+: Metadata extrasa dar inline injection indisponibila — fallback HDR10 static"
+            log "    (Triple-layer DV RPU post-encode ramane functional)"
         fi
         color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
     elif [[ "${IS_HLG:-0}" == "1" ]]; then

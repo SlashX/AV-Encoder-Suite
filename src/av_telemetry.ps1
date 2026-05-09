@@ -60,7 +60,7 @@ function Get-TelemetryTrackIdx {
 
 # ── Scanare fisiere video ────────────────────────────────────────────
 $videoExt = @("*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.360","*.lrv")
-$inputFiles = Get-ChildItem -Path $InputDir -Include $videoExt -File -ErrorAction SilentlyContinue
+$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include $videoExt -File -ErrorAction SilentlyContinue
 $fileCount = ($inputFiles | Measure-Object).Count
 if ($fileCount -eq 0) {
     Write-Host "Nu am gasit fisiere video in $InputDir" -ForegroundColor Red

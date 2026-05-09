@@ -84,7 +84,8 @@ fi
 for script in av_encoder_x265.sh av_encoder_x264.sh \
               av_encoder_av1.sh av_encoder_dnxhr.sh av_encoder_apv.sh av_encoder_prores.sh \
               av_check.sh av_common.sh \
-              av_telemetry.sh av_encoder_audio.sh av_extractor_gps.sh; do
+              av_telemetry.sh av_encoder_audio.sh av_extractor_gps.sh \
+              av_trimconcat.sh av_hdr_dv_tools.sh; do
     if [ ! -f "$SCRIPT_DIR/$script" ]; then
         echo "Eroare: $script nu a fost gasit in $SCRIPT_DIR"; exit 1
     fi
@@ -118,9 +119,10 @@ echo "║  3) Verifica fisiere media           ║"
 echo "║  4) Telemetrie video (DJI/GoPro/...) ║"
 echo "║  5) Import GPS extern (GPX/FIT/KML)  ║"
 echo "║  6) Trim & Concat (taiere/unire)     ║"
-echo "║  7) Anulare / iesire                 ║"
+echo "║  7) HDR/DV tools (transform / remux) ║"
+echo "║  8) Anulare / iesire                 ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Introdu 1-7: " main_choice
+read -p "Introdu 1-8: " main_choice
 
 case "$main_choice" in
     2) echo "Rulez av_encoder_audio.sh..."; ./av_encoder_audio.sh; exit $? ;;
@@ -128,7 +130,8 @@ case "$main_choice" in
     4) echo "Rulez av_telemetry.sh..."; ./av_telemetry.sh; exit $? ;;
     5) echo "Rulez av_extractor_gps.sh..."; ./av_extractor_gps.sh; exit $? ;;
     6) echo "Rulez av_trimconcat.sh..."; ./av_trimconcat.sh; exit $? ;;
-    7) echo "Anulat."; exit 0 ;;
+    7) echo "Rulez av_hdr_dv_tools.sh..."; ./av_hdr_dv_tools.sh; exit $? ;;
+    8) echo "Anulat."; exit 0 ;;
     1) : ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

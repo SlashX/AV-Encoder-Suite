@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + DJI GPS Extractor
-  Documentatie Setup & Utilizare — v41
+  Documentatie Setup & Utilizare — v44
 ═══════════════════════════════════════════════════════════════
 
 
@@ -20,6 +20,7 @@ CUPRINS
  10. Utilizare rapida (comenzi pornire)
  11. Comenzi rapide Termux (edit, backup, stergere)
  12. Troubleshooting
+ 13. HDR/DV Tools — transform / remux / inspect (v44)
 
 
 ═══════════════════════════════════════════════════════════════
@@ -40,6 +41,7 @@ CUPRINS
   av_encoder_prores.sh  — Encoder ProRes (Apple profesional, prores_ks, mov obligatoriu)
   av_encoder_audio.sh      — Re-encode doar audio (video stream copy, rapid)
   av_trimconcat.sh         — Trim & Concat pipeline (v36/v37: trim / concat / pipeline / batch trim)
+  av_hdr_dv_tools.sh       — v44: HDR/DV tools — submeniu transform RPU / remux container / inspect metadata (no re-encode)
   av_check.sh            — Analiza completa video + audio, export CSV (standalone)
   av_telemetry.sh               — Telemetrie unificata multi-brand (DJI/GoPro/Sony/Garmin/QuickTime)
   av_telemetry.ps1              — PS1 mirror standalone al av_telemetry.sh (Windows)
@@ -59,8 +61,10 @@ CUPRINS
 
   TOOLS (src/tools/) — Instalere & Updatare dependinte externe
   ─────────────────────────────────────────────────────────────
-  tools/hdr10plus_parser.sh     — Installer hdr10plus_tool (Termux, compilare Rust)
-  tools/dovi_parser.sh          — Installer dovi_tool (Termux, compilare Rust)
+  tools/hdr10plus_parser.sh     — Installer hdr10plus_tool HEVC (quietvoid; Termux/Linux/macOS, compilare Rust)
+  tools/av1hdr10plus_parser.sh  — v44: Installer sven-pke fork (AV1 OBU); binar `av1hdr10plus_tool` — coexista cu cel HEVC
+  tools/dovi_parser.sh          — Installer dovi_tool HEVC (quietvoid; Termux/Linux/macOS, compilare Rust)
+  tools/av1dovi_parser.sh       — v44: Installer sven-pke fork (AV1 RPU); binar `av1dovi_tool` — coexista cu cel HEVC
   tools/exiftool_update.sh      — Smart updater ExifTool (pkg sau build manual din sursa)
   tools/profile_diff.sh         — v43: compara doua profile .conf (sectiuni "Doar in A/B" + "Valori diferite"; exit 0/1/2)
 
@@ -68,8 +72,10 @@ CUPRINS
   ────────────────────
   av_encode.ps1          — Script PowerShell all-in-one (encode + audio + check media + extractor DJI)
   av_check.ps1           — Analiza completa video + audio, export CSV (standalone)
-  tools/hdr10plus_parser.ps1    — Installer hdr10plus_tool (Windows, descarca release)
-  tools/dovi_parser.ps1         — Installer dovi_tool (Windows, descarca release)
+  tools/hdr10plus_parser.ps1    — Installer hdr10plus_tool HEVC (Windows, descarca release pre-built)
+  tools/av1hdr10plus_parser.ps1 — v44: Installer sven-pke fork (Windows, cargo build din sursa, necesita rustup)
+  tools/dovi_parser.ps1         — Installer dovi_tool HEVC (Windows, descarca release pre-built)
+  tools/av1dovi_parser.ps1      — v44: Installer sven-pke fork (Windows, cargo build din sursa, necesita rustup)
   tools/exiftool_update.ps1     — Smart updater ExifTool (descarca .exe de pe exiftool.org)
   tools/profile_diff.ps1        — v43: compara doua profile .conf (mirror PS1 al profile_diff.sh)
 
@@ -1713,6 +1719,92 @@ PASUL 4: Permite executia scripturilor PowerShell
             DOAR daca ai filmat cu telecomanda GPS Bluetooth DJI conectata
             sau cu aplicatia DJI Mimo pornita pe telefon in timpul filmarii.
             DJI Action 6 nu are senzor GPS intern.
+
+
+═══════════════════════════════════════════════════════════════
+13. HDR/DV TOOLS — TRANSFORM / REMUX / INSPECT (v44)
+═══════════════════════════════════════════════════════════════
+
+Submeniu nou pentru operatii metadata-only / container-only — toate
+FARA re-encode video. Pornire: meniu principal launcher → opt 7
+"HDR/DV tools (transform / remux)". PS1: aceeasi optiune in main menu.
+
+Submeniu (4 optiuni):
+  1) Transform RPU profile — convert 7/8.1/10 cross-codec, no encode
+  2) Remux container       — MKV ↔ MP4/MOV cu tag:v fix + faststart
+  3) Inspect metadata      — dump RPU + HDR10+ scenes (read-only)
+  4) Inapoi
+
+
+  ─── 13.1. Transform RPU profile ───
+  Cazuri tipice:
+    - Ai DV Profile 7 (BL+EL+RPU) si vrei sa-l simplifici la 8.1
+      single-layer pentru compatibilitate larga (TV/playere).
+    - Ai DV Profile 5 si vrei sa-l converti la 8.1 cu HDR10 base.
+    - Ai un fisier HEVC DV 8.1 si vrei un AV1 DV Profile 10 echivalent.
+
+  Modes oferite (ref dovi_tool 2.x):
+    1) Force 8.1 (single-layer + HDR10 base)         [-m 2]
+    2) DV 5 -> 8.1                                   [-m 3]
+    3) DV 7 -> 8.1 (drop EL, MEL only)               [-m 4]
+    4) Pentru AV1: profile 10 (sven-pke fork)        [-m 2 + tool av1]
+
+  Pipeline complet (3 pasi):
+    [1/3] Extract RPU sursa — codec-aware (HEVC: bsf hevc_mp4toannexb;
+          AV1: -f ivf). Foloseste dovi_tool sau av1dovi_tool.
+    [2/3] Convert RPU       — `dovi_tool convert -m N --rpu-out <out>`.
+    [3/3] Re-build video    — extract video raw original, inject RPU
+          convertit, re-mux cu audio/subtitrari/track-uri originale.
+
+  100% lossless pe video — modifici DOAR metadata Dolby Vision.
+
+
+  ─── 13.2. Remux container (MKV ↔ MP4/MOV) ───
+  Pre-flight automat verifica compatibilitatea:
+
+    Container tinta MP4/MOV:
+      - eac3 audio + .mov         → FAIL (level 2): converteste audio
+        sau alege .mp4 (E-AC3 e suportat in MP4 dar NU in MOV).
+      - subtitrari SRT/ASS/SSA    → WARN (level 1): vor fi convertite
+        la mov_text sau strip-uite la fallback.
+      - track-uri DJI (djmd/dbgi) → WARN (level 1): vor fi strip-uite
+        (incompatibile cu MP4).
+
+    Container tinta MKV:
+      - permisiv pentru toate codecurile/track-urile — level 0 mereu.
+
+  Tag:v fix automat la output MP4/MOV:
+    - HEVC → -tag:v hvc1 (in loc de hev1, pentru playere Apple/streaming)
+    - AV1  → -tag:v av01
+    - H264 → -tag:v avc1
+    - +faststart pentru toate (moov atom la inceput)
+
+
+  ─── 13.3. Inspect metadata (read-only) ───
+  Dump rapid pentru diagnoza inainte de transform sau remux:
+    - ffprobe summary (codec, dimensiuni, color_transfer/primaries)
+    - dovi_tool info -i <rpu> (Profile, Level, RPU stats) — extrage RPU
+      automat din container daca e DV
+    - HDR10+ scene descriptors count (BezierCurveData / TargetedSystemDisplay)
+
+
+  ─── 13.4. Sven-pke forks pentru AV1 ───
+  Optiunile DV/HDR10+ pentru AV1 necesita binare DEDICATE (instalate
+  cu rename ca sa nu intre in coliziune cu cele HEVC):
+
+    av1dovi_tool      — sven-pke/dovi_tool      (clone + cargo build)
+    av1hdr10plus_tool — sven-pke/hdr10plus_tool (clone + cargo build)
+
+  Installer scripts:
+    Termux/Linux/macOS: src/tools/av1dovi_parser.sh
+                       src/tools/av1hdr10plus_parser.sh
+    Windows:           src/tools/av1dovi_parser.ps1
+                       src/tools/av1hdr10plus_parser.ps1
+
+  Fork-urile NU au releases pre-built — installer-ul cloneaza de pe
+  GitHub si ruleaza `cargo build --release`. Cere Rust toolchain
+  (rustup recomandat). Tool-urile HEVC upstream raman neatinse.
+
 
 ═══════════════════════════════════════════════════════════════
 

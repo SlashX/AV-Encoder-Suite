@@ -3,9 +3,140 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v43 | 49 bug-uri fixate | 165+ features
-  44 fisiere | ~17400 linii cod | ~3760 linii documentatie
+  TOTAL: v44 | 49 bug-uri fixate | 175+ features
+  47 fisiere | ~18200 linii cod | ~3850 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v44 — DV/HDR10+ AV1 + transform-only + remux container
+═══════════════════════════════════════════════════════════════
+
+  ADD AV1 metadata tools — sven-pke fork installers
+        src/tools/av1dovi_parser.sh / .ps1 — cloneaza si compileaza
+        sven-pke/dovi_tool (fork al quietvoid/dovi_tool cu suport AV1
+        OBU); binarul e instalat ca av1dovi_tool (rename pentru a
+        evita coliziunea cu dovi_tool upstream HEVC-only). Termux:
+        pkg install rust + cargo build. Linux/macOS/Windows: cargo
+        build via rustup (sven-pke nu publica releases pre-built).
+        src/tools/av1hdr10plus_parser.sh / .ps1 — same pattern pentru
+        sven-pke/hdr10plus_tool, binar av1hdr10plus_tool. Tool-urile
+        HEVC upstream raman neatinse — coexista pe acelasi sistem.
+  ADD Codec-aware tool dispatchers (av_common.sh / av_encode.ps1)
+        detect_source_codec(file) / Get-SourceCodec — ffprobe v:0
+        codec_name (hevc/av1/h264/...) cu safe fallback pe input gol.
+        tool_for_extract(codec, kind) / Get-ToolForExtract — selecteaza
+        binarul corect: codec=av1 → av1dovi_tool / av1hdr10plus_tool;
+        altfel → dovi_tool / hdr10plus_tool. Kind: dovi | hdr10plus.
+        tool_for_inject = alias (decuplat pentru future-proofing).
+        _check_av1_dovi_tool / _check_av1_hdr10plus_tool — paralel cu
+        cele HEVC, cache via *_AVAILABLE vars. _check_dovi_tool_for /
+        _check_hdr10plus_tool_for — wrapper care alege ramura corecta
+        pe baza codec-ului tinta. PS1: Test-Av1DoviTool / Test-Av1Hdr10PlusTool /
+        Test-DoviToolFor / Test-Hdr10PlusToolFor.
+  ADD AV1 same-codec — HDR10+ inline + DV Profile 10 inject
+        av_encoder_av1.sh / av_encode.ps1: HDR10+ ramane via svtav1-params
+        hdr10plus-json= dar cu gate nou _check_svtav1_hdr10plus_caps
+        (libsvtav1 v1.5+) si fallback explicit pentru libaom-av1 (warning
+        + HDR10 static). DV deblocat — optiune noua "DV Profile 10 (AV1)"
+        in dialogul DV: extrage RPU din sursa HEVC via dovi_tool, encode
+        AV1 plain, inject post-encode via av1dovi_tool, re-mux cu audio
+        original. Triple-layer (Hibrid 8.1) extins pentru AV1: HDR10+ JSON
+        + DV RPU sintetizat din JSON (target_codec=av1) + post-encode
+        inject. Eticheta "Triple-layer (Hibrid 8.1)" sau "DV P10 + HDR10
+        + HDR10+ (AV1)" in functie de target.
+  ADD handle_hdr10plus_dialog cu target_codec param
+        Dialog HDR10+ acum acepta codec tinta (default hevc back-compat).
+        Pentru av1, gate-uieste optiunea Triple-layer pe av1dovi_tool si
+        propaga target_codec la generate_dv_rpu_from_hdr10plus. Eticheta
+        adaptata: "DV 8.1 + HDR10 + HDR10+ (HEVC)" vs "DV P10 + HDR10
+        + HDR10+ (AV1)".
+  UPDATE inject_dv_rpu / generate_dv_rpu_from_hdr10plus — codec param
+        Functii mostenite din v43 capata parametru opt target_codec
+        (default hevc). RPU-ul este profile-agnostic; diferenta e in
+        binarul folosit. Apelurile existente raman neschimbate.
+  UPDATE Triple-layer post-encode inject (run_encode_loop) — codec-aware
+        Extract raw video: HEVC → bsf hevc_mp4toannexb -f hevc, AV1 →
+        -f ivf. inject_dv_rpu cheama tool-ul corect pe baza
+        TRIPLE_LAYER_TARGET_CODEC. Re-mux pastreaza audio/sub/track-uri
+        originale. PS1 oglindeste integral.
+  ADD _check_svtav1_hdr10plus_caps / Test-SvtAv1Hdr10PlusCaps
+        Detecteaza daca SVT-AV1 din ffmpeg curent suporta hdr10plus-json
+        (introdus in v1.5). Cache rezultat. Fallback la HDR10 static cu
+        mesaj clar daca lipseste suport.
+  ADD HDR/DV tools — submeniu metadata-only (v44 main feature)
+        New: src/av_hdr_dv_tools.sh — entry script cu submeniu 4 optiuni
+        pentru operatii FARA re-encode (paralel cu av_trimconcat.sh).
+        New: launcher main menu opt 7 "HDR/DV tools (transform / remux)";
+        exit shift de la 7 la 8. PS1: Invoke-HdrDvTools dispatcher in
+        av_encode.ps1 + entry in main menu.
+        Submeniu:
+          1) Transform RPU profile — convert RPU 7/8.1/10 cross-codec
+          2) Remux container — MKV ↔ MP4/MOV cu tag:v fix
+          3) Inspect metadata — read-only dump RPU + HDR10+
+          4) Inapoi
+  ADD convert_rpu_profile / Convert-RpuProfile (av_common.sh / PS1)
+        Wrapper peste dovi_tool / av1dovi_tool 'convert -m N' pentru
+        transformari intre profile DV. Modes (dovi_tool 2.x):
+          1 = 8.1 single-layer | 2 = force 8.1 (default) |
+          3 = DV5 → 8.1       | 4 = DV7 → 8.1 (drop EL, MEL only)
+        Pentru AV1 (sven-pke fork) modurile pot diferi; expune `mode`
+        ca int crud + delegheaza tool-ul prin tool_for_inject.
+  ADD Transform-only flow (no re-encode)
+        Pipeline: extract RPU sursa → convert (cross-profile) → extract
+        raw video sursa → inject RPU convertit → re-mux container cu
+        audio/sub/track-uri originale. 100% lossless pe video — modifica
+        doar metadata DV. Folosit cand vrei sa convertezi 7→8.1 fara
+        a pierde nimic. Bash: hdv_flow_transform_rpu. PS1: Invoke-TransformRpu.
+  ADD Remux container flow (MKV ↔ MP4/MOV)
+        _remux_preflight(file, target) / Get-RemuxPreflight — pre-flight
+        check cu reguli:
+          eac3 + .mov              → level 2 (FAIL)
+          subrip/ass/ssa + .mp4/.mov → level 1 (warn, convertite la mov_text)
+          DJI tracks (djmd/dbgi) + .mp4/.mov → level 1 (warn, strip)
+          MKV permisiv             → level 0 mereu
+          container necunoscut     → level 2
+        remux_container_with_tag — re-mux fara re-encode, fix tag:v
+        (hvc1/av01/avc1) pentru MP4/MOV + -movflags +faststart, retry
+        fara subtitrari daca primul pass esueaza pe SRT/ASS.
+        PS1: Get-RemuxPreflight returneaza @{level; notes} hashtable.
+  ADD Inspect metadata flow (read-only)
+        Dump ffprobe summary + DV RPU info (dovi_tool info -i) +
+        HDR10+ scene descriptors count. Util pentru diagnoza inainte
+        de transform sau remux.
+  ADD extract_dv_rpu / Get-DvRpu — codec-aware RPU extract
+        Auto-detecteaza daca input e container sau raw stream;
+        extrage video raw daca e nevoie, apoi cheama dovi_tool /
+        av1dovi_tool extract-rpu. Cleanup automat fisiere temp.
+  ADD extract_raw_video / Get-RawVideo — codec-aware bitstream extract
+        HEVC → bsf hevc_mp4toannexb -f hevc; AV1 → -f ivf;
+        H264 → bsf h264_mp4toannexb -f h264; fallback → -c:v copy.
+  ADD Tests (8 fisiere noi, 71 asserts noi total)
+        unit/test_tool_dispatchers.sh — 30 asserts: codec×kind matrix,
+            default codec back-compat, kind invalid, codec routing prin
+            cache vars, caps cache behavior + probe non-throw,
+            detect_source_codec empty/missing handling
+        unit/test_tool_dispatchers.ps1 — 25 asserts: aceleasi zone +
+            type checks Boolean pe Test-* cmdlets
+        unit/test_hdr_dv_tools.sh — 23 asserts: 10 reguli preflight
+            (toate combinatiile), case-insensitive container, convert
+            failure path, function existence
+        unit/test_hdr_dv_tools.ps1 — 23 asserts: mirror complet cu mock
+            ffprobe via function override
+  ADD CLAUDE.md / av_info.txt / av_changelog.txt sync
+        Sectiuni noi v44 in toate documentele user-facing si interne.
+
+  Note importante:
+    - Profile 8.1 hibrid (DV + HDR10+ co-existing) ramane suportat
+      doar pentru HEVC (v43 triple-layer). Pentru AV1, profilul 10 e
+      noul echivalent — produs prin acelasi flow conceptual.
+    - libdovi NU este necesar — toate operatiile DV folosesc dovi_tool /
+      av1dovi_tool ca tool extern, post-encode injection (Path B).
+    - sven-pke fork e behind upstream pe alte fix-uri (e fork specializat
+      pe AV1). Daca upstream face breaking change la RPU schema, fork-ul
+      poate ramane in urma — verifica --version la diagnostice.
+    - PATH collision rezolvat prin rename la install: dovi_tool /
+      av1dovi_tool si hdr10plus_tool / av1hdr10plus_tool coexista.
 
 
 ═══════════════════════════════════════════════════════════════
