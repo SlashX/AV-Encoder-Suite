@@ -1756,7 +1756,9 @@ function Show-Hdr10PlusDialog {
         [string]$file,
         [string]$TargetCodec = "hevc"
     )
-    $hdr10plusToolAvail = Test-Hdr10PlusToolFor -Codec $TargetCodec
+    # v45: extract are nevoie de source-codec tool, triple-layer inject de target-codec tool
+    $srcCodec = Get-SourceCodec $file
+    $hdr10plusToolAvail = Test-Hdr10PlusToolFor -Codec $srcCodec
     $doviToolAvail      = Test-DoviToolFor    -Codec $TargetCodec
 
     Write-Host ""
@@ -1793,9 +1795,10 @@ function Show-Hdr10PlusDialog {
             default { return "preserve" }
         }
     } else {
-        $needHp = if ($TargetCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
-        $hintHp = if ($TargetCodec -eq "av1") { "av1hdr10plus_parser.ps1" } else { "hdr10plus_parser.ps1" }
-        Write-Host "  ║  $needHp NU este instalat." -ForegroundColor Yellow
+        # v45: tool-ul lipsa e pt source-codec (extract), nu target-codec
+        $needHp = if ($srcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+        $hintHp = if ($srcCodec -eq "av1") { "av1hdr10plus_parser.ps1" } else { "hdr10plus_parser.ps1" }
+        Write-Host "  ║  $needHp NU este instalat (necesar pt sursa $srcCodec)" -ForegroundColor Yellow
         Write-Host "  ║  Fara el, metadata dinamica se pierde.       ║" -ForegroundColor Yellow
         Write-Host "  ║  Instaleaza cu: .\$(Split-Path $ToolsDir -Leaf)\$hintHp" -ForegroundColor DarkGray
         Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
@@ -2287,6 +2290,93 @@ function Invoke-InspectMetadata {
     }
 }
 
+# v45: HDR10+ → DV hybrid (no re-encode) — sintetizeaza DV RPU din HDR10+
+# metadata si il injecteaza in bitstream-ul existent. Acopera HEVC + AV1.
+function Invoke-Hdr10PlusToDv {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  HDR10+ → DV HYBRID (no re-encode)           ║" -ForegroundColor Cyan
+    Write-Host "║  Sintetizeaza DV RPU din HDR10+ metadata     ║" -ForegroundColor Cyan
+    Write-Host "║  si il injecteaza in bitstream existent.     ║" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    $file = _Hdv-PickFile -Prompt "Alege fisier sursa (cu HDR10+)"
+    if (-not $file) { Write-Host "Anulat." -ForegroundColor Yellow; return }
+    $srcCodec = Get-SourceCodec $file
+    Write-Host "  Codec sursa: $srcCodec"
+
+    if ($srcCodec -ne "hevc" -and $srcCodec -ne "av1") {
+        Write-Host "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $srcCodec)." -ForegroundColor Red
+        return
+    }
+    if (-not (Test-Hdr10PlusToolFor -Codec $srcCodec)) {
+        $hp = if ($srcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+        Write-Host "  EROARE: $hp nu este instalat (necesar pt sursa $srcCodec)." -ForegroundColor Red
+        return
+    }
+    if (-not (Test-DoviToolFor -Codec $srcCodec)) {
+        $dv = if ($srcCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+        Write-Host "  EROARE: $dv nu este instalat (necesar pt sinteza DV RPU)." -ForegroundColor Red
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  [1/4] Extract HDR10+ JSON..." -ForegroundColor Cyan
+    $hpJson = Extract-Hdr10PlusMetadata $file
+    if (-not $hpJson -or -not (Test-Path $hpJson) -or (Get-Item $hpJson).Length -eq 0) {
+        Write-Host "  EROARE: Extract HDR10+ esuat (sursa nu are metadata dinamica?)." -ForegroundColor Red
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  [2/4] Sintetizez DV RPU din HDR10+..." -ForegroundColor Cyan
+    $rpuOut = Generate-DvRpuFromHdr10Plus -hdr10plusJson $hpJson -TargetCodec $srcCodec
+    if (-not $rpuOut -or -not (Test-Path $rpuOut) -or (Get-Item $rpuOut).Length -eq 0) {
+        Write-Host "  EROARE: Sinteza DV RPU esuata." -ForegroundColor Red
+        Remove-Item $hpJson -Force -ErrorAction SilentlyContinue
+        return
+    }
+
+    $rawExt = if ($srcCodec -eq "av1") { "ivf" } else { "hevc" }
+    $rawVideo = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $injected = Join-Path $env:TEMP ("inj_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+
+    Write-Host ""
+    Write-Host "  [3/4] Extract raw video ($srcCodec) + inject RPU..." -ForegroundColor Cyan
+    if (-not (Get-RawVideo -InputFile $file -OutputFile $rawVideo -Codec $srcCodec)) {
+        Write-Host "  EROARE: Extract raw video esuat." -ForegroundColor Red
+        Remove-Item $hpJson,$rpuOut,$rawVideo -Force -ErrorAction SilentlyContinue
+        return
+    }
+    if (-not (Inject-DvRpu $rawVideo $rpuOut $injected -TargetCodec $srcCodec)) {
+        Write-Host "  EROARE: Inject RPU esuat." -ForegroundColor Red
+        Remove-Item $hpJson,$rpuOut,$rawVideo,$injected -Force -ErrorAction SilentlyContinue
+        return
+    }
+
+    $outExt = [System.IO.Path]::GetExtension($file).TrimStart('.')
+    $finalOut = Join-Path $OutputDir ("{0}_dvhybrid.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $outExt)
+    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+    $contFlags = Get-ContainerFlags $outExt
+
+    Write-Host ""
+    Write-Host "  [4/4] Re-mux final..." -ForegroundColor Cyan
+    $args = @("-v","error","-i",$injected,"-i",$file,
+              "-map","0:v:0","-map","1:a","-map","1:s?","-map","1:t?",
+              "-c","copy") + $contFlags + @($finalOut)
+    & ffmpeg @args 2>$null
+    $rc = $LASTEXITCODE
+    Remove-Item $hpJson,$rpuOut,$rawVideo,$injected -Force -ErrorAction SilentlyContinue
+    if ($rc -eq 0 -and (Test-Path $finalOut) -and (Get-Item $finalOut).Length -gt 0) {
+        $label = if ($srcCodec -eq "av1") { "DV P10 + HDR10 + HDR10+ (AV1)" } else { "DV 8.1 + HDR10 + HDR10+ (HEVC)" }
+        Write-Host ""
+        Write-Host "  ✓ HDR10+ → DV hybrid complet: $finalOut" -ForegroundColor Green
+        Write-Host "    $label" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  EROARE: Re-mux final esuat." -ForegroundColor Red
+        Remove-Item $finalOut -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-HdrDvTools {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
@@ -2296,14 +2386,16 @@ function Invoke-HdrDvTools {
     Write-Host "║     (cross-codec convert, no encode) ║"
     Write-Host "║  2) Remux container (MKV ↔ MP4/MOV)  ║"
     Write-Host "║  3) Inspect metadata (read-only)     ║"
-    Write-Host "║  4) Inapoi                           ║"
+    Write-Host "║  4) HDR10+ → DV hybrid (no re-encode)║"
+    Write-Host "║  5) Inapoi                           ║"
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-    $ch = Read-Host "Alege 1-4"
+    $ch = Read-Host "Alege 1-5"
     switch ($ch) {
         "1" { Invoke-TransformRpu }
         "2" { Invoke-RemuxContainer }
         "3" { Invoke-InspectMetadata }
-        "4" { return }
+        "4" { Invoke-Hdr10PlusToDv }
+        "5" { return }
         default { Write-Host "Optiune invalida." -ForegroundColor Red }
     }
 }
@@ -3344,6 +3436,7 @@ function Get-ProfileSchema {
         'HW_PRESET_SLOT'       { 'enum:,1,2,3,4,5,6,7'; return }
         'HW_HDR_POLICY'        { 'enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip'; return }
         'MEDIACODEC_HDR_POLICY'{ 'enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip'; return }
+        'DOVI_PRESERVE_POLICY' { 'enum:,auto,preserve,convert,copy,skip'; return }
         'HW_FORCE'             { 'enum:0,1'; return }
         'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
         'ENCODE_MODE'          { 'enum:1,2'; return }
@@ -4413,6 +4506,7 @@ if ($saveProf -ieq "d") {
             "LOG_PROFILE=$logProfileSave"
             "LUT_PATH=$lutPathSave"
             "INTERACTIVE_MODE=$(if ($interactiveMode) { '1' } else { '0' })"
+            "DOVI_PRESERVE_POLICY=$(if ($env:DOVI_PRESERVE_POLICY) { $env:DOVI_PRESERVE_POLICY } else { '' })"
         ) | Out-File $profFile -Encoding UTF8
         Write-Host "  Profil salvat: $profFile" -ForegroundColor Green
         # v43: post-save validation feedback
@@ -5095,8 +5189,21 @@ foreach ($f in $inputFiles) {
                 $maxDv = 3
             }
             Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
-            $dvAv1 = Read-Host "  Alege 1-$maxDv [implicit: 2]"
+            # v45: profile bypass — DOVI_PRESERVE_POLICY mapped to AV1 dialog
+            # AV1: 1=convert HDR10, 2=skip, 3=preserve P10. `copy` nu e suportat → fallback convert.
+            $dvPolicyAv1 = if ($env:DOVI_PRESERVE_POLICY) { $env:DOVI_PRESERVE_POLICY } else { "auto" }
+            $dvAv1 = switch ($dvPolicyAv1) {
+                "preserve" { Write-Host "  DV policy=preserve P10 (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "3" }
+                "convert"  { Write-Host "  DV policy=convert HDR10 (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "1" }
+                "copy"     { Write-Host "  DV policy=copy nu e suportat pe AV1 — fallback convert" -ForegroundColor Yellow; "1" }
+                "skip"     { Write-Host "  DV policy=skip (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "2" }
+                default    { Read-Host "  Alege 1-$maxDv [implicit: 2]" }
+            }
             if (-not $dvAv1) { $dvAv1 = "2" }
+            if ($dvAv1 -eq "3" -and -not $av1DoviAvail) {
+                Write-Host "  DV preserve P10 cerut prin policy dar tool/encoder indisponibil — fallback convert" -ForegroundColor Yellow
+                $dvAv1 = "1"
+            }
             if ($dvAv1 -eq "3" -and $av1DoviAvail) {
                 # Detect source codec si foloseste Get-DvRpu codec-aware
                 # (dovi_tool pt HEVC, av1dovi_tool pt AV1)
@@ -5113,6 +5220,18 @@ foreach ($f in $inputFiles) {
                         $tripleLayerMode = $true
                         $tripleLayerTargetCodec = "av1"
                         Write-Host "  DV (AV1 P10): RPU sursa extras — re-encode + inject post-encode" -ForegroundColor Green
+
+                        # v45: daca sursa are AMANDOUA DV + HDR10+ embedded, extrage si
+                        # HDR10+ JSON pentru inline injection (svtav1-params hdr10plus-json=)
+                        # — pastreaza toate 3 straturile: DV RPU + HDR10 base + HDR10+ dinamic.
+                        if ($si.isHDRPlus -and ($av1Impl -eq "libsvtav1") -and (Test-SvtAv1Hdr10PlusCaps) -and (Test-Hdr10PlusToolFor -Codec $srcCodec)) {
+                            Write-Host "  HDR10+ embedded + DV preserve: extragand HDR10+ JSON pentru inline injection..." -ForegroundColor Cyan
+                            $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
+                            if ($hdr10PlusJson) {
+                                $hdr10PlusAv1Param = ":hdr10plus-json=$hdr10PlusJson"
+                                Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
+                            }
+                        }
                     } else {
                         Write-Host "  DV (AV1 P10): Extract RPU esuat — fallback HDR10" -ForegroundColor Yellow
                         Remove-Item $srcRpu -Force -ErrorAction SilentlyContinue
@@ -5402,24 +5521,71 @@ foreach ($f in $inputFiles) {
         $x265PixFmt = "yuv420p10le"
 
         if ($doVi) {
-            # Dolby Vision dialog
+            # Dolby Vision dialog (v45: + opt 3 DV preserve HEVC 8.1)
             $dvP = Get-DVProfile $f.FullName
+            $dvSrcCodec = Get-SourceCodec $f.FullName
+            $canDvPreserve = (Test-DoviToolFor -Codec $dvSrcCodec) -and (Test-DoviToolFor -Codec "hevc")
             Write-Host ""; Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
             Write-Host "  ║  DOLBY VISION: $($f.Name)" -ForegroundColor Magenta
-            Write-Host "  ║  Profil: $dvP" -ForegroundColor Magenta
+            Write-Host "  ║  Profil sursa: $dvP" -ForegroundColor Magenta
             Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
-            Write-Host "  ║  1-Stream copy  2-HDR10 (best-effort)  3-Sari║" -ForegroundColor White
+            Write-Host "  ║  1) Stream copy video + reencodeaza audio    ║" -ForegroundColor White
+            Write-Host "  ║  2) Converteste la HDR10 (best-effort)       ║" -ForegroundColor White
+            if ($canDvPreserve) {
+                Write-Host "  ║  3) DV preserve (HEVC 8.1) — re-encode+inject║" -ForegroundColor White
+                Write-Host "  ║     extrage RPU sursa ($dvSrcCodec) → encode → inject" -ForegroundColor DarkGray
+            }
+            Write-Host "  ║  4) Sari acest fisier                        ║" -ForegroundColor White
             Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
-            $dvc = Read-Host "  Alege"
-            if ($dvc -eq "3") { $totalSkipped++; continue }
+            # v45: profile bypass — DOVI_PRESERVE_POLICY={auto|preserve|convert|copy|skip}
+            $dvPolicy = if ($env:DOVI_PRESERVE_POLICY) { $env:DOVI_PRESERVE_POLICY } else { "auto" }
+            $dvc = switch ($dvPolicy) {
+                "preserve" { Write-Host "  DV policy=preserve (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "3" }
+                "convert"  { Write-Host "  DV policy=convert HDR10 (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "2" }
+                "copy"     { Write-Host "  DV policy=stream copy (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "1" }
+                "skip"     { Write-Host "  DV policy=skip (DOVI_PRESERVE_POLICY)" -ForegroundColor Cyan; "4" }
+                default    { Read-Host "  Alege [implicit: 2]" }
+            }
+            if (-not $dvc) { $dvc = "2" }
+            if ($dvc -eq "3" -and -not $canDvPreserve) {
+                Write-Host "  DV preserve cerut prin policy dar tool indisponibil — fallback convert HDR10" -ForegroundColor Yellow
+                $dvc = "2"
+            }
+            if ($dvc -eq "4") { $totalSkipped++; continue }
             if ($dvc -eq "1") {
                 $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
                 if (-not $scOk) { $totalErrors++ }
                 continue
             }
-            # DV re-encode → HDR10 best-effort
+            if ($dvc -eq "3" -and $canDvPreserve) {
+                $srcRpu = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+                Write-Host "  DV preserve (HEVC): Extrag RPU din sursa ($dvSrcCodec)..." -ForegroundColor Cyan
+                if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $dvSrcCodec) {
+                    $doviRpuFile = $srcRpu
+                    $tripleLayerMode = $true
+                    $tripleLayerTargetCodec = "hevc"
+                    Write-Host "  DV preserve (HEVC): RPU extras — re-encode + inject post-encode" -ForegroundColor Green
+                } else {
+                    Write-Host "  DV preserve: Extract RPU esuat — fallback HDR10 (best-effort)" -ForegroundColor Yellow
+                    Remove-Item $srcRpu -Force -ErrorAction SilentlyContinue
+                }
+            }
+            # DV re-encode → HDR10 base layer (preserve sau best-effort)
             $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
             $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
+
+            # v45: daca sursa are AMANDOUA DV + HDR10+ embedded, extrage si
+            # HDR10+ JSON pentru inline injection (dhdr10-info) — pastreaza
+            # toate 3 straturile: DV RPU + HDR10 base + HDR10+ dinamic.
+            # NU sintetizam DV din JSON (am DV-ul real); doar add-on inline.
+            if ($si.isHDRPlus -and $tripleLayerMode -and (Test-Hdr10PlusToolFor -Codec $dvSrcCodec)) {
+                Write-Host "  HDR10+ embedded + DV preserve: extragand HDR10+ JSON pentru inline injection..." -ForegroundColor Cyan
+                $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
+                if ($hdr10PlusJson) {
+                    $x265Hdr += "dhdr10-info=${hdr10PlusJson}:"
+                    Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
+                }
+            }
 
         } elseif ($si.isHDRPlus) {
             # HDR10+ dialog

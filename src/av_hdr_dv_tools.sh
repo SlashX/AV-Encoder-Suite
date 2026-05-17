@@ -293,6 +293,114 @@ hdv_flow_inspect() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# Flow 4: HDR10+ → DV hybrid (no re-encode) — v45
+# Pipeline: extract HDR10+ JSON → synthesize DV RPU → extract raw video
+#          → inject RPU → re-mux audio original.
+# Rezultat: sursa pastreaza HDR10 base + HDR10+ dinamic (deja in bitstream)
+# si primeste un strat DV (Profile 8.1 HEVC sau Profile 10 AV1).
+# Pentru AV1 surse exista HDR10+ inline in OBU_METADATA, deci JSON-ul e
+# doar pentru sinteza DV RPU; bitstream-ul video nu se atinge.
+# ─────────────────────────────────────────────────────────────────────
+hdv_flow_hdr10plus_to_dv() {
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  HDR10+ → DV HYBRID (no re-encode)           ║"
+    echo "║  Sintetizeaza DV RPU din HDR10+ metadata     ║"
+    echo "║  si il injecteaza in bitstream existent.     ║"
+    echo "╚══════════════════════════════════════════════╝"
+    _hdv_pick_file "Alege fisier sursa (cu HDR10+)" "$INPUT_DIR" || { echo "Anulat."; return 1; }
+    local file="$HDV_PICKED_FILE"
+    local src_codec
+    src_codec=$(detect_source_codec "$file")
+    echo "  Codec sursa: $src_codec"
+
+    if [[ "$src_codec" != "hevc" && "$src_codec" != "av1" ]]; then
+        echo "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $src_codec)."
+        return 1
+    fi
+    if ! _check_hdr10plus_tool_for "$src_codec"; then
+        local _hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _hp="av1hdr10plus_tool"
+        echo "  EROARE: $_hp nu este instalat (necesar pt sursa $src_codec)."
+        return 1
+    fi
+    if ! _check_dovi_tool_for "$src_codec"; then
+        local _dv="dovi_tool"; [[ "$src_codec" == "av1" ]] && _dv="av1dovi_tool"
+        echo "  EROARE: $_dv nu este instalat (necesar pt sinteza DV RPU)."
+        return 1
+    fi
+
+    # Pas 1: extract HDR10+ JSON (codec-aware)
+    echo ""
+    echo "  [1/4] Extract HDR10+ JSON..."
+    local hp_json
+    hp_json=$(extract_hdr10plus_metadata "$file")
+    if [[ -z "$hp_json" ]] || [ ! -s "$hp_json" ]; then
+        echo "  EROARE: Extract HDR10+ esuat (sursa nu are metadata dinamica?)."
+        return 1
+    fi
+
+    # Pas 2: sintetizeaza DV RPU (target_codec = source codec)
+    echo ""
+    echo "  [2/4] Sintetizez DV RPU din HDR10+..."
+    local rpu_out
+    rpu_out=$(generate_dv_rpu_from_hdr10plus "$hp_json" "$src_codec")
+    if [[ -z "$rpu_out" ]] || [ ! -s "$rpu_out" ]; then
+        echo "  EROARE: Sinteza DV RPU esuata."
+        rm -f "$hp_json"
+        return 1
+    fi
+
+    # Pas 3: extract video raw + inject RPU
+    local raw_ext="hevc"
+    [[ "$src_codec" == "av1" ]] && raw_ext="ivf"
+    local raw_video injected_video
+    raw_video=$(av_mktemp_ext "$raw_ext")
+    injected_video=$(av_mktemp_ext "$raw_ext")
+
+    echo ""
+    echo "  [3/4] Extract raw video ($src_codec) + inject RPU..."
+    if ! extract_raw_video "$file" "$raw_video" "$src_codec"; then
+        echo "  EROARE: Extract raw video esuat."
+        rm -f "$hp_json" "$rpu_out" "$raw_video"
+        return 1
+    fi
+    if ! inject_dv_rpu "$raw_video" "$rpu_out" "$injected_video" "$src_codec"; then
+        echo "  EROARE: Inject RPU esuat."
+        rm -f "$hp_json" "$rpu_out" "$raw_video" "$injected_video"
+        return 1
+    fi
+
+    # Pas 4: re-mux video cu DV + audio/sub/track-uri din original
+    local out_ext="${file##*.}"
+    local final_out="${OUTPUT_DIR}/$(basename "${file%.*}")_dvhybrid.${out_ext}"
+    mkdir -p "$OUTPUT_DIR"
+    local CONTAINER="$out_ext"
+    local cont_flags
+    cont_flags=$(get_container_flags)
+
+    echo ""
+    echo "  [4/4] Re-mux final..."
+    # shellcheck disable=SC2086
+    ffmpeg -v error -i "$injected_video" -i "$file" \
+        -map 0:v:0 -map 1:a -map 1:s? -map 1:t? \
+        -c copy $cont_flags "$final_out" 2>/dev/null
+    local rc=$?
+    rm -f "$hp_json" "$rpu_out" "$raw_video" "$injected_video"
+    if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        local _label="DV 8.1 + HDR10 + HDR10+ (HEVC)"
+        [[ "$src_codec" == "av1" ]] && _label="DV P10 + HDR10 + HDR10+ (AV1)"
+        echo ""
+        echo "  ✓ HDR10+ → DV hybrid complet: $final_out"
+        echo "    $_label"
+        return 0
+    else
+        echo "  EROARE: Re-mux final esuat."
+        rm -f "$final_out"
+        return 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # Submeniu principal
 # ─────────────────────────────────────────────────────────────────────
 echo ""
@@ -303,14 +411,16 @@ echo "║  1) Transform RPU profile            ║"
 echo "║     (cross-codec convert, no encode) ║"
 echo "║  2) Remux container (MKV ↔ MP4/MOV)  ║"
 echo "║  3) Inspect metadata (read-only)     ║"
-echo "║  4) Inapoi                           ║"
+echo "║  4) HDR10+ → DV hybrid (no re-encode)║"
+echo "║  5) Inapoi                           ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Alege 1-4: " hdv_choice
+read -p "Alege 1-5: " hdv_choice
 
 case "$hdv_choice" in
     1) hdv_flow_transform_rpu ;;
     2) hdv_flow_remux ;;
     3) hdv_flow_inspect ;;
-    4) echo "Inapoi."; exit 0 ;;
+    4) hdv_flow_hdr10plus_to_dv ;;
+    5) echo "Inapoi."; exit 0 ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

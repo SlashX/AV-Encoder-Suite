@@ -755,31 +755,9 @@ handle_dolby_vision() {
     esac
 }
 
-# DV handling per encoder — wrapper cu post-encode stats
-# Apelat din encoder_setup_file. Return: 0=DV copy done, 98=skip, 99=re-encode
-handle_dv_with_stats() {
-    local file="$1" filename="$2" output="$3" map_flags="$4" dv_label="$5"
-    START_TIME=$(date +%s)
-    handle_dolby_vision "$file" "$filename" "$output" "$map_flags" "$dv_label"
-    local dv_rc=$?
-    if [ $dv_rc -eq 0 ]; then
-        # Stream copy OK — raportam stats si marcam done
-        NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
-        SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
-        TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
-        ENCODE_TIME=$(( $(date +%s) - START_TIME ))
-        log "  Original: $(( ORIGINAL_SIZE/1024/1024 )) MB | Nou: $(( NEW_SIZE/1024/1024 )) MB"
-        log "  Timp: $((ENCODE_TIME/60))m $((ENCODE_TIME%60))s"
-        log "────────────────────────────────────────"
-        TOTAL_DONE=$((TOTAL_DONE+1))
-        BATCH_NAMES+=("$filename"); BATCH_TIMES+=("$ENCODE_TIME")
-        BATCH_ORIG+=("$ORIGINAL_SIZE"); BATCH_NEW+=("$NEW_SIZE")
-        [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
-        batch_mark_done "$filename"
-        return 0  # skip restul loop-ului
-    fi
-    return $dv_rc
-}
+# v45: handle_dv_with_stats() removed — x265 v45 has inline DV dialog with
+# 4 options (preserve + stream-copy stats inline); AV1 has its own dialog;
+# other encoders never used it.
 
 # ══════════════════════════════════════════════════════════════════════
 # SUBTITLE / CONTAINER / SOURCE HINTS
@@ -1184,18 +1162,47 @@ extract_hdr10plus_metadata() {
 # Dialog HDR10+ per fisier — oferit cand sursa are HDR10+.
 # v44: param 2 optional = target_codec (hevc default | av1) — controleaza
 # disponibilitatea triple-layer (av1dovi_tool vs dovi_tool) si target-ul RPU.
+# v45: gate-ul verifica source-codec tool pt extract (intern in dialog) si
+# target-codec tool pt triple-layer inject — corecteaza cross-codec scenarios.
 # Return: 0=re-encode cu metadata, 1=re-encode HDR10 static, 98=stream copy
 # Seteaza: HDR10PLUS_JSON, DOVI_RPU_FILE, TRIPLE_LAYER_MODE, TRIPLE_LAYER_TARGET_CODEC
 handle_hdr10plus_dialog() {
     local file="$1"
     local target_codec="${2:-hevc}"
+    local src_codec
+    src_codec=$(detect_source_codec "$file")
+
+    # v45: daca DV preserve a setat deja state-ul (extras RPU real din sursa),
+    # nu deschide dialog-ul — ar putea oferi opt 4 triple-layer care
+    # OVERWRITES DOVI_RPU_FILE cu un RPU sintetizat din HDR10+ JSON.
+    # In schimb, auto-extract HDR10+ JSON pentru inline injection (dhdr10-info)
+    # langa DV RPU real → triple-layer (DV+HDR10+HDR10+) cu DV-ul corect.
+    if [[ "${TRIPLE_LAYER_MODE:-0}" == "1" ]] && [[ -n "${DOVI_RPU_FILE:-}" ]]; then
+        log "  HDR10+ + DV preserve: auto-pastrez HDR10+ inline (DV RPU real deja extras)"
+        if _check_hdr10plus_tool_for "$src_codec"; then
+            HDR10PLUS_JSON=$(extract_hdr10plus_metadata "$file")
+            if [[ -n "$HDR10PLUS_JSON" ]]; then
+                log "  HDR10+: Metadata pregatita pentru injectare (dhdr10-info)"
+                return 0
+            else
+                log "  HDR10+: Extract esuat — encode ca HDR10 static (DV RPU pastrat)"
+                return 1
+            fi
+        else
+            local _need_hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _need_hp="av1hdr10plus_tool"
+            log "  HDR10+: $_need_hp indisponibil — encode HDR10 static (DV RPU pastrat)"
+            return 1
+        fi
+    fi
+
     HDR10PLUS_JSON=""
     TRIPLE_LAYER_TARGET_CODEC="$target_codec"
     echo ""
     echo "  ╔══════════════════════════════════════════════╗"
     echo "  ║  HDR10+ DETECTAT                              ║"
     echo "  ╠══════════════════════════════════════════════╣"
-    if _check_hdr10plus_tool_for "$target_codec"; then
+    # v45: extract are nevoie de source-codec tool, nu target-codec tool
+    if _check_hdr10plus_tool_for "$src_codec"; then
         local triple_label
         case "$target_codec" in
             av1) triple_label="DV P10 + HDR10 + HDR10+ (AV1)" ;;
@@ -1262,12 +1269,13 @@ handle_hdr10plus_dialog() {
                 fi ;;
         esac
     else
+        # v45: tool-ul lipsa e pt source-codec (extract), nu target-codec
         local _need_hp="hdr10plus_tool"
         local _hint_hp="hdr10plus_parser.sh"
-        if [[ "$target_codec" == "av1" ]]; then
+        if [[ "$src_codec" == "av1" ]]; then
             _need_hp="av1hdr10plus_tool"; _hint_hp="av1hdr10plus_parser.sh"
         fi
-        echo "  ║  $_need_hp NU este instalat.            "
+        echo "  ║  $_need_hp NU este instalat (necesar pt sursa $src_codec)"
         echo "  ║  Fara el, metadata dinamica se pierde.       ║"
         echo "  ║  Instaleaza cu: $TOOLS_DIR/$_hint_hp"
         echo "  ╠══════════════════════════════════════════════╣"
@@ -3916,6 +3924,12 @@ run_encode_loop() {
         # v38: reset MediaCodec per-file flags pentru a evita leak intre iteratii
         MC_NEEDS_REPAIR=0
         MC_HDR_MODE=""
+        # v45: defensive reset DV/HDR10+ state — daca encoder_setup_file a
+        # esuat / setup_rc=98 in iteratia anterioara fara cleanup, evitam leak
+        [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"
+        [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"
+        HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
+        TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
         CRF=$(get_adaptive_crf "${ENCODER_TYPE:-x265}" "$WIDTH")
@@ -5349,6 +5363,7 @@ profile_schema_get() {
         HW_PRESET_SLOT)       echo "enum:,1,2,3,4,5,6,7" ;;
         HW_HDR_POLICY)        echo "enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip" ;;
         MEDIACODEC_HDR_POLICY) echo "enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip" ;;
+        DOVI_PRESERVE_POLICY) echo "enum:,auto,preserve,convert,copy,skip" ;;
         HW_FORCE)             echo "enum:0,1" ;;
         AUDIO_NORMALIZE)      echo "enum:0,1" ;;
         ENCODE_MODE)          echo "enum:1,2" ;;

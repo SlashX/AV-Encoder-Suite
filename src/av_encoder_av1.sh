@@ -162,7 +162,22 @@ encoder_setup_file() {
         echo "  ╚══════════════════════════════════════════════╝"
         local _max_dv_opt=2
         _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]] && _max_dv_opt=3
-        read -p "  Alege 1-$_max_dv_opt [implicit: 2]: " dv_choice
+        # v45: profile bypass — DOVI_PRESERVE_POLICY={auto|preserve|convert|copy|skip}
+        # AV1 DV dialog mapping: 1=convert HDR10, 2=skip, 3=preserve P10
+        # `copy` nu e suportat de AV1 → fallback convert + warning
+        local dv_choice=""
+        case "${DOVI_PRESERVE_POLICY:-auto}" in
+            preserve) dv_choice="3"; log "  DV policy=preserve P10 (DOVI_PRESERVE_POLICY)" ;;
+            convert)  dv_choice="1"; log "  DV policy=convert HDR10 (DOVI_PRESERVE_POLICY)" ;;
+            copy)     log "  DV policy=copy nu e suportat pe AV1 — fallback convert"; dv_choice="1" ;;
+            skip)     dv_choice="2"; log "  DV policy=skip (DOVI_PRESERVE_POLICY)" ;;
+            *)        read -p "  Alege 1-$_max_dv_opt [implicit: 2]: " dv_choice ;;
+        esac
+        # preserve cere capability; daca lipseste, fallback convert
+        if [[ "$dv_choice" == "3" ]] && { ! _check_av1_dovi_tool || [[ "$AV1_ENCODER" != "libsvtav1" ]]; }; then
+            log "  DV preserve P10 cerut prin policy dar tool/encoder indisponibil — fallback convert HDR10"
+            dv_choice="1"
+        fi
         case "${dv_choice:-2}" in
             3)
                 if _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then

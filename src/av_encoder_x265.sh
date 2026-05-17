@@ -124,16 +124,91 @@ encoder_setup_file() {
         fi  # end else LOG_PROFILE
     fi
 
-    # ── Dolby Vision ──────────────────────────────────────────────────
+    # ── Dolby Vision — HEVC dialog (v45: + opt 3 DV preserve) ─────────
     if [[ -n "$DOVI" ]]; then
-        log "  Dolby Vision detectat"
-        handle_dv_with_stats "$file" "$filename" "$output" "$MAP_FLAGS" \
-            "Converteste la HDR10 (best-effort, Profil 8.x)"
-        local dv_rc=$?
-        [ $dv_rc -eq 0 ]  && return 98
-        [ $dv_rc -eq 98 ] && return 98
-        [ $dv_rc -ne 99 ] && { log "  EROARE DV"; rm -f "$output"; return 1; }
-        log "  Conversie DV → HDR10 (best-effort)"
+        log "  Dolby Vision detectat (sursa Profile $DOVI)"
+        local _dv_src_codec
+        _dv_src_codec=$(detect_source_codec "$file")
+        local _can_dv_preserve=0
+        if _check_dovi_tool_for "$_dv_src_codec" && _check_dovi_tool_for "hevc"; then
+            _can_dv_preserve=1
+        fi
+        echo ""
+        echo "  ╔══════════════════════════════════════════════╗"
+        echo "  ║  DOLBY VISION DETECTAT (sursa Profile $DOVI)"
+        echo "  ╠══════════════════════════════════════════════╣"
+        echo "  ║  1) Stream copy video + reencodeaza audio    ║"
+        echo "  ║  2) Converteste la HDR10 (best-effort)       ║"
+        if [ $_can_dv_preserve -eq 1 ]; then
+            echo "  ║  3) DV preserve (HEVC 8.1) — re-encode+inject║"
+            echo "  ║     extrage RPU sursa ($_dv_src_codec) → encode → inject"
+        fi
+        echo "  ║  4) Sari acest fisier                        ║"
+        echo "  ╚══════════════════════════════════════════════╝"
+        # v45: profile bypass — DOVI_PRESERVE_POLICY={auto|preserve|convert|copy|skip}
+        local _dv_x265_choice=""
+        case "${DOVI_PRESERVE_POLICY:-auto}" in
+            preserve) _dv_x265_choice="3"; log "  DV policy=preserve (DOVI_PRESERVE_POLICY)" ;;
+            convert)  _dv_x265_choice="2"; log "  DV policy=convert HDR10 (DOVI_PRESERVE_POLICY)" ;;
+            copy)     _dv_x265_choice="1"; log "  DV policy=stream copy (DOVI_PRESERVE_POLICY)" ;;
+            skip)     _dv_x265_choice="4"; log "  DV policy=skip (DOVI_PRESERVE_POLICY)" ;;
+            *)        read -p "  Alege [implicit: 2]: " _dv_x265_choice ;;
+        esac
+        # preserve cere _can_dv_preserve; daca tool indisponibil, fallback la 2
+        if [[ "$_dv_x265_choice" == "3" ]] && [ $_can_dv_preserve -eq 0 ]; then
+            log "  DV preserve cerut prin policy dar tool indisponibil — fallback convert HDR10"
+            _dv_x265_choice="2"
+        fi
+        case "${_dv_x265_choice:-2}" in
+            1)
+                # Stream copy + stats inline (paralel cu HDR10+ stream copy)
+                log "  DV: stream copy"
+                START_TIME=$(date +%s)
+                local _dv_audio _dv_sub _dv_cflags _dv_pf _dv_pid
+                _dv_audio=$(get_audio_params "$file"); _dv_sub=$(get_subtitle_codec "$file")
+                _dv_cflags=$(get_container_flags); _dv_pf=$(mktemp); PROGRESS_FILE="$_dv_pf"
+                # shellcheck disable=SC2086
+                ffmpeg -threads "$THREADS" -i "$file" $MAP_FLAGS \
+                    -c:v copy $_dv_audio $_dv_sub -c:t copy \
+                    $_dv_cflags -progress "$_dv_pf" -nostats "$output" 2>>"$LOG_FILE" &
+                _dv_pid=$!; _show_progress "$_dv_pid" "$_dv_pf" "$file" "DV stream copy"; wait "$_dv_pid"
+                local _dv_rc=$?; PROGRESS_FILE=""
+                if [ $_dv_rc -eq 0 ]; then
+                    NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
+                    SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
+                    TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
+                    ENCODE_TIME=$(( $(date +%s) - START_TIME )); TOTAL_DONE=$((TOTAL_DONE+1))
+                    log "  Stream copy OK: $(( NEW_SIZE/1024/1024 )) MB | ${ENCODE_TIME}s"
+                    BATCH_NAMES+=("$filename"); BATCH_TIMES+=("$ENCODE_TIME")
+                    BATCH_ORIG+=("$ORIGINAL_SIZE"); BATCH_NEW+=("$NEW_SIZE")
+                    [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
+                    batch_mark_done "$filename"
+                fi
+                return 98 ;;
+            3)
+                if [ $_can_dv_preserve -eq 1 ]; then
+                    local _src_rpu
+                    _src_rpu=$(av_mktemp_ext bin)
+                    log "  DV preserve (HEVC): Extrag RPU din sursa ($_dv_src_codec)..."
+                    if extract_dv_rpu "$file" "$_src_rpu" "$_dv_src_codec"; then
+                        DOVI_RPU_FILE="$_src_rpu"
+                        TRIPLE_LAYER_MODE=1
+                        TRIPLE_LAYER_TARGET_CODEC="hevc"
+                        log "  DV preserve (HEVC): RPU extras — re-encode + inject post-encode"
+                    else
+                        log "  DV preserve: Extract RPU esuat — fallback HDR10 (best-effort)"
+                        rm -f "$_src_rpu"
+                    fi
+                else
+                    log "  DV preserve: tool DV indisponibil — fallback HDR10 (best-effort)"
+                fi
+                ;;
+            2)
+                log "  DV: Conversie HDR10 (best-effort)"
+                ;;
+            4|*)
+                log "  DV: sarit (user choice)"; return 98 ;;
+        esac
     fi
 
     # ── Rate control ──────────────────────────────────────────────────

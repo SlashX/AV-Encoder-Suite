@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
-  FFmpeg Smart Adaptive Encoder + DJI GPS Extractor
-  Documentatie Setup & Utilizare — v44
+  FFmpeg Smart Adaptive Encoder + Telemetry Extractor
+  Documentatie Setup & Utilizare — v45
 ═══════════════════════════════════════════════════════════════
 
 
@@ -8,241 +8,120 @@ CUPRINS
 ───────
   1. Structura proiectului
   2. Cerinte de sistem
-  3. Setup Termux (Android)
-  3a. Setup Linux (v41)
-  3b. Setup macOS (v41)
-  4. Setup Windows
-  5. Structura foldere video
+  3. Setup pas cu pas (Termux / Linux / macOS / Windows)
+  4. Structura foldere
+  5. Quick start si meniu principal
   6. Flux encodare — cum functioneaza
   7. Optiuni detaliate
-  8. Dialoguri automate (HDR / DV / DJI)
-  9. Diferente intre platforme
- 10. Utilizare rapida (comenzi pornire)
- 11. Comenzi rapide Termux (edit, backup, stergere)
- 12. Troubleshooting
- 13. HDR/DV Tools — transform / remux / inspect (v44)
+  8. Dialoguri automate (HDR / DV / LOG / DJI / HLG / HDR10+)
+  9. Trim & Concat pipeline
+ 10. HDR/DV Tools (transform / remux / inspect / hybrid)
+ 11. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
+ 12. Import GPS extern (GPX / FIT / KML)
+ 13. Hardware Encode (PS1 + MediaCodec + bash backends)
+ 14. Profile system + Tests
+ 15. Diferente intre platforme
+ 16. Comenzi rapide Termux
+ 17. Troubleshooting
 
 
 ═══════════════════════════════════════════════════════════════
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-28 fisiere totale:
+  62 fisiere totale (18 src + 12 tools + 6 profile + 26 test scripts).
 
-  TERMUX / LINUX (Bash)
-  ─────────────────────
-  av_launcher.sh               — Meniu interactiv principal (alege encoder, parametri, lanseaza)
-  av_common.sh       — Functii partajate (DV, DJI, HDR10+, triple-layer, progress, audio)
-  av_encoder_x265.sh    — Encoder H.265/HEVC (HDR10, HDR10+, DV, DJI, triple-layer)
-  av_encoder_x264.sh    — Encoder H.264/AVC (profil auto/manual, DJI)
-  av_encoder_av1.sh     — Encoder AV1 (libsvtav1 / libaom-av1, film-grain, HDR10+, DJI)
-  av_encoder_dnxhr.sh   — Encoder DNxHR (Avid mezzanine, lossless optic)
-  av_encoder_apv.sh     — Encoder APV (Samsung profesional, intra-frame, ffmpeg 8.1)
-  av_encoder_prores.sh  — Encoder ProRes (Apple profesional, prores_ks, mov obligatoriu)
-  av_encoder_audio.sh      — Re-encode doar audio (video stream copy, rapid)
-  av_trimconcat.sh         — Trim & Concat pipeline (v36/v37: trim / concat / pipeline / batch trim)
-  av_hdr_dv_tools.sh       — v44: HDR/DV tools — submeniu transform RPU / remux container / inspect metadata (no re-encode)
-  av_check.sh            — Analiza completa video + audio, export CSV (standalone)
-  av_telemetry.sh               — Telemetrie unificata multi-brand (DJI/GoPro/Sony/Garmin/QuickTime)
-  av_telemetry.ps1              — PS1 mirror standalone al av_telemetry.sh (Windows)
-  av_extractor_gps.sh           — Import GPS extern (GPX/FIT/KML → CSV basic/full/norm, SRT, GPX, KML)
-  av_extractor_gps.ps1          — PS1 mirror standalone al av_extractor_gps.sh (Windows)
-  PROFILES (src/profiles/) — Profile pre-definite pentru camere specifice
-  ────────────────────────────────────────────────────────────────────────
-  profiles/example_profile.conf                          — Exemplu profil .conf documentat cu toate campurile
-  profiles/dji_action6/DJI_Action6_Airsoft_Indoor.conf   — CRF 22, medium, indoor
-  profiles/dji_action6/DJI_Action6_Airsoft_Outdoor.conf  — CRF 20, medium, outdoor
-  profiles/dji_action6/DJI_Action6_Moto_Outdoor.conf     — CRF 20, medium, moto
-  profiles/dji_action6/DJI_Action6_Moto_Cinematic.conf   — CRF 18, slow, D-Log M + LUT
-  profiles/dji_action6/DJI_Action6_DLogM_Outdoor.conf    — CRF 19, medium, D-Log M + LUT
+  Pentru structura completa a folderelor si lista de fisiere
+  vezi README.md (Project Structure tree).
 
-  Nota: Profilele D-Log M necesita LUT-ul dji_dlog_m_to_rec709.cube in folderul Luts/.
-        La incarcare, scriptul verifica daca LUT-ul exista si afiseaza warning daca lipseste.
+  ROL PE PLATFORMA:
+    Termux / Linux / macOS  →  bash (av_launcher.sh deschide encoderele
+                                separate prin av_common.sh)
+    Windows                 →  PowerShell (av_encode.ps1 all-in-one,
+                                independent de scripturile bash)
 
-  TOOLS (src/tools/) — Instalere & Updatare dependinte externe
-  ─────────────────────────────────────────────────────────────
-  tools/hdr10plus_parser.sh     — Installer hdr10plus_tool HEVC (quietvoid; Termux/Linux/macOS, compilare Rust)
-  tools/av1hdr10plus_parser.sh  — v44: Installer sven-pke fork (AV1 OBU); binar `av1hdr10plus_tool` — coexista cu cel HEVC
-  tools/dovi_parser.sh          — Installer dovi_tool HEVC (quietvoid; Termux/Linux/macOS, compilare Rust)
-  tools/av1dovi_parser.sh       — v44: Installer sven-pke fork (AV1 RPU); binar `av1dovi_tool` — coexista cu cel HEVC
-  tools/exiftool_update.sh      — Smart updater ExifTool (pkg sau build manual din sursa)
-  tools/profile_diff.sh         — v43: compara doua profile .conf (sectiuni "Doar in A/B" + "Valori diferite"; exit 0/1/2)
+  PRINCIPIU CHEIE:
+    Orice feature din bash este oglindit in PS1 — atat la nivel de
+    functionalitate, cat si la nivel de structura fisiere (telemetrie
+    si GPS extern au mirror-uri PS1 standalone).
 
-  WINDOWS (PowerShell)
-  ────────────────────
-  av_encode.ps1          — Script PowerShell all-in-one (encode + audio + check media + extractor DJI)
-  av_check.ps1           — Analiza completa video + audio, export CSV (standalone)
-  tools/hdr10plus_parser.ps1    — Installer hdr10plus_tool HEVC (Windows, descarca release pre-built)
-  tools/av1hdr10plus_parser.ps1 — v44: Installer sven-pke fork (Windows, cargo build din sursa, necesita rustup)
-  tools/dovi_parser.ps1         — Installer dovi_tool HEVC (Windows, descarca release pre-built)
-  tools/av1dovi_parser.ps1      — v44: Installer sven-pke fork (Windows, cargo build din sursa, necesita rustup)
-  tools/exiftool_update.ps1     — Smart updater ExifTool (descarca .exe de pe exiftool.org)
-  tools/profile_diff.ps1        — v43: compara doua profile .conf (mirror PS1 al profile_diff.sh)
-
-  TESTS (tests/) — Test framework v43
-  ───────────────────────────────────
-  framework.sh / framework.ps1   — Biblioteca assertion (assert_eq, assert_match, assert_file_exists, ...)
-  run_tests.sh / run_tests.ps1   — Discover + run test_*.{sh,ps1}; exit 0=pass / 77=skip / *=fail
-  fixtures/generate_samples.sh   — Generator idempotent ffmpeg (sdr/hdr10/hlg/audio + GPX/KML)
-  unit/                          — Pure logic tests (profile schema/validation/EXTENDS/diff, helpers, HW preset)
-  integration/                   — ffmpeg/python-dependent (auto-skip cand binar lipseste)
-  Rulare: bash tests/run_tests.sh   (Termux/Linux/macOS)
-          .\tests\run_tests.ps1     (Windows)
-
-Nota: Scriptul Windows (ps1) este complet independent de cele bash.
-      Contine toata logica intern, nu depinde de av_common.sh.
-      Extractorul DJI este integrat in ps1 (nu e fisier separat ca in Termux).
-      av_encode.bat a fost eliminat din v24 — PowerShell acoperă complet
-      functionalitatea, cu arrays native, error handling real si features complete.
-      Scripturile din src/tools/ sunt standalone — se ruleaza manual, nu sunt
-      apelate din encodere. Pot fi rulate oricand pentru instalare/actualizare.
+  TOOLS (src/tools/):
+    Scripturile din tools/ sunt STANDALONE — se ruleaza manual cand
+    vrei sa instalezi/actualizezi dependinte externe (hdr10plus_tool,
+    dovi_tool, ExifTool). NU sunt apelate automat din encodere.
 
 
 ═══════════════════════════════════════════════════════════════
 2. CERINTE DE SISTEM
 ═══════════════════════════════════════════════════════════════
 
-  TERMUX (Android)
-  ────────────────
-  - Termux (din F-Droid, NU din Play Store)
-  - Termux:API (din F-Droid) — pentru notificari si wake-lock
-  - FFmpeg 8.1+ RECOMANDAT (suport ProRes Vulkan, HDR10+ metadata, APV decode)
-    Minim necesar: ffmpeg cu libx265, libx264, libsvtav1/libaom-av1
-  - ffprobe (inclus cu FFmpeg)
-  - ExifTool (optional — necesar pentru DJI + QuickTime in av_telemetry.sh)
-    Instaleaza/actualizeaza cu: ./tools/exiftool_update.sh
-  - Python3 (necesar pentru av_telemetry.sh GoPro/Sony/Garmin si av_extractor_gps.sh)
-  - hdr10plus_tool (optional — necesar pentru HDR10+ metadata preserve)
-    Instaleaza cu: ./tools/hdr10plus_parser.sh
+  CORE (toate platformele):
+    - FFmpeg 8.1+ (recomandat — pentru APV, ProRes Vulkan, HDR10+ metadata)
+      Minim necesar: ffmpeg cu libx265, libx264, libsvtav1 sau libaom-av1
+    - ffprobe (inclus cu FFmpeg)
+    - bash 4+ (Termux / Linux / macOS) sau PowerShell 5.1+ (Windows)
 
-  WINDOWS
-  ───────
-  - FFmpeg instalat si in PATH (ffmpeg.exe + ffprobe.exe)
-    Download: https://www.gyan.dev/ffmpeg/builds/ (versiunea full)
-  - PowerShell 5.1+ (inclus in Windows 10/11) — pentru av_encode.ps1
-  - ExifTool (optional — necesar pentru telemetrie DJI/QuickTime)
-    Download: https://exiftool.org/ (Windows Executable)
-  - Python3 (necesar pentru telemetrie GoPro/Sony/Garmin si import GPS extern)
-    Download: https://python.org/downloads/
+  OPTIONAL (per functionalitate):
+    - ExifTool       — telemetrie DJI si QuickTime
+    - Python3        — telemetrie GoPro/Sony/Garmin si import GPS extern
+    - hdr10plus_tool — pentru HDR10+ metadata preserve (HEVC)
+    - dovi_tool      — pentru Dolby Vision RPU operations (HEVC)
+    - av1hdr10plus_tool / av1dovi_tool — fork sven-pke pentru AV1
+    - Rust (cargo)   — pentru compilarea tool-urilor pe Termux/Linux/macOS
+    - Termux:API     — wake-lock si notificari pe Android
 
-  Dependinte per script:
-    av_encoder_x265/x264/av1.sh  → ffmpeg + ffprobe
-    av_encoder_dnxhr/prores/apv  → ffmpeg + ffprobe
-    av_encoder_audio.sh          → ffmpeg + ffprobe
-    av_check.sh                  → ffprobe
-    av_telemetry.sh (DJI 1-4)    → exiftool
-    av_telemetry.sh (GoPro 1-4)  → python3 + ffmpeg
-    av_telemetry.sh (Sony 1-4)   → python3 + ffmpeg
-    av_telemetry.sh (Garmin 1-4) → python3 + ffmpeg
-    av_telemetry.sh (QT 1-4)     → exiftool
-    av_telemetry.sh (5-6 raw/strip) → ffmpeg
-    av_extractor_gps.sh          → python3
-    tools/hdr10plus_parser.sh    → cargo (Rust) pentru compilare
-    tools/dovi_parser.sh         → cargo (Rust) pentru compilare
-    av_encode.ps1                → ffmpeg + ffprobe (+ exiftool/python3 optional)
-    av_telemetry.ps1             → ffmpeg + ffprobe (+ exiftool DJI/QT, python3 GoPro/Sony/Garmin)
-    av_extractor_gps.ps1         → python3
-    av_check.ps1                 → ffprobe
+  Dependinte per script (mapping principal):
+    av_encoder_*.sh / av_encode.ps1  → ffmpeg + ffprobe
+    av_encoder_audio.sh              → ffmpeg + ffprobe
+    av_check.sh / av_check.ps1       → ffprobe
+    av_telemetry (DJI, QT)           → exiftool
+    av_telemetry (GoPro/Sony/Garmin) → python3 + ffmpeg
+    av_telemetry (raw/strip)         → ffmpeg
+    av_extractor_gps                 → python3
+    tools/*_parser.sh                → cargo (Rust)
 
 
 ═══════════════════════════════════════════════════════════════
-3. SETUP TERMUX (Android)
+3. SETUP PAS CU PAS
 ═══════════════════════════════════════════════════════════════
 
-PASUL 1: Actualizeaza Termux
-────────────────────────────
-  pkg update && pkg upgrade -y
+  ─── 3.1. Termux (Android) ───
 
-PASUL 2: Instaleaza FFmpeg
-──────────────────────────
-  pkg install ffmpeg -y
+  PASUL 1 — Instaleaza Termux DIN F-DROID (nu din Play Store, versiunea
+            Play Store e veche si nu suporta API features).
+            https://f-droid.org/en/packages/com.termux/
+            Optional dar recomandat: si Termux:API din F-Droid (pentru
+            wake-lock si notificari).
 
-  Verifica encoderele:
-    ffmpeg -encoders | grep 265
-    ffmpeg -encoders | grep 264
-    ffmpeg -encoders | grep av1
-    ffmpeg -h encoder=libx265
+  PASUL 2 — Update + dependinte:
+            pkg update && pkg upgrade -y
+            pkg install ffmpeg termux-api -y
 
-  Verifica versiunea:
-    ffprobe -version
+  PASUL 3 — Acces la stocare:
+            termux-setup-storage     # accepta permisiunea
 
-PASUL 3: Instaleaza Termux API (notificari + wake-lock)
-────────────────────────────────────────────────────────
-  pkg install termux-api -y
+            Dupa aceea poti folosi /storage/emulated/0/ (memoria interna).
 
-  IMPORTANT: Instaleaza si aplicatia Termux:API din F-Droid.
-  Fara ea, termux-wake-lock si termux-notification nu functioneaza.
+  PASUL 4 — Dependinte optionale:
+            pkg install exiftool python -y     # telemetrie + GPS
+            ./tools/exiftool_update.sh         # smart updater (cu fallback build manual)
+            ./tools/hdr10plus_parser.sh        # HDR10+ (HEVC) — compileaza din sursa
+            ./tools/dovi_parser.sh             # Dolby Vision (HEVC)
+            ./tools/av1hdr10plus_parser.sh     # HDR10+ AV1 (sven-pke fork)
+            ./tools/av1dovi_parser.sh          # Dolby Vision AV1 (sven-pke fork)
 
-PASUL 4: Acorda acces la stocare
-─────────────────────────────────
-  termux-setup-storage
+  PASUL 5 — Permisiuni:
+            chmod +x src/*.sh src/tools/*.sh
 
-  Accepta permisiunea. Dupa aceea poti accesa:
-    /storage/emulated/0/
-  care este memoria interna a telefonului.
-
-PASUL 5: Instaleaza ExifTool (optional — doar pentru extractor GPS/DJI)
-──────────────────────────────────────────────────────────────────────
-  Metoda 1 (recomandata):
-    pkg install exiftool -y
-
-  Metoda 2 (daca pkg nu gaseste pachetul):
-    pkg install perl -y
-    cpan App::ExifTool
-
-  Verifica instalarea:
-    exiftool -ver
-
-  NOTA: ExifTool este necesar DOAR pentru optiunea "Export date GPS/DJI"
-  din launcher. Encodarea video functioneaza fara el.
-
-PASUL 6: Instaleaza Python3 (optional — doar pentru import GPS extern)
-──────────────────────────────────────────────────────────────────────
-  pkg install python -y
-
-  Verifica instalarea:
-    python3 --version
-
-  NOTA: Python3 este necesar pentru: (a) telemetrie GoPro/Sony/Garmin
-  (av_telemetry.sh) si (b) "Import GPS extern" (av_extractor_gps.sh)
-  care converteste fisiere GPX/FIT/KML. Nu are dependinte externe —
-  foloseste doar module standard Python (xml, csv, struct, math, datetime, re).
-
-PASUL 7: Copiaza scripturile si seteaza permisiuni
-───────────────────────────────────────────────────
-  Copiaza cele 9 fisiere .sh in home Termux ($HOME) sau in folderul Android Scripts.
-
-  Seteaza permisiuni executare:
-    chmod +x av_launcher.sh av_common.sh \
-              av_encoder_x265.sh av_encoder_x264.sh \
-              av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_telemetry.sh av_extractor_gps.sh
-
-  Verifica permisiunile (rwx la inceput = executabil):
-    ls -l *.sh
-
-PASUL 8 (optional): Backup scripturi in folder Android
-───────────────────────────────────────────────────────
-  mkdir -p /storage/emulated/0/Media/Scripts/
-
-  cp av_launcher.sh av_common.sh \
-     av_encoder_x265.sh av_encoder_x264.sh \
-     av_encoder_av1.sh av_encoder_audio.sh av_check.sh av_telemetry.sh av_extractor_gps.sh \
-     /storage/emulated/0/Media/Scripts/
-
-  chmod +x /storage/emulated/0/Media/Scripts/*.sh
-
-  ls -l /storage/emulated/0/Media/Scripts/
+  PASUL 6 — Lanseaza:
+            cd src && ./av_launcher.sh
 
 
-═══════════════════════════════════════════════════════════════
-3a. SETUP LINUX (v41)
-═══════════════════════════════════════════════════════════════
+  ─── 3.2. Linux ───
 
-Suport nativ Linux x86_64 / ARM cu bash 4+ via av_common.sh detect_platform().
-Folderele se creeaza langa scripturi (NU /storage/emulated/0/...).
+  Suport nativ Linux x86_64 / ARM cu bash 4+ via detect_platform().
+  Folderele se creeaza langa scripturi (NU /storage/emulated/0/).
 
-PASUL 1: Instaleaza ffmpeg si dependinte
-─────────────────────────────────────────
   Debian / Ubuntu:
     sudo apt update && sudo apt install ffmpeg python3 git exiftool libnotify-bin
 
@@ -252,1065 +131,1061 @@ PASUL 1: Instaleaza ffmpeg si dependinte
   Arch / Manjaro:
     sudo pacman -S ffmpeg python git perl-image-exiftool libnotify
 
-  RPMFusion (Fedora) / official builds: ffmpeg 8.1+ recomandat pentru APV/HDR10+.
+  Lanseaza:
+    git clone <repo-url> ~/AV-Encoder-Suite
+    cd ~/AV-Encoder-Suite/src
+    chmod +x *.sh tools/*.sh
+    ./av_launcher.sh
 
-PASUL 2: Cloneaza proiectul
-───────────────────────────
-  git clone <repo-url> ~/AV-Encoder-Suite
-  cd ~/AV-Encoder-Suite/src
-  chmod +x *.sh tools/*.sh
-
-PASUL 3: Lanseaza
-─────────────────
-  ./av_launcher.sh
-
-  La primul rulaj se creeaza automat:
+  La primul rulaj se creeaza automat langa scripturi:
     InputVideos/  OutputVideos/  Luts/  UserProfiles/  Temp/
-  toate in folderul src/ (langa scripturi).
 
-PASUL 4: Optional — HDR10+ / DV tools
-──────────────────────────────────────
-  cargo install hdr10plus_tool   # necesita rustup
-  cargo install dovi_tool
-
-PASUL 5: Optional — coreutils GNU (daca distroul tau e BSD-like)
-────────────────────────────────────────────────────────────────
-  Wrapperele av_common.sh detecteaza nproc/stat/sed GNU automat.
+  Optional — HDR10+ / DV tools:
+    cargo install hdr10plus_tool dovi_tool    # necesita rustup
 
 
-═══════════════════════════════════════════════════════════════
-3b. SETUP macOS (v41)
-═══════════════════════════════════════════════════════════════
+  ─── 3.3. macOS ───
 
-PASUL 1: Instaleaza Homebrew (daca nu il ai)
-─────────────────────────────────────────────
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  PASUL 1 — Homebrew (daca nu il ai):
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-PASUL 2: Instaleaza bash 4+ (CRITIC — macOS ships bash 3.2)
-─────────────────────────────────────────────────────────────
-  brew install bash
+  PASUL 2 — bash 4+ (CRITIC — macOS ships bash 3.2):
+    brew install bash
+    Fara acest pas av_common.sh refuza pornirea.
 
-  Fara acest pas av_common.sh refuza pornirea (verificare BASH_VERSINFO ≥ 4).
+  PASUL 3 — Dependinte:
+    brew install ffmpeg python3 git exiftool
 
-PASUL 3: Instaleaza ffmpeg + dependinte
-────────────────────────────────────────
-  brew install ffmpeg python3 git exiftool
+  PASUL 4 — Optional:
+    brew install coreutils                # ggrep/greadlink (wrapperele au fallback)
+    brew install hdr10plus_tool dovi_tool # daca exista in tap; altfel cargo install
 
-PASUL 4: Optional — coreutils GNU (recomandat)
-───────────────────────────────────────────────
-  brew install coreutils
+  PASUL 5 — Clone + lansare:
+    git clone <repo-url> ~/AV-Encoder-Suite
+    cd ~/AV-Encoder-Suite/src
+    chmod +x *.sh tools/*.sh
+    ./av_launcher.sh
 
-  Activeaza fallback ggrep/greadlink in wrappere (nu obligatoriu — exista
-  fallback Python pentru readlink -f si grep -E pentru pattern-uri simple).
-
-PASUL 5: Optional — HDR10+ / DV tools
-──────────────────────────────────────
-  brew install hdr10plus_tool
-  brew install dovi_tool
-
-PASUL 6: Cloneaza proiectul si lanseaza
-────────────────────────────────────────
-  git clone <repo-url> ~/AV-Encoder-Suite
-  cd ~/AV-Encoder-Suite/src
-  chmod +x *.sh tools/*.sh
-  ./av_launcher.sh
-
-  Folderele se creeaza langa scripturi (Movies/InputVideos NU este folosit;
-  totul ramane in $SCRIPT_DIR).
-
-PASUL 7: Wake-lock pe macOS
-────────────────────────────
-  Wrapperul av_wake_lock foloseste caffeinate -dimsu in background pe durata
-  encode-ului. Nu necesita configurare suplimentara.
+  Wake-lock: wrapperul foloseste automat `caffeinate -dimsu` in background
+             pe durata encode-ului. Fara configurare suplimentara.
 
 
-═══════════════════════════════════════════════════════════════
-4. SETUP WINDOWS
-═══════════════════════════════════════════════════════════════
+  ─── 3.4. Windows ───
 
-PASUL 1: Instaleaza FFmpeg
-──────────────────────────
-  1. Descarca FFmpeg full build de la: https://www.gyan.dev/ffmpeg/builds/
-  2. Extrage in C:\ffmpeg\ (sau alt folder)
-  3. Adauga C:\ffmpeg\bin in variabila de mediu PATH
-  4. Verifica in CMD: ffmpeg -version
+  PASUL 1 — FFmpeg:
+    1. Descarca FFmpeg full build de la: https://www.gyan.dev/ffmpeg/builds/
+    2. Extrage in C:\ffmpeg\
+    3. Adauga C:\ffmpeg\bin in variabila de mediu PATH
+    4. Verifica in CMD: ffmpeg -version
 
-PASUL 2: Copiaza scriptul
-─────────────────────────
-  Copiaza av_encode.ps1 in folderul cu fisierele video.
-  Scriptul foloseste folderul curent ca INPUT si creaza subfolder "output" pentru rezultate.
+  PASUL 2 — PowerShell execution policy (rulează O SINGURA DATA):
+    Deschide PowerShell ca Administrator si ruleaza:
+      Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 
-PASUL 3 (optional): Instaleaza ExifTool (doar pentru extractor GPS/DJI)
-───────────────────────────────────────────────────────────────────────
-  1. Descarca ExifTool de pe: https://exiftool.org/ (Windows Executable)
-  2. Redenumeste "exiftool(-k).exe" in "exiftool.exe"
-  3. Pune exiftool.exe in ACELASI folder cu av_encode.ps1
-     (adica langa fisierele video)
-  4. Verifica: exiftool -ver
+  PASUL 3 — Dependinte optionale:
+    - ExifTool: https://exiftool.org/ (Windows Executable) → redenumeste
+      "exiftool(-k).exe" in "exiftool.exe" → pune langa av_encode.ps1
+    - Python3: https://python.org/downloads/ (bifeaza "Add to PATH" la install)
+    - HDR10+ / DV tools (HEVC): tools/hdr10plus_parser.ps1 si dovi_parser.ps1
+      descarca release-ul pre-built de pe GitHub (quietvoid).
+    - HDR10+ / DV tools (AV1): tools/av1hdr10plus_parser.ps1 si av1dovi_parser.ps1
+      cer rustup + git (cargo build din sven-pke fork — nu exista releases).
 
-  NOTA: ExifTool este necesar DOAR pentru optiunea "Export date GPS/DJI".
-  Encodarea video functioneaza fara el. Scriptul verifica automat daca
-  exiftool.exe exista inainte de a porni extractia.
-
-PASUL 4: Permite executia scripturilor PowerShell
-─────────────────────────────────────────────────
-  Deschide PowerShell ca Administrator si ruleaza O SINGURA DATA:
-    Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-
-  Dupa aceasta, poti rula scriptul normal:
-    powershell -ExecutionPolicy Bypass -File av_encode.ps1
+  PASUL 4 — Lansare:
+    cd src
+    .\av_encode.ps1
 
 
 ═══════════════════════════════════════════════════════════════
-5. STRUCTURA FOLDERE
+4. STRUCTURA FOLDERE
 ═══════════════════════════════════════════════════════════════
 
-  TERMUX (structura completa /storage/emulated/0/Media/)
-  ──────────────────────────────────────────────────────
-  /storage/emulated/0/Media/
-  ├── Scripts/                ← toate scripturile (AV + Photo)
-  │   ├── av_launcher.sh
-  │   ├── av_common.sh
-  │   ├── av_encoder_x265.sh
-  │   ├── av_encoder_x264.sh
-  │   ├── av_encoder_av1.sh
-  │   ├── av_encoder_audio.sh
-  │   ├── av_trimconcat.sh
-  │   ├── av_check.sh
-  │   ├── av_telemetry.sh
-  │   ├── av_extractor_gps.sh
-  │   └── (photo scripts — viitor)
-  ├── InputVideos/            ← surse video + fisiere GPS (.gpx, .fit)
-  ├── OutputVideos/           ← rezultate video + CSV/SRT GPS
-  ├── Temp/                   ← (v36) lazy, folosit de Trim & Concat
-  ├── InputPhotos/            ← surse poze (viitor)
-  └── OutputPhotos/           ← rezultate poze (viitor)
+  TERMUX (cale fixa /storage/emulated/0/Media/):
+    Media/
+    ├── Scripts/         ← toate scripturile bash + tools/
+    ├── InputVideos/     ← surse video + fisiere GPS (.gpx, .fit, .kml)
+    ├── OutputVideos/    ← rezultate + CSV/SRT
+    ├── Luts/            ← LUT-uri .cube (apple_log_*, dji_dlog_m_*, hlg_*, etc.)
+    ├── Luts/Creative/   ← LUT-uri creative (film emulation, teal&orange)
+    ├── UserProfiles/    ← profile .conf salvate de utilizator
+    └── Temp/            ← (lazy) folosit de Trim & Concat
 
-  Scripturile creaza automat folderele daca nu exista.
+  LINUX / macOS / WINDOWS:
+    Toate folderele sunt create LANGA SCRIPTURI ($SCRIPT_DIR/...).
+    Path-urile Termux NU se folosesc — paths cross-platform via
+    BASH_SOURCE / $PSScriptRoot auto-rezolvate la pornire.
 
-  WINDOWS
-  ───────
-  Input:   Folderul unde se afla av_encode.ps1
-  Output:  Subfolder "output" creat automat in acelasi folder
+  Scripturile creeaza automat folderele daca nu exista.
 
-  Pune fisierele video (.mp4, .mov, .mkv) langa script.
+
+═══════════════════════════════════════════════════════════════
+5. QUICK START SI MENIU PRINCIPAL
+═══════════════════════════════════════════════════════════════
+
+  LANSARE:
+    Termux / Linux / macOS:
+      cd src && ./av_launcher.sh
+    Windows:
+      cd src; .\av_encode.ps1
+
+  MENIU PRINCIPAL (8 optiuni, identic pe toate platformele):
+    1) Encode video + audio
+    2) Encode doar audio (video stream copy)
+    3) Verifica fisiere media (analiza + CSV)
+    4) Telemetrie video — DJI / GoPro / Sony / Garmin / QuickTime
+    5) Import GPS extern — GPX / FIT / KML
+    6) Trim & Concat — trim / concat / pipeline / batch trim
+    7) HDR/DV tools — transform RPU / remux / inspect / HDR10+ → DV
+    8) Anulare / iesire
+
+  FISIERE OUTPUT:
+    Termux:        /storage/emulated/0/Media/OutputVideos/
+    Linux/macOS:   $SCRIPT_DIR/OutputVideos/
+    Windows:       output\ langa script
+    CSV analiza:   av_check_report.csv in folderul output
+    Telemetrie:    <name>.gpx + <name>_basic.csv + <name>_FULL.csv +
+                   <name>_norm.csv + <name>.srt
+    GPS extern:    <name>_gps_basic.csv + <name>_gps_full.csv +
+                   <name>_norm.csv + <name>_gps.srt
 
 
 ═══════════════════════════════════════════════════════════════
 6. FLUX ENCODARE — CUM FUNCTIONEAZA
 ═══════════════════════════════════════════════════════════════
 
-  Fluxul este identic pe toate platformele (Termux / PS1).
-  Diferenta: pe Termux av_launcher.sh deschide scriptul separat per encoder,
-  pe Windows totul e intr-un singur fisier (ps1).
+  Fluxul este identic pe toate platformele. Diferenta: pe Termux/Linux/macOS
+  av_launcher.sh deschide scriptul separat per encoder; pe Windows totul e
+  intr-un singur fisier (av_encode.ps1).
 
-  FLUXUL PRINCIPAL (per fisier video):
-  ─────────────────────────────────────
-  1. Verifica daca output-ul exista deja (>1MB = skip, <1MB = sterge si reincepe)
-  2. Detecteaza track-uri DJI (djmd, dbgi, tmcd, cover) → dialog daca gaseste
-  3. Construieste map flags (DJI: loop dinamic per stream; non-DJI: standard)
-  4. Detecteaza HDR (color_transfer + HDR10+ side_data + DV codec_tag)
-  5. Detecteaza Dolby Vision → dialog: stream copy / re-encode HDR10 / skip
-  6. Seteaza CRF auto (bazat pe rezolutie) sau foloseste CRF/VBR custom
-  7. Aplica resize daca e selectat (scale width, no upscale, aspect ratio pastrat)
-  8. Construieste parametri encoder (x265-params / x264 profile+level / av1-params)
-  9. Lanseaza ffmpeg in background cu progress file
-  10. Afiseaza progress bar (procent, FPS real, ETA)
-  11. La finalizare: logheaza dimensiuni, timp, spatiu salvat
+  PASII LOGICI (per fisier video, simplificat):
+    1. Verifica daca output-ul exista deja (skip / re-do)
+    2. Detecteaza track-uri DJI (djmd/dbgi/tmcd/cover) → dialog daca gaseste
+    3. Detecteaza HDR (color_transfer + side_data + codec_tag)
+    4. Detecteaza Dolby Vision / HDR10+ / LOG / HLG → dialog dedicat
+    5. Smart stream copy detection (v38): daca codec source == target si
+       nu sunt transformari planificate → prompt opt-in skip re-encode
+    6. Seteaza CRF auto (per rezolutie) sau foloseste CRF/VBR custom
+    7. Aplica resize / FPS / filtre daca selectate
+    8. Construieste parametri encoder
+    9. Lanseaza ffmpeg cu progress file
+   10. Afiseaza progress bar real (label dinamic, FPS, ETA, %)
+   11. Stderr capturat in fisier temporar — pe error tail -10 inline
+   12. La finalizare: logheaza dimensiuni, timp, spatiu salvat
 
-  FLUXUL CHECK VIDEO (analiza fara encodare):
-  ────────────────────────────────────────────
-  1. Scaneaza folderul Input pentru .mp4/.mov/.mkv
-  2. Per fisier: extrage codec, rezolutie, FPS, bitrate, HDR, DV, DJI,
-     subtitrari, capitole, attachments, canale audio
-  3. Calculeaza estimare dimensiune output pentru x265/x264/AV1
-  4. Genereaza recomandare encoder (ex: "libx265 — DV singurul suportat")
-  5. Afiseaza totul in terminal + exporta CSV cu 30 campuri
+  DRY-RUN (v23.1):
+    Optiune in meniul de lansare. Parcurge tot batch-ul si afiseaza per
+    fisier ce ar face (encoder, sursa, HDR, resize, FPS, filtre, audio,
+    estimare dimensiune) — fara sa ruleze ffmpeg. Util pentru verificare
+    inainte de batch lung.
 
-  FLUXUL AUDIO-ONLY ENCODE (av_encoder_audio):
-  ──────────────────────────────────────────────
-  Re-encodeaza DOAR audio, video ramane intact (stream copy).
-  Util cand vrei sa schimbi codec-ul audio fara sa re-encodezi video
-  (rapid, pastreaza calitatea video 1:1).
+  RESUME (v23.1):
+    Fisierele encodate cu succes sunt marcate in batch_progress.log.
+    La reluare, fisierele deja procesate sarite automat. La finalizare
+    cu succes, batch_progress.log se sterge automat. Daca batch-ul e
+    intrerupt (Ctrl+C, crash), .log ramane si pickup-ul e automat.
 
-  Fluxul:
-  1. Alege container (mp4/mkv/mov)
-  2. Alege codec audio (AAC/Opus/FLAC + bitrate sau copy)
-  3. Scanare fisiere din Input
-  4. Per fisier: detectie surround, build audio params
-  5. ffmpeg -c:v copy [audio params] → output
-  6. Statistici finale + notificare
+  PRESERVE FOLDER STRUCTURE (v33.3):
+    Optiune la inceput batch: "Pastrezi structura de foldere?" (d/n).
+    Daca d → scanare recursiva subfoldere + recreare in Output.
+    Exemplu: Input/Airsoft/clip1.mp4 → Output/Airsoft/clip1_x265.mp4
 
-  FLUXUL EXPORT GPS/DJI (extractordji):
-  ──────────────────────────────────────
-  Necesita ExifTool instalat. Scaneaza folderul Input si extrage datele
-  GPS/telemetrie din fisierele video DJI (inregistrate cu telecomanda GPS
-  Bluetooth sau cu aplicatia DJI Mimo conectata la telefon).
+  BATCH QUEUE (v33):
+    Inainte de lansare, optiune optional "Editezi batch queue?".
+    Comenzi interactive: X toggle, F muta pe prima, M muta de la→la,
+    D doar acest fisier, Enter lanseaza.
 
-  Meniu cu 7 optiuni:
-    1) Standard — GPX + KML (Google Earth) + CSV esential
-       (Lat, Lon, Alt, Speed, Track, DateTime)
-    2) Full Data — GPX + KML + CSV cu absolut toate metadatele (setari camera,
-       firmware, orientare, bitrate — tot ce a salvat camera)
-    3) Subtitrare — fisier .SRT pentru VLC (viteza, altitudine,
-       coordonate afisate ca subtitrare in timp real)
-    4) Totul — GPX + KML + CSV basic + CSV full + SRT
-    5) Raw streams — extrage stream-urile DJI ca fisiere separate:
-       djmd → _djmd.bin (date GPS/telemetrie raw)
-       dbgi → _dbgi.bin (date debug DJI, ~295 MB)
-       tmcd → _tmcd.bin (timecode raw)
-       cover → _cover.jpg (thumbnail JPEG al inregistrarii)
-       Aceasta optiune foloseste ffmpeg (nu ExifTool) si este utila
-       ca backup al datelor originale inainte de editare video.
-    6) Elimina metadata DJI (remux rapid) — sterge track-uri DJI din sursa
-       fara re-encode (ffmpeg -c copy). Sub-dialog:
-         1) Elimina doar debug (dbgi ~295 MB) [implicit]
-         2) Elimina GPS + debug (djmd + dbgi)
-         3) Elimina tot (djmd + dbgi + tmcd + cover)
-       Output: _clean.ext in folderul output. Fisierul original ramane intact.
-    7) Anulare
-
-  Optiunile 1-4 necesita ExifTool. Optiunile 5-6 necesita ffmpeg.
-  Fisierele .fmt (template-uri ExifTool) se genereaza automat si se sterg
-  dupa procesare. Nu trebuie descarcate separat.
-
-  FLUXUL IMPORT GPS EXTERN (av_extractor_gps):
-  ──────────────────────────────────────────────
-  Necesita python3 instalat (pkg install python).
-  Converteste fisiere GPS de la orice dispozitiv (Garmin, Huawei, Apple
-  Watch, Strava, Komoot, etc.) in formate utile.
-
-  Formate input suportate:
-    .GPX — GPS Exchange Format (XML, universal)
-    .FIT — Flexible and Interoperable Data Transfer (binar, Garmin/sport)
-    .KML — Keyhole Markup Language (Google Earth, Maps)
-
-  Pune fisierele .gpx / .fit / .kml in InputVideos/ si ruleaza scriptul.
-
-  Meniu cu 6 optiuni de export:
-    1) CSV esential — Lat, Lon, Alt, Speed(m/s), DateTime
-    2) CSV complet — toate metadatele disponibile (inclusiv HR, cadence,
-       power, temperatura daca sunt prezente in fisierul sursa)
-    3) Subtitrare SRT — speed km/h + altitude + coordonate (+ HR/cadence
-       daca fisierul FIT contine date de la senzori)
-    4) Totul — CSV basic + CSV full + SRT
-    5) GPX & KML — conversie intre formate:
-       GPX → KML, FIT → GPX + KML, KML → GPX
-    6) Anulare
-
-  GPX: parsat cu Python XML. Speed calculat automat din distanta/timp
-  daca nu e prezent in extensions.
-  FIT: parser binar pur Python (fara dependinte externe). Citeste record
-  messages, converteste semicircles in grade, altitude si speed in unitati
-  standard. Extrage si HR, cadence, power, temp daca sunt prezente.
-
-  FLUXUL TRIM & CONCAT (v36/v37 — av_trimconcat.sh / Invoke-*Flow):
-  ──────────────────────────────────────────────────────────────
-  Submeniu cu 4 flow-uri + back:
-    1) Trim clip (un fisier)
-    2) Concat clips (unire)
-    3) Trim + Concat + Encode (pipeline complet)
-    4) Batch trim (v37: aceleasi cuturi pe N fisiere)
-    5) Inapoi
-
-  La intrare: scan foldere reziduale din Temp/. Daca exista subfoldere
-  trim_*/concat_*/pipeline_*/preview_* (sesiuni anterioare intrerupte sau esuate),
-  se afiseaza lista cu size (MB) + age (h/z) si 3 optiuni:
-    1) Pastreaza toate — pentru recovery manual
-    2) Sterge >24h [default] — curatenie sigura (procese vii protejate)
-    3) Sterge toate — curatenie completa
-
-  FLOW 1 — TRIM UN FISIER:
-    1. Listare fisiere din InputVideos/ cu durate
-    2. Selectie fisier
-    3. Loop multi-cut: pentru fiecare segment
-       - Introducere start/end (format flexibil: 45 / 1:30 / 1:05:30)
-       - Confirmare clip rezultat
-       - Alegere precizie:
-         1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]
-         2) Re-encode (exact, frame-accurate, mai lent)
-       - Dialog re-encode: codec (x265/x264) + CRF + audio (copy/aac/eac3)
-       - Output: <nume>_trim<N>_<start>.<ext> cu collision auto-increment
-    4. Intreaba daca mai vrei alt segment din acelasi fisier
-
-  FLOW 2 — CONCAT CLIPS:
-    1. Listare fisiere + selectie cu range syntax:
-       all / 1,3,5 / 1-5 / 1-3,7,10-12
-    2. Ordine:
-       1) Nume alfabetic [default]
-       2) Data modificare
-       3) Dimensiune
-       4) Manual (introdu ordinea: 3,1,2)
-       5) Pastreaza ordinea selectiei
-    3. Afisare ordine finala cu durate + durata totala
-    4. Nume output (default: concat_YYYYMMDD_HHMMSS)
-    5. Container: mkv [default] / mp4 / mov
-    6. Compat check — ffprobe extrage codec+WxH+fps+pix_fmt pentru fiecare:
-       a) Toate identice → optiune stream copy (concat demuxer, instant, lossless)
-                         sau re-encode (compresie suplimentara)
-       b) Diferente → re-encode OBLIGATORIU via concat filter
-    7. Re-encode: codec (x265/x264) + CRF + audio (aac/eac3/copy)
-    8. Executie → cleanup temp automat daca OK, pastrat daca esuat
-
-  FLOW 3 — TRIM + CONCAT + ENCODE (PIPELINE):
-    Pas 1: Selectie fisiere (range syntax) + sort (ca la Concat)
-    Pas 2: Indicare care fisiere au nevoie de trim
-           Exemple: none / 1,3 / 1-2 / all
-           Pentru fiecare fisier selectat: loop multi-segment (start/end)
-    Pas 3: Setari encode GLOBALE (o singura data pt toate):
-           - Mod encode (v37): 1) Video+Audio re-encode [default]  2) Audio-only (video copy)
-           - Codec (daca nu audio-only): libx265 [default] / libx264 / libsvtav1
-           - CRF [default 22]
-           - Preset: medium [default] / slow / fast
-           - Audio: aac 192k [default] / eac3 224k / copy
-    Pas 4: Nume output (default pipeline_YYYYMMDD_HHMMSS) + container (mkv/mp4/mov)
-           - Capitole automate (v37): 1) Da [default] 2) Nu — 1 capitol per segment
-    Pas 5: Rezumat pre-executie:
-           - Lista fisiere cu tag [FULL] sau [TRIM xN]
-           - Durata finala estimata
-           - Temp estimat (MB) — proportional cu bitrate-ul sursei
-           - Setari encode + nume output (sau "AUDIO-ONLY" daca audio_only)
-           - Info HDR daca e cazul (auto-detectie inainte de Pass 3)
-           - Preview thumbnails (v37, opt-in): 3-frame tile 320p / fisier in preview_<ts>/
-           - Confirm (d/n) [default: d]
-    Pas 6: Executie in 3 pass-uri explicite:
-           [Pass 1/3] Trim stream copy — fiecare segment → subdir temp
-                      Fisierele FULL (fara trim) NU se copiaza (referinta directa)
-                      Tracking parallel seg_durations[] pt timeline (v37)
-           [Pass 2/3] Verificare compat (codec+rez+fps+pix_fmt) pe fisierele generate
-                      Daca compat: generare concat.txt (demuxer path)
-                      Daca diferite: switch automat la concat filter
-                      Audio copy → fallback aac 192k cand se foloseste concat filter
-                      audio_only + filter incompat → fallback la full re-encode
-                      v37: Smart stream copy detection — daca codec source == codec target,
-                      opt-in skip re-encode total (instant `-c copy`)
-           Pre-Pass 3 (v37): chapters.txt FFMETADATA1 daca opt-in
-           Pre-Pass 3 (v37): HDR mode detection (sdr/hdr10/hdr10plus/hlg/dv/mixed)
-                      hdr10/hlg + libx265 → auto inject pix_fmt yuv420p10le + color_* + x265-params
-                      hdr10plus → opt-in extragere via hdr10plus_tool, fallback HDR10 la lipsa tool
-                      dv → fallback HDR10 + warning ca DV RPU nu se pastreaza
-                      mixed → no inject + warning
-                      codec ≠ libx265 → no inject + warning
-           [Pass 3/3] Concat + Encode intr-un singur ffmpeg, cu progress bar real:
-                      smart_copy: -f concat -i concat.txt -c copy (instant, lossless)
-                      audio_only: -f concat -i concat.txt -c:v copy + audio re-encode
-                      filter:     -i per fisier + filter_complex concat (lent dar robust)
-                      demuxer:    -f concat -safe 0 -i concat.txt (rapid, input unificat)
-                      Toate primesc condiționat: -i chapters.txt + -map_chapters <idx> (v37)
-                      Re-encode primeste hdr_pix_args + hdr_color_args + hdr_x265_args (v37)
-                      Comun (re-encode): -c:v CODEC -crf CRF -preset PP -map_metadata 0
-    Pas 7: Cleanup temp daca output OK, pastrat daca esuat
-    Stats finale: size output, ratio compresie vs input, durata, nr. segmente
-
-  FLOW 4 — BATCH TRIM (v37):
-    1. Listare fisiere + multi-select (range syntax)
-    2. Calcul min_dur (limita superioara cuturi)
-    3. Loop: defineste 1-N cuturi start:end (aplicate la TOATE fisierele)
-    4. Mod: 1) Stream copy [default, instant]  2) Re-encode (codec/CRF/audio)
-    5. Loop fisiere × cuturi → output `<basename>_btrimN_<start>.<ext>`
-       Skip automat fisiere mai scurte decat end_s (cu log explicit)
-       Sumar final: OK / FAIL / SKIP
-    Util pentru: scoatere intro/outro din toate clipurile dintr-o sedinta cu un singur set de cuts.
+  INTERACTIVE MODE (v30):
+    Optiune in meniul lansare ("Normal / Dry-run / Interactiv").
+    Dupa fiecare fisier: dialog Pastreaza setari / Modifica audio-CRF-
+    normalize-filtru / Opreste batch. Util pentru batch-uri mixte.
 
   PROGRESS BAR REAL (v37/v38):
-  Toate apelurile ffmpeg heavy (Trim re-encode, Concat copy + filter, Pipeline Pass 3
-  toate variantele, Batch trim re-encode, ENCODE FLOW PRINCIPAL v38) folosesc
-  -progress file watched paralel.
-  Afiseaza in terminal: "<LABEL>: NN% | FPS: X.X | ETA: HH:MM:SS"
-  Label dinamic (v38) bazat pe encoder activ:
-    bash: uppercase ENCODER_NAME (LIBX265, AV1, DNXHR, APV, PRORES, LIBX264)
-    PS:   HEVC / H264 / AV1-SVT / AV1-AOM / DNxHR / ProRes / APV / *-NVENC / *-QSV / *-AMF
-  La exit code != 0: tail -10 din stderr capturat in fisier temporar (root cause vizibil),
-  appended si la LOG_FILE pentru istoric complet.
-
-  SMART STREAM COPY (v38):
-  Detectie automata in run_encode_loop / PS encode main: daca codec source == codec target
-  (libx265↔hevc, libx264↔h264, av1↔av1) si NU sunt transformari planificate, prompt opt-in:
-    "⚡ SMART COPY: source este deja X, identic cu target (libX) (bitrate sursa ~Y kbps)."
-    "Re-encode redundant — pierde calitate fara beneficiu real de compresie."
-    "Stream copy total in loc de re-encode? (D/n) [default: D]:"
-  Skip detectie cand exista: VIDEO_FILTER (scale/vidstab/preset), AUDIO_NORMALIZE,
-  LOG profile (Apple/D-Log M/Samsung), HDR10+ side data, Dolby Vision, TRIPLE_LAYER_MODE,
-  FPS modification — toate cer re-encode legitim.
-  Caz tipic: user descarca .mkv HEVC, alege "encode HEVC CRF 22" — in loc de 4h re-encode
-  cu degradare, primeste smart copy instant lossless.
-
-  FOLDER TEMP:
-  Termux: /storage/emulated/0/Media/Temp
-  Windows: <folder av_encode.ps1>/Temp
-  Creat lazy la prima folosire (nu e prezent in repo).
-  Exclus din git (.gitignore).
-  Subfoldere per-rulare: trim_PID_timestamp, concat_PID_timestamp,
-                         pipeline_PID_timestamp, preview_PID_timestamp (v37).
+    "<LABEL>: NN% | FPS: X.X | ETA: HH:MM:SS"
+    Label dinamic per encoder (LIBX265 / LIBX264 / AV1-SVT / AV1-AOM /
+    DNXHR / ProRes / APV / *-NVENC / *-QSV / *-AMF / MediaCodec).
+    Aplicat si pe stream copy, DV copy, HDR10+ copy, Trim/Concat re-encode.
 
 
 ═══════════════════════════════════════════════════════════════
 7. OPTIUNI DETALIATE
 ═══════════════════════════════════════════════════════════════
 
-  ENCODER
-  ───────
+  ─── 7.1. Encodere video ───
+
   libx265    — H.265/HEVC. Compresie ~40% mai buna decat H.264.
-               Suporta HDR10, HDR10+, Dolby Vision. Recomandat general.
+               Suporta HDR10, HDR10+, Dolby Vision, HLG. Recomandat general.
   libx264    — H.264/AVC. Compatibilitate maxima (orice dispozitiv).
-               NU suporta HDR nativ (fara metadata MaxCLL/MaxFALL).
+               NU suporta HDR nativ (fara MaxCLL/MaxFALL/mastering).
                Profil selectabil: high (8bit), high10 (10bit), high422.
   libsvtav1  — AV1 via SVT. Rapid, recomandat pe telefon.
                Compresie ~20-30% mai buna decat HEVC. Suporta film-grain.
+               HDR10+ inline (v1.5+), DV Profile 10 via post-encode inject.
   libaom-av1 — AV1 via libaom. Calitate maxima, foarte lent.
-               Film-grain via -denoise-noise-level (nu synthesis complet).
+               Film-grain via denoise-noise-level. NU suporta HDR10+ inline.
+  dnxhd      — DNxHR (Avid mezzanine, codec lossless optic — vezi 7.3).
+  prores_ks  — Apple ProRes (codec lossless optic Apple — vezi 7.4).
+  libopenapv — Samsung APV. NU este in build-ul Termux standard;
+               necesita ffmpeg --enable-libopenapv.
 
-  CONTAINER
-  ─────────
-  mkv   — Flexibil, suporta orice codec/subtitlu/DV/track-uri DJI. Recomandat default.
-  mp4   — Compatibil maxim (web, Smart TV, telefoane). Adauga -movflags +faststart.
-          Incompatibil cu subtitrari PGS/DVDSUB si track-uri DJI (codec "none").
-  mov   — Apple / Final Cut Pro. Aceleasi limitari ca mp4.
+
+  ─── 7.2. Container ───
+
+  mkv   — Flexibil, suporta orice codec / subtitlu / DV / track-uri DJI.
+          Recomandat default.
+  mp4   — Compatibil maxim (web, Smart TV, telefoane). +faststart.
+          Incompatibil cu PGS/DVDSUB si track-uri DJI (codec "none").
+  mov   — Apple / Final Cut Pro. Aceleasi limitari ca mp4. + E-AC3 incompat.
   mxf   — Avid native. Folosit exclusiv cu DNxHR.
+  webm  — Doar AV1 + Opus (vezi 7.10).
 
-  ENCODER 4 — DNxHR (Avid, codec video mezzanine)
-  ─────────────────────────────────────────────────────────────
-  DNxHR este un codec video profesional dezvoltat de Avid, standard in post-productie
-  broadcast si film. Spre deosebire de x265/x264/AV1 care sunt codecuri lossy destinate
-  distributiei, DNxHR este un codec mezzanine — lossless optic, dimensiune predictibila,
-  viteza de decodare maxima, perfect pentru timeline editing.
+
+  ─── 7.3. DNxHR — codec mezzanine profesional ───
+
+  DNxHR este un codec video profesional dezvoltat de Avid, standard in
+  post-productie broadcast si film. Spre deosebire de x265/x264/AV1
+  (lossy, pentru distributie), DNxHR e un codec mezzanine — lossless
+  optic, dimensiune predictibila, decodare rapida, perfect pentru
+  timeline editing.
 
   CAND SE FOLOSESTE:
-    - Trimiti materialul unui editor care lucreaza in Premiere Pro, Resolve sau Avid
-    - Vrei un master intermediar fara degradare pentru editare/color grading
-    - Sursa este .vob DVD sau .m2ts Blu-ray si vrei un fisier editabil direct
-    - Ai nevoie de un codec cu decodare rapida pe timeline (nu CPU-intensive ca x265)
+    - Trimiti material unui editor in Premiere/Resolve/Avid
+    - Master intermediar fara degradare pentru editare/color grading
+    - Sursa DVD/Blu-ray si vrei fisier editabil direct
+    - Decodare rapida pe timeline (nu CPU-intensive ca x265)
 
   CAND NU SE FOLOSESTE:
-    - Distributie finala (fisierele sunt mari — zeci de GB pentru film intreg)
-    - Stocare pe termen lung (foloseste x265 CRF 18-22 pentru arhivare)
-    - Streaming sau upload (foloseste x265/x264/AV1)
+    - Distributie finala (fisiere de zeci de GB pentru film intreg)
+    - Stocare termen lung (foloseste x265 CRF 18-22 pentru arhivare)
+    - Streaming sau upload (x265 / x264 / AV1)
 
-  PROFILURI DNxHR:
-  ──────────────────────────────────────────────────────────────────────
-  1) DNxHR LB — ~45 Mbps la 1080p/25fps
-     Offline editing cu spatiu limitat. Calitate vizuala acceptabila pentru
-     montaj. NU recomandat pentru color grading sau livrare finala.
-     pix_fmt: yuv422p10le (10-bit, 4:2:2)
-
-  2) DNxHR SQ — ~145 Mbps la 1080p/25fps  [implicit recomandat]
-     Standard Quality — cel mai echilibrat profil. Folosit pentru livrare
-     interchange intre editare si color grading. Vizual identic cu sursa
-     in conditii normale de vizionare.
-     pix_fmt: yuv422p10le (10-bit, 4:2:2)
-
-  3) DNxHR HQ — ~220 Mbps la 1080p/25fps
-     High Quality — spatiu cromatic si detaliu superior fata de SQ.
-     Recomandat pentru color grading intensiv sau livrari broadcast.
-     pix_fmt: yuv422p10le (10-bit, 4:2:2)
-
-  4) DNxHR HQX — ~220 Mbps la 1080p/25fps
-     12-bit, singurul profil DNxHR recomandat pentru HDR workflow.
-     Pastreaza range-ul HDR corect (10 stop vs 8 stop la profilele 10-bit).
-     Foloseste pentru surse HDR10 cand vrei sa editezi/gradezi in HDR.
-     pix_fmt: yuv422p12le (12-bit, 4:2:2)
-
-  5) DNxHR 444 — ~440 Mbps la 1080p/25fps
-     4:4:4 chroma sampling — zero compresie cromatica. Necesar pentru
-     VFX, compositing, keying verde/albastru, lucrari unde fidelitatea
-     culorii la nivel de pixel este critica.
-     pix_fmt: yuv444p10le (10-bit, 4:4:4)
+  PROFILURI (toate 5):
+    LB  ~45 Mbps  yuv422p10le   offline edit, spatiu limitat
+    SQ  ~145 Mbps yuv422p10le   standard interchange [implicit recomandat]
+    HQ  ~220 Mbps yuv422p10le   color grading intensiv / broadcast
+    HQX ~220 Mbps yuv422p12le   12-bit HDR workflow (singur recomandat pt HDR)
+    444 ~440 Mbps yuv444p10le   4:4:4 — VFX, compositing, keying green/blue
 
   DIMENSIUNI ESTIMATE (1080p/25fps, 1 ora material):
-    DNxHR LB  : ~20 GB
-    DNxHR SQ  : ~65 GB
-    DNxHR HQ  : ~99 GB
-    DNxHR HQX : ~99 GB
-    DNxHR 444 : ~198 GB
+    LB ~20 GB / SQ ~65 GB / HQ-HQX ~99 GB / 444 ~198 GB.
 
-  CONTAINERE:
-    .mov — QuickTime, compatibil cu Final Cut Pro, Premiere Pro, Resolve
-    .mxf — Avid native, compatibil cu Media Composer, Interplay
+  CONTAINERE: .mov (QuickTime — FCP/Premiere/Resolve) sau .mxf (Avid native).
+  LIMITARI: track-uri DJI omise automat; PGS/DVDSUB incompatibile cu .mov;
+            fara CRF / preset / tune / VBR — bitrate fix per profil.
 
-  LIMITARI:
-    - Track-urile DJI (djmd/dbgi/tmcd) nu sunt compatibile cu .mov/.mxf
-      si sunt omise automat. Metadatele raman in fisierul original.
-    - Nu are CRF, preset de viteza, tune sau VBR — bitrate este fix per profil.
-    - Fisierele sunt mult mai mari decat x265/AV1 — plan spatiu in consecinta.
-    - Subtitrari PGS/dvd_subtitle incompatibile cu .mov — omise automat.
 
-  SURSE DVD SI BLU-RAY
-  ─────────────────────────────────────────────────────────────
+  ─── 7.4. ProRes — codec profesional Apple ───
+
+  Encoder Apple intra-frame (prores_ks). Container OBLIGATORIU .mov.
+  LOG format: pastrare automata (fara dialog, mesaj informativ).
+
+  PROFILE:
+    Proxy    ~45 Mbps   offline editing spatiu limitat
+    LT       ~100 Mbps  light workflow
+    Standard ~145 Mbps  interchange
+    HQ       ~220 Mbps  [implicit recomandat] high quality broadcast
+    4444     ~330 Mbps  4:4:4 + alpha channel
+    4444 XQ  ~500 Mbps  calitate maxima VFX / compositing
+
+
+  ─── 7.5. Surse DVD si Blu-ray ───
+
   Suita proceseaza direct fisiere .vob (DVD) si .m2ts/.mts (Blu-ray)
-  fara tooluri externe, cu conditia ca discul sa NU fie protejat prin
-  CSS (DVD) sau AACS/BD+ (Blu-ray comercial).
+  FARA tooluri externe, cu conditia ca discul sa NU fie protejat
+  (CSS pe DVD, AACS/BD+ pe Blu-ray comercial).
 
   Discuri NEPROTEJATE (filmate personal, backup propriu):
-    → Copiaza fisierele direct in InputVideos si encodeaza normal.
+    → Copiaza fisierele in InputVideos si encodeaza normal.
 
   Discuri PROTEJATE (comerciale):
-    → Necesita MakeMKV sau similar pentru decriptare inainte.
-    → Dupa decriptare, .mkv rezultat se proceseaza normal.
+    → Necesita MakeMKV pentru decriptare inainte. Dupa decriptare,
+      .mkv rezultat se proceseaza normal.
 
-  FORMAT .VOB (DVD)
-  ─────────────────
-  Codec video: MPEG-2 (interlasate in marea majoritate a cazurilor).
-  Codec audio: AC3/DTS (surround), PCM.
-  Subtitrari:  dvd_subtitle (format imagine, bitmap).
-               Incompatibile cu mp4/mov → omise automat (-sn).
-               Se pastreaza doar in container mkv.
+  .VOB (DVD):
+    Video: MPEG-2 (aproape mereu interlasat).
+    Audio: AC3 / DTS (surround), PCM.
+    Subtitrari: dvd_subtitle (bitmap) — incompatibile mp4/mov (omise -sn),
+                pastrate doar in mkv.
+    ATENTIE DEINTERLACE: surse DVD sunt aproape mereu interlasate.
+    Activeaza filtrul Deinterlace (vezi 7.8) pentru rezultate corecte.
 
-  ATENTIE DEINTERLACE: Sursele DVD sunt aproape intotdeauna interlasate
-  (linii orizontale vizibile in miscare rapida). Activeaza filtrul
-  Deinterlace (optiunea 7 din meniu filtre) pentru rezultate corecte.
+    Optiuni launcher cand exista .vob in InputVideos:
+      1) Encodeaza fiecare .vob individual
+      2) Import titlu DVD complet — specifica calea VIDEO_TS/, launcher
+         concateneaza VTS_01_1..N.VOB intr-un singur fisier.
+         ATENTIE: VIDEO_TS/ nu trebuie sa contina spatii — protocolul
+         concat: al ffmpeg nu suporta spatii.
 
-  DVD-ul fizic imparte titlul in segmente de max 1GB:
-    VTS_01_0.VOB = meniu (nu se encodeaza)
-    VTS_01_1.VOB, VTS_01_2.VOB, ... = continutul titlului
+  .M2TS / .MTS (Blu-ray):
+    Video: H.264 / H.265, progresiv (de obicei — fara deinterlace).
+    Audio: DTS-HD, TrueHD, AC3, AAC.
+    Subtitrari: PGS (bitmap) — incompatibile mp4/mov, pastrate doar in mkv.
 
-  Optiuni disponibile in launcher (Termux):
-    1) Encodeaza fiecare .vob individual — simplul ca fiecare segment
-       devine un fisier encodat separat.
-    2) Import titlu DVD complet — specifica calea folderului VIDEO_TS/,
-       launcher-ul concateneaza automat segmentele VTS_01_*.VOB intr-un
-       singur fisier DVD_titlu_complet.vob in InputVideos, gata de encodat.
-       ATENTIE: calea catre VIDEO_TS/ nu trebuie sa contina spatii —
-       protocolul concat: al ffmpeg nu suporta spatii in cai de fisiere.
+    Fisierele .m2ts sunt unice per titlu (de obicei BDMV/STREAM/XXXXX.m2ts) —
+    se pun direct in InputVideos.
 
-  FORMAT .M2TS / .MTS (Blu-ray)
-  ──────────────────────────────
-  Codec video: H.264 (AVC) sau H.265 (HEVC), progresiv (de obicei).
-               Nu necesita deinterlace.
-  Codec audio: DTS-HD, TrueHD, AC3, AAC.
-  Subtitrari:  PGS (hdmv_pgs, format imagine bitmap).
-               Incompatibile cu mp4/mov → omise automat (-sn).
-               Se pastreaza doar in container mkv.
 
-  Fisierele .m2ts de pe Blu-ray sunt fisiere unice per titlu
-  (de obicei in BDMV/STREAM/XXXXX.m2ts) — se pun direct in InputVideos.
+  ─── 7.6. Rezolutie output ───
 
-  REZOLUTIE OUTPUT
-  ────────────────
-  1) Pastreaza originala [implicit] — fara resize
-  2) 3840 — 4K UHD
-  3) 2560 — 2K / 1440p
-  4) 1920 — Full HD 1080p
-  5) 1280 — HD 720p
-  6) Custom — introdu width manual (minim 320, numar par)
+  1) Pastreaza originala [implicit]
+  2) 3840 (4K UHD)
+  3) 2560 (2K / 1440p)
+  4) 1920 (Full HD 1080p)
+  5) 1280 (HD 720p)
+  6) Custom (minim 320, numar par — ajustare automata daca impar)
 
-  Cum functioneaza:
-    ffmpeg primeste "-vf scale=WIDTH:-2" care calculeaza height-ul automat
-    din aspect ratio-ul sursei. -2 garanteaza height par (necesar h264/h265).
-    Nu face upscale: daca sursa e mai mica sau egala cu target-ul ales,
-    rezolutia ramane neschimbata.
-    La Dolby Vision stream copy: resize-ul NU se aplica (e copy, nu re-encode).
+  Filtru folosit: scale=WIDTH:-2 (aspect ratio pastrat, height par).
+  NU face upscale automat: daca sursa <= target, ramane neschimbata.
+  Dolby Vision stream copy: resize NU se aplica.
 
-  FRAME RATE (FPS) OUTPUT
-  ───────────────────────
-  1) Pastreaza original [implicit] — fara conversie FPS
-  2) 60 fps
-  3) 50 fps
-  4) 30 fps
-  5) 25 fps (standard PAL/european)
-  6) 24 fps (cinematic — film pe pelicola)
-  7) 23.976 fps (24000/1001 — standard Blu-ray, Netflix, content US)
-  8) Custom — introdu FPS manual (ex: 29.97, 48, 120)
 
-  Dupa alegerea FPS-ului, se alege metoda de conversie:
-  1) Drop/duplicate frames [implicit] — rapid. ffmpeg arunca sau duplica
-     frame-uri pentru a atinge FPS-ul tinta. Metoda standard.
-  2) Motion interpolation — calitate mai buna, genereaza frame-uri
-     intermediare prin analiza miscarii. FOARTE lent (10-20x mai lent).
-     Pe telefon poate dura ore. Recomandat doar pe PC.
+  ─── 7.7. Frame rate (FPS) output ───
 
-  Nu face FPS upscale: daca sursa e 30fps si alegi 60fps, ramane 30fps
-  (nu duplica frame-uri inutil). Conversia se aplica doar downward.
-  Audio-ul NU necesita modificari — ffmpeg sincronizeaza automat.
-  La Dolby Vision stream copy: FPS-ul NU se aplica (e copy, nu re-encode).
+  1) Pastreaza original [implicit]
+  2) 60 / 50 / 30 / 25 / 24 / 23.976
+  3) Custom (29.97, 48, 120, etc.)
 
-  FILTRE VIDEO (optional)
-  ───────────────────────
-  Filtrele video se aplica per-fisier, dupa scale si inainte de FPS, toate
-  combinate intr-un singur -vf. Nu afecteaza audio.
+  Dupa FPS, alegi metoda:
+  1) Drop/duplicate frames [implicit] — rapid (-r FPS).
+  2) Motion interpolation — calitate mai buna, FOARTE lent (10-20x).
+     Recomandat doar pe PC. Pe telefon poate dura ore.
+
+  NU face FPS upscale (30→60 ramane 30). Audio se sincronizeaza automat.
+  Dolby Vision stream copy: FPS NU se aplica.
+
+
+  ─── 7.8. Filtre video (optional) ───
+
+  Filtrele se aplica per-fisier, dupa scale si inainte de FPS, combinate
+  intr-un singur -vf. Nu afecteaza audio.
 
   1) Fara filtre [implicit]
-     Niciun filtru aditional — output identic cu sursa (minus re-encode).
-     Recomandat cand materialul este curat si nu are probleme vizibile.
 
   2) Denoise light — nlmeans h=1.0:s=7:p=3:r=5
-     Non-local means denoising, intensitate redusa.
      Pastreaza detalii fine (texturi, fir de par, text).
-     Potrivit pt: footage 4K modern cu zgomot usor de ISO ridicat,
-     drone footage in conditii bune de lumina, camere de actiune.
-     Impact performanta: ridicat (nlmeans e lent pe CPU).
+     Potrivit pt: 4K modern cu zgomot usor ISO, drone footage in lumina buna,
+     camere de actiune.
+     Performanta: ridicat (nlmeans e lent).
 
-  3) Denoise medium — hqdn3d luma_spatial=4 chroma_spatial=3
-     High Quality DeNoise 3D — filtru clasic rapid, eficient.
-     Lucreaza pe ambele axe spatiale si temporale simultan.
-     Potrivit pt: fisiere cu zgomot moderat, encode-uri lungi unde
-     viteza conteaza, material de arhiva digitizat.
-     Impact performanta: scazut (hqdn3d e rapid).
+  3) Denoise medium — hqdn3d luma_spatial=4:chroma_spatial=3
+     Filtru clasic rapid, eficient, ambele axe spatiale + temporale.
+     Potrivit pt: zgomot moderat, encode-uri lungi unde viteza conteaza,
+     arhiva digitizata.
+     Performanta: scazut (hqdn3d e rapid).
 
   4) Denoise strong — nlmeans h=3.0:s=7:p=5:r=9
-     Non-local means agresiv, fereastra mare de cautare (r=9).
-     Elimina zgomot ridicat dar poate inmuia detalii fine.
-     Potrivit pt: VHS digitizat, surse TV analogice, footage nocturn
-     cu ISO foarte ridicat, material cu artefacte de compresie.
-     Impact performanta: foarte ridicat (cel mai lent filtru).
+     Agresiv, fereastra mare. Elimina zgomot ridicat dar inmoaie detalii.
+     Potrivit pt: VHS digitizat, TV analogic, footage nocturn ISO foarte
+     ridicat, material cu artefacte compresie.
+     Performanta: foarte ridicat.
 
-  5) Sharpen light — unsharp luma_amount=0.8 chroma_amount=0.4
-     Unsharp mask — ascutire clasica, naturala.
-     Mareste contrastul local la margini fara a introduce halos.
-     Potrivit pt: footage usor neclar din miscare, conversii de
-     rezolutie (dupa downscale), material mai vechi.
-     Impact performanta: scazut.
+  5) Sharpen light — unsharp luma_amount=0.8
+     Ascutire clasica naturala. Mareste contrast local fara halos.
+     Potrivit pt: footage neclar din miscare, downscale, material vechi.
+     Performanta: scazut.
 
   6) Sharpen medium — cas strength=0.6
-     Contrast Adaptive Sharpening (AMD CAS).
-     Adapteaza intensitatea per-pixel in functie de continut local.
-     Evita supraascutirea in zone deja clare.
+     Contrast Adaptive Sharpening (AMD CAS). Adapteaza per-pixel.
+     Evita supraascutire in zone deja clare.
      Potrivit pt: footage modern, gaming capture, screencasts.
-     Impact performanta: foarte scazut (GPU-friendly, eficient pe CPU).
+     Performanta: foarte scazut.
 
   7) Deinterlace — bwdif mode=send_field parity=auto
-     Bob Weaver Deinterlacing Filter — calitate superioara yadif.
-     Reconstruieste frame-uri complete din campuri interlasate.
-     parity=auto: detecteaza automat TFF/BFF din metadate.
-     OBLIGATORIU pt: DVD-uri rip, capturen TV analogic/digital,
-     VHS digitizat, orice sursa interlasata (linii orizontale vizibile
-     in miscare rapida).
-     NU folosi pe surse progressive (camera, drone, telefon) —
-     bwdif pe progressive genereaza artefacte.
-     Impact performanta: mediu.
+     OBLIGATORIU pt surse interlasate (DVD rip, TV analogic, VHS digitizat).
+     parity=auto: detecteaza TFF/BFF din metadate.
+     NU folosi pe surse progressive (camera/drone/telefon) — genereaza artefacte.
+     Performanta: mediu.
 
-  8) Custom — scrii filtrul manual
-     Introdu orice filtru ffmpeg valid (ex: eq=brightness=0.05:contrast=1.1,
-     hflip, vignette=PI/4, colorbalance=rs=0.1).
-     Filtrul se insereaza direct in lantul -vf, combinat cu scale/fps.
-     Nu se face validare — sintaxa incorecta opreste encode-ul.
+  8) Upscale 4K (Lanczos) — scale=3840:-2:flags=lanczos
+     Upscale inteligent. Nu se combina cu Resize. Pt material vechi 1080p/720p,
+     drone 2.7K.
+
+  9) Stabilizare vidstab (2-pass) — vidstabdetect + vidstabtransform
+     Pass 1: detectie shakiness → .trf. Pass 2: transform + encode.
+     Timp ~2x. .trf cleanup automat.
+     Ideal pt drone, filmare mana, actiune.
+
+  10) Custom — string ffmpeg manual
+      Introdu orice filtru valid (ex: eq=brightness=0.05, hflip, vignette).
+      Nu se face validare — sintaxa gresita opreste encode.
 
   COMBINATII RECOMANDATE:
-  ─────────────────────────────────────────────────────────────
-  Sursa TV/DVD interlasata + denoise:
-    → Alege deinterlace (7) si ruleaza a doua oara cu denoise medium (3)
-      (doua filtre combinate automat daca amandoua sunt in meniu —
-       varianta viitoare; deocamdata alege custom si scrie manual:
-       bwdif=mode=send_field:parity=auto,hqdn3d=4:3:6:4.5)
+    DVD/TV interlasata + denoise → custom: bwdif=mode=send_field:parity=auto,hqdn3d=4:3:6:4.5
+    4K drone ISO ridicat        → Denoise light (2)
+    VHS digitizat / vechi       → Denoise strong (4)
 
-  4K drone cu ISO ridicat:
-    → Denoise light (2) — pastreaza detalii, elimina granulatie
 
-  Vechi digitizat / VHS:
-    → Denoise strong (4) — curata agresiv artefactele de compresie/analogic
+  ─── 7.9. Audio output ───
 
-  AUDIO OUTPUT
-  ────────────
-  1) AAC 192k / 5.1 384k / 7.1 768k [implicit] — lossy, compatibilitate maxima
-  2) AAC custom — alegi bitrate manual (ex: 128k, 256k, 320k)
-  3) Opus 128k / 5.1 256k / 7.1 512k — lossy, calitate superioara la bitrate mic
-  4) Opus custom — alegi bitrate manual
-  5) FLAC lossless — zero pierdere calitate, fisier mai mare
-  6) FLAC custom — alegi compression level (0-12, 8=default)
+  1) AAC 192k / 5.1 384k / 7.1 768k [implicit]
+     Lossy, compatibilitate maxima.
+  2) AAC custom — bitrate manual (128k, 256k, 320k).
+  3) Opus 128k / 5.1 256k / 7.1 512k
+     Lossy, calitate superioara la bitrate mic. Container mkv/webm/mp4 (4.3+).
+  4) Opus custom.
+  5) FLAC lossless — zero pierdere, fisier mai mare. Doar mkv.
+  6) FLAC custom — compression level 0-12 (8=default).
   7) E-AC3 (Dolby Digital Plus) — stereo 224k / 5.1 640k / 7.1 1024k
-     Codec ffmpeg: -c:a eac3. Compatibil nativ cu Samsung TV + soundbar.
-     Ideal pentru Home Cinema (TV recunoaste E-AC3 de pe stick USB).
-     NOTA: ffmpeg NU suporta encodare Dolby Atmos JOC (Joint Object Coding).
-     Conversia TrueHD → E-AC3 produce sunet surround de calitate, dar pierde
-     obiectele spatiale Atmos. Dolby Encoding Engine (DEE) e singurul tool
-     care face E-AC3+Atmos corect, dar e extern si comercial.
-  8) LPCM (PCM necomprimat) — 16bit / 24bit / 32bit
-     Codec ffmpeg: -c:a pcm_s16le / pcm_s24le / pcm_s32le
-     Audio necomprimat, calitate maxima, fisier foarte mare.
-     Ideal pentru mastering, editare profesionala, DaVinci Resolve.
-     Compatibil cu mkv si mov. NU e compatibil cu mp4.
-  9) Pastreaza audio original (copy) — fara re-encode
+     Compatibil nativ Samsung TV + soundbar.
+     NOTA: ffmpeg NU encodeaza Atmos JOC. TrueHD→E-AC3 produce surround
+     bun, dar pierde obiectele spatiale. Pentru E-AC3+Atmos: Dolby
+     Encoding Engine (extern, comercial).
+  8) LPCM (PCM necomprimat) — 16/24/32 bit.
+     Necomprimat, calitate maxima, fisier foarte mare. Doar mkv/mov.
+     Ideal pentru mastering, DaVinci Resolve.
+  9) Pastreaza audio original (copy) — fara re-encode.
 
-  Compatibilitate container (verificat din ffmpeg 8.1 Termux build):
-    mp4: AAC, Opus (ffmpeg >= 4.3), E-AC3
-    mkv: AAC, Opus, FLAC, E-AC3, LPCM — toate
-    mov: AAC, LPCM (FLAC, E-AC3, Opus incompatibile)
-    mxf: LPCM (celelalte incompatibile)
-  Daca alegi FLAC + mp4/mov, E-AC3 + mov, LPCM + mp4 sau WebM + non-Opus,
-  scriptul ofera switch automat.
+  LOUDNORM (v23, EBU R128 2-pass):
+    Meniu separat dupa Audio output. Target -24 LUFS, True Peak -2.0 dB,
+    LRA 7 LU. Pass 1 analiza → Pass 2 aplicare cu linear=true.
+    Nu se aplica daca audio = copy.
 
-  COMPATIBILITATE CONTAINER VIDEO + AUDIO (date reale ffmpeg 8.1):
-  ───────────────────────────────────────────────────────────────
+  MULTI-AUDIO SELECTIV (v33, PS1 only):
+    Cand sursa are >1 track audio si nu e audio copy, dialog per-file:
+      1) Track 0 encode + restul copy [implicit]
+      2) Selecteaza per track: E=encode, C=copy, S=skip
+
+  SURROUND AUTO-DETECT:
+    >2 canale (5.1): AAC 384k, Opus 256k, E-AC3 640k.
+    >6 canale (7.1): AAC 768k, Opus 512k, E-AC3 1024k.
+    Custom: bitrate ramane cel introdus.
+
+  AVERTIZARI METADATA (per fisier, in log, nu blocheaza):
+    TrueHD + re-encode → pierdere metadata Atmos.
+    DTS-HD MA / DTS:X + re-encode → pierdere metadata lossless/spatiala
+                                    (ffmpeg nu poate encoda DTS-HD — Xperi).
+
+  Primul track audio se re-encodeaza; restul -c:a copy.
+
+
+  ─── 7.10. Compatibilitate container (date reale ffmpeg 8.1) ───
+
   VIDEO ENCODERE (ce putem SCRIE):
-    libx265 HEVC  → mp4, mkv, mov
-    libx264 AVC   → mp4, mkv, mov
-    libsvtav1     → mp4, mkv, webm
-    libaom-av1    → mp4, mkv, webm
-    dnxhd DNxHR   → mkv, mov, mxf
-    prores_ks     → mov (OBLIGATORIU)
-    libopenapv    → NU DISPONIBIL in build-ul standard Termux
-                    (necesita --enable-libopenapv la compilare)
-
-  VIDEO DECODERE (ce putem CITI):
-    H.264, H.265/HEVC, AV1, ProRes, ProRes RAW, DNxHR, APV
-    MPEG-2, MPEG-4, VP9 (decodere native)
-    Input: mp4, mkv, mov, m2ts, mts, vob, mxf, apv (raw)
+    libx265 / libx264         → mp4, mkv, mov
+    libsvtav1 / libaom-av1    → mp4, mkv, webm
+    dnxhd                     → mkv, mov, mxf
+    prores_ks                 → mov (OBLIGATORIU)
+    libopenapv                → NU in build standard Termux
 
   AUDIO ENCODERE (ce putem SCRIE):
-    AAC            → mp4, mkv, mov
-    Opus           → mp4 (ffmpeg 4.3+), mkv
-    FLAC           → mkv
-    E-AC3          → mp4, mkv
-    LPCM pcm_s*    → mkv, mov, mxf
-    Copy           → orice container compatibil cu sursa
+    AAC                       → mp4, mkv, mov
+    Opus                      → mp4 (4.3+), mkv, webm
+    FLAC                      → mkv
+    E-AC3                     → mp4, mkv (incompat .mov)
+    LPCM                      → mkv, mov, mxf
+    Copy                      → orice container compatibil cu sursa
 
-  COMBINATII VALIDE (output):
-    x265/x264 + AAC/Opus/E-AC3      → mp4, mkv
-    x265/x264 + AAC                  → mov
-    x265/x264 + FLAC/LPCM           → mkv
-    AV1 + AAC/Opus/E-AC3            → mp4, mkv
-    AV1 + Opus                       → mp4, mkv, webm
-    AV1 + FLAC/LPCM                 → mkv
-    DNxHR + AAC/LPCM                → mov
-    DNxHR + orice                   → mkv, mxf
-    ProRes + AAC/LPCM               → mov (OBLIGATORIU)
-    APV — NU SE POATE ENCODA (libopenapv lipseste din build)
-    Nota: WebM suporta DOAR Opus ca audio. Daca alegi alt codec
-    cu WebM, scriptul ofera switch automat.
+  Daca alegi combinatie incompatibila (FLAC + mp4, E-AC3 + mov, LPCM + mp4,
+  WebM + non-Opus), scriptul ofera switch automat.
 
-  NOTA DESPRE APV:
-    Samsung APV (Advanced Professional Video) — codec intra-frame profesional.
-    Dezvoltat de Samsung, open-source prin AcademySoftwareFoundation/openapv.
-    Suporta: 422/444 10-bit si 12-bit, metadata HDR10/HDR10+, multi-view.
-    Optimizat ARM NEON + x86 SSE/AVX. Container: mp4/mov (APV-ISOBMFF).
+  Nota APV: Decodare APV este inclusa in ffmpeg 8.1 standard — fisierele
+  APV pot fi citite si convertite la orice alt codec. Encodare APV
+  necesita compilare ffmpeg cu --enable-libopenapv (nu in build Termux).
 
-    ENCODARE APV (av_encoder_apv.sh):
-      Necesita ffmpeg compilat cu --enable-libopenapv.
-      Build-ul standard Termux NU include libopenapv.
-      Scriptul are runtime check — afiseaza eroare clara daca lipseste.
-      Pentru encodare APV: recompileaza ffmpeg din sursa cu flag-ul.
 
-    DECODARE APV (citire fisiere APV):
-      Decoderul APV ESTE inclus in ffmpeg 8.1 standard.
-      Fisierele APV pot fi citite si convertite la orice alt codec.
-      Exemplu: APV HDR10+ → x265 HDR10+ (cu metadata, ~90% reducere spatiu)
-      sau APV → AV1 (si mai mic, dar metadata HDR10+ doar cu libsvtav1).
-      NOTA: hdr10plus_tool nu suporta extragere metadata din APV direct.
-      Metadata HDR10+ din sursa APV se pastreaza DOAR daca ffmpeg o transfera
-      la re-encode (comportament ffmpeg standard pentru color metadata).
+  ─── 7.11. CRF / VBR ───
 
-  Surround detection:
-    Daca sursa are >2 canale (5.1), bitrate-ul creste automat:
-      AAC 192k → 384k, Opus 128k → 256k, E-AC3 224k → 640k
-    Daca sursa are >6 canale (7.1), bitrate-ul creste la:
-      AAC 192k → 768k, Opus 128k → 512k, E-AC3 224k → 1024k
-    La custom, bitrate-ul ramine cel introdus de utilizator.
+  CRF — calitate constanta (recomandat default). Scriptul alege per rezolutie:
+    x265: 4K=22 / 1080p=21 / 720p=20
+    x264: 4K=20 / 1080p=19 / 720p=18
+    AV1:  4K=30 / 1080p=28 / 720p=26
+  Sau alegi CRF custom (0=lossless, valori mai mari = fisier mai mic).
 
-  Avertizari metadata audio (per fisier, in log):
-    TrueHD + re-encode: avertizare ca metadata Atmos (obiecte spatiale JOC)
-    se va pierde — ffmpeg nu suporta encodare Atmos.
-    DTS-HD MA / DTS:X + re-encode: avertizare ca metadata lossless/spatiala
-    se va pierde — ffmpeg nu poate encoda DTS-HD (format proprietar Xperi).
-    Avertizarile NU blocheaza encodarea, doar informeaza utilizatorul.
+  VBR — bitrate mediu tinta (ex: 4000k, 4M). Maxrate=1.5x, bufsize=2x auto.
+        Poti suprascrie maxrate/bufsize manual.
 
-  Primul track audio se re-encodeaza, restul se copiaza intact (-c:a copy).
 
-  MOD ENCODARE
-  ────────────
-  CRF   — Calitate constanta. Scriptul alege automat per rezolutie:
-            x265: 4K=22, 1080p=21, 720p=20
-            x264: 4K=20, 1080p=19, 720p=18
-            AV1:  4K=30, 1080p=28, 720p=26
-          Sau alegi CRF custom (0 = lossless, valori mai mari = mai mic/mai slab).
-  VBR   — Bitrate mediu tinta (ex: 4000k, 4M). Maxrate = 1.5x, bufsize = 2x auto.
-          Poti suprascrie maxrate/bufsize manual.
+  ─── 7.12. Preset ───
 
-  PRESET
-  ──────
-  x265/x264: ultrafast → veryslow (9 niveluri). slow = recomandat telefon.
-  SVT-AV1:   0 (veryslow) → 12 (ultrafast). 6 (medium) = recomandat.
-  libaom:    cpu-used 0 (lent) → 8 (rapid). 4 = recomandat.
+  x265 / x264:  ultrafast → veryslow (9 niveluri). slow = recomandat telefon.
+  SVT-AV1:      0 (veryslow) → 12 (ultrafast). 6 (medium) = recomandat.
+  libaom:       cpu-used 0 (lent) → 8 (rapid). 4 = recomandat.
+
   Mai lent = calitate mai buna la acelasi bitrate, dar dureaza mai mult.
 
-  TUNE / FILM-GRAIN
-  ──────────────────
-  x265/x264: animation, grain, film, stillimage, fastdecode, sau fara.
-  AV1:       film-grain synthesis 0-50.
-               0 = dezactivat.
-               1-10 = usor (scena curata cu putin grain).
-               11-20 = mediu (film 35mm tipic).
-               21-50 = intens (grain vizibil, material vintage).
-             SVT-AV1: integrat in -svtav1-params (film-grain=N).
-             libaom: via -denoise-noise-level N.
 
-  PARAMETRI EXTRA ENCODER (toate platformele)
-  ──────────────────────────────────────────
-  x265: format key=value separati cu ":" — ex: rc-lookahead=40:psy-rd=1.5
-  x264: identic — ex: ref=6:bframes=5
+  ─── 7.13. Tune / Film-grain ───
+
+  x265 / x264:  animation, grain, film, stillimage, fastdecode, sau fara.
+  AV1:          film-grain synthesis 0-50.
+                0   = dezactivat
+                1-10  = usor (scena curata cu putin grain)
+                11-20 = mediu (film 35mm tipic)
+                21-50 = intens (grain vizibil, material vintage)
+                SVT-AV1: -svtav1-params film-grain=N
+                libaom:  -denoise-noise-level N
+
+
+  ─── 7.14. Parametri extra encoder ───
+
+  x265:    format key=value separati cu ":" — ex: rc-lookahead=40:psy-rd=1.5
+  x264:    identic — ex: ref=6:bframes=5
   SVT-AV1: identic — ex: enable-overlays=1:scd=1
-  libaom: format ffmpeg standard cu spatii — ex: -enable-chroma-deltaqp 1
-  Pe toate platformele: Enter = sari (fara parametri extra).
+  libaom:  format ffmpeg standard cu spatii — ex: -enable-chroma-deltaqp 1
+
+  Enter = sari (fara parametri extra).
 
 
 ═══════════════════════════════════════════════════════════════
-8. DIALOGURI AUTOMATE (HDR / DV / DJI)
+8. DIALOGURI AUTOMATE
 ═══════════════════════════════════════════════════════════════
 
-  Scripturile detecteaza automat situatii speciale si afiseaza dialog interactiv.
+  Scripturile detecteaza automat situatii speciale si afiseaza dialog
+  interactiv per fisier.
 
-  DOLBY VISION DETECTAT (x265/x264)
-  ──────────────────────────────────
-  Afiseaza profil DV (4/5/7/8.x/9) si ofera:
+  ─── 8.1. Dolby Vision ───
+
+  HEVC (x265):
     1) Stream copy video — pastreaza DV intact, re-encodeaza doar audio.
-       Cel mai rapid. Fisierul ramane DV compatibil.
-    2) Re-encode la HDR10 — pierde layer-ul DV, pastreaza HDR10 base.
-       Util daca player-ul nu suporta DV.
-    3) Sari fisierul.
+    2) Re-encode la HDR10 — pierde layer DV, pastreaza HDR10 base.
+    3) DV preserve (HEVC 8.1) — v45: re-encode + inject RPU
+       Extrage RPU codec-aware (HEVC sau AV1), encode HDR10 base, inject
+       RPU post-encode → DV Profile 8.1 final. Necesita dovi_tool /
+       av1dovi_tool pentru codec-ul sursei.
+    4) Skip fisier.
 
-  DOLBY VISION DETECTAT (AV1)
-  ────────────────────────────
-  AV1 nu suporta DV nativ. Optiuni:
-    1) Converteste la HDR10 (pierde layer DV).
-    2) Sari fisierul.
+  AV1 (svtav1 / libaom):
+    AV1 nu suporta DV nativ. Optiuni (v44, 3 optiuni):
+    1) Converteste la HDR10 (pierde layer DV)
+    2) Sari acest fisier
+    3) DV Profile 10 (AV1) — re-encode + inject [conditional]
+       Extract RPU sursa, encode AV1 plain, inject post-encode → DV P10.
+       Apare DOAR daca av1dovi_tool e instalat SI encoder-ul e libsvtav1.
 
-  HDR DETECTAT + X264 / DIALOG x264 PER-FILE
-  ─────────────────────────────────────────────
-  x264 nu suporta HDR nativ (fara metadata MaxCLL/MaxFALL/mastering).
-  Dialog per-file cu analiza sursa:
-    1) 8-bit (high — compatibilitate maxima)
-    2) 10-bit (high10 — calitate, anti-banding)
-    3) Stream copy video (pastreaza tot, rapid)
-    4) Sari acest fisier
-  Daca sursa e HDR/DV/HDR10+: warning suplimentar ca metadata se pierde.
-  Daca sursa e LOG: redirecteaza la dialog LOG (fara optiune HDR10).
+  PROFILE DOVI_PRESERVE_POLICY (v45) — bypass dialog pentru batch/CI:
+    auto (default, dialog) | preserve | convert | copy | skip
 
-  FISIER DJI DETECTAT
-  ────────────────────
-  Afiseaza track-urile gasite (djmd, tmcd, dbgi, cover JPEG).
-  Track-urile DJI (djmd/dbgi/tmcd) au codec "none" — incompatibil cu mp4/mov.
+  Comportament per encoder:
+    HEVC (x265): toate 5 valori suportate; fallback automat la convert daca
+                 policy=preserve si tool DV lipseste.
+    AV1:         preserve→opt 3, convert→opt 1, skip→opt 2.
+                 copy → fallback la convert cu warning ("nu e suportat pe AV1"),
+                 pentru ca AV1 nu are equivalent legacy DV stream copy.
+
+
+  ─── 8.2. HDR10 / SDR ───
+
+  HDR10 sursa (x265 / AV1):
+    1) Encodeaza HDR10 10-bit — pastreaza color flags BT.2020/PQ.
+    2) Encodeaza SDR 10-bit (tonemap Rec.709) — zscale + Hable + bt709.
+       Util pentru ecrane non-HDR.
+    3) Stream copy video.
+    4) Skip.
+
+  SDR sursa (x265 / AV1):
+    1) Encodeaza 10-bit SDR — yuv420p10le (anti-banding).
+    2) Stream copy.
+    3) Skip.
+
+  Nota: x265 si AV1 encodeaza mereu in 10-bit (eficienta superioara).
+        x264 are dialog propriu (8-bit / 10-bit / copy / skip).
+
+
+  ─── 8.3. LOG format video (Apple Log / D-Log M / Samsung Log) ───
+
+  Detectie automata: 10-bit + BT.2020 + brand din metadata ffprobe.
+    Apple Log — iPhone (com.apple.quicktime.make=Apple)
+    D-Log M   — DJI Action/Pocket
+    Samsung Log — Samsung S24 Ultra (exclus daca HDR10+ sau smpte2084)
+    Unknown   — 10-bit + bt2020 fara HDR = probabil LOG
+
+  Meniu per-file pentru x265 / AV1:
+    1) Apply LUT (.cube) → 10-bit SDR Rec.709 [doar daca .cube exista]
+    2) Convert SDR (fara LUT) → 10-bit Rec.709 (best-effort)
+    3) Convert HDR10 (fara LUT) → 10-bit BT.2020/PQ
+    4) Preserve Log — compresie fara schimbare culori
+    5) Stream copy
+    6) Skip
+
+  + 2 optiuni HLG (v39, doar x265/AV1 — vezi 8.5):
+    "Apply LUT Log→HLG → 10-bit BT.2100" (cand hlg_*.cube gasit)
+    "Convert HLG (fara LUT) → 10-bit"
+
+  x264: fara optiune HDR10. Forteaza 8-bit. Warning la Preserve Log.
+  DNxHR / ProRes: auto-preserve LOG (fara dialog, mesaj informativ).
+
+  CAUTARE LUT (.cube):
+    Termux:  /storage/emulated/0/Media/Luts/
+    Windows: $InputDir\Luts\ (langa script)
+    Linux/macOS: $SCRIPT_DIR/Luts/
+
+    Conventia de denumire (prefix):
+      Rec.709 LUT → apple_log_*.cube / dji_dlog_m_*.cube / samsung_log_*.cube
+      HLG LUT     → hlg_apple_log_*.cube / hlg_dji_dlog_m_*.cube etc.
+      Creative    → creative_*.cube (sau in Luts/Creative/)
+
+    Daca 1 LUT → auto-select. Daca mai multe → dialog. Brand unknown → toate.
+
+  SURSE LUT-uri:
+    Apple:   developer.apple.com → "Apple Log Profile Delivery SDK"
+    DJI:     dji.com → pagina produsului → Downloads
+    Samsung: developer.samsung.com → "Samsung Log to Rec709 3DLUT v1.0"
+
+  FORCE LOG DETECTION:
+    Setare globala in launcher pentru camere care nu seteaza metadata
+    corect (camere chinezesti, GoPro vechi, Sony S-Log3). Forteaza
+    dialog LOG pe toate fisierele. Salvat in profil.
+
+  VFR WARNING:
+    Detectie automata avg_frame_rate vs r_frame_rate. Cand sursa LOG e
+    VFR (iPhone, Samsung), dialogul afiseaza warning si recomanda setare
+    FPS fix din meniu.
+
+
+  ─── 8.4. HDR10+ (dynamic metadata) ───
+
+  Detectie: side_data SMPTE ST 2094-40 prezent in stream.
+
+  Dialog cu hdr10plus_tool disponibil:
+    1) Re-encode HDR10 static — pierde metadata dinamica.
+    2) Re-encode HDR10+ — extract JSON via hdr10plus_tool, reinject la encode.
+       x265: -x265-params dhdr10-info=<json>
+       SVT-AV1: -svtav1-params hdr10plus-json=<json> (v1.5+)
+       libaom-av1: NU suporta hdr10plus-json — fallback HDR10 static.
+    3) Stream copy video.
+    4) Triple-layer DV+HDR10+HDR10+ [doar daca si dovi_tool instalat]
+       Pipeline: extract HDR10+ JSON → genereaza DV RPU Profile 8.1 CMv4.0
+       → encode x265 cu dhdr10-info → inject DV RPU → re-mux.
+       Rezultat: fisier cu 3 layere (DV + HDR10 + HDR10+). Cel mai
+       compatibil output posibil.
+
+  Cross-codec gate fix (v45):
+    Tool-ul corect e ales pe baza codec-ului SURSEI (extract), nu target-ului.
+    Pe sursa AV1 + target HEVC: mesajul de eroare numeste explicit
+    "av1hdr10plus_tool" (tool-ul lipsa pt sursa AV1).
+    Triple-layer inject ramane gate pe target codec (acolo se injecteaza).
+
+  DOVI + HDR10+ co-existence (v45):
+    Cand sursa are DV + HDR10+ embedded (Profile 8.1 hybrid), ambele
+    layere sunt pastrate prin encode. RPU-ul real extras din sursa NU
+    mai e supra-scris de un RPU sintetizat din JSON.
+
+  Fara hdr10plus_tool:
+    1) Re-encode HDR10 static.
+    2) Stream copy.
+
+
+  ─── 8.5. HLG (BT.2100 HLG, v39) ───
+
+  Al 4-lea tip de sursa HDR cu dialog dedicat (alaturi de HDR10/HDR10+/DV).
+
+  Detectie: color_transfer=arib-std-b67. Mutual-exclusive cu HDR10/HDR10+/DV/LOG.
+
+  Dialog HLG (5 optiuni):
+    1) HLG nativ — pastreaza signaling BT.2100 HLG (recomandat).
+    2) HLG → HDR10 (PQ) — zscale linearization + smpte2084.
+    3) HLG → SDR (Rec.709) — zscale + tonemap=hable.
+    4) Stream copy.
+    5) Skip.
+
+  HW Windows: NVENC/QSV/AV1-AMF accepta HLG p010le.
+              h264_amf/hevc_amf raman 8-bit (signaling se transmite oricum).
+              h264 HW: HLG→HDR10 auto-fallback la HLG nativ (no SEI HDR10).
+
+  Pipeline + Trim & Concat: detect HDR mode "hlg" + injectare params HLG
+  corect (fara hdr10=1) la Pass 3.
+
+
+  ─── 8.6. DJI tracks ───
+
+  Detectie: codec tags djmd, dbgi, tmcd, cover JPEG.
+  Track-urile DJI au codec "none" — incompatibile cu mp4/mov.
   Doar mkv poate pastra aceste track-uri.
 
-  Daca container = mp4 sau mov:
-    1) Schimba la MKV — pastreaza track-urile DJI (trece la dialogul MKV).
+  Daca container = mp4 / mov:
+    1) Schimba la MKV — pastreaza track-urile (trece la dialogul MKV).
     2) Continua mp4/mov fara track-uri DJI (doar video + audio).
        Metadatele GPS/telemetrie raman in fisierul original.
 
-  Daca container = mkv (sau dupa switch la MKV):
+  Daca container = mkv (sau dupa switch):
     Dialog selectie track-uri DJI in output:
-    Cu dbgi prezent (4 optiuni, implicit = 2):
-      1) Pastreaza tot (djmd + dbgi + tmcd)
-      2) Fara debug (dbgi ~295 MB) [recomandat]
-      3) Fara GPS/locatie (elimina djmd + dbgi, pastreaza tmcd)
-      4) Elimina tot (fara track-uri DJI)
-    Fara dbgi (3 optiuni, implicit = 1):
-      1) Pastreaza tot (djmd + tmcd)
-      2) Fara GPS/locatie (elimina djmd, pastreaza tmcd)
-      3) Elimina tot (fara track-uri DJI)
+      Cu dbgi (4 optiuni, default 2):
+        1) Pastreaza tot (djmd + dbgi + tmcd)
+        2) Fara debug (dbgi ~295 MB) [recomandat]
+        3) Fara GPS/locatie (elimina djmd + dbgi, pastreaza tmcd)
+        4) Elimina tot
+      Fara dbgi (3 optiuni, default 1):
+        1) Pastreaza tot (djmd + tmcd)
+        2) Fara GPS/locatie
+        3) Elimina tot
 
-  Cover JPEG (thumbnail DJI) nu se copiaza niciodata — este al doilea
-  stream video si ar cauza re-encode MJPEG→libx265 (codec conflict).
+  Cover JPEG (thumbnail DJI) NU se copiaza niciodata — ar cauza re-encode
+  MJPEG→libx265 (codec conflict).
 
-  Containerul se schimba PER FISIER — daca ai un batch cu DJI + non-DJI,
-  fiecare fisier primeste dialogul individual, iar containerul se reseteaza
-  la cel original ales inainte de fiecare fisier.
+  Containerul se reseteaza per fisier — batch mixt cu DJI + non-DJI
+  primeste dialog individual.
 
-  SUBTITRARI PGS/DVDSUB + CONTAINER MP4/MOV
-  ───────────────────────────────────────────
-  PGS si DVDSUB sunt formate imagine, incompatibile cu mov_text (mp4/mov).
-  Scriptul le omite automat (-sn) si afiseaza avertisment.
-  Solutie: foloseste mkv ca sa pastrezi subtitrari PGS/DVDSUB.
 
-  ANALIZA SURSA — HDR10 (x265 / AV1)
-  ────────────────────────────────────
-  Cand sursa este HDR10 (fara HDR10+, fara DV, fara LOG), dialog per-file:
-    1) Encodeaza HDR10 10-bit — pastreaza HDR10 cu color flags BT.2020/PQ.
-    2) Encodeaza SDR 10-bit (tonemap Rec.709) — conversie la SDR prin
-       linearizare + tonemap Hable + remap bt709. Util pentru ecrane non-HDR.
-    3) Stream copy video — pastreaza tot, rapid.
-    4) Sari acest fisier.
+  ─── 8.7. Subtitrari PGS / DVDSUB + container MP4/MOV ───
 
-  ANALIZA SURSA — SDR (x265 / AV1)
-  ──────────────────────────────────
-  Cand sursa este SDR (8-bit sau 10-bit), dialog per-file:
-    1) Encodeaza 10-bit SDR — output yuv420p10le (anti-banding, eficienta).
-    2) Stream copy video.
-    3) Sari acest fisier.
+  PGS si DVDSUB sunt formate imagine — incompatibile cu mov_text.
+  Scriptul le omite automat (-sn) cu avertisment.
+  Solutie: foloseste mkv pentru a pastra subtitrari PGS/DVDSUB.
 
-  Nota: x265 si AV1 encodeaza mereu in 10-bit (eficienta superioara).
-  x264 are dialog-ul propriu cu alegere 8-bit / 10-bit / copy / skip.
 
-  LOG FORMAT VIDEO DETECTAT (Apple Log / D-Log M / Samsung Log)
-  ──────────────────────────────────────────────────────────────
-  Detectie automata surse LOG de la iPhone (Apple Log), DJI Action/Pocket
-  (D-Log M), Samsung S24 Ultra (Samsung Log). Se activeaza cand sursa
-  este 10-bit + BT.2020 + brand detectat din metadata ffprobe.
+  ─── 8.8. Interactive Mode ───
 
-  Meniu per-file pentru x265/AV1:
-    1) Apply LUT (.cube) → 10-bit SDR Rec.709
-       Apare DOAR daca un fisier .cube corespunzator exista.
-    2) Convert SDR (fara LUT) → 10-bit Rec.709
-       Tonemap best-effort cu zscale (linearizare + Hable + bt709).
-       LUT-ul oficial este recomandat pentru acuratete maxima.
-    3) Convert HDR10 (fara LUT) → 10-bit BT.2020/PQ (HDR10 static)
-       x265: x265-params hdr10=1 | AV1: color flags directe.
-    4) Preserve Log — compresie fara schimbare culori
-       Pastreaza color flags originale. CRF recomandat: 12-15.
-    5) Stream copy video
-    6) Sari fisier
-
-  Meniu per-file pentru x264:
-    Fara optiune HDR10 (x264 nu suporta).
-    Forteaza 8-bit (High profile). Warning la Preserve Log.
-
-  DNxHR / ProRes:
-    Nu afiseaza dialog — pastreaza automat profilul Log intact.
-    Mesaj informativ in log.
-
-  CAUTARE LUT (.cube)
-  ────────────────────
-  Scriptul cauta automat LUT-uri intr-o singura locatie per platforma:
-
-    Windows (PS1): $InputDir/Luts/      (langa script, case-insensitive NTFS)
-                   $InputDir/Luts/Creative/  (LUT-uri creative/artistice)
-
-    Android (SH):  /storage/emulated/0/Media/Luts/
-                   /storage/emulated/0/Media/Luts/Creative/
-
-  Nu mai scaneaza alte foldere — un singur loc, clar, fara ambiguitate.
-
-  Conventia de denumire (prefix obligatoriu):
-    apple_log_*.cube     — ex: apple_log_AppleLogToRec709-v1.0.cube
-    dji_dlog_m_*.cube    — ex: dji_dlog_m_Rec709.cube
-    samsung_log_*.cube   — ex: samsung_log_Rec709_3DLUT_v1.0.cube
-
-  Daca un singur LUT e gasit → selectie automata.
-  Daca mai multe LUT-uri → dialog de selectie.
-  Daca brand-ul e necunoscut → listeaza toate .cube din folder.
-
-  Surse oficiale LUT-uri:
-    Apple:   developer.apple.com → "Apple Log Profile Delivery SDK"
-    DJI:     dji.com → pagina produsului → Downloads
-    Samsung: developer.samsung.com/mobile/samsung-log-video.html
-             Foloseste: Samsung Log to Rec709 3DLUT v1.0
-
-  FORCE LOG DETECTION
-  ────────────────────
-  In meniul de configurare din launcher exista optiunea:
-    1) Auto-detect [implicit] — detectie pe baza metadata ffprobe
-    2) Fortat ON — trateaza toate fisierele ca LOG
-
-  Util cand camera nu seteaza metadata corect (camere chinezesti,
-  GoPro mai vechi, Sony S-Log3, etc.).
-  Se salveaza in profile .conf.
-
-  VFR (Variable Frame Rate) WARNING
-  ──────────────────────────────────
-  Cand sursa LOG vine de pe telefon (iPhone, Samsung), este posibil
-  sa fie VFR (Variable Frame Rate). Scriptul detecteaza automat
-  diferenta intre avg_frame_rate si r_frame_rate si afiseaza warning
-  in dialog-ul LOG cu recomandarea de a seta FPS fix din meniu.
-
-  HDR10+ DETECTAT (x265 / AV1)
-  ─────────────────────────────
-  Cand sursa contine metadata HDR10+ dinamica, dialog per-file:
-
-  Cu hdr10plus_tool instalat:
-    1) Re-encode HDR10 static — pierde metadata dinamica (+), pastreaza HDR10 base.
-    2) Re-encode HDR10+ — extrage metadata JSON via hdr10plus_tool si o
-       reinjecteaza in output (x265: dhdr10-info, AV1/SVT: hdr10plus-json).
-    3) Stream copy video — pastreaza tot, rapid.
-    4) Triple-layer DV+HDR10+HDR10+ [doar daca si dovi_tool instalat]
-       Pipeline: extract HDR10+ JSON → genereaza DV RPU (Profile 8.1 CMv4.0)
-       → encode x265 cu dhdr10-info → inject DV RPU → re-mux.
-       Rezultat: fisier cu 3 layere — DV (compatibil DV TV), HDR10 (fallback),
-       HDR10+ (metadata dinamica). Cel mai compatibil output posibil.
-
-  Fara hdr10plus_tool:
-    1) Re-encode HDR10 static — pierde metadata dinamica.
-    2) Stream copy video.
-
-  INTERACTIVE MODE (dupa fiecare fisier)
-  ──────────────────────────────────────
-  Cand Interactive Mode e activat (setare din meniu sau profil .conf),
-  dupa fiecare fisier encodat cu succes apare dialog:
+  Activabil din meniu launcher ("Normal / Dry-run / Interactiv") sau profil.
+  Dupa fiecare fisier encodat cu succes apare dialog:
     1) Pastreaza setarile (continua) [implicit]
-    2) Modifica setari — audio, CRF, normalizare
+    2) Modifica setari — audio / CRF / normalizare / filtru
     3) Opreste batch-ul
-  Util pentru batch-uri mixte (ex: unele fisiere necesita alt audio sau CRF).
 
-  PRORES ENCODER (v32)
-  ─────────────────────
-  Encoder Apple profesional intra-frame (prores_ks).
-  Container obligatoriu: .mov (QuickTime).
-  Profile disponibile:
-    Proxy    — ~45 Mbps (offline editing cu spatiu limitat)
-    LT       — ~100 Mbps (light workflow)
-    Standard — ~145 Mbps (interchange standard)
-    HQ       — ~220 Mbps [implicit recomandat] (high quality, broadcast)
-    4444     — ~330 Mbps (4:4:4, alpha channel support)
-    4444 XQ  — ~500 Mbps (calitate maxima, VFX/compositing)
-  LOG format: ProRes pastreaza profilul Log intact automat (fara dialog).
-  Track-uri DJI: omise automat (mov incompatibil cu codec 'none').
-
-  WEBM CONTAINER PENTRU AV1 (v32)
-  ────────────────────────────────
-  AV1 suporta container WebM (nativ web, VP8/VP9/AV1).
-  WebM suporta DOAR audio Opus/Vorbis — scriptul avertizeaza automat
-  daca audio-ul ales nu e Opus si ofera conversie sau switch la MKV.
-  Subtitrari: omise automat (-sn) — WebM suporta doar WebVTT.
+  Util pentru batch-uri mixte (drone + anime + film = setari diferite).
+  Nu apare la ultimul fisier. Nu apare in dry-run.
 
 
-  HARDWARE ENCODE GPU (v35 overhaul, PS1 only)
-  ─────────────────────────────────────────────
-  Meniu encoder optiunea 6. Detectie dubla: ffmpeg binary + GPU fizic (WMI).
+═══════════════════════════════════════════════════════════════
+9. TRIM & CONCAT PIPELINE (v36/v37 — meniu principal opt 6)
+═══════════════════════════════════════════════════════════════
 
-  NVIDIA NVENC: hevc_nvenc, h264_nvenc, av1_nvenc
-  Intel QSV:    hevc_qsv,   h264_qsv,   av1_qsv
-  AMD AMF:      hevc_amf,   h264_amf,   av1_amf (nou in v35)
+  Submeniu cu 5 optiuni:
+    1) Trim (un fisier)
+    2) Concat (multe fisiere)
+    3) Pipeline (trim + concat + encode in 3 pass-uri)
+    4) Batch trim (aceleasi cuturi pe N fisiere)
+    5) Inapoi
 
-  Foloseste QP (Quality Parameter) in loc de CRF — recomandat 18-28.
-  Preset-uri: NVENC p1-p7, QSV veryfast-veryslow, AMF speed/balanced/quality.
+  La intrare in submeniu: scan foldere reziduale din Temp/. Daca exista
+  trim_*/concat_*/pipeline_*/preview_* vechi, dialog cu 3 optiuni:
+    1) Pastreaza toate
+    2) Sterge >24h [default]
+    3) Sterge toate
+
+  TIME PARSER FLEXIBIL: 45 / 1:30 / 1:05:30 / HH:MM:SS — toate acceptate.
+  RANGE SELECTION: all / 1,3,5 / 1-5 / 1-3,7,10-12.
+
+
+  ─── 9.1. Trim un fisier ───
+
+  Multi-cut loop: tai oricate segmente intr-o sesiune.
+  Pentru fiecare segment:
+    - Start / end (format flexibil)
+    - Confirmare
+    - Precizie:
+      1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]
+      2) Re-encode (exact, frame-accurate, mai lent)
+    - Re-encode: codec (x265/x264) + CRF + audio (copy/aac/eac3)
+  Output: <nume>_trim<N>_<start>.<ext> cu collision auto-increment.
+
+
+  ─── 9.2. Concat clips ───
+
+  Sort: nume / data / dimensiune / manual / pastreaza selectia.
+  Container: mkv [default] / mp4 / mov.
+
+  Signature check (ffprobe codec + rez + fps + pix_fmt per fisier):
+    Toate identice → optiune stream copy (concat demuxer, instant, lossless)
+                     sau re-encode (compresie suplimentara).
+    Diferente      → re-encode OBLIGATORIU via concat filter.
+
+
+  ─── 9.3. Pipeline (trim + concat + encode) ───
+
+  Pas 1: Selectie fisiere + sort.
+  Pas 2: Indicare care fisiere au nevoie de trim.
+  Pas 3: Setari encode GLOBALE:
+    - Mod encode (v37): Video+Audio re-encode [default] / Audio-only (video copy)
+    - Codec (daca nu audio-only): libx265 [default] / libx264 / libsvtav1
+    - CRF (default 22)
+    - Preset: medium [default] / slow / fast
+    - Audio: aac 192k [default] / eac3 224k / copy
+  Pas 4: Nume output + container (mkv/mp4/mov).
+         Capitole automate (v37, opt-in): 1 capitol per segment via FFMETADATA1.
+  Pas 5: Rezumat pre-executie:
+    - Lista [FULL] / [TRIM xN]
+    - Durata finala estimata
+    - Temp estimat
+    - Setari encode
+    - Info HDR daca e cazul (auto-detect inainte de Pass 3)
+    - Preview thumbnails (v37, opt-in): 3-frame tile 320p per fisier
+    - Confirm
+
+  Pas 6: Executie in 3 pass-uri:
+    [Pass 1/3] Trim stream copy → subdir temp.
+               Fisierele FULL (fara trim) NU se copiaza (referinta directa).
+    [Pass 2/3] Compat check pe fisierele generate.
+               Compat → concat demuxer. Diferite → switch automat la filter.
+               Smart stream copy (v37): daca codec source == target,
+               opt-in skip re-encode total (instant -c copy).
+    Pre-Pass 3: chapters.txt + HDR mode detection (sdr / hdr10 / hdr10plus /
+               hlg / dv / mixed).
+               hdr10/hlg + libx265 → auto inject pix_fmt + color flags +
+                                     x265-params dedicat.
+               hdr10plus → opt-in extragere via hdr10plus_tool, fallback HDR10.
+               dv → fallback HDR10 + warning (RPU nu se pastreaza la re-encode).
+               mixed → no inject + warning.
+               codec != libx265 → no inject + warning.
+    [Pass 3/3] Concat + Encode intr-un singur ffmpeg cu progress bar real.
+  Pas 7: Cleanup temp daca output OK, pastrat daca esuat.
+
+
+  ─── 9.4. Batch trim (v37) ───
+
+  N cuturi comune aplicate la TOATE fisierele selectate.
+  Mod: stream copy (default, instant) sau re-encode (codec/CRF/audio).
+  Skip automat fisiere mai scurte decat end_s. Sumar OK/FAIL/SKIP.
+  Util pentru scoatere intro/outro din toate clipurile dintr-o sedinta
+  cu un singur set de cuts.
+
+
+  ─── 9.5. Folder temp ($AV_TEMP_DIR) ───
+
+  Termux:        /storage/emulated/0/Media/Temp
+  Linux/macOS:   $SCRIPT_DIR/Temp
+  Windows:       <folder script>\Temp
+
+  Lazy-creat (nu in repo). Exclus din git. Subfoldere per-rulare:
+  trim_PID_ts / concat_PID_ts / pipeline_PID_ts / preview_PID_ts.
+  Cleanup automat la succes, pastrate daca output esuat (pentru recovery).
+
+
+═══════════════════════════════════════════════════════════════
+10. HDR/DV TOOLS (v44/v45 — meniu principal opt 7)
+═══════════════════════════════════════════════════════════════
+
+  Submeniu pentru operatii metadata-only / container-only — toate
+  FARA re-encode video.
+
+  Submeniu (5 optiuni dupa v45):
+    1) Transform RPU profile      (v44)
+    2) Remux container            (v44)
+    3) Inspect metadata           (v44)
+    4) HDR10+ → DV hybrid         (v45)
+    5) Inapoi
+
+
+  ─── 10.1. Transform RPU profile ───
+
+  Cazuri tipice:
+    - Ai DV Profile 7 (BL+EL+RPU) si vrei sa-l simplifici la 8.1
+      single-layer pentru compatibilitate larga.
+    - Ai DV Profile 5 si vrei sa-l converti la 8.1 cu HDR10 base.
+    - Ai HEVC DV 8.1 si vrei AV1 DV Profile 10 echivalent.
+
+  Modes oferite (ref dovi_tool 2.x):
+    1) Force 8.1 (single-layer + HDR10 base)        [-m 2]
+    2) DV 5 → 8.1                                   [-m 3]
+    3) DV 7 → 8.1 (drop EL, MEL only)               [-m 4]
+    4) Pentru AV1: profile 10 (sven-pke fork)
+
+  Pipeline (3 pasi):
+    1) Extract RPU sursa (codec-aware: HEVC → dovi_tool, AV1 → av1dovi_tool)
+    2) Convert RPU
+    3) Re-build video — extract video raw, inject RPU convertit, re-mux
+       cu audio/sub/track-uri originale
+
+  100% lossless pe video — modifici DOAR metadata Dolby Vision.
+
+
+  ─── 10.2. Remux container (MKV ↔ MP4/MOV) ───
+
+  Pre-flight automat verifica compatibilitatea:
+
+    Container tinta MP4/MOV:
+      eac3 + .mov          → FAIL (level 2): converteste audio sau alege .mp4
+      SRT/ASS/SSA          → WARN (level 1): vor fi convertite la mov_text
+                                              sau strip-uite la fallback
+      track-uri DJI        → WARN (level 1): vor fi strip-uite
+
+    Container tinta MKV: permisiv (level 0 mereu).
+
+  Tag:v fix automat la MP4/MOV:
+    HEVC → -tag:v hvc1 (in loc de hev1, pentru playere Apple/streaming)
+    AV1  → -tag:v av01
+    H264 → -tag:v avc1
+    + faststart pentru toate (moov atom la inceput)
+
+  Retry automat fara subtitrari daca primul pass esueaza pe SRT/ASS.
+
+
+  ─── 10.3. Inspect metadata (read-only) ───
+
+  Dump rapid pentru diagnoza:
+    - ffprobe summary (codec, dimensiuni, color_transfer/primaries)
+    - dovi_tool info -i (Profile, Level, RPU stats)
+    - HDR10+ scene descriptors count
+
+
+  ─── 10.4. HDR10+ → DV hybrid (v45, no re-encode) ───
+
+  Sintetizeaza un strat DV din metadata HDR10+ existenta si il
+  injecteaza in bitstream FARA re-encode.
+
+  Pipeline:
+    1) Extract HDR10+ JSON (codec-aware tool)
+    2) Generate DV RPU din scene descriptors HDR10+
+    3) Extract raw video (HEVC annex-B / AV1 IVF)
+    4) Inject DV RPU
+    5) Re-mux cu audio/sub/track-uri originale
+
+  Rezultat:
+    HEVC HDR10+ → HEVC hybrid (DV 8.1 + HDR10 + HDR10+)
+    AV1  HDR10+ → AV1 hybrid (DV P10 + HDR10 + HDR10+)
+
+  100% lossless pe video. Util pentru playere care prefera DV ca prim
+  level cand sursa are doar HDR10+.
+
+
+  ─── 10.5. Sven-pke forks pentru AV1 ───
+
+  Optiunile DV / HDR10+ pe surse sau target-uri AV1 necesita binare
+  dedicate (instalate cu rename ca sa nu intre in coliziune cu cele HEVC):
+
+    av1dovi_tool      — sven-pke/dovi_tool      (clone + cargo build)
+    av1hdr10plus_tool — sven-pke/hdr10plus_tool (clone + cargo build)
+
+  Installer scripts:
+    Termux/Linux/macOS:  tools/av1dovi_parser.sh / tools/av1hdr10plus_parser.sh
+    Windows:             tools/av1dovi_parser.ps1 / tools/av1hdr10plus_parser.ps1
+
+  Fork-urile NU au releases pre-built — installer-ul cloneaza de pe GitHub
+  si ruleaza cargo build --release. Necesita Rust toolchain (rustup).
+  Tool-urile HEVC upstream raman neatinse.
+
+
+═══════════════════════════════════════════════════════════════
+11. TELEMETRIE MULTI-BRAND (v40 — meniu principal opt 4)
+═══════════════════════════════════════════════════════════════
+
+  Extragere unificata telemetrie din video pentru 5 branduri majore.
+  Brand auto-detectat per fisier; output normalizat cross-brand.
+
+  BRAND DETECTION (per fisier, codec tag scan):
+    djmd | dbgi   → DJI         (ExifTool)
+    gpmd          → GoPro       (parser GPMF Python)
+    fdsc          → Garmin VIRB (parser FIT Python)
+    nmea          → Sony Action Cam (parser NMEA Python)
+    fallback ISO 6709 → QuickTime (Apple/Samsung/Pixel/OnePlus/Xiaomi
+                                   via exiftool, single-point GPS)
+
+  Pre-scan fisiere la start cu counter per brand in banner UI.
+
+  EXCLUSE prin decizie (proprietary / documentatie insuficienta):
+    Insta360, Yi Action Cam / Akaso / SJCAM.
+
+  6 OPTIUNI MENIU:
+    1) Standard       — GPX + CSV basic + CSV norm
+    2) Full Data      — GPX + CSV FULL + CSV norm (toate metadatele)
+    3) Subtitrare SRT — pentru overlay in VLC
+    4) Totul          — GPX + CSV basic + CSV FULL + SRT + CSV norm
+    5) Raw streams    — exporta track-ul nativ:
+                        DJI: djmd / dbgi / tmcd / cover
+                        GoPro: gpmd / Sony: nmea / Garmin: fdsc
+                        QuickTime: N/A (single point)
+    6) Strip metadata — remux fara re-encode (sterge tracks)
+                        DJI sub-dialog:
+                          1) Doar dbgi (~295 MB) [implicit]
+                          2) djmd + dbgi
+                          3) djmd + dbgi + tmcd + cover
+                        Restul branduri: orice optiune sterge track-ul telemetry.
+
+  CSV NORMALIZAT — schema 18 coloane cross-brand:
+    timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
+    gforce_x, gforce_y, gforce_z, gyro_x, gyro_y, gyro_z,
+    temp_c, hr_bpm, cadence_rpm, power_w, source_brand
+
+  source_brand valori:
+    dji | gopro | sony | garmin | quicktime |
+    external_gpx | external_fit | external_kml
+
+  PARSERS (rezumat):
+    GoPro GPMF — KLV binary; containere DEVC → STRM nested; GPS5 records
+                 cu scale factors; skip fix=0 si zero coords.
+    Sony NMEA  — $GPRMC + $GPGGA (+ multi-constellation $GN); altitudine
+                 din $GPGGA atasata la ultimul $GPRMC.
+    Garmin FIT — parser binar Python pur; record messages cu lat/lon
+                 (semicircles → degrees); extra HR/cadence/power/temp.
+    QuickTime  — atom com.apple.quicktime.location.ISO6709 via exiftool;
+                 1 punct (start).
+
+  BURN-IN HUD: planificat (3 niveluri viitoare):
+    - Extract only (actual)
+    - Embed lossless (atasare track GPX/CSV ca data stream)
+    - Burn-in re-encode (overlay grafic + re-encode forced)
+
+
+═══════════════════════════════════════════════════════════════
+12. IMPORT GPS EXTERN (GPX/FIT/KML — meniu principal opt 5)
+═══════════════════════════════════════════════════════════════
+
+  Necesita Python3.
+  Converteste fisiere GPS de la orice dispozitiv (Garmin, Huawei,
+  Apple Watch, Strava, Komoot, etc.) in formate utile.
+
+  Formate input suportate:
+    .GPX — GPS Exchange Format (XML, universal)
+    .FIT — Flexible and Interoperable Data Transfer (Garmin/sport, binar)
+    .KML — Keyhole Markup Language (Google Earth, Maps)
+
+  Pune fisierele in InputVideos/ si ruleaza scriptul.
+
+  6 OPTIUNI EXPORT:
+    1) CSV esential — Lat, Lon, Alt, Speed (m/s), DateTime
+    2) CSV complet — toate metadatele (HR / cadence / power / temp daca exista)
+    3) SRT — speed km/h + altitude + coordonate (+ HR/cadence pentru FIT)
+    4) Totul — CSV basic + CSV full + SRT
+    5) GPX & KML — conversie intre formate (GPX↔KML, FIT→GPX+KML)
+    6) Anulare
+
+  Output: paralel cu CSV-urile, scriptul scrie si CSV_norm (schema 18
+  coloane identica cu telemetria video, source_brand = external_gpx /
+  external_fit / external_kml).
+
+
+═══════════════════════════════════════════════════════════════
+13. HARDWARE ENCODE
+═══════════════════════════════════════════════════════════════
+
+  ─── 13.1. Windows PS1 — NVENC / QSV / AMF (v35) ───
+
+  Meniu encoder optiunea 6 in av_encode.ps1.
+  Detectie dubla: ffmpeg binary + GPU fizic (WMI Win32_VideoController).
+  Filtreaza adaptoare virtuale (RDP, VMware, VirtualBox, Hyper-V, Citrix,
+  DisplayLink, Parsec).
+
+  Encodere disponibile:
+    NVIDIA NVENC: hevc_nvenc / h264_nvenc / av1_nvenc
+    Intel QSV:    hevc_qsv   / h264_qsv   / av1_qsv
+    AMD AMF:      hevc_amf   / h264_amf   / av1_amf
+
+  Rate control: QP (Quality Parameter), NU CRF. Recomandat 18-28.
+  Preset: NVENC p1-p7 / QSV veryfast-veryslow / AMF speed-balanced-quality.
   10-bit automat (p010le) pe NVENC/QSV si AV1 AMF daca sursa e 10-bit.
-  Avantaj: encode 10-20x mai rapid decat software pe GPU dedicat.
-  Dezavantaj: calitate usor inferioara la acelasi bitrate vs software.
 
-  Cerinte AV1 HW encode (generatii specifice):
-    NVIDIA: RTX 40 series (Ada) sau mai nou (RTX 50, L4, L40)
-    Intel:  Arc A/B series, Core Ultra (Meteor/Arrow/Lunar Lake)
-    AMD:    RDNA3+ (RX 7000/8000/9000, W7000, iGPU 740M/760M/780M/860M/880M/890M)
+  AV1 HW — cerinte generatie:
+    NVIDIA: RTX 40+ (Ada) sau mai nou (RTX 50, L4, L40)
+    Intel:  Arc A/B, Core Ultra (Meteor/Arrow/Lunar Lake)
+    AMD:    RDNA3+ (RX 7000/8000/9000, W7000, iGPU 740M..890M)
 
-  BANNER GPU la startul fluxului encode:
-    Afiseaza toate GPU-urile fizice detectate (filtrand RDP/VM/virtual)
-    Listeaza HW encode disponibil per-codec H.264/H.265/AV1
-    Daca nu e detectat niciun GPU fizic: mesaj "HW indisponibil, doar SW"
+  Banner GPU la startul fluxului encode cu lista HW per-codec.
+  Optiuni indisponibile listate gri cu motiv: "necesita RTX 40+ (Ada)",
+  "necesita RDNA3+", "GPU absent".
 
-  FILTRARE MENIU HW:
-    Apar doar optiuni compatibile cu hardware-ul curent.
-    Optiunile indisponibile apar in lista gri cu motiv clar:
-    "Intel QSV AV1 (necesita Arc/Core Ultra)"
-    "AMD AMF AV1  (necesita RDNA3+ RX 7000)"
-    "AMD AMF *    (GPU AMD absent)"
+  Fallback automat la SW echivalent cand GPU nu suporta:
+    hevc_* → libx265 / h264_* → libx264 / av1_* → libsvtav1
 
-  PROFILE .conf — validare HW la load:
-    HW_ENC_CODEC salvat in profil se verifica impotriva GPU-ului real.
-    Daca GPU nu suporta → fallback automat la SW echivalent:
-      hevc_* → libx265    h264_* → libx264    av1_*  → libsvtav1
-    Bypass: seteaza HW_FORCE=1 in profil (util pt GPU-uri noi
-    ne-detectate de regex-ul intern — ex: viitoare generatii nesuportate).
+  Profile field HW_FORCE=1: bypass detection (util pt GPU-uri noi
+  ne-detectate de regex-ul intern).
 
 
-  HARDWARE ENCODE MEDIACODEC (v38, Termux/Android only)
-  ──────────────────────────────────────────────────────
-  Meniu HW MediaCodec aparut in launcher dupa selectia encoder-ului
-  (x265/x264/av1). Detectie dubla: ffmpeg binary (h264/hevc/av1_mediacodec)
-  + Termux + getprop.
+  ─── 13.2. MediaCodec (Termux/Android, v38/v39) ───
 
-  ENCODERE MEDIACODEC:
-    hevc_mediacodec — H.265 HW (8-bit + 10-bit pe SoC verificat)
-    h264_mediacodec — H.264 HW (8-bit only, SDR only)
-    av1_mediacodec  — AV1 HW (rar, doar SoC AV1-capable)
+  Meniu HW in launcher post-encoder selection (SW vs MediaCodec).
+  Detectie: Termux + getprop + binary check.
+
+  Per-codec mapping:
+    x265 → hevc_mediacodec   (8-bit + 10-bit pe SoC verificat)
+    x264 → h264_mediacodec   (8-bit only, SDR only)
+    av1  → av1_mediacodec    (rar, doar SoC AV1-capable)
 
   SoC WHITELIST (capabilitati verificate, marcat [verificat] in meniu):
-    Qualcomm Snapdragon 8xx (8 Gen 1+) — HEVC 10-bit
-                            (8 Gen 2+) — AV1 encode
-    Samsung Exynos 21xx-24xx           — HEVC 10-bit
-                   24xx+               — AV1 encode
-    Google Tensor G2+                  — HEVC 10-bit
-                   G3+                 — AV1 encode
-    MediaTek Dimensity 9000+           — HEVC 10-bit
-                       9300+           — AV1 encode
+    Snapdragon 8xx (8 Gen 1+ HEVC10, 8 Gen 2+ AV1)
+    Exynos 21xx-24xx HEVC10, 24xx+ AV1
+    Tensor G2+ HEVC10, G3+ AV1
+    Dimensity 9000+ HEVC10, 9300+ AV1
 
-  SoC NEDETECTAT IN WHITELIST: marcat [suport necunoscut] dar selectabil.
-  Prompt confirmare la alegere (default: NU). Bypass: HW_FORCE=1 in profil.
+  SoC necunoscut: marcat [suport necunoscut], prompt confirmare la
+  alegere (default NU). Bypass: HW_FORCE=1.
 
   PIERDERI REALE (universale MediaCodec, nu chip-specific):
     HDR10+ dynamic metadata (per-frame) — imposibil via API public Android
@@ -1318,588 +1193,328 @@ PASUL 4: Permite executia scripturilor PowerShell
 
   TOT RESTUL FUNCTIONEAZA:
     HDR10 static (cu signaling repair via hevc_metadata bsf post-encode)
-    HEVC 10-bit (main10) pe SoC verificat
-    AV1 SDR pe SoC AV1-capable
-    H.264 SDR oricare SoC
+    HEVC 10-bit main10
+    AV1 SDR (SoC AV1-capable)
+    HLG nativ (v39 — signaling in transfer chars, fara SEI repair)
 
-  DIALOG HDR UNIFORMIZAT (per fisier HDR cand MediaCodec selectat):
-    Surse DV / HDR10+ / HDR10 → meniu cu 4-5 optiuni:
-      [1] SW libx265 — pastrare completa (recomandat, default)
-      [2] SW libx265 — strip enhancement (DV→HDR10 BL, HDR10+→HDR10 static)
-      [3] MediaCodec — HDR10 10-bit + signaling repair (mastering display
-          + max_cll/max_fall extrase din sursa via ffprobe, fallback Rec.2020
-          1000/400 nits daca lipsesc)
-      [4] MediaCodec — SDR tonemap 8-bit (proxy rapid pentru editare/preview)
-      [5] Skip fisier
-    Default mereu pe optiunea SW (apasa Enter pentru calitate maxima).
+  Dialog HDR MediaCodec (DV / HDR10+ / HLG / HDR10):
+    1) SW libx265 — pastrare completa (recomandat default)
+    2) SW libx265 — strip enhancement (DV→HDR10 BL, HDR10+→HDR10 static)
+    3) MediaCodec — HDR10 / HLG nativ + signaling repair
+    4) MediaCodec — SDR tonemap 8-bit (proxy rapid)
+    5) Skip
 
-  H.264 SPECIAL CASE:
-    h264_mediacodec NU suporta HDR — pe surse HDR forteaza tonemap automat
-    sau fallback SW. Optiunea [3] HDR10 repair se comuta automat la [4] SDR.
+  x264 special: h264_mediacodec NU suporta HDR → auto-tonemap.
+  AV1: daca SoC fara AV1 HW encoder → fallback SW automat.
 
-  AV1 PRE-CHECK:
-    Daca MC_CAP_AV1=0 (SoC fara AV1 HW encoder) → fallback automat la
-    SW (libsvtav1/libaom-av1) cu mesaj informativ. Util sa selectezi
-    MediaCodec pe AV1 fara sa stii cu siguranta daca SoC-ul are AV1 encoder.
-
-  RATE CONTROL:
-    MediaCodec NU suporta CRF — doar VBR/CBR via -b:v.
-    get_adaptive_bitrate mapeaza CRF echivalent la kbps per codec×rezolutie:
-      4K HEVC: 25 Mbps   1080p HEVC: 8 Mbps    720p HEVC: 4.5 Mbps
-      4K H264: 35 Mbps   1080p H264: 12 Mbps   720p H264: 6.5 Mbps
-      4K AV1:  18 Mbps   1080p AV1:  5.5 Mbps  720p AV1:  3 Mbps
-    Maxrate = 1.5x bitrate, bufsize = 2x bitrate.
-
-  PROFILE FIELD MEDIACODEC_HDR_POLICY (.conf bypass dialog pe batch):
-    sw_full      — fallback SW completa
-    sw_degraded  — fallback SW degradata (strip DV/dynamic)
-    hw_repair    — MediaCodec HDR10 + repair
-    hw_sdr       — MediaCodec SDR tonemap 8-bit
-    skip         — skip fisierele HDR
-    gol          — afiseaza dialog interactiv per fisier (default)
-
-  CAZ REAL S24 ULTRA (Snapdragon 8 Gen 3 / Exynos 2400):
-    HEVC 8-bit + 10-bit:  YES
-    HDR10 (cu repair):    YES
-    HDR10+:               drop dynamic, ramane HDR10
-    Dolby Vision:         imposibil — comuta la SW sau strip→HDR10 BL
-    AV1 encode:           YES
-    H.264:                YES (8-bit only)
-
-  PS1 NU este atins: MediaCodec e Android only. Pe Windows ramane
-  NVENC/QSV/AMF.
-
-  HLG SUPPORT (v39, end-to-end)
-  ─────────────────────────────
-  HLG (BT.2100 HLG, transfer=arib-std-b67) este al 4-lea tip de sursa HDR
-  cu dialog dedicat, alaturi de HDR10/HDR10+/Dolby Vision.
-
-  DETECTIE: detect_source_info / Get-SourceInfo seteaza IS_HLG / isHLG
-  cand color_transfer=arib-std-b67. Mutual-exclusive cu HDR10/HDR10+/DV/LOG
-  (Apple Log poate raporta arib-std-b67, deci HLG ramane 0 cand LOG e detectat).
-
-  DIALOG HLG (5 optiuni — bash handle_hlg_dialog / PS Show-HLGDialog):
-    [1] HLG nativ — pastreaza signaling BT.2100 HLG (recomandat)
-    [2] HLG → HDR10 (PQ) — zscale linearization + smpte2084
-    [3] HLG → SDR (Rec.709) — zscale + tonemap=hable
-    [4] Stream copy video — pastreaza tot
-    [5] Skip
-
-  PARAMS HLG x265 (NU foloseste hdr10=1):
-    -pix_fmt yuv420p10le
-    -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc
-    -x265-params hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc
-
-  HW WINDOWS: NVENC/QSV/AV1-AMF suporta p010le + signaling HLG.
-    h264_amf/hevc_amf raman 8-bit (signaling se transmite oricum).
-    h264 HW: HLG → HDR10 auto-fallback la HLG nativ (no SEI HDR10 pe H.264).
-
-  MEDIACODEC HLG (Termux): HLG nativ avantaj — signaling in transfer chars,
-    fara nevoie de SEI repair (spre deosebire de HDR10 unde mastering display
-    SEI trebuie reinjectat).
-    Dialog MediaCodec HLG (5 optiuni):
-      [1] MediaCodec — HLG nativ 10-bit (recomandat)
-      [2] SW libx265 — HLG nativ 10-bit
-      [3] MediaCodec — HLG → HDR10 (PQ) + signaling repair
-      [4] MediaCodec — SDR tonemap 8-bit
-      [5] Skip
-    h264_mediacodec NU suporta HLG → auto-comut pe SDR tonemap.
-    AV1 MediaCodec accepta HLG dacă SoC suporta (MC_CAP_AV1=1).
-
-  LOG → HLG via LUT (Convenție Luts/hlg_*.cube):
-    hlg_apple_log_*.cube — Apple Log → HLG
-    hlg_dji_dlog_m_*.cube — D-Log M → HLG
-    hlg_samsung_log_*.cube — Samsung Log → HLG
-    hlg_*.cube — prefix generic (brand necunoscut)
-  LUT-urile se cauta in $InputDir/Luts/ paralel cu cele Rec.709.
-  Dialog LOG (x265/AV1 only) primeste 2 optiuni noi:
-    "Apply LUT Log→HLG → 10-bit BT.2100" (cand fisier hlg_*.cube gasit)
-    "Convert HLG (fara LUT) → 10-bit" (zscale best-effort)
-
-  PIPELINE/TRIM-CONCAT HLG: detect_pipeline_hdr_mode returneaza "hlg" cand
-  toate input files sunt HLG. Pass 3 inject params HLG corect (fara hdr10=1).
-
-  PROFILE FIELD: MEDIACODEC_HDR_POLICY=hw_hlg pentru bypass dialog HLG MediaCodec.
+  Profile bypass MEDIACODEC_HDR_POLICY:
+    sw_full | sw_degraded | hw_repair | hw_hlg (v39) | hw_sdr | skip
 
 
-  LUT-URI CREATIVE (v33)
-  ──────────────────────
-  Pe langa LUT-urile de conversie Rec.709, suita suporta LUT-uri creative
-  (film emulation, teal & orange, bleach bypass, etc.).
-  Locatie: luts/creative/ subfolder sau creative_*.cube in luts/.
-  Optiune noua in dialog LOG: "Creative LUT (look artistic)".
-  Apare DOAR daca exista fisiere .cube creative.
-  Disponibil pe Termux (SH) si Windows (PS1).
+  ─── 13.3. Bash cross-platform backends (v42 generalized) ───
 
-  MULTI-AUDIO TRACK SELECTIV (v33, PS1 only)
-  ───────────────────────────────────────────
-  Cand sursa are >1 track audio, dialog per-file:
-    1) Track 0 re-encode, restul copy [implicit]
-    2) Selecteaza per track: E=encode, C=copy, S=skip
-  Permite re-encode selectiv (ex: track 0 AAC, track 1 copy, track 2 skip).
+  5 backend-uri HW noi peste MediaCodec si HW PS1 Windows:
 
-  COMPARATIE INPUT vs OUTPUT (v33)
-  ────────────────────────────────
-  Dupa analiza fisierelor (Verifica media), cauta perechi Input/Output
-  si raporteaza compresie reala, spatiu salvat, verificare streams.
-  Disponibil in: av_check.ps1 standalone, av_encode.ps1 optiunea 3,
-  si av_check.sh (exista din v23).
+    NVENC         (NVIDIA, Linux) — AV1 doar RTX 40+/Ada
+    VAAPI         (Intel iGPU + AMD, Linux) — via /dev/dri/renderD*
+    QSV           (Intel, Linux) — HDR10 pe Tiger Lake+ / Alchemist+
+    VideoToolbox  (macOS) — AV1 doar M3+; HDR10+HLG full pe Apple Silicon
+    AMF           [experimental] (AMD, Linux) — AV1 doar RDNA3+ (RX 7000/8000
+                  + iGPU 740M..890M, v42.1 — Phoenix/Hawk Point/Strix Point)
 
-  BATCH QUEUE — EDITARE ORDINE SI EXCLUDERE (v33)
-  ────────────────────────────────────────────────
-  Dupa configurare, inainte de lansarea encode, optiune optionala:
-    "Editezi batch queue (ordine/excludere)? 1-Nu [impl]  2-Da"
+  AMF prompt confirmare la alegere (warning artefacte HDR pe RDNA2).
+  Bypass cu HW_FORCE=1.
 
-  Implicit Nu — comportament identic cu versiunile anterioare.
-  Daca Da, apare dialog interactiv cu lista fisierelor:
-    - Fiecare fisier afisat cu numar, status [✓/✗], nume, dimensiune
-    - Comenzi disponibile:
-      X<nr>      — toggle include/exclude (ex: X3 exclude fisierul 3)
-      F<nr>      — muta pe prima pozitie (ex: F5)
-      M<de>,<la> — muta (ex: M3,1 muta fisierul 3 pe pozitia 1)
-      D<nr>      — doar acest fisier (exclude toate celelalte)
-      Enter      — lanseaza encode cu fisierele selectate
 
-  Util pentru:
-    - Prioritizare: fisierul cel mai important primul
-    - Excludere: sari fisiere fara a le muta din folder
-    - Test rapid: encodeaza doar un fisier pentru a verifica setarile
-  Disponibil pe Termux (SH) si Windows (PS1).
+  ─── 13.4. UX uniform — preset table 1-7 cross-backend ───
 
-  PASTRARE STRUCTURA FOLDERE (v33.3)
-  ──────────────────────────────────
-  La inceputul batch-ului (dupa dry-run), intrebare noua:
-    "Pastrezi structura de foldere din input? (d/n)"
+    1=Ultrafast / 2=Faster / 3=Fast / 4=Quality (default) /
+    5=Slow / 6=Slower / 7=Veryslow
 
-  Daca n (implicit) — comportament anterior:
-    - Toate fisierele din Input → acelasi folder Output
-    - Scanare doar in radacina Input (fara subfoldere)
+  Mapping per backend:
+    NVENC         p1..p7
+    VAAPI         q1..q7
+    QSV           veryfast..veryslow
+    VideoToolbox  q:v 80..50
+    AMF           speed / balanced / quality (3-tier)
+    MediaCodec    scalare bitrate 60%..150%
 
-  Daca d — structura pastrată:
-    - Scanare recursiva a tuturor subfolderelor din Input
-    - Structura subfoldere recreata in Output
-    - mkdir -p (bash) / New-Item -ItemType Directory (PS1)
+  Tabelul afiseaza coloane filtrate per platforma (Termux→MC, macOS→VT,
+  Linux→nvenc+vaapi+qsv+amf). Coloana activa highlighted galben.
+  Pe terminale inguste afiseaza doar coloana activa.
 
-  Exemplu:
-    Input/Airsoft_20260405/clip1.mp4 → Output/Airsoft_20260405/clip1_x265.mp4
-    Input/Moto_20260406/clip2.mp4   → Output/Moto_20260406/clip2_x265.mp4
 
-  La scanare afiseaza:
-    "Gasite: 25 fisiere in 4 foldere"
+  ─── 13.5. HDR dialog HW unificat ───
 
-  La batch summary final:
-    "Structura foldere: PASTRATA (4 foldere)"
+  Show-HDR-HW-dialog pentru NVENC/VAAPI/QSV/VT/AMF (paralel cu MediaCodec).
+  4 tipuri sursa: DV / HDR10+ / HLG / HDR10 — fiecare cu 4-5 optiuni:
 
-  Disponibil pe Termux (SH) si Windows (PS1).
+    sw_full       — preserve all (recomandat pt DV/HDR10+)
+    sw_degraded   — strip enhancement
+    hw_hdr10      — 10-bit + signaling PQ
+    hw_hlg        — 10-bit + transfer arib-std-b67 (v39)
+    hw_sdr        — tonemap 8-bit
+    skip
+
+  Bypass dialog via HW_HDR_POLICY in profil (paralel cu MEDIACODEC_HDR_POLICY).
+
+
+  ─── 13.6. Profile fields HW ───
+
+  HW_BACKEND       = sw | nvenc | vaapi | qsv | videotoolbox | amf | mediacodec
+  HW_PRESET_SLOT   = 1..7 (default 4 = Quality)
+  HW_HDR_POLICY    = sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr | skip
+  HW_FORCE         = 1 (bypass detection — pt GPU/SoC ne-detectate)
+
+  Back-compat: USE_MEDIACODEC=1 setat automat cand HW_BACKEND=mediacodec.
 
 
 ═══════════════════════════════════════════════════════════════
-9. DIFERENTE INTRE PLATFORME
+14. PROFILE SYSTEM + TESTS (v43)
 ═══════════════════════════════════════════════════════════════
 
-  TERMUX vs WINDOWS — ce e identic:
-    - Meniu, optiuni, encodere, containere, CRF/VBR, preset, tune
-    - Detectie HDR/DV/DJI, dialoguri interactive, LOG detect, LUT search
-    - CSV 30 campuri identice (incl. LogProfile, Est_ProRes), estimari
+  ─── 14.1. Profile .conf ───
+
+  Format KEY=VALUE cross-platform (bash: source, PS1: Get-Content).
+  Locatii:
+    Termux:        /storage/emulated/0/Media/UserProfiles/
+    Linux/macOS:   $SCRIPT_DIR/UserProfiles/
+    Windows:       UserProfiles\ langa script
+
+  Contine: encoder, container, CRF, preset, audio, filtre, loudnorm,
+  ProRes profile, Force LOG detection, Interactive Mode, HW_BACKEND,
+  HW_PRESET_SLOT, HW_HDR_POLICY, HW_FORCE, MEDIACODEC_HDR_POLICY,
+  DOVI_PRESERVE_POLICY (v45), LOG_PROFILE, LUT_PATH.
+
+  NOTA: Profilurile NU sunt cross-platform — bash si PS1 folosesc
+  field-uri diferite (ENCODER_NAME vs ENCODER, AUDIO_CODEC_ARG vs
+  AUDIO_CODEC + AUDIO_BITRATE, etc.). Schema validation cunoaste
+  ambele seturi, dar load-ul ramane per-platform.
+
+  La urmatoarea rulare, profilurile disponibile sunt afisate si pot
+  fi incarcate direct (skip meniuri → lansare).
+
+  BUILT-IN PROFILES (src/profiles/dji_action6/):
+    5 profile pre-built pentru DJI Osmo Action 6, marcate cu [DJI] in lista:
+      DJI_Action6_Airsoft_Indoor   — CRF 22, medium, indoor
+      DJI_Action6_Airsoft_Outdoor  — CRF 20, medium, outdoor
+      DJI_Action6_Moto_Outdoor     — CRF 20, medium, moto
+      DJI_Action6_Moto_Cinematic   — CRF 18, slow, D-Log M + LUT
+      DJI_Action6_DLogM_Outdoor    — CRF 19, medium, D-Log M + LUT
+    Profilurile D-Log M auto-valideaza prezenta LUT-ului din Luts/ la load
+    si afiseaza warning daca lipseste (cu instructiuni descarcare).
+
+    src/profiles/example_profile.conf documenteaza toate campurile disponibile —
+    util ca referinta cand creezi profile noi.
+
+
+  ─── 14.2. Schema validation ───
+
+  Schema declarativa per camp (enum / regex / int / intrange / string /
+  path). Validare per linie inainte de load.
+
+  Cheile necunoscute = WARNING (forward-compat, nu eroare).
+  Valori invalide = EROARE → user primeste prompt daca continua sau anuleaza.
+
+  Non-interactive guard: detecteaza stdin redirectat sau AV_NONINTERACTIVE=1
+  si face fail-fast in loc sa blocheze pe prompt — sigur pentru CI/scripting.
+
+
+  ─── 14.3. EXTENDS — Profile inheritance ───
+
+  EXTENDS=parent_name in profil child. Profilul child mosteneste TOATE
+  campurile parintelui; cele suprascrise local au prioritate.
+
+  Rezolutie parinte: sibling dir → UserProfiles/ → src/profiles/*/.
+  Override semantics: root → leaf (leaf wins).
+  Cycle detection cu path canonicalization (corect pe Windows/macOS
+  case-insensitive — recunoaste "./dir/x.conf" si "DIR/x.conf" ca acelasi).
+  Depth limit: 5.
+
+  Lant >1 link → afiseaza secventa "root → leaf" inainte de source.
+
+
+  ─── 14.4. Bypass fields pentru batch / CI ───
+
+  HW_HDR_POLICY             — bypass dialog HDR pe backend-uri HW v42
+  MEDIACODEC_HDR_POLICY     — bypass dialog HDR pe MediaCodec (v38/v39)
+  DOVI_PRESERVE_POLICY (v45) — bypass dialog DV (auto/preserve/convert/copy/skip)
+  HW_FORCE                  — bypass detection GPU/SoC
+
+  Toate sunt opt-in. Default = dialog interactiv per fisier.
+
+
+  ─── 14.5. profile_diff CLI ───
+
+  Utilitar in src/tools/profile_diff.{sh,ps1} pentru comparat doua
+  profile .conf:
+
+    ./tools/profile_diff.sh A.conf B.conf
+    .\tools\profile_diff.ps1 A.conf B.conf
+
+  Raport cu sectiuni:
+    "Doar in A" — chei prezente doar in A
+    "Doar in B" — chei prezente doar in B
+    "Valori diferite" — chei comune cu valori diferite
+
+  Exit codes: 0=identice / 1=diferente / 2=invalid args.
+
+
+  ─── 14.6. Tests (v43) ───
+
+  Framework bash + PS1 mirror in tests/.
+
+  Rulare:
+    bash tests/fixtures/generate_samples.sh && bash tests/run_tests.sh
+    .\tests\fixtures\generate_samples.ps1; .\tests\run_tests.ps1
+
+  Discover automat in unit/, integration/, hw/. Per-test log + summary.
+  Test-urile dependente de ffmpeg/ffprobe/exiftool auto-skip cand binarul
+  lipseste — runner raporteaza ca "~ skip: <reason>".
+
+  Acoperire: profile schema/validation/EXTENDS/diff, helpers pure
+  (CRF adaptiv, time parser, range expand), HW preset label + list,
+  trim/concat helpers, pipeline HDR detection, concat compat, telemetry
+  brand detection, GPS extractor end-to-end, tool dispatchers (v44),
+  HDR/DV preflight (v44), DOVI+HDR10+ co-existence (v45),
+  DOVI_PRESERVE_POLICY schema (v45).
+
+
+═══════════════════════════════════════════════════════════════
+15. DIFERENTE INTRE PLATFORME
+═══════════════════════════════════════════════════════════════
+
+  CE E IDENTIC:
+    - Meniu principal, optiuni, encodere, containere, CRF/VBR, preset, tune
+    - Detectie HDR / DV / DJI / LOG / HLG / HDR10+
+    - Dialoguri interactive per fisier
+    - CSV 30+ campuri identice (incl. LogProfile, Est_ProRes)
     - Progress bar cu FPS real si ETA
-    - Creative LUT-uri, comparatie I/O
+    - Profile system v43 (cu schema, EXTENDS, diff)
+    - Trim & Concat pipeline
+    - HDR/DV Tools (transform / remux / inspect / HDR10+→DV)
+    - Telemetrie multi-brand + GPS extern
+    - Creative LUT-uri, comparatie I/O, batch queue, preserve folder structure
 
-  TERMUX vs WINDOWS — ce difera:
-    - Termux: 11 scripturi separate | Windows: 1 fisier all-in-one (ps1)
-    - PS1 are: HW Encode GPU (NVENC/QSV/AMF) — SH nu are (Termux = mobil)
-    - PS1 are: Multi-audio track selectiv — SH nu are
-    - Termux: termux-notification + wake-lock | Windows: nu e necesar
-
-  PS1 parity status (v33):
-    PS1 are TOATE dialogurile identice cu SH + features exclusive:
-    - Dialog HDR10+ per-file (static/preserve/copy/triple-layer)
-    - Dialog ANALIZA SURSA HDR10/SDR per-file
-    - Dialog LOG format video (LUT/SDR/HDR10/Preserve/copy/skip)
-    - Dialog x264 per-file (8bit/10bit/copy/skip + LOG branch)
-    - ProRes encoder (prores_ks, 6 profile, mov obligatoriu)
-    - Interactive Mode (modificare setari dupa fiecare fisier)
-    - Triple-layer DV+HDR10+HDR10+ pipeline (hdr10plus_tool + dovi_tool)
-    - Runtime checks per encoder la start
-    - WebM container pentru AV1 (+ Opus compat warning)
-    - Force LOG detection, VFR warning, LUT .cube search
+  CE DIFERA:
+    bash       — scripturi separate per encoder (modular)
+    PS1        — 1 fisier all-in-one (av_encode.ps1)
+    bash       — wrapperele av_* abstractizeaza GNU vs BSD coreutils
+    PS1        — foloseste cmdlet-uri PowerShell native
+    Termux     — wake-lock + notificari Android via Termux:API
+    macOS      — caffeinate -dimsu pentru wake-lock
+    Linux      — no-op wake-lock (best effort)
+    Windows    — fara wake-lock necesar
+    Termux-only — MediaCodec HW encode (Android only)
+    Linux/macOS — HW backends v42 (NVENC/VAAPI/QSV/VT/AMF)
+    Windows    — HW PS1 backends (NVENC/QSV/AMF) + multi-audio selectiv
 
 
 ═══════════════════════════════════════════════════════════════
-10. UTILIZARE RAPIDA (comenzi pornire)
+16. COMENZI RAPIDE TERMUX
 ═══════════════════════════════════════════════════════════════
 
-  TERMUX:
-    cd $HOME && ./av_launcher.sh
-    sau: cd /storage/emulated/0/Media/Scripts/ && ./av_launcher.sh
-
-  WINDOWS:
-    powershell -ExecutionPolicy Bypass -File av_encode.ps1
-
-  Meniul principal:
-    Termux (6 optiuni):
-      1) Encode video + audio
-      2) Encode doar audio (video copy)
-      3) Verifica fisiere media (analiza + CSV 30 campuri)
-      4) Telemetrie video (DJI/GoPro/Sony/Garmin/QuickTime)
-      5) Import GPS extern — GPX/FIT/KML (necesita python3)
-      6) Iesire
-    Windows PS1 (6 optiuni):
-      1) Encode video + audio
-      2) Encode doar audio (video copy)
-      3) Verifica fisiere media (analiza + CSV 30 campuri)
-      4) Telemetrie video (DJI/GoPro/Sony/Garmin/QuickTime)
-      5) Import GPS extern — GPX/FIT/KML (necesita Python3)
-      6) Iesire
-
-  Fisiere output:
-    Termux:  /storage/emulated/0/Media/OutputVideos/
-    Windows: subfolder "output" langa script
-    CSV:     av_check_report.csv in folderul output
-    Telem:   .gpx, _basic.csv, _FULL.csv, _norm.csv, .srt (dupa telemetrie video)
-    GPS:     _gps_basic.csv, _gps_full.csv, _norm.csv, _gps.srt (dupa import GPX/FIT/KML)
-
-
-═══════════════════════════════════════════════════════════════
-10b. TELEMETRY UNIFIED (v40) — DJI/GoPro/Sony/Garmin/QuickTime
-═══════════════════════════════════════════════════════════════
-
-  CE FACE:
-    Extragere unificata telemetrie din video pentru 5 branduri majore.
-    Brand auto-detectat per fisier (codec_tag + ISO 6709 fallback).
-    Output normalizat cross-brand: <name>_norm.csv (schema 18 coloane).
-
-  BRAND DETECTION (codec_tag scan):
-    djmd | dbgi  → DJI         (ExifTool)
-    gpmd         → GoPro       (parser GPMF Python)
-    fdsc         → Garmin VIRB (parser FIT Python)
-    nmea | sony  → Sony Action (parser NMEA Python)
-    fallback     → QuickTime   (atom ISO 6709 via ExifTool, single-point)
-
-  EXCLUDED v40: Insta360, Yi/Akaso/SJCAM (decizie utilizator).
-
-  6 OPTIUNI MENIU:
-    1) Standard       — GPX + CSV basic + CSV norm
-    2) Full Data      — GPX + CSV FULL + CSV norm (toate metadatele disponibile)
-    3) Subtitrare SRT — pentru overlay in VLC
-    4) Totul          — GPX + CSV basic + CSV FULL + SRT + CSV norm
-    5) Raw streams    — exporta track-ul nativ (DJI: djmd/dbgi/tmcd/cover;
-                        GoPro: gpmd; Sony: nmea; Garmin: fdsc); QT: N/A
-    6) Strip metadata — remux fara re-encode (sterge tracks)
-                        DJI sub-dialog: 1)dbgi-only 2)djmd+dbgi 3)tot
-                        Restul: orice optiune sterge track-ul telemetry
-
-  CSV NORMALIZAT — schema 18 coloane (cross-brand):
-    timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
-    gforce_x, gforce_y, gforce_z, gyro_x, gyro_y, gyro_z,
-    temp_c, hr_bpm, cadence_rpm, power_w, source_brand
-
-    source_brand valori:
-      dji, gopro, sony, garmin, quicktime,
-      external_gpx, external_fit, external_kml
-
-  EXEMPLE:
-    Termux:  cd $HOME && ./av_telemetry.sh   (sau prin av_launcher.sh opt 4)
-    Windows: pwsh -File av_telemetry.ps1     (sau prin av_encode.ps1 opt 4)
-
-    Pune fisierele video in InputVideos/, output in OutputVideos/output/.
-
-  PARSERS DETALII:
-    GPMF (GoPro): KLV binary, FourCC + 1B type + 1B struct_size + 2B BE sample_count.
-                  Containere DEVC → STRM nested. SCAL aplicat la GPS5 (5×int32:
-                  lat/lon/alt/speed_2d/speed_3d). Filter: skip GPSF<2 (no fix).
-    FIT (Garmin): header validare ".FIT", definition+data messages.
-                  mesg_num=20 record: lat/lon semicircles → degrees (×180/2^31),
-                  alt=(raw/5)-500, speed=raw/1000. Extra: HR(3), cad(4),
-                  power(7), temp(23). Timestamp: FIT epoch=1989-12-31.
-    NMEA (Sony): $GPRMC + $GPGGA (+$GNRMC/$GNGGA multi-constellation).
-                 ddmm.mmmm → decimal grade. Knots → m/s (×0.514444).
-                 Altitudine din $GPGGA atasata la ultimul $GPRMC.
-    QuickTime:   atom com.apple.quicktime.location.ISO6709, 1 punct (start).
-                 Apple iPhone, Samsung, Pixel, OnePlus, Xiaomi (Android stock).
-
-  BURN-IN HUD: planificat v41 (3 niveluri):
-    - Extract only (v40 actual)
-    - Embed lossless (atasare track GPX/CSV ca data stream)
-    - Burn-in re-encode (overlay grafic + re-encode forced)
-
-
-═══════════════════════════════════════════════════════════════
-11. COMENZI RAPIDE TERMUX (edit, backup, stergere)
-═══════════════════════════════════════════════════════════════
-
-  Navigare la scripturi:
+  NAVIGARE LA SCRIPTURI:
     cd $HOME
     ls -l *.sh
 
-  Editare cu nano:
+  EDITARE CU NANO:
     nano av_launcher.sh
+    Salvare: CTRL + Volum Jos + O  →  ENTER  →  CTRL + Volum Jos + X
 
-  Salvare in nano:
-    CTRL + Volum Jos + O  →  ENTER  →  CTRL + Volum Jos + X
-
-  Golire si re-editare script:
+  GOLIRE SI RE-EDITARE:
     > av_launcher.sh
     nano av_launcher.sh
 
-  Stergere toate scripturile din home:
+  STERGERE SCRIPTURI:
     rm -f *.sh
-
-  Stergere din folder Scripts:
     rm -f /storage/emulated/0/Media/Scripts/*.sh
     rm -f /storage/emulated/0/Media/Scripts/tools/*.sh
 
-  Backup complet (toate scripturile bash):
+  BACKUP COMPLET (toate scripturile bash):
     mkdir -p /storage/emulated/0/Media/Scripts/tools/
     cp av_launcher.sh av_common.sh \
-       av_encoder_x265.sh av_encoder_x264.sh \
-       av_encoder_av1.sh av_encoder_dnxhr.sh \
-       av_encoder_apv.sh av_encoder_prores.sh \
+       av_encoder_x265.sh av_encoder_x264.sh av_encoder_av1.sh \
+       av_encoder_dnxhr.sh av_encoder_prores.sh av_encoder_apv.sh \
        av_encoder_audio.sh av_check.sh \
+       av_trimconcat.sh av_hdr_dv_tools.sh \
        av_telemetry.sh av_extractor_gps.sh \
        /storage/emulated/0/Media/Scripts/
-    cp hdr10plus_parser.sh dovi_parser.sh \
-       exiftool_update.sh \
+    cp hdr10plus_parser.sh av1hdr10plus_parser.sh \
+       dovi_parser.sh av1dovi_parser.sh \
+       exiftool_update.sh profile_diff.sh \
        /storage/emulated/0/Media/Scripts/tools/
     chmod +x /storage/emulated/0/Media/Scripts/*.sh
     chmod +x /storage/emulated/0/Media/Scripts/tools/*.sh
 
-  Rulare din folder Android:
+  RULARE DIN FOLDER ANDROID:
     cd /storage/emulated/0/Media/Scripts/ && ./av_launcher.sh
 
 
 ═══════════════════════════════════════════════════════════════
-12. TROUBLESHOOTING
+17. TROUBLESHOOTING
 ═══════════════════════════════════════════════════════════════
 
   PROBLEMA: "Permission denied" la rulare script
-  SOLUTIE:  chmod +x av_launcher.sh (si celelalte .sh)
+  SOLUTIE:  chmod +x src/*.sh src/tools/*.sh
 
   PROBLEMA: "command not found: ffmpeg"
-  SOLUTIE:  pkg install ffmpeg -y (Termux)
-            sau adauga ffmpeg in PATH (Windows)
+  SOLUTIE:  Termux:        pkg install ffmpeg -y
+            Linux:         apt/dnf/pacman install ffmpeg
+            macOS:         brew install ffmpeg
+            Windows:       adauga in PATH
 
   PROBLEMA: PS1 nu se ruleaza ("execution of scripts is disabled")
   SOLUTIE:  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
             (ruleaza o singura data in PowerShell ca Administrator)
 
   PROBLEMA: termux-wake-lock nu functioneaza
-  SOLUTIE:  pkg install termux-api
-            + instaleaza Termux:API din F-Droid (aplicatia separata)
+  SOLUTIE:  pkg install termux-api + instaleaza aplicatia Termux:API din F-Droid
+            (versiunea Play Store nu functioneaza)
+
+  PROBLEMA: macOS bash fails at startup ("Refuza bash 3.x")
+  SOLUTIE:  brew install bash (default macOS este 3.2, nesuportat)
 
   PROBLEMA: "Nu am gasit fisiere video"
-  SOLUTIE:  Termux — pune fisierele in /storage/emulated/0/Media/InputVideos/
-            Windows — pune fisierele in acelasi folder cu scriptul
-
-  PROBLEMA: termux-setup-storage nu cere permisiune
-  SOLUTIE:  Reinstaleaza Termux din F-Droid (versiunea Play Store nu suporta)
+  SOLUTIE:  Termux:       pune fisierele in /storage/emulated/0/Media/InputVideos/
+            Linux/macOS:  pune fisierele in $SCRIPT_DIR/InputVideos/
+            Windows:      pune fisierele in folderul cu scriptul
 
   PROBLEMA: Fisierele DJI pierd metadata GPS/telemetrie
   SOLUTIE:  Track-urile DJI (djmd/dbgi/tmcd) au codec "none" — incompatibile
-            cu mp4/mov. Alege mkv, sau cand scriptul detecteaza DJI si ai
-            ales mp4, accepta optiunea "Schimba la MKV" din dialog.
-            Metadatele raman oricum in fisierul original.
+            cu mp4/mov. Alege mkv sau accepta "Schimba la MKV" din dialog.
+            Metadatele raman in fisierul original.
 
   PROBLEMA: Subtitrari PGS/DVDSUB pierdute la mp4/mov
   SOLUTIE:  Normal — PGS/DVDSUB sunt incompatibile cu mp4/mov.
-            Scripturile le omit automat (-sn) si afiseaza avertisment.
-            Foloseste mkv pentru a pastra subtitrari PGS.
+            Scripturile le omit automat (-sn). Foloseste mkv pentru a pastra.
 
-  PROBLEMA: Dolby Vision — cum pastrez DV complet?
-  SOLUTIE:  Alege "Stream copy video" in dialogul DV.
-            Video-ul nu se re-encodeaza, doar audio-ul.
-            Pentru re-encode, DV se converteste la HDR10 (best-effort).
-
-  PROBLEMA: "Export date GPS/DJI" nu porneste — "exiftool nu a fost gasit"
-  SOLUTIE:  Termux: pkg install exiftool -y (sau cpan App::ExifTool)
-            Windows: descarca exiftool.exe de pe https://exiftool.org/
-            si pune-l in acelasi folder cu av_encode.ps1
+  PROBLEMA: Cum pastrez Dolby Vision complet?
+  SOLUTIE:  Alege "Stream copy video" in dialogul DV — video-ul nu se
+            re-encodeaza, doar audio-ul.
+            Pentru re-encode cu DV preserve (v45): opt 3 "DV preserve (HEVC 8.1)"
+            sau pentru AV1: opt 3 "DV Profile 10 (AV1)" (necesita dovi_tool /
+            av1dovi_tool pentru sursa).
 
   PROBLEMA: Export GPS genereaza fisiere goale
-  SOLUTIE:  Fisierul video nu contine date GPS. Datele GPS se salveaza
-            DOAR daca ai filmat cu telecomanda GPS Bluetooth DJI conectata
-            sau cu aplicatia DJI Mimo pornita pe telefon in timpul filmarii.
-            DJI Action 6 nu are senzor GPS intern.
+  SOLUTIE:  Fisierul video nu contine date GPS. Pe DJI Action 6 (fara
+            senzor GPS intern), datele se salveaza DOAR daca ai filmat
+            cu telecomanda DJI Bluetooth conectata sau cu aplicatia DJI
+            Mimo pornita pe telefon.
 
+  PROBLEMA: AV1 HDR10+ inline missing
+  SOLUTIE:  Requires SVT-AV1 v1.5+. libaom-av1 falls back to HDR10 static
+            automatically. Update ffmpeg pentru SVT-AV1 v1.5+.
 
-═══════════════════════════════════════════════════════════════
-13. HDR/DV TOOLS — TRANSFORM / REMUX / INSPECT (v44)
-═══════════════════════════════════════════════════════════════
+  PROBLEMA: "av1dovi_tool not found" sau "av1hdr10plus_tool not found"
+  SOLUTIE:  Installer cu cargo: ./tools/av1dovi_parser.sh sau .ps1.
+            Necesita Rust toolchain (rustup) si git.
 
-Submeniu nou pentru operatii metadata-only / container-only — toate
-FARA re-encode video. Pornire: meniu principal launcher → opt 7
-"HDR/DV tools (transform / remux)". PS1: aceeasi optiune in main menu.
+  PROBLEMA: profile load esueaza pe Windows / macOS (cycle false-positive)
+  SOLUTIE:  Path canonicalization fixat in v43 — pe Windows si macOS
+            case-insensitive, "./dir/x.conf" si "DIR/x.conf" recunoscute
+            ca acelasi fisier. Verifica daca ai v43+ in cod.
 
-Submeniu (4 optiuni):
-  1) Transform RPU profile — convert 7/8.1/10 cross-codec, no encode
-  2) Remux container       — MKV ↔ MP4/MOV cu tag:v fix + faststart
-  3) Inspect metadata      — dump RPU + HDR10+ scenes (read-only)
-  4) Inapoi
-
-
-  ─── 13.1. Transform RPU profile ───
-  Cazuri tipice:
-    - Ai DV Profile 7 (BL+EL+RPU) si vrei sa-l simplifici la 8.1
-      single-layer pentru compatibilitate larga (TV/playere).
-    - Ai DV Profile 5 si vrei sa-l converti la 8.1 cu HDR10 base.
-    - Ai un fisier HEVC DV 8.1 si vrei un AV1 DV Profile 10 echivalent.
-
-  Modes oferite (ref dovi_tool 2.x):
-    1) Force 8.1 (single-layer + HDR10 base)         [-m 2]
-    2) DV 5 -> 8.1                                   [-m 3]
-    3) DV 7 -> 8.1 (drop EL, MEL only)               [-m 4]
-    4) Pentru AV1: profile 10 (sven-pke fork)        [-m 2 + tool av1]
-
-  Pipeline complet (3 pasi):
-    [1/3] Extract RPU sursa — codec-aware (HEVC: bsf hevc_mp4toannexb;
-          AV1: -f ivf). Foloseste dovi_tool sau av1dovi_tool.
-    [2/3] Convert RPU       — `dovi_tool convert -m N --rpu-out <out>`.
-    [3/3] Re-build video    — extract video raw original, inject RPU
-          convertit, re-mux cu audio/subtitrari/track-uri originale.
-
-  100% lossless pe video — modifici DOAR metadata Dolby Vision.
-
-
-  ─── 13.2. Remux container (MKV ↔ MP4/MOV) ───
-  Pre-flight automat verifica compatibilitatea:
-
-    Container tinta MP4/MOV:
-      - eac3 audio + .mov         → FAIL (level 2): converteste audio
-        sau alege .mp4 (E-AC3 e suportat in MP4 dar NU in MOV).
-      - subtitrari SRT/ASS/SSA    → WARN (level 1): vor fi convertite
-        la mov_text sau strip-uite la fallback.
-      - track-uri DJI (djmd/dbgi) → WARN (level 1): vor fi strip-uite
-        (incompatibile cu MP4).
-
-    Container tinta MKV:
-      - permisiv pentru toate codecurile/track-urile — level 0 mereu.
-
-  Tag:v fix automat la output MP4/MOV:
-    - HEVC → -tag:v hvc1 (in loc de hev1, pentru playere Apple/streaming)
-    - AV1  → -tag:v av01
-    - H264 → -tag:v avc1
-    - +faststart pentru toate (moov atom la inceput)
-
-
-  ─── 13.3. Inspect metadata (read-only) ───
-  Dump rapid pentru diagnoza inainte de transform sau remux:
-    - ffprobe summary (codec, dimensiuni, color_transfer/primaries)
-    - dovi_tool info -i <rpu> (Profile, Level, RPU stats) — extrage RPU
-      automat din container daca e DV
-    - HDR10+ scene descriptors count (BezierCurveData / TargetedSystemDisplay)
-
-
-  ─── 13.4. Sven-pke forks pentru AV1 ───
-  Optiunile DV/HDR10+ pentru AV1 necesita binare DEDICATE (instalate
-  cu rename ca sa nu intre in coliziune cu cele HEVC):
-
-    av1dovi_tool      — sven-pke/dovi_tool      (clone + cargo build)
-    av1hdr10plus_tool — sven-pke/hdr10plus_tool (clone + cargo build)
-
-  Installer scripts:
-    Termux/Linux/macOS: src/tools/av1dovi_parser.sh
-                       src/tools/av1hdr10plus_parser.sh
-    Windows:           src/tools/av1dovi_parser.ps1
-                       src/tools/av1hdr10plus_parser.ps1
-
-  Fork-urile NU au releases pre-built — installer-ul cloneaza de pe
-  GitHub si ruleaza `cargo build --release`. Cere Rust toolchain
-  (rustup recomandat). Tool-urile HEVC upstream raman neatinse.
-
-
-═══════════════════════════════════════════════════════════════
-
-UPSCALE 4K (LANCZOS) — v23
-═══════════════════════════════════════════════════════════════
-
-  Optiunea 9 din meniul Filtre video.
-  Upscale inteligent la 4K (3840px) cu algoritmul Lanczos.
-  Filtru: scale=3840:-2:flags=lanczos
-  Nu se combina cu Resize (downscale) — upscale e prioritar.
-  Util pt material vechi 1080p/720p, drone footage 2.7K.
-
-═══════════════════════════════════════════════════════════════
-
-STABILIZARE VIDEO (VIDSTAB 2-PASS) — v23
-═══════════════════════════════════════════════════════════════
-
-  Optiunea 10 din meniul Filtre video.
-  Trecerea 1: vidstabdetect (shakiness=5, accuracy=15) → .trf
-  Trecerea 2: vidstabtransform (smoothing=10, optzoom=1) + encode
-  Timp ~2x mai mare. Fisierele .trf se sterg automat.
-  Ideal pt drone footage, filmare din mana, material actiune.
-
-═══════════════════════════════════════════════════════════════
-
-NORMALIZARE AUDIO (LOUDNORM EBU R128) — v23
-═══════════════════════════════════════════════════════════════
-
-  Meniu separat dupa Audio output. Standard EBU R128.
-  Target: -24 LUFS, True Peak: -2.0 dB, LRA: 7 LU.
-  2 treceri: analiza → aplicare cu linear=true (pastreaza dinamica).
-  Nu se aplica daca audio = copy. Ideal pt batch cu surse mixte.
-
-═══════════════════════════════════════════════════════════════
-
-PROFIL SALVAT (.CONF) — v23
-═══════════════════════════════════════════════════════════════
-
-  Salvare/incarcare configuratie completa in .conf.
-  Locatie Termux: /storage/emulated/0/Media/UserProfiles/
-  Locatie Windows: folderul UserProfiles\ langa script
-  Contine: encoder, container, CRF, preset, audio, filtre, loudnorm,
-  ProRes profile, Force LOG detection, Interactive Mode.
-  La urmatoarea rulare, scriptul afiseaza profilele disponibile.
-  Format .conf cross-platform KEY=VALUE — compatibil bash/bat/ps1.
-  Disponibil pe toate platformele.
-
-═══════════════════════════════════════════════════════════════
-
-REZUMAT BATCH DETALIAT + COMPARATIE I/O — v23
-═══════════════════════════════════════════════════════════════
-
-  Rezumat batch: raport per fisier cu compresie %, timp, fastest/slowest.
-  Comparatie I/O (av_check.sh): cauta perechi Input/Output, raporteaza
-  compresie reala, spatiu salvat, verificare streams video/audio.
-
-═══════════════════════════════════════════════════════════════
-
-═══════════════════════════════════════════════════════════════
-
-DRY-RUN MODE — v23.1
-═══════════════════════════════════════════════════════════════
-
-  Dupa configurare, inainte de lansare, apare meniul:
-    1) Encodeaza normal [implicit]
-    2) Dry-run (doar analiza, fara encode)
-
-  In mod dry-run, scriptul parcurge tot batch-ul si afiseaza
-  per fisier ce ar face: encoder, container, sursa, HDR tip,
-  resize, FPS, filtre, audio, loudnorm, estimare dimensiune.
-
-  NU ruleaza ffmpeg — zero encodare. Dureaza cateva secunde
-  pe tot batch-ul. Util pt verificare setari inainte de
-  batch lung (50+ fisiere, ore de encodare).
-
-  Disponibil pe toate platformele: bash, bat, ps1.
-
-═══════════════════════════════════════════════════════════════
-
-RESUME INTERRUPTED BATCH — v23.1
-═══════════════════════════════════════════════════════════════
-
-  Fiecare fisier encodat cu succes este marcat in
-  batch_progress.log (in OutputDir). La reluare, fisierele
-  deja procesate sunt sarite automat (pe langa skip >1MB
-  existent pe output).
-
-  La finalizarea cu succes a intregului batch,
-  batch_progress.log se sterge automat.
-
-  Daca batch-ul e intrerupt (Ctrl+C, crash, eroare):
-    - batch_progress.log ramane pe disc
-    - la urmatoarea rulare, fisierele OK sunt sarite
-    - doar cele neprocesat se reiau
-
-  Disponibil pe toate platformele: bash, bat, ps1.
-
-═══════════════════════════════════════════════════════════════
+  PROBLEMA: Test runner blocheaza pe prompt-uri param-mandatory
+  SOLUTIE:  Runner PS1 foloseste -NonInteractive automat.
+            Pentru bash CI: export AV_NONINTERACTIVE=1 inainte de tests/run_tests.sh.
