@@ -3,9 +3,200 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v47 | 49 bug-uri fixate | 185+ features
-  62 fisiere (18 src + 12 tools + 6 profile + 27 tests) | ~19000 linii cod | ~4000 linii documentatie
+  TOTAL: v48 | 49 bug-uri fixate | 192+ features
+  67 fisiere (19 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 28 tests) | ~20500 linii cod | ~4200 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v48 — Burn-in overlay (HUD telemetrie + subtitrari SRT/ASS)
+═══════════════════════════════════════════════════════════════
+
+  ADD av_burnin.sh + av_burnin.ps1 — script nou pentru 4 tipuri de burn-in
+        Launcher main menu opt 8 (shift Anulare la opt 9). Acopera toate
+        platformele (Termux/Linux/macOS/Windows) cu mirror complet bash↔PS1.
+        Sub-meniu principal cu 4 flow-uri + Anulare:
+          1) Telemetry HUD  (gauges + map M2, render Python+matplotlib)
+          2) Subtitrari SRT (hardcoded movies / telemetry overlay)
+          3) Subtitrari ASS (anime, styled subs cu embedded styling)
+          4) Image subs PGS/VobSub (Bluray/DVD, ext + embedded tracks)
+          5) Anulare
+        Output: OutputVideos/<name>_hud.<ext> (HUD) sau <name>_subs.<ext>
+        (SRT/ASS/Image). Sursa neatinsa.
+
+  ADD Flow SRT — hardcoded subtitles burn-in
+        Scan video + <name>.srt in OutputVideos/InputVideos. Dialog stil:
+          1) Small  (FontSize 18, white + black outline)  [implicit]
+          2) Medium (FontSize 24)
+          3) Large  (FontSize 32)
+          4) Default ffmpeg (no force_style override)
+          5) Anulare
+        Encoder dialog (libx265/libx264/libsvtav1) → ffmpeg cu
+        -vf "subtitles='file.srt':force_style='...'" — bake-in standard
+        via libass. Path escape pentru Windows drive colons.
+
+  ADD Flow ASS — styled subtitles burn-in (anime, etc.)
+        Scan video + <name>.ass. Dialog font scale:
+          1) 1.0x (embedded styling preservat, fara override)  [implicit]
+          2) 1.25x (TV mediu)
+          3) 1.5x (TV mare)
+          4) Anulare
+        ffmpeg -vf "ass='file.ass':force_style='ScaleX=N,ScaleY=N'" pe
+        opt 2/3, sau strict ass='file.ass' pe opt 1. Render libass nativ
+        cu tot styling-ul ASS (positioning, fonts, karaoke effects).
+
+  ADD Flow Image subs — Bluray PGS / DVD VobSub burn-in
+        Scan unificat extern + embedded:
+          - Extern PGS:    <name>.sup langa video sau in OutputVideos
+          - Extern VobSub: <name>.idx + <name>.sub (pereche)
+          - Embedded:      ffprobe enumerate subtitle streams cu codec
+                           hdmv_pgs_subtitle (PGS) sau dvd_subtitle (VobSub),
+                           selectie per track cu lang tag afisat
+        Per video pot fi multiple entries (una per fiecare sursa de imagine).
+        ffmpeg filter dispatcher pe kind:
+          - ext_pgs / ext_vob: -i video -i aux -filter_complex
+                               "[0:v][1:s]overlay[v]"
+          - emb_pgs / emb_vob: -i video -filter_complex
+                               "[0:v][0:s:N]overlay[v]"
+        Bitmap pre-rendered — fara optiuni de styling (font/size). Track
+        selection only. Output: <name>_subs.<ext> (acelasi naming ca SRT/ASS).
+        Audio stream copy, video re-encode prin encoder dialog comun.
+
+  ADD burnin_render.py — engine Python+matplotlib (shared bash↔PS1)
+        Genereaza PNG sequence (frame_NNNNNN.png) cu HUD render: gauges
+        text, map M2 (route static + dot animat), interpolare liniara per
+        frame intre sample-uri telemetrie. Input: norm CSV (schema 18 col).
+        CLI: --csv --preset --output-dir --fps --duration --width --height
+        --offset --brand. Functii: load_csv_points (parse CSV cu timestamp
+        ISO/exiftool/epoch), sample_at (binary search + interpolare),
+        build_route_xy (equirectangular projection pt map M2), render_frame
+        (matplotlib Agg backend, transparent PNG).
+
+  ADD 3 layout presets in src/burnin_presets/
+        - minimal.conf     timestamp + speed (corner anchors), no strip/map
+        - data-strip.conf  bottom bar 80px cu speed/alt/heading/temp
+        - full.conf        data-strip + corner map M2 (220x220) +
+                           G-force/HR gauges (auto-skip daca brandul nu
+                           produce datele)
+        Format: KEY=VALUE; campuri pentru fonts, culori, pozitii (anchor
+        tl/tr/bl/br + offset px), STRIP_FIELDS configurabil.
+
+  ADD Scan auto: video + norm CSV pair
+        Scaneaza OutputVideos/ (preferat — video deja encodate mai mici) si
+        InputVideos/, listeaza doar perechi cu <name>_norm.csv existent.
+        Brand detectat din coloana source_brand a CSV-ului (fallback
+        unknown). Selectie: index unic / lista (1,3,5) / ALL.
+
+  ADD Sync offset auto/prompt per brand
+        Branduri interne (dji/gopro/sony/garmin/quicktime) → offset 0
+        automat (telemetria e in container-ul video, sincronizata nativ).
+        Branduri external_* (gpx/fit/kml import) → prompt user pentru
+        offset in secunde (camera + GPS extern pornite separat).
+
+  ADD Encoder dialog 3 optiuni + Anulare
+        1) libx265 (HEVC) CRF 23 medium [implicit]
+        2) libx264 (H.264) CRF 20 medium
+        3) libsvtav1 (AV1) CRF 30 preset 6
+        ffmpeg overlay pipeline: filter_complex [0:v][1:v]overlay=0:0;
+        audio stream copy; -movflags +faststart pe MP4/MOV/M4V.
+
+  ADD HUD frame rate configurabil
+        Default 10 fps (suficient pentru gauges + map dot pe orice rezolutie
+        sursa). Range 1-60 fps. Higher fps = more PNGs + render time, fara
+        beneficiu vizibil cand sample rate telemetry e <30 Hz oricum.
+
+  ADD Preview mode (opt-in pe toate 4 flow-uri)
+        Dupa encoder dialog, prompt "Preview mode (5s clip la mid-point)
+        [y/N]". Genereaza un clip scurt cu burn-in aplicat, ca verificare
+        rapida inainte de full encode (evita ore irosite cand stil/track/
+        sync e gresit). Helpers shared:
+          - ask_preview / Get-PreviewMode — prompt si seteaza state
+          - preview_compute_window / Get-PreviewWindow — fereastra 5s la
+            50% din durata (sau min(5s, durata) cand video < 5s)
+        Implementare per flow:
+          - HUD: burnin_render.py cu --duration 5 + --offset shiftat la
+            t_start; ffmpeg -ss t_start -t 5 -i video + PNG seq scurta
+          - SRT/ASS/Image: ffmpeg -ss t_start -copyts -t 5 -i video
+            (-copyts pentru aliniere corecta subtitle filters cu PTS)
+        Output naming distinct: <name>_preview.<ext> (vs _hud / _subs).
+        Mode batch — daca user selecteaza ALL + preview, fiecare fisier
+        primeste propriul preview de 5s.
+
+  FIX [audit] Image subs scan se prabusea pe fisiere corupte
+        Scanarea intregului folder esua daca un fisier video era invalid
+        sau locked. Acum scan-ul continua si raporteaza doar perechile
+        valide.
+
+  FIX [audit] Image subs flow se oprea la primul ffmpeg failure
+        Crash mid-batch fara sumar. Acum continua cu urmatorul fisier
+        si afiseaza raport final OK/esuat (paritate cu HUD/SRT/ASS).
+
+  FIX [audit] Preview output reaparea ca sursa la re-rulare
+        Scan-ul excluzand _hud / _telem / _subs dar nu si _preview →
+        re-rulare producea <name>_preview_preview.<ext>. Acum exclus
+        in toate 4 scan-uri (bash + PS1).
+
+  FIX [audit] Preview pe video cu durata necunoscuta producea fisier gol
+        Cand ffprobe nu putea citi durata, preview producea output
+        0-byte marcat OK. Acum se face fall-back la full encode cu
+        mesaj de avertizare.
+
+  FIX [audit] Preview esua silent pe locale EU in PowerShell
+        Pe PS 5.1 + locale cu virgula decimala (de-DE, fr-FR, ro-RO),
+        timestamp-urile erau formatate "2,5" in loc de "2.5" →
+        ffmpeg le respinge. Acum se forteaza InvariantCulture la
+        formatare.
+
+  FIX [audit] burnin_render.py — encoding explicit la load preset
+        Acum citeste preset-urile ca UTF-8 (tolerant la BOM), evitand
+        potentiale erori pe Windows cu locale non-UTF-8.
+
+  FIX [audit] Label launcher rebrand: "Burn-in (HUD/SRT/ASS/Image)"
+        Vechiul "Burn-in HUD overlay (telemetrie)" sugera doar HUD.
+        Update in main menu bash + PS1.
+
+  ADD Tests v48 (test_v48_burnin.{sh,ps1}) — 102 + 99 asserts
+        Coverage: files exist, syntax (bash+PS1+Python), launcher
+        integration (opt 8/9 shift), main dispatcher (4 flow + Anulare),
+        flow HUD (preset menu, layout markers, PNG seq, filter_complex,
+        sync offset auto/external_*), flow SRT (style menu 5 opt,
+        force_style FontSize 18/24/32, subtitles= filter), flow ASS
+        (scale menu 4 opt, ScaleX/Y 125/150, ass= filter), flow Image
+        subs (PGS .sup / VobSub .idx+.sub / embedded codec detection
+        hdmv_pgs_subtitle + dvd_subtitle, kind dispatcher ext_pgs/vob +
+        emb_pgs/vob, overlay filter [0:v][1:s] ext vs [0:v][0:s:N] emb),
+        shared helpers (ask_encoder/pick_files/scan_for_pairs/escape path),
+        encoder options, output naming (_hud vs _subs), preset content,
+        render engine functions + CLI args.
+
+  Dependinte noi:
+    - python3 (mandatory pentru burn-in)
+    - matplotlib, numpy, pillow (instal: pip install matplotlib numpy pillow)
+    - pe Termux: pkg install python-numpy && pip install matplotlib pillow
+    - Soft-detect non-blocking pentru restul flow-urilor — burn-in cere
+      explicit aceste deps doar cand e invocat.
+
+  Note importante:
+    - Burn-in re-encodeaza videoul (lossy) pe toate 3 flow-uri — telemetry
+      embed (v47) ramane lossless. Complementare: v47 pt archive (subtitle
+      track + attachments), v48 pt share (pixeli baked-in).
+    - Flow HUD: per-clip render depinde de durata × hud_fps × rezolutie.
+      La 10 fps × 5 min × 1080p ~3000 frame-uri PNG = ~30-60s render
+      Python pe SBC modern, plus re-encode ffmpeg.
+    - Flow SRT/ASS: zero Python, doar ffmpeg cu libass. Speed = pur
+      encode speed (no overlay overhead semnificativ).
+    - PNG sequence (doar HUD) stocat in $AV_TEMP_DIR/burnin_<name>_<pid>/,
+      cleanup automat dupa overlay (sau pe failure).
+    - SRT/ASS: bake-in standard via libass (suportat de ffmpeg full build).
+      Daca ffmpeg nu are libass compiled (rare), filter va da error.
+    - HUD brand-uri: toate cele din norm CSV (DJI/GoPro/Sony/Garmin/
+      QuickTime/external_gpx/external_fit/external_kml).
+    - SRT/ASS: zero dependenta de brand — orice .srt/.ass valid functioneaza.
+    - Image subs: scan unificat ext (.sup PGS / .idx+.sub VobSub) +
+      embedded (ffprobe detecteaza codec hdmv_pgs_subtitle si dvd_subtitle).
+      Pentru multi-lang containere, fiecare track apare ca entry separat
+      cu lang tag in label (ex: "[PGS embedded s:1 ron]"). Bitmap subs
+      = pre-rendered → fara optiuni de styling, doar track selection.
 
 
 ═══════════════════════════════════════════════════════════════

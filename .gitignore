@@ -46,3 +46,7 @@ CLAUDE.md
 # v43: test results + synthetic samples (regenerable)
 tests/results/
 tests/fixtures/samples/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

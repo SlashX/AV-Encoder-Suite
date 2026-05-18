@@ -120,9 +120,10 @@ echo "║  4) Telemetrie video (DJI/GoPro/...) ║"
 echo "║  5) Import GPS extern (GPX/FIT/KML)  ║"
 echo "║  6) Trim & Concat (taiere/unire)     ║"
 echo "║  7) HDR/DV tools (transform / remux) ║"
-echo "║  8) Anulare / iesire                 ║"
+echo "║  8) Burn-in (HUD/SRT/ASS/Image subs) ║"
+echo "║  9) Anulare / iesire                 ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Introdu 1-8: " main_choice
+read -p "Introdu 1-9: " main_choice
 
 case "$main_choice" in
     2) echo "Rulez av_encoder_audio.sh..."; ./av_encoder_audio.sh; exit $? ;;
@@ -131,7 +132,8 @@ case "$main_choice" in
     5) echo "Rulez av_extractor_gps.sh..."; ./av_extractor_gps.sh; exit $? ;;
     6) echo "Rulez av_trimconcat.sh..."; ./av_trimconcat.sh; exit $? ;;
     7) echo "Rulez av_hdr_dv_tools.sh..."; ./av_hdr_dv_tools.sh; exit $? ;;
-    8) echo "Anulat."; exit 0 ;;
+    8) echo "Rulez av_burnin.sh..."; ./av_burnin.sh; exit $? ;;
+    9) echo "Anulat."; exit 0 ;;
     1) : ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

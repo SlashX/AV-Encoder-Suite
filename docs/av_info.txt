@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v47
+  Documentatie Setup & Utilizare — v48
 ═══════════════════════════════════════════════════════════════
 
 
@@ -18,18 +18,20 @@ CUPRINS
  10. HDR/DV Tools (transform / remux / inspect / hybrid)
  11. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
  12. Import GPS extern (GPX / FIT / KML)
- 13. Hardware Encode (PS1 + MediaCodec + bash backends)
- 14. Profile system + Tests
- 15. Diferente intre platforme
- 16. Comenzi rapide Termux
- 17. Troubleshooting
+ 13. Burn-in overlay — HUD telemetrie / SRT / ASS
+ 14. Hardware Encode (PS1 + MediaCodec + bash backends)
+ 15. Profile system + Tests
+ 16. Diferente intre platforme
+ 17. Comenzi rapide Termux
+ 18. Troubleshooting
 
 
 ═══════════════════════════════════════════════════════════════
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  62 fisiere totale (18 src + 12 tools + 6 profile + 26 test scripts).
+  67 fisiere totale (19 src + 12 tools + 6 profile + 3 burnin presets +
+  1 Python engine + 28 test scripts).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -64,11 +66,13 @@ CUPRINS
   OPTIONAL (per functionalitate):
     - ExifTool       — telemetrie DJI si QuickTime
     - Python3        — telemetrie GoPro/Sony/Garmin si import GPS extern
+    - matplotlib + numpy + pillow — burn-in HUD overlay (v48)
     - hdr10plus_tool — pentru HDR10+ metadata preserve (HEVC)
     - dovi_tool      — pentru Dolby Vision RPU operations (HEVC)
     - av1hdr10plus_tool / av1dovi_tool — fork sven-pke pentru AV1
     - Rust (cargo)   — pentru compilarea tool-urilor pe Termux/Linux/macOS
     - Termux:API     — wake-lock si notificari pe Android
+    - libass         — bake-in SRT/ASS (inclus in ffmpeg full builds)
 
   Dependinte per script (mapping principal):
     av_encoder_*.sh / av_encode.ps1  → ffmpeg + ffprobe
@@ -78,6 +82,8 @@ CUPRINS
     av_telemetry (GoPro/Sony/Garmin) → python3 + ffmpeg
     av_telemetry (raw/strip)         → ffmpeg
     av_extractor_gps                 → python3
+    av_burnin (HUD)                  → ffmpeg + python3 + matplotlib + numpy
+    av_burnin (SRT/ASS)              → ffmpeg + libass
     tools/*_parser.sh                → cargo (Rust)
 
 
@@ -236,7 +242,8 @@ CUPRINS
     5) Import GPS extern — GPX / FIT / KML
     6) Trim & Concat — trim / concat / pipeline / batch trim
     7) HDR/DV tools — transform RPU / remux / inspect / HDR10+ → DV
-    8) Anulare / iesire
+    8) Burn-in HUD overlay — telemetrie HUD / subtitrari SRT / ASS
+    9) Anulare / iesire
 
   FISIERE OUTPUT:
     Termux:        /storage/emulated/0/Media/OutputVideos/
@@ -1162,10 +1169,184 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-13. HARDWARE ENCODE
+13. BURN-IN OVERLAY (v48 — meniu principal opt 8)
 ═══════════════════════════════════════════════════════════════
 
-  ─── 13.1. Windows PS1 — NVENC / QSV / AMF (v35) ───
+  Script separat: src/av_burnin.sh + src/av_burnin.ps1 (mirror complet
+  bash↔PS1). Output OutputVideos/<name>_hud.<ext> (HUD) sau
+  <name>_subs.<ext> (SRT/ASS). Sursa neatinsa.
+
+  Sub-meniu principal:
+    1) Telemetry HUD  (gauges + map M2, render Python+matplotlib)
+    2) Subtitrari SRT (hardcoded movies / telemetry overlay)
+    3) Subtitrari ASS (anime, styled subs cu embedded styling)
+    4) Image subs PGS/VobSub (Bluray/DVD, ext + embedded)
+    5) Anulare
+
+  Diferenta fata de v47 (complementare):
+    v47 embed lossless (archive) = stream copy + SRT track + attachments
+    v48 burn-in (share/distribute) = re-encode cu pixeli baked-in
+
+  ─── 13.1. Flow Telemetry HUD ───
+
+  Deps: python3 + matplotlib + numpy + pillow (verificate doar la HUD).
+    Termux: pkg install python-numpy && pip install matplotlib pillow
+    Linux/macOS/Windows: pip install matplotlib numpy pillow
+
+  Scan: video + <name>_norm.csv in OutputVideos/InputVideos (genereaza
+  norm CSV cu telemetria opt 1/2/4 sau Import GPS extern).
+
+  Brand extras din coloana source_brand (rand 2 CSV).
+    Interne (dji/gopro/sony/garmin/quicktime) → sync offset 0 automat.
+    Externe (external_gpx/external_fit/external_kml) → prompt offset sec.
+
+  Layout preset (3 + Anulare):
+    1) minimal      — timestamp + speed corner overlay (no strip/map)
+    2) data-strip   — bottom bar 80px (speed/alt/heading/temp)
+    3) full         — data-strip + map M2 + G-force/HR gauges [implicit]
+    4) Anulare
+
+  HUD frame rate (default 10 fps, range 1-60). Higher fps = mai multe
+  PNGs + render time, fara beneficiu vizibil cand telemetry e <30 Hz.
+
+  Encoder pentru output (3 + Anulare):
+    1) libx265 CRF 23 medium [implicit]
+    2) libx264 CRF 20 medium
+    3) libsvtav1 CRF 30 preset 6
+    4) Anulare
+
+  Pipeline intern:
+    1. burnin_render.py genereaza PNG seq (frame_NNNNNN.png) in
+       $AV_TEMP_DIR/burnin_<name>_<pid>/ — interpolare liniara per
+       frame intre sample-uri norm CSV.
+    2. ffmpeg overlay: filter_complex [0:v][1:v]overlay=0:0:shortest=0
+       cu input #2 = PNG seq la HUD fps; audio stream copy.
+    3. Cleanup frames_dir dupa overlay (sau pe failure).
+
+  Presets format KEY=VALUE (src/burnin_presets/*.conf):
+    HUD_TIMESTAMP/SPEED/DATA_STRIP/MAP/GFORCE/HR (toggle 0/1)
+    POS_TIMESTAMP/SPEED/GFORCE/HR (anchor:dx,dy — tl/tr/bl/br)
+    STRIP_FIELDS (timestamp,speed,altitude,heading,temperature)
+    MAP_SIZE / MAP_POSITION / MAP_ROUTE_COLOR / MAP_DOT_COLOR
+    FONT_SIZE_LARGE/MEDIUM/LABEL, SHADOW_OFFSET, SPEED_UNIT (kmh/mph/mps)
+
+  ─── 13.2. Flow Subtitrari SRT ───
+
+  Zero deps Python — ffmpeg + libass suficient.
+  Scan: video + <name>.srt in OutputVideos/InputVideos.
+
+  Stil SRT (4 + Anulare):
+    1) Small (FontSize 18, white + black outline) [implicit]
+    2) Medium (FontSize 24)
+    3) Large (FontSize 32)
+    4) Default ffmpeg (no force_style override)
+    5) Anulare
+
+  ffmpeg -vf "subtitles='<path>':force_style='FontSize=N,...'" cu path
+  escape pentru Windows drive colons (C: → C\:) si backslash → forward
+  slash. Bake-in standard via libass.
+
+  ─── 13.3. Flow Subtitrari ASS ───
+
+  Zero deps Python — ffmpeg + libass suficient.
+  Scan: video + <name>.ass in OutputVideos/InputVideos.
+
+  Font scale (3 + Anulare):
+    1) 1.0x (embedded styling preservat, no override) [implicit]
+    2) 1.25x (TV mediu) — ScaleX=125,ScaleY=125
+    3) 1.5x (TV mare)  — ScaleX=150,ScaleY=150
+    4) Anulare
+
+  ffmpeg -vf "ass='<path>':force_style='ScaleX=N,ScaleY=N'" (opt 2/3)
+  sau strict ass='<path>' (opt 1). Render libass nativ cu tot
+  styling-ul ASS (positioning, fonts, karaoke effects).
+
+  ─── 13.4. Flow Image subs (Bluray PGS / DVD VobSub) ───
+
+  Zero deps Python — ffmpeg suficient. ffprobe folosit pentru scan
+  embedded tracks (skip silent daca lipseste).
+
+  Scan unificat per video:
+    - Extern PGS:    <name>.sup langa video sau in OutputVideos
+    - Extern VobSub: <name>.idx + <name>.sub (pereche) langa video sau
+                     in OutputVideos
+    - Embedded:      ffprobe enumerate streams subtitle din container,
+                     detecteaza codec hdmv_pgs_subtitle (PGS) sau
+                     dvd_subtitle (VobSub); per track entry separat
+                     cu lang tag in label
+
+  Per video pot fi multiple entries (ex: video.mkv cu 2 track-uri PGS
+  + extern .sup = 3 entries, fiecare pickable independent).
+
+  Encoder dialog (3 + Anulare):
+    1) libx265 CRF 23 medium [implicit]
+    2) libx264 CRF 20 medium
+    3) libsvtav1 CRF 30 preset 6
+    4) Anulare
+
+  ffmpeg filter dispatcher pe kind:
+    - ext_pgs / ext_vob:
+        -i video -i aux -filter_complex "[0:v][1:s]overlay[v]"
+    - emb_pgs / emb_vob:
+        -i video -filter_complex "[0:v][0:s:N]overlay[v]"
+        unde N = subtitle-relative stream index (s:0, s:1, etc.)
+
+  Bitmap subs = pre-rendered → fara optiuni de styling (font/size).
+  Track selection only (lang tag afisat in label cand exista).
+
+  Note:
+    - .idx + .sub trebuie sa fie pereche (ambele non-empty) pentru a fi
+      detectate. ffmpeg incarca .sub automat cand primeste .idx.
+    - Embedded MKV/MP4 multi-lang: fiecare track PGS/VobSub apare ca
+      entry separat. Pentru SRT-uri embedded text (codec subrip/ass)
+      foloseste extragere externa intai (mkvextract), apoi SRT/ASS flow.
+    - Output naming: <name>_subs.<ext> (acelasi ca SRT/ASS — toate
+      sunt subtitle burn-in).
+
+  ─── 13.5. Preview mode (opt-in pe toate 4 flow-uri) ───
+
+  Dupa encoder dialog, fiecare flow promtea:
+    "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]"
+
+  Cand activ:
+    - Output naming distinct: <name>_preview.<ext> (vs _hud / _subs)
+    - HUD: render PNG seq doar pentru fereastra preview (5s la mid),
+      cu --offset shiftat la t_start astfel ca frame 1 sa reprezinte
+      CSV-ul la momentul preview. ffmpeg -ss t_start -t 5 pe video +
+      PNG seq scurta, aliniate la t=0 in output.
+    - SRT/ASS/Image: ffmpeg -ss t_start -copyts -t 5 -i video [...].
+      Flag-ul -copyts pastreaza PTS-urile originale pt ca subtitle
+      filters (subtitles=, ass=, overlay pe stream sub) sa aleaga
+      corect subtitle-ul de la momentul preview.
+
+  Caz limita: video < 5s → fereastra = (0, min(5, durata)).
+
+  Utilitate: economiseste ore cand stilul/track-ul/sync offset-ul e
+  gresit. User verifica preview-ul de 30-60 sec, apoi re-ruleaza
+  flow-ul fara preview pentru full encode.
+
+  Mode batch: daca user selecteaza ALL + preview, fiecare fisier
+  primeste propriul <name>_preview.<ext> de 5s.
+
+
+  ─── 13.6. Note generale importante ───
+
+    - Burn-in re-encodeaza videoul (lossy) pe toate 4 flow-uri.
+      Pentru archive lossless foloseste v47 embed (opt 4 sub-opt 7).
+    - HUD: per-clip render depinde de durata x hud_fps x rezolutie.
+      ~10 fps × 5 min × 1080p ~3000 PNG ~30-60s render Python pe SBC.
+    - SRT/ASS: zero Python, doar ffmpeg cu libass. Speed = encode speed
+      pur (no overlay overhead semnificativ).
+    - Output naming: _hud (HUD) vs _subs (SRT/ASS) — diferentiat clar.
+    - Re-rularea pe acelasi fisier este safe: scan-ul exclude *_hud,
+      *_telem, *_subs (evita ciclare in OutputVideos).
+
+
+═══════════════════════════════════════════════════════════════
+14. HARDWARE ENCODE
+═══════════════════════════════════════════════════════════════
+
+  ─── 14.1. Windows PS1 — NVENC / QSV / AMF (v35) ───
 
   Meniu encoder optiunea 6 in av_encode.ps1.
   Detectie dubla: ffmpeg binary + GPU fizic (WMI Win32_VideoController).
@@ -1197,7 +1378,7 @@ CUPRINS
   ne-detectate de regex-ul intern).
 
 
-  ─── 13.2. MediaCodec (Termux/Android, v38/v39) ───
+  ─── 14.2. MediaCodec (Termux/Android, v38/v39) ───
 
   Meniu HW in launcher post-encoder selection (SW vs MediaCodec).
   Detectie: Termux + getprop + binary check.
@@ -1240,7 +1421,7 @@ CUPRINS
     sw_full | sw_degraded | hw_repair | hw_hlg (v39) | hw_sdr | skip
 
 
-  ─── 13.3. Bash cross-platform backends (v42 generalized) ───
+  ─── 14.3. Bash cross-platform backends (v42 generalized) ───
 
   5 backend-uri HW noi peste MediaCodec si HW PS1 Windows:
 
@@ -1255,7 +1436,7 @@ CUPRINS
   Bypass cu HW_FORCE=1.
 
 
-  ─── 13.4. UX uniform — preset table 1-7 cross-backend ───
+  ─── 14.4. UX uniform — preset table 1-7 cross-backend ───
 
     1=Ultrafast / 2=Faster / 3=Fast / 4=Quality (default) /
     5=Slow / 6=Slower / 7=Veryslow
@@ -1273,7 +1454,7 @@ CUPRINS
   Pe terminale inguste afiseaza doar coloana activa.
 
 
-  ─── 13.5. HDR dialog HW unificat ───
+  ─── 14.5. HDR dialog HW unificat ───
 
   Show-HDR-HW-dialog pentru NVENC/VAAPI/QSV/VT/AMF (paralel cu MediaCodec).
   4 tipuri sursa: DV / HDR10+ / HLG / HDR10 — fiecare cu 4-6 optiuni:
@@ -1293,7 +1474,7 @@ CUPRINS
   Bypass dialog via HW_HDR_POLICY in profil (paralel cu MEDIACODEC_HDR_POLICY).
 
 
-  ─── 13.5.1. HW DV preserve (v46) ───
+  ─── 14.5.1. HW DV preserve (v46) ───
 
   Toate 6 HW backends (NVENC/QSV/VAAPI/VT/AMF/MediaCodec) suporta acum DV
   preserve cand target codec este HEVC sau AV1. Pipeline-ul:
@@ -1311,7 +1492,7 @@ CUPRINS
   Acopera 12 combinatii: 6 backends × {HEVC target, AV1 target}.
 
 
-  ─── 13.6. Profile fields HW ───
+  ─── 14.6. Profile fields HW ───
 
   HW_BACKEND       = sw | nvenc | vaapi | qsv | videotoolbox | amf | mediacodec
   HW_PRESET_SLOT   = 1..7 (default 4 = Quality)
@@ -1323,10 +1504,10 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-14. PROFILE SYSTEM + TESTS (v43)
+15. PROFILE SYSTEM + TESTS (v43)
 ═══════════════════════════════════════════════════════════════
 
-  ─── 14.1. Profile .conf ───
+  ─── 15.1. Profile .conf ───
 
   Format KEY=VALUE cross-platform (bash: source, PS1: Get-Content).
   Locatii:
@@ -1361,7 +1542,7 @@ CUPRINS
     util ca referinta cand creezi profile noi.
 
 
-  ─── 14.2. Schema validation ───
+  ─── 15.2. Schema validation ───
 
   Schema declarativa per camp (enum / regex / int / intrange / string /
   path). Validare per linie inainte de load.
@@ -1373,7 +1554,7 @@ CUPRINS
   si face fail-fast in loc sa blocheze pe prompt — sigur pentru CI/scripting.
 
 
-  ─── 14.3. EXTENDS — Profile inheritance ───
+  ─── 15.3. EXTENDS — Profile inheritance ───
 
   EXTENDS=parent_name in profil child. Profilul child mosteneste TOATE
   campurile parintelui; cele suprascrise local au prioritate.
@@ -1387,7 +1568,7 @@ CUPRINS
   Lant >1 link → afiseaza secventa "root → leaf" inainte de source.
 
 
-  ─── 14.4. Bypass fields pentru batch / CI ───
+  ─── 15.4. Bypass fields pentru batch / CI ───
 
   HW_HDR_POLICY             — bypass dialog HDR pe backend-uri HW v42
   MEDIACODEC_HDR_POLICY     — bypass dialog HDR pe MediaCodec (v38/v39)
@@ -1397,7 +1578,7 @@ CUPRINS
   Toate sunt opt-in. Default = dialog interactiv per fisier.
 
 
-  ─── 14.5. profile_diff CLI ───
+  ─── 15.5. profile_diff CLI ───
 
   Utilitar in src/tools/profile_diff.{sh,ps1} pentru comparat doua
   profile .conf:
@@ -1413,7 +1594,7 @@ CUPRINS
   Exit codes: 0=identice / 1=diferente / 2=invalid args.
 
 
-  ─── 14.6. Tests (v43) ───
+  ─── 15.6. Tests (v43) ───
 
   Framework bash + PS1 mirror in tests/.
 
@@ -1434,7 +1615,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-15. DIFERENTE INTRE PLATFORME
+16. DIFERENTE INTRE PLATFORME
 ═══════════════════════════════════════════════════════════════
 
   CE E IDENTIC:
@@ -1464,7 +1645,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-16. COMENZI RAPIDE TERMUX
+17. COMENZI RAPIDE TERMUX
 ═══════════════════════════════════════════════════════════════
 
   NAVIGARE LA SCRIPTURI:
@@ -1505,7 +1686,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-17. TROUBLESHOOTING
+18. TROUBLESHOOTING
 ═══════════════════════════════════════════════════════════════
 
   PROBLEMA: "Permission denied" la rulare script

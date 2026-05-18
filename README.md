@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v47** — 49 bugs fixed · 185+ features · ~19 000 LoC · 62 files
+**v48** — 49 bugs fixed · 192+ features · ~20 500 LoC · 67 files
 
 ---
 
@@ -21,6 +21,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), container remux with preflight, HDR10+→DV hybrid synthesis (lossless on video)
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
+- **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 layout presets with map M2 + animated dot · linear interpolation per frame), SRT (libass with FontSize 18/24/32 styling), ASS (anime/styled subs with embedded styling + scale 1.0x/1.25x/1.5x), Image subs PGS/VobSub (Bluray/DVD, external `.sup`/`.idx+.sub` + embedded tracks via ffprobe). **Preview mode** opt-in per flow — 5s clip at mid-point for quick check before full encode
 
 ## Quick Start
 
@@ -50,7 +51,7 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **Audio encode** | AAC · Opus · FLAC · E-AC3 · LPCM |
 | **Audio passthrough** | AC3 · TrueHD · DTS · DTS-HD (auto stream copy) |
 | **Telemetry** | DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 |
-| **Workflows** | Encode · Audio-only · Trim & Concat · HDR/DV tools · Telemetry · GPS · Analysis |
+| **Workflows** | Encode · Audio-only · Trim & Concat · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
 
 ---
 
@@ -175,6 +176,17 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
    | Inspect | ffprobe + `dovi_tool info` + HDR10+ scene count |
    | HDR10+ → DV hybrid (v45) | Synthesize DV RPU from HDR10+ → inject → re-mux |
 
+8. **Burn-in overlay** (v48, re-encode with baked-in pixels):
+
+   | Flow | Source | ffmpeg pipeline |
+   |---|---|---|
+   | Telemetry HUD | `<name>_norm.csv` | `burnin_render.py` → PNG seq → `[0:v][1:v]overlay` |
+   | SRT | `<name>.srt` | `subtitles='<path>':force_style='FontSize=N,...'` (libass) |
+   | ASS | `<name>.ass` | `ass='<path>'[:force_style='ScaleX=N,ScaleY=N']` (libass) |
+   | Image subs | `<name>.sup` · `<name>.idx+.sub` · embedded PGS/VobSub | `[0:v][1:s]overlay` (ext) · `[0:v][0:s:N]overlay` (emb) |
+
+   **Preview mode** (opt-in per flow): generates 5s clip at mid-point as `<name>_preview.<ext>` — quick check before committing to full encode.
+
 ---
 
 ## Project Structure
@@ -200,6 +212,13 @@ AV-Encoder-Suite/
 │   ├── av_telemetry.ps1        # PS1 mirror standalone
 │   ├── av_extractor_gps.sh     # External GPS import GPX/FIT/KML
 │   ├── av_extractor_gps.ps1    # PS1 mirror standalone
+│   ├── av_burnin.sh            # v48 — Burn-in overlay (HUD/SRT/ASS/Image)
+│   ├── av_burnin.ps1           # v48 — PS1 mirror standalone
+│   ├── burnin_render.py        # v48 — Python+matplotlib HUD render engine
+│   ├── burnin_presets/         # v48 — HUD layout presets (.conf)
+│   │   ├── minimal.conf        # timestamp + speed corner overlay
+│   │   ├── data-strip.conf     # bottom bar gauges (speed/alt/heading/temp)
+│   │   └── full.conf           # data-strip + map M2 + G-force/HR gauges
 │   ├── profiles/
 │   │   ├── example_profile.conf       # Documented profile example (all fields)
 │   │   └── dji_action6/        # DJI Osmo Action 6 preset profiles
@@ -261,7 +280,8 @@ Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip when the binary is 
 5. Import external GPS — GPX/FIT/KML
 6. Trim & Concat — trim / concat / pipeline / batch
 7. **HDR/DV tools** — transform RPU / remux / inspect / HDR10+ → DV (v45)
-8. Exit
+8. **Burn-in overlay** (v48) — HUD telemetry / SRT / ASS / Image subs (PGS/VobSub)
+9. Exit
 
 ---
 
@@ -337,4 +357,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v47** — 49 bugs fixed · 185+ features · ~19 000 LoC · 62 files
+Current: **v48** — 49 bugs fixed · 192+ features · ~20 500 LoC · 67 files

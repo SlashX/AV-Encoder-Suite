@@ -2976,10 +2976,19 @@ if ($fileCount -eq 0) { Write-Host "Nu am gasit fisiere." -ForegroundColor Red; 
 # Daca utilizatorul alege Verifica sau Iesire, nu mai parcurge intrebarile
 # ══════════════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Telemetrie video  5-Import GPS extern  6-Trim & Concat  7-HDR/DV tools  8-Iesire" -ForegroundColor Cyan
+Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Telemetrie video  5-Import GPS extern  6-Trim & Concat  7-HDR/DV tools  8-Burn-in (HUD/SRT/ASS/Image)  9-Iesire" -ForegroundColor Cyan
 $mainChoice = Read-Host "Selecteaza"
-if ($mainChoice -eq "8") { exit }
+if ($mainChoice -eq "9") { exit }
 if ($mainChoice -eq "7") { Invoke-HdrDvTools; exit }
+if ($mainChoice -eq "8") {
+    $burninScript = Join-Path $PSScriptRoot "av_burnin.ps1"
+    if (-not (Test-Path $burninScript)) {
+        Write-Host "[EROARE] av_burnin.ps1 nu a fost gasit langa av_encode.ps1" -ForegroundColor Red
+        exit 1
+    }
+    & pwsh -NoProfile -File $burninScript
+    exit $LASTEXITCODE
+}
 
 # ── Import GPS extern (GPX/FIT/KML → CSV/SRT) ─────────────────────
 # v40: logica mutata in av_extractor_gps.ps1 (paritate cu av_extractor_gps.sh)
