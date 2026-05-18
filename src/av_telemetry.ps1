@@ -105,12 +105,42 @@ Write-Host "║  4) Totul (GPX + CSV + SRT)                  ║" -ForegroundCol
 Write-Host "║  5) Raw streams (DJI:djmd/dbgi/tmcd/cover    ║" -ForegroundColor White
 Write-Host "║      GoPro:gpmf  Sony:nmea  Garmin:fit)      ║" -ForegroundColor White
 Write-Host "║  6) Elimina metadata (remux fara re-encode)  ║" -ForegroundColor White
-Write-Host "║  7) Anulare                                  ║" -ForegroundColor White
+Write-Host "║  7) Extract + embed lossless                 ║" -ForegroundColor White
+Write-Host "║     SRT track + CSV/GPX attachments in MKV   ║" -ForegroundColor White
+Write-Host "║  8) Anulare                                  ║" -ForegroundColor White
 Write-Host "║  Nota: QuickTime are 1 punct GPS (start)     ║" -ForegroundColor White
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-$choice = Read-Host "Alege 1-7 [implicit: 1]"
+$choice = Read-Host "Alege 1-8 [implicit: 1]"
 if (-not $choice) { $choice = "1" }
-if ($choice -eq "7") { exit }
+if ($choice -eq "8") { exit }
+
+# opt 7 (embed) — submenu pentru continut embed
+$EmbedAfter = $false
+$EmbedProfile = ""
+if ($choice -eq "7") {
+    Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  EMBED LOSSLESS — selecteaza continut         ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║  1) SRT only (compatibil MKV/MP4/MOV)         ║" -ForegroundColor White
+    Write-Host "║  2) SRT + norm CSV (MKV preferred)            ║" -ForegroundColor White
+    Write-Host "║  3) SRT + norm CSV + GPX (MKV preferred)      ║" -ForegroundColor White
+    Write-Host "║     [implicit]                                ║" -ForegroundColor White
+    Write-Host "║  4) Toate (SRT + toate CSV + GPX + KML,       ║" -ForegroundColor White
+    Write-Host "║     MKV mandatory)                            ║" -ForegroundColor White
+    Write-Host "║  5) Anulare                                   ║" -ForegroundColor White
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    $embProf = Read-Host "Alege 1-5 [implicit: 3]"
+    if (-not $embProf) { $embProf = "3" }
+    switch ($embProf) {
+        "1" { $EmbedProfile = "srt";         $choice = "3" }
+        "2" { $EmbedProfile = "srt_csv";     $choice = "4" }
+        "3" { $EmbedProfile = "srt_csv_gpx"; $choice = "4" }
+        "4" { $EmbedProfile = "all";         $choice = "4" }
+        "5" { Write-Host "Anulat."; exit }
+        default { $EmbedProfile = "srt_csv_gpx"; $choice = "4" }
+    }
+    $EmbedAfter = $true
+}
 
 # Sub-dialog strip metadata (optiunea 6)
 $stripMode = ""
@@ -720,6 +750,186 @@ function Invoke-TelemStripTrack {
     }
 }
 
+# ── Embed lossless — atașeaza telemetria in container ───────────────
+# Profile ($EmbedProfile): srt | srt_csv | srt_csv_gpx | all
+# Output: $OutputDir/<name>_telem.<ext>; sursa neatinsa.
+# Genereaza KML din _norm.csv (toate brandurile)
+function New-KmlFromNormCsv {
+    param([string]$CsvPath, [string]$KmlPath, [string]$TrackName)
+    if (-not (Test-Path $CsvPath) -or (Get-Item $CsvPath).Length -eq 0) { return $false }
+    $rows = Import-Csv -LiteralPath $CsvPath
+    $coords = foreach ($r in $rows) {
+        if ($r.lat -and $r.lon) {
+            $alt = if ($r.alt_m) { $r.alt_m } else { '0' }
+            "$($r.lon),$($r.lat),$alt"
+        }
+    }
+    if (-not $coords) { return $false }
+    $safeName = [System.Net.WebUtility]::HtmlEncode($TrackName)
+    $kml = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document><name>$safeName</name>
+<Style id="track"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>
+<Placemark><name>$safeName</name><styleUrl>#track</styleUrl>
+<LineString><altitudeMode>absolute</altitudeMode><coordinates>
+$($coords -join ' ')
+</coordinates></LineString></Placemark></Document></kml>
+"@
+    Set-Content -LiteralPath $KmlPath -Value $kml -Encoding UTF8
+    return (Test-Path $KmlPath) -and (Get-Item $KmlPath).Length -gt 0
+}
+
+function Invoke-EmbedTelemetryLossless {
+    param([System.IO.FileInfo]$f, [string]$name)
+
+    $srcExt = $f.Extension.TrimStart('.').ToLowerInvariant()
+    $profile = if ($EmbedProfile) { $EmbedProfile } else { "srt_csv_gpx" }
+
+    $srtFile  = Join-Path $OutputDir "${name}.srt"
+    $csvNorm  = Join-Path $OutputDir "${name}_norm.csv"
+    $csvBasic = Join-Path $OutputDir "${name}_basic.csv"
+    $csvFull  = Join-Path $OutputDir "${name}_FULL.csv"
+    $gpxFile  = Join-Path $OutputDir "${name}.gpx"
+    $kmlFile  = Join-Path $OutputDir "${name}.kml"
+
+    # Pentru profilul `all`: genereaza KML din norm CSV daca lipseste
+    if ($profile -eq "all" -and (-not (Test-Path $kmlFile) -or (Get-Item $kmlFile).Length -eq 0)) {
+        if ((Test-Path $csvNorm) -and (Get-Item $csvNorm).Length -gt 0) {
+            [void](New-KmlFromNormCsv -CsvPath $csvNorm -KmlPath $kmlFile -TrackName $name)
+        }
+    }
+
+    # Selecteaza artefactele
+    $hasSrt = (Test-Path $srtFile) -and (Get-Item $srtFile).Length -gt 0
+    $wantCsvNorm = $false; $wantCsvBasic = $false; $wantCsvFull = $false; $wantGpx = $false; $wantKml = $false
+    switch ($profile) {
+        "srt"         { }
+        "srt_csv"     {
+            $wantCsvNorm = (Test-Path $csvNorm) -and (Get-Item $csvNorm).Length -gt 0
+        }
+        "srt_csv_gpx" {
+            $wantCsvNorm = (Test-Path $csvNorm) -and (Get-Item $csvNorm).Length -gt 0
+            $wantGpx     = (Test-Path $gpxFile) -and (Get-Item $gpxFile).Length -gt 0
+        }
+        "all" {
+            $wantCsvNorm  = (Test-Path $csvNorm)  -and (Get-Item $csvNorm).Length  -gt 0
+            $wantCsvBasic = (Test-Path $csvBasic) -and (Get-Item $csvBasic).Length -gt 0
+            $wantCsvFull  = (Test-Path $csvFull)  -and (Get-Item $csvFull).Length  -gt 0
+            $wantGpx      = (Test-Path $gpxFile)  -and (Get-Item $gpxFile).Length  -gt 0
+            $wantKml      = (Test-Path $kmlFile)  -and (Get-Item $kmlFile).Length  -gt 0
+        }
+    }
+    $totalArtifacts = @($hasSrt,$wantCsvNorm,$wantCsvBasic,$wantCsvFull,$wantGpx,$wantKml) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+    if ($totalArtifacts -eq 0) {
+        Write-Host "  [SKIP] Embed: nu exista artefacte de embed pentru profilul '$profile'" -ForegroundColor DarkGray
+        return
+    }
+
+    # Container decision (per profil)
+    $targetExt = "mkv"
+    switch ($profile) {
+        "srt" {
+            if ($srcExt -in @("mkv","mp4","mov","m4v")) { $targetExt = $srcExt } else { $targetExt = "mkv" }
+        }
+        "all" { $targetExt = "mkv" }
+        default {
+            switch -Regex ($srcExt) {
+                '^mkv$' { $targetExt = "mkv"; break }
+                '^(mp4|mov|m4v)$' {
+                    Write-Host ""
+                    Write-Host "  Sursa este .$srcExt - MP4/MOV nu suporta attachments (CSV/GPX)." -ForegroundColor Yellow
+                    Write-Host "    1) Convert la MKV - embed total [recomandat]" -ForegroundColor White
+                    Write-Host "    2) Pastreaza .$srcExt - doar SRT (mov_text); CSV/GPX raman side-files" -ForegroundColor White
+                    Write-Host "    3) Skip embed pentru acest fisier" -ForegroundColor White
+                    $embCh = Read-Host "  Alege 1-3 [implicit: 1]"
+                    if (-not $embCh) { $embCh = "1" }
+                    switch ($embCh) {
+                        "1" { $targetExt = "mkv" }
+                        "2" { $targetExt = $srcExt }
+                        "3" { Write-Host "  Embed sarit" -ForegroundColor DarkGray; return }
+                        default { $targetExt = "mkv" }
+                    }
+                    break
+                }
+                default { $targetExt = "mkv" }
+            }
+        }
+    }
+
+    $out = Join-Path $OutputDir "${name}_telem.${targetExt}"
+
+    # Build ffmpeg args
+    $ffArgs = [System.Collections.Generic.List[string]]@("-v","error","-i",$f.FullName)
+    $ffMaps = [System.Collections.Generic.List[string]]@("-map","0:v","-map","0:a?","-map","0:d?")
+    $ffMeta = [System.Collections.Generic.List[string]]@()
+    $subsCodec = "copy"
+
+    if ($hasSrt) {
+        $ffArgs.AddRange([string[]]@("-i",$srtFile))
+        $ffMaps.AddRange([string[]]@("-map","1:s"))
+        $subsCodec = if ($targetExt -eq "mkv") { "srt" } else { "mov_text" }
+        $ffMeta.AddRange([string[]]@("-metadata:s:s:0","title=Telemetry"))
+        $ffMeta.AddRange([string[]]@("-metadata:s:s:0","language=eng"))
+    }
+
+    if ($targetExt -eq "mkv") {
+        $attIdx = 0
+        if ($wantCsvNorm) {
+            $ffArgs.AddRange([string[]]@("-attach",$csvNorm))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $attIdx++
+        }
+        if ($wantCsvBasic) {
+            $ffArgs.AddRange([string[]]@("-attach",$csvBasic))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $attIdx++
+        }
+        if ($wantCsvFull) {
+            $ffArgs.AddRange([string[]]@("-attach",$csvFull))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $attIdx++
+        }
+        if ($wantGpx) {
+            $ffArgs.AddRange([string[]]@("-attach",$gpxFile))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=application/gpx+xml"))
+            $attIdx++
+        }
+        if ($wantKml) {
+            $ffArgs.AddRange([string[]]@("-attach",$kmlFile))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=application/vnd.google-earth.kml+xml"))
+            $attIdx++
+        }
+    }
+
+    $ffArgs.AddRange($ffMaps)
+    $ffArgs.AddRange([string[]]@("-c:v","copy","-c:a","copy"))
+    if ($hasSrt) { $ffArgs.AddRange([string[]]@("-c:s",$subsCodec)) }
+    $ffArgs.AddRange($ffMeta)
+    if ($targetExt -in @("mp4","mov","m4v")) {
+        $ffArgs.AddRange([string[]]@("-movflags","+faststart"))
+    }
+    $ffArgs.AddRange([string[]]@($out,"-y"))
+
+    & ffmpeg @ffArgs 2>$null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
+        $sizeStr = Format-Bytes (Get-Item $out).Length
+        $embStr = ""
+        if ($hasSrt) { $embStr += " SRT" }
+        if ($targetExt -eq "mkv") {
+            if ($wantCsvNorm)  { $embStr += " norm" }
+            if ($wantCsvBasic) { $embStr += " basic" }
+            if ($wantCsvFull)  { $embStr += " FULL" }
+            if ($wantGpx)      { $embStr += " GPX" }
+            if ($wantKml)      { $embStr += " KML" }
+        }
+        Write-Host "  [OK] Embed [$profile]: ${name}_telem.${targetExt} ($sizeStr) -${embStr}" -ForegroundColor Green
+    } else {
+        Write-Host "  [EROARE] Embed esuat" -ForegroundColor Red
+        Remove-Item $out -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Process-Sony {
     param([System.IO.FileInfo]$f, [string]$name)
     switch ($choice) {
@@ -810,6 +1020,11 @@ foreach ($f in $inputFiles) {
         "garmin"    { Process-Garmin    $f $name }
         "quicktime" { Process-QuickTime $f $name }
         "unknown"   { Write-Host "  [SKIP] Brand telemetrie nedetectat" -ForegroundColor DarkGray }
+    }
+
+    # dupa extractie, embed in container daca user a ales opt 7
+    if ($EmbedAfter -and $brand -ne "unknown") {
+        Invoke-EmbedTelemetryLossless $f $name
     }
 }
 

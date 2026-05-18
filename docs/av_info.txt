@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v46
+  Documentatie Setup & Utilizare — v47
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1063,7 +1063,7 @@ CUPRINS
   EXCLUSE prin decizie (proprietary / documentatie insuficienta):
     Insta360, Yi Action Cam / Akaso / SJCAM.
 
-  6 OPTIUNI MENIU:
+  7 OPTIUNI MENIU (+ Anulare):
     1) Standard       — GPX + CSV basic + CSV norm
     2) Full Data      — GPX + CSV FULL + CSV norm (toate metadatele)
     3) Subtitrare SRT — pentru overlay in VLC
@@ -1078,6 +1078,31 @@ CUPRINS
                           2) djmd + dbgi
                           3) djmd + dbgi + tmcd + cover
                         Restul branduri: orice optiune sterge track-ul telemetry.
+    7) Embed lossless — extract + re-mux in container nou.
+                        Sub-meniu cu 4 profile:
+                          1) SRT only       — compatibil MKV/MP4/MOV
+                                              (mov_text pe MP4/MOV, srt pe MKV)
+                                              fara prompt convert
+                          2) SRT + norm CSV — MKV preferred (atasament CSV)
+                                              MP4/MOV → prompt convert
+                          3) SRT + norm CSV + GPX — [implicit] MKV preferred
+                                              embed standard
+                          4) Toate          — SRT + basic + FULL + norm CSV
+                                              + GPX + KML; MKV mandatory
+                                              KML generat on-the-fly
+                                              (DJI: exiftool template,
+                                               restul: din norm CSV)
+                          5) Anulare
+                        Container dialog adaptiv (profile srt_csv/srt_csv_gpx
+                        pe surse MP4/MOV):
+                          1) Convert la MKV (recomandat, embed total)
+                          2) Pastreaza .mp4/.mov (doar SRT mov_text)
+                          3) Skip embed pentru fisier
+                        Output: OutputVideos/<name>_telem.<ext>
+                        Video stream copy 100% (no re-encode).
+                        Mimetypes attachment: text/csv, application/gpx+xml,
+                        application/vnd.google-earth.kml+xml.
+    8) Anulare
 
   CSV NORMALIZAT — schema 18 coloane cross-brand:
     timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
@@ -1098,10 +1123,14 @@ CUPRINS
     QuickTime  — atom com.apple.quicktime.location.ISO6709 via exiftool;
                  1 punct (start).
 
-  BURN-IN HUD: planificat (3 niveluri viitoare):
-    - Extract only (actual)
-    - Embed lossless (atasare track GPX/CSV ca data stream)
-    - Burn-in re-encode (overlay grafic + re-encode forced)
+  BURN-IN HUD: planificat in v48 (separat de embed v47):
+    - Python + matplotlib PNG sequence overlay
+    - Interpolare liniara per HUD frame (10 fps default)
+    - Map M2 (PNG static cu route + dot animat)
+    - Layout presets: minimal / data-strip / full HUD
+    - .conf style customization (font, opacity, position, culori)
+    - Sync offset: auto 0 pentru internal brands, prompt pentru external_*
+    - Toggle GPS smoothing (default off, raw GPS)
 
 
 ═══════════════════════════════════════════════════════════════

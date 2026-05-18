@@ -3,9 +3,89 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v46 | 49 bug-uri fixate | 180+ features
-  62 fisiere (18 src + 12 tools + 6 profile + 26 tests) | ~18700 linii cod | ~3950 linii documentatie
+  TOTAL: v47 | 49 bug-uri fixate | 185+ features
+  62 fisiere (18 src + 12 tools + 6 profile + 27 tests) | ~19000 linii cod | ~4000 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v47 — Telemetry embed lossless (SRT track + CSV/GPX/KML attachments)
+═══════════════════════════════════════════════════════════════
+
+  ADD Telemetry opt 7 — Extract + embed lossless
+        Reutilizeaza extractia interna si re-mux artefactele intr-un
+        container nou — SRT ca subtitle track + CSV/GPX/KML ca attachments
+        MKV. Video stream copy 100% (no re-encode).
+        Output: OutputVideos/<name>_telem.<ext>; sursa neatinsa.
+
+  ADD Submeniu Embed Lossless — 4 profile + Anulare
+        Sub-dialog dupa opt 7:
+          1) SRT only (compatibil MKV/MP4/MOV)
+          2) SRT + norm CSV (MKV preferred)
+          3) SRT + norm CSV + GPX (MKV preferred)  [implicit]
+          4) Toate (SRT + toate CSV + GPX + KML, MKV mandatory)
+          5) Anulare
+        Setat EMBED_PROFILE (srt | srt_csv | srt_csv_gpx | all) + override
+        adaptiv pe choice de extractie (srt→3, restul→4) ca pipeline-ul
+        sa genereze artefactele necesare.
+
+  ADD Profil srt — extragere si embed strict SRT
+        Foloseste extraction choice=3 (doar SRT). Respecta containerul sursa
+        — MP4/MOV → mov_text nativ, MKV → srt. Fara prompt convert-to-MKV
+        (attachment-urile nu se aplica).
+
+  ADD Profil all — embed maxim cu KML, MKV mandatory
+        Extractie choice=4 (basic + FULL CSV + norm CSV + GPX + SRT).
+        Genereaza KML pe-loc daca lipseste: DJI prin exiftool template
+        (bash), restul brandurilor prin conversie din norm CSV → KML
+        (helper _gen_kml_from_norm_csv / New-KmlFromNormCsv).
+        Forteaza targetExt=mkv (attachments necesare); no prompt.
+
+  ADD Container dialog adaptiv (MKV vs MP4/MOV) pentru srt_csv / srt_csv_gpx
+        MKV sursa → direct MKV (no dialog).
+        MP4/MOV sursa → user prompt:
+          1) Convert la MKV (recomandat, embed total)
+          2) Pastreaza MP4/MOV (doar SRT via mov_text; CSV/GPX raman side)
+          3) Skip embed pentru fisierul curent.
+
+  ADD Attachment mimetypes
+        text/csv (CSV norm/basic/FULL), application/gpx+xml (GPX),
+        application/vnd.google-earth.kml+xml (KML) la -metadata:s:t:<N>.
+
+  ADD Mirror PS1 complet — Invoke-EmbedTelemetryLossless in av_telemetry.ps1.
+        Aceeasi optiune 7 + submeniu identic + helper New-KmlFromNormCsv.
+        $EmbedAfter flag + hook in main loop.
+
+  ADD Tests v47 (test_v47_embed.{sh,ps1}) — 45 + 45 asserts pure-logic.
+        Coverage: menu structure, EMBED_AFTER + EMBED_PROFILE override
+        mechanism, submenu wiring (toate 4 profile + Anulare), choice
+        override per profile, container routing (MKV/MP4/MOV per profil),
+        attachment mimetypes (CSV/GPX/KML), codec branching (srt vs
+        mov_text), main loop hook, output naming, KML generator helper.
+
+  Note importante:
+    - SRT track e standard subtitle stream — vizibil in orice player
+      (VLC, mpv, MX Player) ca subtitle overlay live, fara software extern.
+    - MKV attachments sunt extractabile cu mkvextract / ffmpeg -dump_attachment.
+    - Profil 1 (SRT only) e singurul fara prompt MP4-vs-MKV — embed nativ
+      pe orice container fara loss (subtitle track).
+    - Profil 4 (Toate) include si KML pentru Google Earth visualization.
+      DJI: KML real cu altitudine din exiftool. Non-DJI: KML derivat din
+      norm CSV (lat/lon/alt fara timestamp).
+    - Profil 4 forteaza MKV — daca user e adamant pe MP4, foloseste profil 1.
+    - Default submeniului = profil 3 (SRT + norm CSV + GPX, MKV preferred).
+    - Sample rate-uri telemetrie raman raw in CSV/GPX (DJI 10Hz, GoPro 10-18Hz,
+      Sony/Garmin 1Hz). Burn-in HUD cu interpolare frame-perfect e planificat
+      in v48 (separat de embed).
+    - Brand-uri suportate: DJI / GoPro / Sony / Garmin / QuickTime.
+
+  FIX bash DJI norm CSV — soft Python detection (paralel cu PS1)
+        Mai vechi: pe sistem fara python3 + sursa DJI + choice ∈ {1,2,4},
+        norm CSV se generea silent fail (NEED_PYTHON gate-uia doar pe
+        GoPro/Sony/Garmin). Acum: flag `HAVE_PYTHON` + `WANT_PY_DJI_NORM`
+        emit [INFO] non-blocant cand python3 lipseste, iar `process_dji`
+        sare generarea norm CSV explicit (basic CSV + GPX + SRT raman OK).
+        Comportament identic cu PS1 (`$wantPyDjiNorm`).
 
 
 ═══════════════════════════════════════════════════════════════

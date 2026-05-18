@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v46** — 49 bugs fixed · 180+ features · ~18 700 LoC · 62 files
+**v47** — 49 bugs fixed · 185+ features · ~19 000 LoC · 62 files
 
 ---
 
@@ -154,6 +154,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 - **DJI strip** sub-modes — dbgi-only · djmd+dbgi · total
 - **Excluded by design** — Insta360, Yi/Akaso/SJCAM
 - **External GPS import** — GPX/FIT/KML → CSV/SRT/GPX/KML via `av_extractor_gps`
+- **Embed lossless** (opt 7) — extract telemetry then re-mux as SRT subtitle track + attachments (MKV); video stream copy, no re-encode. Submenu with 4 profiles: `srt` (SRT only, any container) · `srt_csv` (SRT + norm CSV, MKV) · `srt_csv_gpx` (default, SRT + norm CSV + GPX, MKV) · `all` (SRT + basic + FULL + GPX + KML, MKV mandatory). KML auto-generated for profile `all` from norm CSV (or DJI exiftool template). Mimetypes: `text/csv`, `application/gpx+xml`, `application/vnd.google-earth.kml+xml`.
 
 ---
 
@@ -336,4 +337,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v46** — 49 bugs fixed · 180+ features · ~18 700 LoC · 62 files
+Current: **v47** — 49 bugs fixed · 185+ features · ~19 000 LoC · 62 files

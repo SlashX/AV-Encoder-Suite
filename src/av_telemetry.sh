@@ -91,12 +91,42 @@ echo "║  4) Totul (GPX + CSV + SRT)                   ║"
 echo "║  5) Raw streams (DJI:djmd/dbgi/tmcd/cover     ║"
 echo "║      GoPro:gpmf  Sony:nmea  Garmin:fit)       ║"
 echo "║  6) Elimina metadata (remux fara re-encode)   ║"
-echo "║  7) Anulare                                   ║"
+echo "║  7) Extract + embed lossless                  ║"
+echo "║     SRT track + CSV/GPX attachments in MKV    ║"
+echo "║  8) Anulare                                   ║"
 echo "║  Nota: QuickTime are 1 punct GPS (start)      ║"
 echo "╚══════════════════════════════════════════════╝"
-read -p "Alege 1-7 [implicit: 1]: " choice
+read -p "Alege 1-8 [implicit: 1]: " choice
 choice="${choice:-1}"
-[ "$choice" == "7" ] && { echo "Anulat."; exit 0; }
+[ "$choice" == "8" ] && { echo "Anulat."; exit 0; }
+
+# ── opt 7 (embed) — submenu pentru continut embed ────────────────────
+EMBED_AFTER=0
+EMBED_PROFILE=""
+if [ "$choice" == "7" ]; then
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  EMBED LOSSLESS — selecteaza continut         ║"
+    echo "╠══════════════════════════════════════════════╣"
+    echo "║  1) SRT only (compatibil MKV/MP4/MOV)         ║"
+    echo "║  2) SRT + norm CSV (MKV preferred)            ║"
+    echo "║  3) SRT + norm CSV + GPX (MKV preferred)      ║"
+    echo "║     [implicit]                                ║"
+    echo "║  4) Toate (SRT + toate CSV + GPX + KML,       ║"
+    echo "║     MKV mandatory)                            ║"
+    echo "║  5) Anulare                                   ║"
+    echo "╚══════════════════════════════════════════════╝"
+    read -p "Alege 1-5 [implicit: 3]: " _emb_prof
+    case "${_emb_prof:-3}" in
+        1) EMBED_PROFILE="srt";         choice="3" ;;  # SRT only
+        2) EMBED_PROFILE="srt_csv";     choice="4" ;;  # SRT + norm CSV
+        3) EMBED_PROFILE="srt_csv_gpx"; choice="4" ;;  # default
+        4) EMBED_PROFILE="all";         choice="4" ;;  # everything (forces MKV)
+        5) echo "Anulat."; exit 0 ;;
+        *) EMBED_PROFILE="srt_csv_gpx"; choice="4" ;;
+    esac
+    EMBED_AFTER=1
+fi
 
 # ── Verificare dependente ────────────────────────────────────────────
 NEED_EXIFTOOL=0; NEED_PYTHON=0; NEED_FFMPEG=1
@@ -108,15 +138,27 @@ case "$choice" in
     5|6) : ;;  # ffmpeg only
 esac
 
+# Soft Python detection pentru DJI norm CSV (nu blocant — paralel cu PS1)
+HAVE_PYTHON=0
+command -v python3 &>/dev/null && HAVE_PYTHON=1
+WANT_PY_DJI_NORM=0
+if [ "$DJI_COUNT" -gt 0 ] && [[ "$choice" =~ ^[124]$ ]] && [ "$NEED_PYTHON" -eq 0 ]; then
+    WANT_PY_DJI_NORM=1
+fi
+
 if [ "$NEED_EXIFTOOL" -eq 1 ] && ! command -v exiftool &>/dev/null; then
     echo "EROARE: exiftool nu este instalat (necesar pentru DJI/QuickTime)."
     echo "Instaleaza cu: $(av_pkg_install_hint exiftool)"
     exit 1
 fi
-if [ "$NEED_PYTHON" -eq 1 ] && ! command -v python3 &>/dev/null; then
+if [ "$NEED_PYTHON" -eq 1 ] && [ "$HAVE_PYTHON" -eq 0 ]; then
     echo "EROARE: python3 nu este instalat (necesar pentru parser GoPro/Sony/Garmin)."
     echo "Instaleaza cu: $(av_pkg_install_hint python3)"
     exit 1
+fi
+if [ "$WANT_PY_DJI_NORM" -eq 1 ] && [ "$HAVE_PYTHON" -eq 0 ]; then
+    echo "[INFO] python3 nu este disponibil — norm.csv (CSV unificat) va fi sarit pentru DJI."
+    echo "       Recomandare: $(av_pkg_install_hint python3)"
 fi
 if ! command -v ffmpeg &>/dev/null; then
     echo "EROARE: ffmpeg nu este instalat."
@@ -508,7 +550,7 @@ process_dji() {
                 exiftool -ee3 -api LargeFileSupport=1 -csv -n -GPSLatitude -GPSLongitude -GPSAltitude -GPSSpeed -GPSTrack -GPSDateTime "$file" > "$basic_src.tmp" 2>/dev/null
                 [ -s "$basic_src.tmp" ] && basic_src="$basic_src.tmp"
             fi
-            if [ -s "$basic_src" ]; then
+            if [ -s "$basic_src" ] && [ "$HAVE_PYTHON" -eq 1 ]; then
                 python3 -c "
 import csv, sys
 NORM=['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg','gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z','temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
@@ -530,8 +572,8 @@ with open(sys.argv[1]) as fi, open(sys.argv[2],'w',newline='') as fo:
         w.writerow([out[c] for c in NORM])
 " "$basic_src" "$OUTPUT_DIR/${name}_norm.csv" 2>/dev/null
                 [ -s "$OUTPUT_DIR/${name}_norm.csv" ] && echo "  [OK] CSV Norm: ${name}_norm.csv" || rm -f "$OUTPUT_DIR/${name}_norm.csv"
-                rm -f "$OUTPUT_DIR/${name}_basic.csv.tmp"
             fi
+            rm -f "$OUTPUT_DIR/${name}_basic.csv.tmp"
             ;;
     esac
     if [ "$choice" == "5" ]; then process_dji_raw "$file" "$name"; fi
@@ -658,6 +700,193 @@ _telem_strip_track() {
     else echo "  [EROARE] Remux esuat"; rm -f "$out_clean"; fi
 }
 
+# ── Embed lossless — atașeaza telemetria in container ───────────────
+# Profile (EMBED_PROFILE): srt | srt_csv | srt_csv_gpx | all
+# Output: $OUTPUT_DIR/<name>_telem.<ext>; sursa neatinsa.
+# Genereaza KML din _norm.csv (fallback non-DJI; DJI primeste KML din exiftool)
+_gen_kml_from_norm_csv() {
+    local csv="$1" kml="$2" track_name="$3"
+    [[ ! -s "$csv" ]] && return 1
+    python3 -c "
+import csv, sys, html
+name = html.escape(sys.argv[3])
+with open(sys.argv[1], newline='') as fi:
+    r = csv.DictReader(fi)
+    coords = []
+    for row in r:
+        lat = row.get('lat','').strip(); lon = row.get('lon','').strip()
+        alt = row.get('alt_m','').strip() or '0'
+        if not lat or not lon: continue
+        coords.append(f'{lon},{lat},{alt}')
+if not coords: sys.exit(1)
+with open(sys.argv[2], 'w') as fo:
+    fo.write('<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n')
+    fo.write('<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n')
+    fo.write(f'<Document><name>{name}</name>\n')
+    fo.write('<Style id=\"track\"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>\n')
+    fo.write(f'<Placemark><name>{name}</name><styleUrl>#track</styleUrl>\n')
+    fo.write('<LineString><altitudeMode>absolute</altitudeMode><coordinates>\n')
+    fo.write(' '.join(coords))
+    fo.write('\n</coordinates></LineString></Placemark></Document></kml>\n')
+" "$csv" "$kml" "$track_name" 2>/dev/null
+    [[ -s "$kml" ]]
+}
+
+embed_telemetry_lossless() {
+    local file="$1" name="$2"
+    local src_ext="${file##*.}"; src_ext="${src_ext,,}"
+    local profile="${EMBED_PROFILE:-srt_csv_gpx}"
+
+    local srt_file="$OUTPUT_DIR/${name}.srt"
+    local csv_norm="$OUTPUT_DIR/${name}_norm.csv"
+    local csv_basic="$OUTPUT_DIR/${name}_basic.csv"
+    local csv_full="$OUTPUT_DIR/${name}_FULL.csv"
+    local gpx_file="$OUTPUT_DIR/${name}.gpx"
+    local kml_file="$OUTPUT_DIR/${name}.kml"
+
+    # Pentru profilul `all`: genereaza KML daca lipseste (DJI prin exiftool, restul prin python)
+    if [[ "$profile" == "all" && ! -s "$kml_file" ]]; then
+        if [[ -s "$file" ]] && command -v exiftool &>/dev/null && \
+           ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null | grep -qiE 'djmd|dbgi'; then
+            exiftool -p "$KML_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$kml_file" 2>/dev/null
+            [[ -s "$kml_file" ]] || rm -f "$kml_file"
+        fi
+        if [[ ! -s "$kml_file" && -s "$csv_norm" ]]; then
+            _gen_kml_from_norm_csv "$csv_norm" "$kml_file" "$name"
+        fi
+    fi
+
+    # Selecteaza artefactele in functie de profil
+    local has_srt=0 want_csv_norm=0 want_csv_basic=0 want_csv_full=0 want_gpx=0 want_kml=0
+    [[ -s "$srt_file" ]] && has_srt=1
+    case "$profile" in
+        srt)         : ;;  # doar SRT
+        srt_csv)     [[ -s "$csv_norm" ]] && want_csv_norm=1 ;;
+        srt_csv_gpx) [[ -s "$csv_norm" ]] && want_csv_norm=1; [[ -s "$gpx_file" ]] && want_gpx=1 ;;
+        all)
+            [[ -s "$csv_norm"  ]] && want_csv_norm=1
+            [[ -s "$csv_basic" ]] && want_csv_basic=1
+            [[ -s "$csv_full"  ]] && want_csv_full=1
+            [[ -s "$gpx_file"  ]] && want_gpx=1
+            [[ -s "$kml_file"  ]] && want_kml=1
+            ;;
+    esac
+    local total_artifacts=$((has_srt + want_csv_norm + want_csv_basic + want_csv_full + want_gpx + want_kml))
+    if [[ $total_artifacts -eq 0 ]]; then
+        echo "  [SKIP] Embed: nu exista artefacte de embed pentru profilul '$profile'"
+        return 1
+    fi
+
+    # Container decision (per profil)
+    local target_ext="mkv"
+    case "$profile" in
+        srt)
+            # SRT-only: respecta containerul sursa (mov_text pe MP4/MOV, srt pe MKV)
+            case "$src_ext" in
+                mkv|mp4|mov|m4v) target_ext="$src_ext" ;;
+                *) target_ext="mkv" ;;
+            esac
+            ;;
+        all)
+            # MKV mandatory pentru profilul Toate (attachments necesare)
+            target_ext="mkv"
+            ;;
+        srt_csv|srt_csv_gpx)
+            case "$src_ext" in
+                mkv) target_ext="mkv" ;;
+                mp4|mov|m4v)
+                    echo ""
+                    echo "  Sursa este .$src_ext — MP4/MOV nu suporta attachments (CSV/GPX)."
+                    echo "    1) Convert la MKV — embed total [recomandat]"
+                    echo "    2) Pastreaza .$src_ext — doar SRT (mov_text); CSV/GPX raman side-files"
+                    echo "    3) Skip embed pentru acest fisier"
+                    read -p "  Alege 1-3 [implicit: 1]: " _emb_ch
+                    case "${_emb_ch:-1}" in
+                        1) target_ext="mkv" ;;
+                        2) target_ext="$src_ext" ;;
+                        3) echo "  Embed sarit"; return 0 ;;
+                        *) target_ext="mkv" ;;
+                    esac
+                    ;;
+                *) target_ext="mkv" ;;
+            esac
+            ;;
+    esac
+
+    local out="$OUTPUT_DIR/${name}_telem.${target_ext}"
+
+    # Build ffmpeg args
+    local -a ff_args=(-v error -i "$file")
+    local -a ff_maps=(-map "0:v" -map "0:a?" -map "0:d?")
+    local -a ff_meta=()
+    local subs_codec="copy"
+
+    if [[ $has_srt -eq 1 ]]; then
+        ff_args+=(-i "$srt_file")
+        ff_maps+=(-map "1:s")
+        if [[ "$target_ext" == "mkv" ]]; then subs_codec="srt"; else subs_codec="mov_text"; fi
+        ff_meta+=("-metadata:s:s:0" "title=Telemetry" "-metadata:s:s:0" "language=eng")
+    fi
+
+    # Attachments — MKV only
+    if [[ "$target_ext" == "mkv" ]]; then
+        local att_idx=0
+        if [[ $want_csv_norm -eq 1 ]]; then
+            ff_args+=(-attach "$csv_norm")
+            ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            att_idx=$((att_idx+1))
+        fi
+        if [[ $want_csv_basic -eq 1 ]]; then
+            ff_args+=(-attach "$csv_basic")
+            ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            att_idx=$((att_idx+1))
+        fi
+        if [[ $want_csv_full -eq 1 ]]; then
+            ff_args+=(-attach "$csv_full")
+            ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            att_idx=$((att_idx+1))
+        fi
+        if [[ $want_gpx -eq 1 ]]; then
+            ff_args+=(-attach "$gpx_file")
+            ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=application/gpx+xml")
+            att_idx=$((att_idx+1))
+        fi
+        if [[ $want_kml -eq 1 ]]; then
+            ff_args+=(-attach "$kml_file")
+            ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=application/vnd.google-earth.kml+xml")
+            att_idx=$((att_idx+1))
+        fi
+    fi
+
+    ff_args+=("${ff_maps[@]}" -c:v copy -c:a copy)
+    [[ $has_srt -eq 1 ]] && ff_args+=(-c:s "$subs_codec")
+    ff_args+=("${ff_meta[@]}")
+    case "$target_ext" in
+        mp4|mov|m4v) ff_args+=(-movflags +faststart) ;;
+    esac
+    ff_args+=("$out" -y)
+
+    if ffmpeg "${ff_args[@]}" </dev/null 2>/dev/null; then
+        local size_str=""
+        size_str=$(du -h "$out" 2>/dev/null | cut -f1)
+        local emb_str=""
+        [[ $has_srt -eq 1 ]] && emb_str+=" SRT"
+        if [[ "$target_ext" == "mkv" ]]; then
+            [[ $want_csv_norm  -eq 1 ]] && emb_str+=" norm"
+            [[ $want_csv_basic -eq 1 ]] && emb_str+=" basic"
+            [[ $want_csv_full  -eq 1 ]] && emb_str+=" FULL"
+            [[ $want_gpx       -eq 1 ]] && emb_str+=" GPX"
+            [[ $want_kml       -eq 1 ]] && emb_str+=" KML"
+        fi
+        echo "  [OK] Embed [$profile]: ${name}_telem.${target_ext} ($size_str) —${emb_str}"
+        return 0
+    else
+        echo "  [EROARE] Embed esuat"
+        rm -f "$out"
+        return 1
+    fi
+}
+
 # ── Procesare Sony (NMEA) ────────────────────────────────────────────
 process_sony() {
     local file="$1"; local name="$2"
@@ -772,6 +1001,11 @@ for ((i=0; i<TOTAL; i++)); do
         quicktime) process_quicktime "$file" "$name" ;;
         unknown)   echo "  [SKIP] Brand telemetrie nedetectat" ;;
     esac
+
+    # dupa extractie, embed in container daca user a ales opt 7
+    if [ "$EMBED_AFTER" == "1" ] && [ "$brand" != "unknown" ]; then
+        embed_telemetry_lossless "$file" "$name"
+    fi
 done
 
 # ── Curatenie ────────────────────────────────────────────────────────
