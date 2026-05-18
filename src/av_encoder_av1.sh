@@ -113,7 +113,9 @@ encoder_setup_file() {
             fi
 
             if [[ -n "$mc_source_type" ]]; then
-                show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile"
+                local _mc_src_codec
+                _mc_src_codec=$(detect_source_codec "$file" 2>/dev/null); [[ -z "$_mc_src_codec" ]] && _mc_src_codec="hevc"
+                show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile" "av1" "$_mc_src_codec"
                 local mc_dlg_rc=$?
                 [ $mc_dlg_rc -eq 98 ] && return 98
                 case "$MC_HDR_MODE" in
@@ -125,6 +127,29 @@ encoder_setup_file() {
                         fi
                         # NU reseta USE_MEDIACODEC (decizie per-fisier);
                         # cad prin la path-ul SW de mai jos
+                        ;;
+                    hw_preserve)
+                        # v46: MC AV1 encode + repair + inject DV RPU post-encode
+                        local _rpu_tmp
+                        _rpu_tmp=$(av_mktemp_ext "rpu.bin")
+                        if extract_dv_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
+                            DOVI_RPU_FILE="$_rpu_tmp"
+                            TRIPLE_LAYER_MODE=1
+                            TRIPLE_LAYER_TARGET_CODEC="av1"
+                            MC_NEEDS_REPAIR=1
+                            MC_REPAIR_SRC="$file"
+                            MC_HDR_MODE="hw_repair"
+                            log "  v46 MC DV preserve: RPU extras ($_mc_src_codec) -> MC AV1 encode -> repair -> inject (av1)"
+                        else
+                            log "  v46 MC DV preserve: extract RPU esuat -> fallback hw_repair"
+                            rm -f "$_rpu_tmp"
+                            MC_HDR_MODE="hw_repair"
+                        fi
+                        if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                            dry_run_report "$file" "$output" "av1_mediacodec (DV preserve)" \
+                                "$WIDTH" "$DURATION" "$mc_source_type"; return 0
+                        fi
+                        build_mediacodec_cmd "$file" "av1"; return 0
                         ;;
                     hw_repair|hw_sdr|hw_hlg)
                         if [[ "${DRY_RUN:-0}" == "1" ]]; then

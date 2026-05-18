@@ -1,8 +1,42 @@
 # AV Encoder Suite
 
-Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell. Smart FFmpeg wrapper with full HDR/DV/HLG awareness, 6 HW backends, unified telemetry and metadata-only HDR/DV transforms.
+Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v45** — 49 bugs fixed · 178+ features · ~18 550 LoC · 62 files
+**v46** — 49 bugs fixed · 180+ features · ~18 700 LoC · 62 files
+
+---
+
+## Overview
+
+A smart FFmpeg wrapper for real-world video work — HDR/Dolby Vision detection and preservation, codec-aware tool dispatch (HEVC vs AV1), adaptive CRF per resolution and encoder, batch encoding with resume, action-cam telemetry extraction, and metadata-only DV/HDR10+ transforms. Built around an interactive menu that asks one targeted question per file (e.g. *"this source is DV Profile 5 — preserve, convert to HDR10, or stream-copy?"*) instead of hand-crafting ffmpeg flags.
+
+The same workflow runs identically across all four platforms — bash and PowerShell branches are mirrored feature-for-feature, and `.conf` profiles keep settings reproducible for batches and CI. The goal is to keep Dolby Vision RPU, HDR10+ dynamic metadata, 10-bit pixel formats and color signaling intact end-to-end — the kind of detail raw `ffmpeg` calls usually mishandle without very specific flags.
+
+## Highlights
+
+- **Dolby Vision preserve end-to-end** — HEVC↔AV1 cross-codec (P5/P7/P8.1↔P10), SW + all 6 HW backends (v46), HDR10+ co-existence when source carries both layers
+- **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
+- **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
+- **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 18-column normalized CSV + SRT overlay tracks
+- **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), container remux with preflight, HDR10+→DV hybrid synthesis (lossless on video)
+- **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
+- **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
+
+## Quick Start
+
+```bash
+# Termux / Linux / macOS
+chmod +x src/*.sh src/tools/*.sh
+cd src && ./av_launcher.sh
+```
+
+```powershell
+# Windows
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned   # once
+cd src; .\av_encode.ps1
+```
+
+Drop your files into the input folder shown on first run (Termux: `/storage/emulated/0/Media/InputVideos/`; Linux/macOS/Windows: `InputVideos/` next to the script). Pick **1) Encode** from the menu, accept the defaults — done. Output lands in the matching `OutputVideos/` folder, with a per-batch summary on screen.
 
 ---
 
@@ -60,7 +94,9 @@ DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` A
 | **AMF** | Win + Linux exp (v42.1) | ✅ | ✅ | RDNA3+ (RX 7000/8000 + 740M–890M) | ✅ | `speed/balanced/quality` |
 | **MediaCodec** | Termux/Android | ✅ | ✅ + HDR10 repair | SoC-dependent | via `hevc_metadata` bsf | `60%..150%`, SoC whitelist |
 
-Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across all backends. `show_hdr_hw_dialog` per-source-type (DV / HDR10+ / HLG / HDR10) with `sw_full` / `sw_degraded` / `hw_hdr10` / `hw_hlg` / `hw_sdr` / skip. Bypass via `HW_HDR_POLICY`.
+Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across all backends. `show_hdr_hw_dialog` per-source-type (DV / HDR10+ / HLG / HDR10) with `sw_full` / `sw_degraded` / `hw_hdr10` / `hw_hlg` / `hw_sdr` / `hw_preserve` (v46, DV preserve via HW) / skip. Bypass via `HW_HDR_POLICY`.
+
+**v46 — HW DV preserve**: all 6 HW backends now support DV preserve (HEVC target via Profile 8.1, AV1 target via Profile 10). Extracts source RPU → HW encode HDR10 base → post-encode RPU inject. MediaCodec adds SEI signaling repair between encode and inject. Available on 12 combinations (6 backends × 2 codecs).
 
 ---
 
@@ -204,21 +240,7 @@ AV-Encoder-Suite/
 
 ---
 
-## Quick Start
-
-```bash
-# Termux / Linux / macOS
-chmod +x src/*.sh src/tools/*.sh
-cd src && ./av_launcher.sh
-```
-
-```powershell
-# Windows
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned   # once
-cd src; .\av_encode.ps1
-```
-
-### Tests
+## Tests
 
 ```bash
 bash tests/fixtures/generate_samples.sh && bash tests/run_tests.sh
@@ -314,4 +336,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v45** — 49 bugs fixed · 178+ features · ~18 550 LoC · 62 files
+Current: **v46** — 49 bugs fixed · 180+ features · ~18 700 LoC · 62 files

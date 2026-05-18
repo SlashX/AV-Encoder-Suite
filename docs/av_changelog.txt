@@ -3,9 +3,55 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v45 | 49 bug-uri fixate | 178+ features
-  62 fisiere (18 src + 12 tools + 6 profile + 26 tests) | ~18550 linii cod | ~3900 linii documentatie
+  TOTAL: v46 | 49 bug-uri fixate | 180+ features
+  62 fisiere (18 src + 12 tools + 6 profile + 26 tests) | ~18700 linii cod | ~3950 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v46 — HW backend DV preserve (NVENC/QSV/VAAPI/VT/AMF/MediaCodec)
+═══════════════════════════════════════════════════════════════
+
+  ADD DV preserve via HW encoders (toate 6 backends)
+        Optiune noua in dialogul DV pentru toate HW backends: extract RPU sursa
+        (codec-aware via dovi_tool sau av1dovi_tool), HW encode produce HDR10
+        base layer, post-encode inject RPU → DV Profile 8.1 (HEVC target) sau
+        Profile 10 (AV1 target). Acopera 12 combinatii (6 backends x 2 codecs).
+        Gate: HEVC sau AV1 target + tool DV disponibil pt sursa + target.
+
+  ADD MediaCodec DV preserve cu repair SEI
+        Secventa speciala MediaCodec: HW encode → repair_hdr10_signaling (SEI
+        mastering_display + max_cll) → inject DV RPU. Postul-encode handler
+        in run_encode_loop ordoneaza automat repair inainte de inject.
+
+  ADD HW_HDR_POLICY=hw_preserve (profil bypass)
+        Nou valoare in enum HW_HDR_POLICY si MEDIACODEC_HDR_POLICY:
+        hw_preserve forteaza DV preserve via HW backend pe toate fisierele.
+        Fallback automat la hw_hdr10 (HW) sau hw_repair (MediaCodec) cand
+        tool DV indisponibil pt sursa sau target.
+
+  ADD Mirror PS1 complet pentru HW DV preserve
+        Branch nou in av_encode.ps1 useHWEnc — detecteaza DV via ffprobe,
+        afiseaza dialog cu 4 optiuni (HDR10/preserve/SDR/skip), aplica
+        HW_HDR_POLICY bypass, extrage RPU si seteaza tripleLayerMode pentru
+        post-encode inject (handler existent la ~line 5839).
+
+  ADD Tests v46 (test_v46_features.sh / .ps1) — 20 + 20 asserts pure-logic.
+
+  FIX Persistare HW_HDR_POLICY + MEDIACODEC_HDR_POLICY in save flow PS1
+        Erau acceptate de schema dar nu se persistau cand user salva profil.
+        Acum sunt scrise alaturi de DOVI_PRESERVE_POLICY si HW_FORCE.
+
+  FIX Defensive reset HW_HDR_MODE + MC_REPAIR_SRC intre iteratii batch
+        Adaugate in run_encode_loop pre-iteratie cleanup — previne leak intre
+        fisiere consecutive cand hw_preserve a fost setat in iteratia anterioara.
+
+  Note importante:
+    - DV preserve acum disponibil pe TOATE pipeline-urile: SW (v45) + 5 HW
+      backends + MediaCodec. Pierderi: SEI metadata pe MediaCodec necesita
+      repair (deja in flow), restul backends pastreaza HDR10 base nativ.
+    - Triple-layer co-existence (DV RPU + HDR10 + HDR10+) functioneaza si pe
+      HW path daca sursa are amandoua si tool-urile sunt disponibile.
 
 
 ═══════════════════════════════════════════════════════════════

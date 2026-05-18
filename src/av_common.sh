@@ -1708,8 +1708,16 @@ handle_hlg_dialog() {
 # Return: 0 = proceed cu MC_HDR_MODE setat | 98 = skip
 # ══════════════════════════════════════════════════════════════════════
 show_hdr_mediacodec_dialog() {
-    local source_type="$1" dv_profile="${2:-}"
+    local source_type="$1" dv_profile="${2:-}" enc_codec="${3:-}" src_codec="${4:-}"
     MC_HDR_MODE=""
+
+    # v46: gate hw_preserve (DV preserve via MediaCodec - HEVC/AV1 only + tools)
+    local _can_hw_preserve=0
+    if [[ "$source_type" == "dv" ]] && [[ "$enc_codec" == "hevc" || "$enc_codec" == "av1" ]]; then
+        if _check_dovi_tool_for "${src_codec:-hevc}" && _check_dovi_tool_for "$enc_codec"; then
+            _can_hw_preserve=1
+        fi
+    fi
 
     # Profile bypass
     if [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]]; then
@@ -1718,6 +1726,16 @@ show_hdr_mediacodec_dialog() {
                 MC_HDR_MODE="$MEDIACODEC_HDR_POLICY"
                 log "  MediaCodec HDR policy din profil: $MC_HDR_MODE"
                 return 0 ;;
+            hw_preserve)
+                if [ $_can_hw_preserve -eq 1 ]; then
+                    MC_HDR_MODE="hw_preserve"
+                    log "  MediaCodec HDR policy: hw_preserve (DV preserve via MC)"
+                    return 0
+                else
+                    MC_HDR_MODE="hw_repair"
+                    log "  MediaCodec HDR policy=hw_preserve dar tool DV indisponibil — fallback hw_repair"
+                    return 0
+                fi ;;
             skip)
                 log "  MediaCodec HDR policy din profil: skip"
                 return 98 ;;
@@ -1729,22 +1747,40 @@ show_hdr_mediacodec_dialog() {
     case "$source_type" in
         dv)
             echo "  ║  ⚠ Sursa este Dolby Vision (profil ${dv_profile:-?})"
-            echo "  ║  MediaCodec nu poate produce DV. Optiuni:"
+            echo "  ║  MediaCodec nu poate produce DV nativ. Optiuni:"
             echo "  ╠══════════════════════════════════════════════════════╣"
             echo "  ║  1) SW libx265 — pastreaza DV complet (recomandat)"
             echo "  ║  2) SW libx265 — strip DV, pastreaza HDR10 BL"
-            echo "  ║  3) MediaCodec — strip DV → HDR10 10-bit + repair"
-            echo "  ║  4) MediaCodec — strip DV → SDR tonemap 8-bit (proxy)"
-            echo "  ║  5) Skip fisier"
-            echo "  ╚══════════════════════════════════════════════════════╝"
-            read -p "  Alege 1-5 [implicit: 1]: " _mc_ch
-            case "${_mc_ch:-1}" in
-                2) MC_HDR_MODE="sw_degraded"; log "  Ales: SW libx265 strip DV → HDR10 BL" ;;
-                3) MC_HDR_MODE="hw_repair";   log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
-                4) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
-                5) log "  Sarit de utilizator"; return 98 ;;
-                *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu DV complet" ;;
-            esac
+            if [ $_can_hw_preserve -eq 1 ]; then
+                echo "  ║  3) MediaCodec — DV preserve (HDR10 base + inject RPU) [v46]"
+                echo "  ║     extrage RPU sursa ($src_codec) -> MC encode -> repair SEI -> inject"
+                echo "  ║  4) MediaCodec — strip DV → HDR10 10-bit + repair"
+                echo "  ║  5) MediaCodec — strip DV → SDR tonemap 8-bit (proxy)"
+                echo "  ║  6) Skip fisier"
+                echo "  ╚══════════════════════════════════════════════════════╝"
+                read -p "  Alege 1-6 [implicit: 1]: " _mc_ch
+                case "${_mc_ch:-1}" in
+                    2) MC_HDR_MODE="sw_degraded"; log "  Ales: SW libx265 strip DV → HDR10 BL" ;;
+                    3) MC_HDR_MODE="hw_preserve"; log "  Ales: MediaCodec DV preserve via post-encode inject" ;;
+                    4) MC_HDR_MODE="hw_repair";   log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
+                    5) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
+                    6) log "  Sarit de utilizator"; return 98 ;;
+                    *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu DV complet" ;;
+                esac
+            else
+                echo "  ║  3) MediaCodec — strip DV → HDR10 10-bit + repair"
+                echo "  ║  4) MediaCodec — strip DV → SDR tonemap 8-bit (proxy)"
+                echo "  ║  5) Skip fisier"
+                echo "  ╚══════════════════════════════════════════════════════╝"
+                read -p "  Alege 1-5 [implicit: 1]: " _mc_ch
+                case "${_mc_ch:-1}" in
+                    2) MC_HDR_MODE="sw_degraded"; log "  Ales: SW libx265 strip DV → HDR10 BL" ;;
+                    3) MC_HDR_MODE="hw_repair";   log "  Ales: MediaCodec HDR10 10-bit + signaling repair" ;;
+                    4) MC_HDR_MODE="hw_sdr";      log "  Ales: MediaCodec SDR tonemap 8-bit (proxy)" ;;
+                    5) log "  Sarit de utilizator"; return 98 ;;
+                    *) MC_HDR_MODE="sw_full";     log "  Ales: SW libx265 cu DV complet" ;;
+                esac
+            fi
             ;;
         hdr10plus)
             echo "  ║  ⚠ Sursa este HDR10+ (cu dynamic metadata)"
@@ -3383,13 +3419,23 @@ build_amf_cmd() {
 # ══════════════════════════════════════════════════════════════════════
 # v42 Chunk 5: HDR generalizat peste backend-uri HW
 # Generalizare a show_hdr_mediacodec_dialog pentru NVENC/VAAPI/QSV/VT/AMF.
-# Sets HW_HDR_MODE: sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr
+# Sets HW_HDR_MODE: sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr | hw_preserve (v46)
 # Returns: 0 mode set | 98 user skip
 # Profile bypass via HW_HDR_POLICY env (sau MEDIACODEC_HDR_POLICY pentru MC).
+# v46: hw_preserve apare DOAR pentru DV src_type cand enc_codec in (hevc|av1)
+#      si tool-urile DV sunt disponibile pentru source codec + target codec.
 # ══════════════════════════════════════════════════════════════════════
 show_hdr_hw_dialog() {
-    local backend="$1" src_type="$2" dv_p="${3:-}"
+    local backend="$1" src_type="$2" dv_p="${3:-}" enc_codec="${4:-}" src_codec="${5:-}"
     HW_HDR_MODE=""
+
+    # v46: gate pentru hw_preserve (DV preserve via HW backend)
+    local _can_hw_preserve=0
+    if [[ "$src_type" == "dv" ]] && [[ "$enc_codec" == "hevc" || "$enc_codec" == "av1" ]]; then
+        if _check_dovi_tool_for "${src_codec:-hevc}" && _check_dovi_tool_for "$enc_codec"; then
+            _can_hw_preserve=1
+        fi
+    fi
 
     local policy="${HW_HDR_POLICY:-}"
     [[ "$backend" == "mediacodec" ]] && [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]] && policy="$MEDIACODEC_HDR_POLICY"
@@ -3400,6 +3446,16 @@ show_hdr_hw_dialog() {
                 [[ "$policy" == "hw_repair" ]] && HW_HDR_MODE="hw_hdr10"
                 log "  HW HDR policy din profil: $HW_HDR_MODE"
                 return 0 ;;
+            hw_preserve)
+                if [ $_can_hw_preserve -eq 1 ]; then
+                    HW_HDR_MODE="hw_preserve"
+                    log "  HW HDR policy: hw_preserve (DV preserve via $backend)"
+                    return 0
+                else
+                    HW_HDR_MODE="hw_hdr10"
+                    log "  HW HDR policy=hw_preserve dar tool DV indisponibil — fallback hw_hdr10"
+                    return 0
+                fi ;;
             skip)
                 log "  HW HDR policy din profil: skip"; return 98 ;;
         esac
@@ -3411,22 +3467,41 @@ show_hdr_hw_dialog() {
     case "$src_type" in
         dv)
             echo "  |  ! Sursa este Dolby Vision (profil ${dv_p:-?})"
-            echo "  |  $bl nu poate produce DV nativ. Optiuni:"
+            echo "  |  $bl nu poate produce DV nativ direct. Optiuni:"
             echo "  +------------------------------------------------------+"
-            echo "  |  1) SW - pastreaza DV complet (recomandat)"
+            echo "  |  1) SW - pastreaza DV complet (recomandat baseline)"
             echo "  |  2) SW - strip DV, pastreaza HDR10 BL"
-            echo "  |  3) $bl - strip DV -> HDR10 10-bit"
-            echo "  |  4) $bl - strip DV -> SDR tonemap 8-bit"
-            echo "  |  5) Skip fisier"
-            echo "  +======================================================+"
-            read -p "  Alege 1-5 [implicit: 1]: " _ch
-            case "${_ch:-1}" in
-                2) HW_HDR_MODE="sw_degraded" ;;
-                3) HW_HDR_MODE="hw_hdr10"    ;;
-                4) HW_HDR_MODE="hw_sdr"      ;;
-                5) return 98 ;;
-                *) HW_HDR_MODE="sw_full"     ;;
-            esac ;;
+            if [ $_can_hw_preserve -eq 1 ]; then
+                echo "  |  3) $bl - DV preserve (HDR10 base + inject RPU) [v46]"
+                echo "  |     extrage RPU sursa ($src_codec) -> HW encode -> inject"
+                echo "  |  4) $bl - strip DV -> HDR10 10-bit"
+                echo "  |  5) $bl - strip DV -> SDR tonemap 8-bit"
+                echo "  |  6) Skip fisier"
+                echo "  +======================================================+"
+                read -p "  Alege 1-6 [implicit: 1]: " _ch
+                case "${_ch:-1}" in
+                    2) HW_HDR_MODE="sw_degraded" ;;
+                    3) HW_HDR_MODE="hw_preserve" ;;
+                    4) HW_HDR_MODE="hw_hdr10"    ;;
+                    5) HW_HDR_MODE="hw_sdr"      ;;
+                    6) return 98 ;;
+                    *) HW_HDR_MODE="sw_full"     ;;
+                esac
+            else
+                echo "  |  3) $bl - strip DV -> HDR10 10-bit"
+                echo "  |  4) $bl - strip DV -> SDR tonemap 8-bit"
+                echo "  |  5) Skip fisier"
+                echo "  +======================================================+"
+                read -p "  Alege 1-5 [implicit: 1]: " _ch
+                case "${_ch:-1}" in
+                    2) HW_HDR_MODE="sw_degraded" ;;
+                    3) HW_HDR_MODE="hw_hdr10"    ;;
+                    4) HW_HDR_MODE="hw_sdr"      ;;
+                    5) return 98 ;;
+                    *) HW_HDR_MODE="sw_full"     ;;
+                esac
+            fi
+            ;;
         hdr10plus)
             echo "  |  ! Sursa este HDR10+ (cu dynamic metadata)"
             echo "  |  $bl nu transmite dynamic metadata. Optiuni:"
@@ -3521,7 +3596,12 @@ hw_dispatch_sdr() {
         elif [[ "${HDR_TYPE:-}" == *"smpte2084"* ]]; then src_type="hdr10"
         fi
 
-        show_hdr_hw_dialog "$HW_BACKEND" "$src_type" "$dv_p"
+        # v46: detecteaza source codec pentru gate hw_preserve (DV preserve via HW)
+        local src_codec=""
+        src_codec=$(detect_source_codec "$file" 2>/dev/null)
+        [[ -z "$src_codec" ]] && src_codec="hevc"
+
+        show_hdr_hw_dialog "$HW_BACKEND" "$src_type" "$dv_p" "$enc_codec" "$src_codec"
         local dlg_rc=$?
         [ $dlg_rc -eq 98 ] && return 98
 
@@ -3534,6 +3614,32 @@ hw_dispatch_sdr() {
                 HDR_PLUS=""
                 if [[ -n "${DOVI:-}" ]]; then DOVI=""; HDR_TYPE="smpte2084"; fi
                 return 1
+                ;;
+            hw_preserve)
+                # v46: HW backend produce HDR10 base layer; post-encode injecteaza RPU
+                local rpu_tmp
+                rpu_tmp=$(av_mktemp_ext "rpu.bin")
+                if extract_dv_rpu "$file" "$rpu_tmp" "$src_codec"; then
+                    DOVI_RPU_FILE="$rpu_tmp"
+                    TRIPLE_LAYER_MODE=1
+                    TRIPLE_LAYER_TARGET_CODEC="$enc_codec"
+                    log "  v46 HW DV preserve: RPU extras ($src_codec) -> inject post-encode ($enc_codec via $HW_BACKEND)"
+                    # Build HW cmd ca HDR10 base layer
+                    HW_HDR_MODE="hw_hdr10"
+                    # MediaCodec necesita SEI repair inainte de inject
+                    [[ "$HW_BACKEND" == "mediacodec" ]] && MC_NEEDS_REPAIR=1 && MC_REPAIR_SRC="$file"
+                else
+                    log "  v46 HW DV preserve: extract RPU esuat -> fallback HDR10"
+                    rm -f "$rpu_tmp"
+                    HW_HDR_MODE="hw_hdr10"
+                fi
+                if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                    dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} (DV preserve)" \
+                        "$WIDTH" "$DURATION" "$src_type"
+                    return 0
+                fi
+                hw_build_cmd "$file" "$enc_codec"
+                return 0
                 ;;
             hw_hdr10|hw_hlg|hw_sdr)
                 if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -3924,12 +4030,15 @@ run_encode_loop() {
         # v38: reset MediaCodec per-file flags pentru a evita leak intre iteratii
         MC_NEEDS_REPAIR=0
         MC_HDR_MODE=""
+        MC_REPAIR_SRC=""
         # v45: defensive reset DV/HDR10+ state — daca encoder_setup_file a
         # esuat / setup_rc=98 in iteratia anterioara fara cleanup, evitam leak
+        # v46: include si HW_HDR_MODE pentru hw_preserve cleanup
         [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"
         HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+        HW_HDR_MODE=""
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
         CRF=$(get_adaptive_crf "${ENCODER_TYPE:-x265}" "$WIDTH")
@@ -5361,8 +5470,8 @@ profile_schema_get() {
         HW_ENC_CODEC)         echo "enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf" ;;
         HW_BACKEND)           echo "enum:,sw,nvenc,vaapi,qsv,videotoolbox,amf,mediacodec" ;;
         HW_PRESET_SLOT)       echo "enum:,1,2,3,4,5,6,7" ;;
-        HW_HDR_POLICY)        echo "enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip" ;;
-        MEDIACODEC_HDR_POLICY) echo "enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip" ;;
+        HW_HDR_POLICY)        echo "enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,hw_preserve,skip" ;;
+        MEDIACODEC_HDR_POLICY) echo "enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,hw_preserve,skip" ;;
         DOVI_PRESERVE_POLICY) echo "enum:,auto,preserve,convert,copy,skip" ;;
         HW_FORCE)             echo "enum:0,1" ;;
         AUDIO_NORMALIZE)      echo "enum:0,1" ;;

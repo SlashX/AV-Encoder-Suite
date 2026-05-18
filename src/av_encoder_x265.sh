@@ -81,7 +81,9 @@ encoder_setup_file() {
         fi
 
         if [[ -n "$mc_source_type" ]]; then
-            show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile"
+            local _mc_src_codec
+            _mc_src_codec=$(detect_source_codec "$file" 2>/dev/null); [[ -z "$_mc_src_codec" ]] && _mc_src_codec="hevc"
+            show_hdr_mediacodec_dialog "$mc_source_type" "$mc_dv_profile" "hevc" "$_mc_src_codec"
             local mc_dlg_rc=$?
             [ $mc_dlg_rc -eq 98 ] && return 98
             case "$MC_HDR_MODE" in
@@ -98,6 +100,31 @@ encoder_setup_file() {
                         fi
                     fi
                     # Continua spre path-ul SW standard de mai jos
+                    ;;
+                hw_preserve)
+                    # v46: MC encode HDR10 base + repair SEI + inject DV RPU post-encode
+                    local _rpu_tmp
+                    _rpu_tmp=$(av_mktemp_ext "rpu.bin")
+                    if extract_dv_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
+                        DOVI_RPU_FILE="$_rpu_tmp"
+                        TRIPLE_LAYER_MODE=1
+                        TRIPLE_LAYER_TARGET_CODEC="hevc"
+                        MC_NEEDS_REPAIR=1
+                        MC_REPAIR_SRC="$file"
+                        MC_HDR_MODE="hw_repair"
+                        log "  v46 MC DV preserve: RPU extras ($_mc_src_codec) -> MC encode -> repair -> inject (hevc)"
+                    else
+                        log "  v46 MC DV preserve: extract RPU esuat -> fallback hw_repair"
+                        rm -f "$_rpu_tmp"
+                        MC_HDR_MODE="hw_repair"
+                    fi
+                    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                        dry_run_report "$file" "$output" "hevc_mediacodec (DV preserve)" \
+                            "$WIDTH" "$DURATION" "$mc_source_type"
+                        return 0
+                    fi
+                    build_mediacodec_cmd "$file" "hevc"
+                    return 0
                     ;;
                 hw_repair|hw_sdr|hw_hlg)
                     # Build MediaCodec FFMPEG_CMD si return

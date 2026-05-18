@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v45
+  Documentatie Setup & Utilizare — v46
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1247,23 +1247,47 @@ CUPRINS
   ─── 13.5. HDR dialog HW unificat ───
 
   Show-HDR-HW-dialog pentru NVENC/VAAPI/QSV/VT/AMF (paralel cu MediaCodec).
-  4 tipuri sursa: DV / HDR10+ / HLG / HDR10 — fiecare cu 4-5 optiuni:
+  4 tipuri sursa: DV / HDR10+ / HLG / HDR10 — fiecare cu 4-6 optiuni:
 
     sw_full       — preserve all (recomandat pt DV/HDR10+)
     sw_degraded   — strip enhancement
     hw_hdr10      — 10-bit + signaling PQ
     hw_hlg        — 10-bit + transfer arib-std-b67 (v39)
     hw_sdr        — tonemap 8-bit
+    hw_preserve   — v46: DV preserve via HW (extract RPU → HW HDR10 base
+                          → post-encode inject RPU). Disponibil doar pentru
+                          target HEVC/AV1 + tool DV (dovi_tool / av1dovi_tool)
+                          pt sursa SI target. MediaCodec adauga repair SEI
+                          intre encode si inject.
     skip
 
   Bypass dialog via HW_HDR_POLICY in profil (paralel cu MEDIACODEC_HDR_POLICY).
+
+
+  ─── 13.5.1. HW DV preserve (v46) ───
+
+  Toate 6 HW backends (NVENC/QSV/VAAPI/VT/AMF/MediaCodec) suporta acum DV
+  preserve cand target codec este HEVC sau AV1. Pipeline-ul:
+
+    1. extract_dv_rpu(sursa) — codec-aware (dovi_tool HEVC, av1dovi_tool AV1)
+    2. HW encode produce HDR10 base layer (10-bit p010le)
+    3. (MediaCodec only) repair_hdr10_signaling — SEI mastering_display + max_cll
+    4. inject_dv_rpu(output, RPU) — post-encode handler in run_encode_loop
+
+  Gate (HEVC sau AV1 target + tool DV pt sursa + tool DV pt target):
+  cand gate=0 dialogul afiseaza meniu redus fara opt hw_preserve (renumerotat
+  dinamic ca sa nu skip numere). Fallback automat la hw_hdr10 cand policy=
+  hw_preserve dar tool indisponibil.
+
+  Acopera 12 combinatii: 6 backends × {HEVC target, AV1 target}.
 
 
   ─── 13.6. Profile fields HW ───
 
   HW_BACKEND       = sw | nvenc | vaapi | qsv | videotoolbox | amf | mediacodec
   HW_PRESET_SLOT   = 1..7 (default 4 = Quality)
-  HW_HDR_POLICY    = sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr | skip
+  HW_HDR_POLICY    = sw_full | sw_degraded | hw_hdr10 | hw_hlg | hw_sdr |
+                     hw_preserve (v46) | skip
   HW_FORCE         = 1 (bypass detection — pt GPU/SoC ne-detectate)
 
   Back-compat: USE_MEDIACODEC=1 setat automat cand HW_BACKEND=mediacodec.

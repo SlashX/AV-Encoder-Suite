@@ -3434,8 +3434,8 @@ function Get-ProfileSchema {
         'HW_ENC_CODEC'         { 'enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf'; return }
         'HW_BACKEND'           { 'enum:,sw,nvenc,vaapi,qsv,videotoolbox,amf,mediacodec'; return }
         'HW_PRESET_SLOT'       { 'enum:,1,2,3,4,5,6,7'; return }
-        'HW_HDR_POLICY'        { 'enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,skip'; return }
-        'MEDIACODEC_HDR_POLICY'{ 'enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,skip'; return }
+        'HW_HDR_POLICY'        { 'enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,hw_preserve,skip'; return }
+        'MEDIACODEC_HDR_POLICY'{ 'enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,hw_preserve,skip'; return }
         'DOVI_PRESERVE_POLICY' { 'enum:,auto,preserve,convert,copy,skip'; return }
         'HW_FORCE'             { 'enum:0,1'; return }
         'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
@@ -4507,6 +4507,8 @@ if ($saveProf -ieq "d") {
             "LUT_PATH=$lutPathSave"
             "INTERACTIVE_MODE=$(if ($interactiveMode) { '1' } else { '0' })"
             "DOVI_PRESERVE_POLICY=$(if ($env:DOVI_PRESERVE_POLICY) { $env:DOVI_PRESERVE_POLICY } else { '' })"
+            "HW_HDR_POLICY=$(if ($env:HW_HDR_POLICY) { $env:HW_HDR_POLICY } else { '' })"
+            "MEDIACODEC_HDR_POLICY=$(if ($env:MEDIACODEC_HDR_POLICY) { $env:MEDIACODEC_HDR_POLICY } else { '' })"
         ) | Out-File $profFile -Encoding UTF8
         Write-Host "  Profil salvat: $profFile" -ForegroundColor Green
         # v43: post-save validation feedback
@@ -5408,8 +5410,88 @@ foreach ($f in $inputFiles) {
             $hwPixFmt = "p010le"
         }
 
-        # v39: HLG dialog pentru HW encode (signaling via color_trc, fara SEI repair)
+        # v46: DV source detection + DV preserve via HW (HEVC/AV1 target only)
         $hwColorFlags = @()
+        $hwDoVi = & ffprobe -v error -show_entries stream=codec_tag_string `
+            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
+            Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        if ($hwDoVi) {
+            $hwTargetCodec = if ($hwEncCodec -match "^hevc_") { "hevc" } elseif ($hwEncCodec -match "^av1_") { "av1" } else { "" }
+            $hwSrcCodec = Get-SourceCodec $f.FullName
+            $hwCanDvPreserve = ($hwTargetCodec -in @("hevc","av1")) -and (Test-DoviToolFor -Codec $hwSrcCodec) -and (Test-DoviToolFor -Codec $hwTargetCodec)
+            $dvP = Get-DVProfile $f.FullName
+            Write-Host ""
+            Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
+            Write-Host "  ║  DOLBY VISION detectat (profil $dvP)" -ForegroundColor Magenta
+            Write-Host "  ║  HW $hwEncCodec — optiuni:" -ForegroundColor Magenta
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
+            Write-Host "  ║  1) HW — strip DV → HDR10 (pierde RPU)       ║" -ForegroundColor White
+            $maxHwDv = 2
+            if ($hwCanDvPreserve) {
+                Write-Host "  ║  2) HW — DV preserve (HDR10 base + inject)   ║" -ForegroundColor White
+                Write-Host "  ║     extrage RPU ($hwSrcCodec) → HW → inject  ║" -ForegroundColor DarkGray
+                Write-Host "  ║  3) HW — strip DV → SDR tonemap 8-bit        ║" -ForegroundColor White
+                Write-Host "  ║  4) Sari acest fisier                        ║" -ForegroundColor White
+                $maxHwDv = 4
+            } else {
+                Write-Host "  ║  2) HW — strip DV → SDR tonemap 8-bit        ║" -ForegroundColor White
+                Write-Host "  ║  3) Sari acest fisier                        ║" -ForegroundColor White
+                $maxHwDv = 3
+            }
+            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
+            # Policy bypass: HW_HDR_POLICY ({sw_full,sw_degraded,hw_hdr10,hw_sdr,hw_preserve,skip})
+            $hwPolicy = if ($env:HW_HDR_POLICY) { $env:HW_HDR_POLICY } else { "" }
+            $hwDvc = ""
+            if ($hwPolicy) {
+                switch ($hwPolicy) {
+                    "hw_preserve" {
+                        if ($hwCanDvPreserve) { $hwDvc = "2"; Write-Host "  HW HDR policy: hw_preserve" -ForegroundColor Cyan }
+                        else { $hwDvc = "1"; Write-Host "  HW policy=hw_preserve dar tool indisponibil — fallback hw_hdr10" -ForegroundColor Yellow }
+                    }
+                    "hw_hdr10"    { $hwDvc = "1"; Write-Host "  HW HDR policy: hw_hdr10" -ForegroundColor Cyan }
+                    "hw_sdr"      { $hwDvc = if ($hwCanDvPreserve) { "3" } else { "2" }; Write-Host "  HW HDR policy: hw_sdr" -ForegroundColor Cyan }
+                    "skip"        { $hwDvc = if ($hwCanDvPreserve) { "4" } else { "3" }; Write-Host "  HW HDR policy: skip" -ForegroundColor Cyan }
+                    default       { $hwDvc = "1" }
+                }
+            } else {
+                $hwDvc = Read-Host "  Alege 1-$maxHwDv [implicit: 1]"
+                if (-not $hwDvc) { $hwDvc = "1" }
+            }
+            $isSkip = ($hwCanDvPreserve -and $hwDvc -eq "4") -or ((-not $hwCanDvPreserve) -and $hwDvc -eq "3")
+            if ($isSkip) { $totalSkipped++; continue }
+
+            if ($hwCanDvPreserve -and $hwDvc -eq "2") {
+                # v46: extract RPU + setup triple-layer; HW produce HDR10 base layer
+                $srcRpu = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+                Write-Host "  v46 HW DV preserve: Extrag RPU sursa ($hwSrcCodec)..." -ForegroundColor Cyan
+                if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $hwSrcCodec) {
+                    $doviRpuFile = $srcRpu
+                    $tripleLayerMode = $true
+                    $tripleLayerTargetCodec = $hwTargetCodec
+                    Write-Host "  v46 HW DV preserve: RPU extras — HW encode + inject post-encode ($hwTargetCodec)" -ForegroundColor Green
+                } else {
+                    Write-Host "  v46 HW DV preserve: Extract RPU esuat — fallback HDR10" -ForegroundColor Yellow
+                    Remove-Item $srcRpu -Force -ErrorAction SilentlyContinue
+                }
+                $hwColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+                if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+            }
+            elseif ($hwDvc -eq "1") {
+                # Strip DV → HDR10
+                $hwColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+                if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+            }
+            else {
+                # SDR tonemap
+                $hwColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
+                $hwPixFmt = "yuv420p"
+                $tmHwVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p"
+                if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$tmHwVf,$($videoFilter[1])") }
+                else { $videoFilter = @("-vf",$tmHwVf) }
+            }
+        }
+
+        # v39: HLG dialog pentru HW encode (signaling via color_trc, fara SEI repair)
         if ($logInfo.isHLG) {
             $isH264HW = ($hwEncCodec -match "^h264_")
             $hlgResultHw = Show-HLGDialog $f.FullName $f.Name $hwEncCodec
