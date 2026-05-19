@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v48** — 49 bugs fixed · 192+ features · ~20 500 LoC · 67 files
+**v49** — 49 bugs fixed · 195+ features · ~21 000 LoC · 69 files
 
 ---
 
@@ -18,7 +18,8 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 18-column normalized CSV + SRT overlay tracks
-- **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), container remux with preflight, HDR10+→DV hybrid synthesis (lossless on video)
+- **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), HDR10+→DV hybrid synthesis (lossless on video)
+- **Mux tools** (v49) — standalone script with two flows. **Remux**: per-stream selection (video / audio / subtitles / attachments / chapters) with per-target compat matrix and pre-flight warnings. **Demux**: smart per-codec uniform wrapping — video→`.mkv` (preserves HDR/DV), audio→`.mka` (preserves Atmos / E-AC3 / TrueHD metadata), subtitles→native ext (.srt/.ass/.sup/.sub/.vtt), cover art auto-extracted, chapters→Matroska XML, attachments+data in folders. Input: mkv · webm · mp4 · m4v · mov · ts · m2ts · mts · vob · mxf (Blu-ray / DVD / broadcast covered)
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
 - **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 layout presets with map M2 + animated dot · linear interpolation per frame), SRT (libass with FontSize 18/24/32 styling), ASS (anime/styled subs with embedded styling + scale 1.0x/1.25x/1.5x), Image subs PGS/VobSub (Bluray/DVD, external `.sup`/`.idx+.sub` + embedded tracks via ffprobe). **Preview mode** opt-in per flow — 5s clip at mid-point for quick check before full encode
@@ -51,7 +52,7 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **Audio encode** | AAC · Opus · FLAC · E-AC3 · LPCM |
 | **Audio passthrough** | AC3 · TrueHD · DTS · DTS-HD (auto stream copy) |
 | **Telemetry** | DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 |
-| **Workflows** | Encode · Audio-only · Trim & Concat · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
+| **Workflows** | Encode · Audio-only · Trim & Concat · Remux · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
 
 ---
 
@@ -167,16 +168,22 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 4. **Telemetry** — 6 modes: Standard / Full / SRT / All / Raw / Strip
 5. **External GPS** — GPX/FIT/KML → CSV/SRT
 6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass · batch trim · HDR-aware
-7. **HDR/DV Tools** (v44/v45, metadata-only, no re-encode):
+7. **Mux tools** (v49, no re-encode, lossless):
+
+   | Flow | Action |
+   |---|---|
+   | Remux container | Per-stream selection (video/audio/sub/attach/chapters) → mkv/mp4/mov/webm with per-target compat matrix + preflight |
+   | Demux streams | Smart per-codec wrap: video→`.mkv`, audio→`.mka`, sub→native ext, cover→jpg/png, chapters→XML, attachments+data→folders |
+
+8. **HDR/DV Tools** (v44/v45, metadata-only, no re-encode):
 
    | Option | Action |
    |---|---|
    | Transform RPU | DV profile convert (5/7→8.1, force 8.1, 8.1↔10) |
-   | Remux container | MKV ↔ MP4/MOV + `tag:v hvc1/av01/avc1` + faststart + preflight |
    | Inspect | ffprobe + `dovi_tool info` + HDR10+ scene count |
    | HDR10+ → DV hybrid (v45) | Synthesize DV RPU from HDR10+ → inject → re-mux |
 
-8. **Burn-in overlay** (v48, re-encode with baked-in pixels):
+9. **Burn-in overlay** (v48, re-encode with baked-in pixels):
 
    | Flow | Source | ffmpeg pipeline |
    |---|---|---|
@@ -204,7 +211,9 @@ AV-Encoder-Suite/
 │   ├── av_encoder_apv.sh       # APV encoder (Samsung, ffmpeg 8.1+)
 │   ├── av_encoder_audio.sh     # Audio-only re-encode (video stream copy)
 │   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36/v37)
-│   ├── av_hdr_dv_tools.sh      # HDR/DV tools submenu (v44 + v45)
+│   ├── av_mux.sh               # v49 — Mux tools standalone (remux + demux)
+│   ├── av_mux.ps1              # v49 — PS1 mirror standalone
+│   ├── av_hdr_dv_tools.sh      # HDR/DV tools submenu (v44 + v45; remux moved to av_mux in v49)
 │   ├── av_check.sh             # Media analysis + CSV export (Termux/Linux/macOS)
 │   ├── av_check.ps1            # Media analysis + CSV export (Windows)
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
@@ -279,9 +288,10 @@ Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip when the binary is 
 4. Telemetry — DJI / GoPro / Sony / Garmin / QuickTime
 5. Import external GPS — GPX/FIT/KML
 6. Trim & Concat — trim / concat / pipeline / batch
-7. **HDR/DV tools** — transform RPU / remux / inspect / HDR10+ → DV (v45)
-8. **Burn-in overlay** (v48) — HUD telemetry / SRT / ASS / Image subs (PGS/VobSub)
-9. Exit
+7. **Mux tools** (v49) — Remux container + Demux streams, no re-encode · 10 input formats (Blu-ray/DVD/broadcast) · remux to mkv/mp4/mov/webm · demux to mkv/mka/native sub ext + cover/chapters/attach
+8. **HDR/DV tools** — transform RPU / inspect / HDR10+ → DV (v45)
+9. **Burn-in overlay** (v48) — HUD telemetry / SRT / ASS / Image subs (PGS/VobSub)
+10. Exit
 
 ---
 
@@ -357,4 +367,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v48** — 49 bugs fixed · 192+ features · ~20 500 LoC · 67 files
+Current: **v49** — 49 bugs fixed · 195+ features · ~21 000 LoC · 69 files

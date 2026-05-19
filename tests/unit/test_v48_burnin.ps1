@@ -46,10 +46,11 @@ Assert-Match $burninText 'Invoke-ImgFlow'                 "dispatcher calls Invo
 # ─────────────────────────────────────────────────────────────────
 # 3) av_encode.ps1 main menu integration
 # ─────────────────────────────────────────────────────────────────
-Assert-Match $encodeText '8-Burn-in \(HUD/SRT/ASS/Image\)'  "av_encode main menu opt 8"
-Assert-Match $encodeText '9-Iesire'               "av_encode main menu opt 9 exits"
-Assert-Match $encodeText '\$mainChoice -eq "9"'   "opt 9 triggers exit"
-Assert-Match $encodeText '\$mainChoice -eq "8"'   "opt 8 dispatches burnin"
+# v49: renumerotat — opt 9 = Burn-in, opt 10 = Iesire (Remux ocupa opt 7)
+Assert-Match $encodeText '9-Burn-in \(HUD/SRT/ASS/Image\)'  "av_encode main menu opt 9 = Burn-in (v49)"
+Assert-Match $encodeText '10-Iesire'              "av_encode main menu opt 10 = Iesire (v49)"
+Assert-Match $encodeText '\$mainChoice -eq "10"'  "opt 10 triggers exit (v49)"
+Assert-Match $encodeText '\$mainChoice -eq "9"'   "opt 9 dispatches burnin (v49)"
 Assert-Match $encodeText 'av_burnin\.ps1'         "dispatches av_burnin.ps1"
 
 # ─────────────────────────────────────────────────────────────────

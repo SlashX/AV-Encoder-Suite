@@ -22,10 +22,14 @@ _mock_tags=""
 
 ffprobe() {
     local args="$*"
-    if [[ "$args" == *"select_streams a:0"* ]]; then echo "$_mock_audio"; return 0; fi
-    if [[ "$args" == *"select_streams s:0"* ]]; then echo "$_mock_sub"; return 0; fi
-    if [[ "$args" == *"codec_tag_string"* ]]; then echo "$_mock_tags"; return 0; fi
+    # v49: _remux_preflight foloseste select_streams a/s/t (toate stream-urile),
+    # nu :0 (primul). Mock raspunde la noua forma.
     if [[ "$args" == *"select_streams v:0"* && "$args" == *"codec_name"* ]]; then echo "hevc"; return 0; fi
+    if [[ "$args" == *"select_streams t"* ]]; then echo ""; return 0; fi  # no attachments
+    if [[ "$args" == *"select_streams a"* ]]; then echo "$_mock_audio"; return 0; fi
+    if [[ "$args" == *"select_streams s"* ]]; then echo "$_mock_sub"; return 0; fi
+    if [[ "$args" == *"codec_tag_string"* ]]; then echo "$_mock_tags"; return 0; fi
+    if [[ "$args" == *"show_chapters"* ]]; then echo ""; return 0; fi
     return 1
 }
 export -f ffprobe
@@ -58,7 +62,7 @@ _mock_audio="aac"; _mock_sub="subrip"; _mock_tags=""
 _remux_preflight "$TMPFILE" "mp4"
 assert_eq 1 "$REMUX_PREFLIGHT_LEVEL" "subrip+mp4 -> level 1"
 joined="${REMUX_PREFLIGHT_NOTES[*]}"
-assert_contains "$joined" "subrip" "note mentions subrip"
+assert_contains "$joined" "mov_text" "note mentions mov_text conversion"
 
 # 1e) ass + mov → level 1
 _mock_audio="aac"; _mock_sub="ass"; _mock_tags=""

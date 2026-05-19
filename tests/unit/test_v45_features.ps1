@@ -38,8 +38,9 @@ $menu = $funcs | Where-Object { $_.Name -eq 'Invoke-HdrDvTools' } | Select-Objec
 if ($menu) { _pass } else { _fail "Invoke-HdrDvTools defined" }
 $menuText = $menu.Extent.Text
 Assert-Match $menuText 'HDR10\+ → DV hybrid' "menu has HDR10+ → DV hybrid label"
-Assert-Match $menuText '"4"\s*\{\s*Invoke-Hdr10PlusToDv' "menu opt 4 wired to Invoke-Hdr10PlusToDv"
-Assert-Match $menuText '"5"\s*\{\s*return' "menu opt 5 = Inapoi"
+# v49: renumerotat dupa scoaterea Remux container (4 opt acum)
+Assert-Match $menuText '"3"\s*\{\s*Invoke-Hdr10PlusToDv' "menu opt 3 wired to Invoke-Hdr10PlusToDv (v49)"
+Assert-Match $menuText '"4"\s*\{\s*return' "menu opt 4 = Inapoi (v49)"
 
 # ─────────────────────────────────────────────────────────────────
 # 3) P1 — DV preserve markers in HEVC encode flow

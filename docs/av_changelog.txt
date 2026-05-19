@@ -3,9 +3,142 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v48 | 49 bug-uri fixate | 192+ features
-  67 fisiere (19 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 28 tests) | ~20500 linii cod | ~4200 linii documentatie
+  TOTAL: v49 | 49 bug-uri fixate | 195+ features
+  69 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 29 tests) | ~21000 linii cod | ~4300 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v49 — Mux tools standalone (remux + demux) cu selectie streams
+═══════════════════════════════════════════════════════════════
+
+  ADD av_mux.sh + av_mux.ps1 — script nou standalone "Mux tools" cu
+        submeniu intern: 1) Remux container, 2) Demux streams,
+        3) Anulare. Launcher main menu opt 7 (shift HDR/DV→8,
+        Burn-in→9, Anulare→10). Mirror complet bash↔PS1.
+
+  ADD Input formats extinse (Remux + Demux):
+        mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
+        Acopera Blu-ray (m2ts/mts/ts), DVD (vob), broadcast (mxf),
+        Apple (m4v) si toate containerele moderne mainstream.
+
+  ─── Remux container (sub-opt 1) ─────────────────────────────
+
+  ADD Output formats: mkv, mp4, mov, webm. WEBM gated pe VP8/VP9/AV1
+        + Opus/Vorbis + WebVTT (cea mai restrictiva tinta).
+
+  ADD Stream selection interactiv — 5 prompt-uri per fisier:
+        - Video (auto-selectat daca e unic)
+        - Audio (lista cu codec/channels/lang/title + warn-uri incompat)
+        - Subtitle (lista cu codec/lang + warn convert mov_text / drop)
+        - Attachments (fonts/imagini) — doar MKV
+        - Chapters — toggle keep/drop
+        Sintaxa selectie: index ("1"), lista ("1,3,5"), interval ("1-3"),
+        ALL (implicit), NONE.
+
+  ADD Compat matrix per target container:
+        - MKV: permisiv (totul OK)
+        - MP4: hevc/h264/av1/mpeg4/mpeg2/vp9/prores + aac/ac3/eac3/mp3/
+               opus/alac/flac + mov_text/tx3g; bitmap subs si attachments
+               sunt strip-uite cu warning
+        - MOV: hevc/h264/prores/dnxhr/mpeg4/mjpeg + aac/ac3/mp3/alac/
+               pcm + mov_text; eac3/truehd/dts/opus strip-uite (eac3 abort)
+        - WEBM: doar vp8/vp9/av1 + opus/vorbis + webvtt
+        Per-stream `Get-RemuxStreamCompat` / `remux_stream_compat` →
+        "copy" | "convert:mov_text" | "drop".
+
+  ADD Pre-flight extins (`_remux_preflight` / `Get-RemuxPreflight`)
+        cu reguli noi: WEBM video gate, bitmap subs (PGS/VobSub), DTS-HD/
+        TrueHD audio, atasamente non-MKV. Level 0 (ok) / 1 (warn, continui)
+        / 2 (fail abort).
+
+  ADD `remux_enumerate_streams` (bash) / `Get-RemuxStreams` (PS1) —
+        enumerate complet via 4 ffprobe queries (video/audio/sub/attach)
+        + show_chapters. Populeaza arrays cu codec, lang, title, extra
+        (WxH / channels) per stream.
+
+  ADD Output naming consistent: `<name>_remux.<ext>`. Adaugat in scan
+        exclude liste pentru a evita re-procesarea propriilor output-uri.
+
+  ─── Demux streams (sub-opt 2) ───────────────────────────────
+
+  ADD Smart per-codec uniform wrapping — strategie lossless:
+        - Video    → `.mkv` wrapper (pastreaza HDR/DV/HDR10+/timecode/
+                     color signaling complet; cea mai permisiva tinta)
+        - Audio    → `.mka` wrapper (Matroska audio — pastreaza Atmos /
+                     E-AC3 obj data / TrueHD metadata + tag-uri container
+                     language/title intacte)
+        - Subtitle → ext nativ (.srt / .ass / .sup / .sub / .vtt) cu
+                     lang suffix; mov_text/tx3g → .srt prin convert
+        - Cover    → auto-extract attached_pic ca .jpg/.png/.webp/.bmp
+        - Chapters → Matroska XML format (`<name>_chapters.xml` — import
+                     direct in mkvtoolnix; OGM/FFMETADATA1 evitate)
+        - Attach   → folder `<name>_attach/` (fonts, imagini, etc.)
+        - Data     → folder `<name>_data/` opt-in pentru DJI/timecode
+                     binary streams (cu nota de redirect catre opt 4
+                     Telemetrie pentru parsing real GPS/gauges)
+
+  ADD Stream selection demux — multi-output per fisier sursa:
+        prompt-uri pentru fiecare categorie de stream (video/audio/sub/
+        cover/attach/data/chapters). Sintaxa identica cu remux (index/
+        lista/interval/ALL/NONE).
+
+  ADD Output naming demux:
+        `<name>_v<idx>_<codec>.mkv` (video tracks)
+        `<name>_a<idx>_<codec>_<lang>.mka` (audio tracks)
+        `<name>_s<idx>_<codec>_<lang>.<ext>` (subtitle tracks)
+        `<name>_cover_<idx>.<ext>` (cover art)
+        `<name>_chapters.xml` (Matroska XML)
+        `<name>_attach/` + `<name>_data/` (folder outputs)
+
+  ADD Helper-i pure-logic + ffprobe-driven detection:
+        - `demux_subtitle_ext` / `Get-DemuxSubtitleExt` — codec → ext
+          (subrip→srt, ass/ssa→ass, webvtt→vtt, PGS→sup, dvd_subtitle
+          →sub, mov_text/tx3g→srt convert, fallback bin)
+        - `demux_cover_ext` / `Get-DemuxCoverExt` — codec → image ext
+          (mjpeg/jpeg→jpg, png/webp/bmp pastrate, fallback img)
+        - `demux_detect_special_streams` / `Get-DemuxSpecialStreams` —
+          ffprobe + attached_pic disposition filter pentru cover; data
+          streams via codec_type=data enumerate
+        - `demux_generate_chapters_xml` / `New-ChaptersXml` — awk
+          (bash) / ConvertFrom-Json (PS1) parsing pe show_chapters JSON
+          → Matroska XML cu DOCTYPE + Chapters/EditionEntry/ChapterAtom.
+          PS1 foloseste InvariantCulture pentru parsing decimal sigur
+          pe EU locales.
+
+  ─── Refactor + tests ────────────────────────────────────────
+
+  REMOVE Remux din HDR/DV Tools submenu — `hdv_flow_remux` (bash) +
+        `Invoke-RemuxContainer` (PS1) sterse. Submeniul HDR/DV trece la
+        4 optiuni: 1) Transform RPU, 2) Inspect, 3) HDR10+→DV, 4) Inapoi.
+        Functiile worker `remux_container_with_tag` (bash) si `Invoke-Remux`
+        (PS1) pastrate pentru back-compat — folosite de teste.
+
+  ADD Tests `tests/unit/test_v49_mux.{sh,ps1}` — coverage:
+        stream selection parser (index/lista/interval/ALL/NONE),
+        compat matrix per target × codec × stream type,
+        preflight rules (mp4/mov/webm/mkv + DTS/PGS/attach),
+        ffmpeg cmd builder marker checks, HDR/DV menu renumber audit,
+        demux subtitle/cover ext mapping (pure-logic), av_mux dispatcher
+        markers (Invoke-DemuxFlow / Invoke-DemuxFile / New-ChaptersXml /
+        Get-DemuxSpecialStreams).
+
+  FIX Demux bash raporta gresit succes/esec pentru ffmpeg — failures
+        cu mesaj de eroare erau marcate ca OK, iar succese silentioase ca
+        esec. Acum verifica exit code-ul real + valideaza output non-empty.
+
+  FIX Scan exclude prea agresiv in bash — fisierele user cu pattern
+        ca `season1_v2.mkv` erau filtrate gresit. Paritate restaurata cu PS1.
+
+  FIX Chapter XML in bash pe locale-uri EU (ro/de/fr) — separatorul
+        decimal era virgula in loc de punct, rezultand XML invalid pt
+        mkvtoolnix. PS1 era deja corect.
+
+  FIX Re-rulare remux/demux pe output existent — lipsea flag-ul de
+        overwrite pe ffmpeg, batch-ul s-ar fi blocat pe prompt interactiv.
+
+  FIX Submeniu PS1 — input invalid trecea silentios la Remux. Acum
+        valideaza optiunea si abandoneaza cu eroare (paritate cu bash).
 
 
 ═══════════════════════════════════════════════════════════════

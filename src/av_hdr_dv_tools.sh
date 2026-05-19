@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
-# av_hdr_dv_tools.sh — HDR/DV Tools (v44)
+# av_hdr_dv_tools.sh — HDR/DV Tools (v49)
 #
-# Submeniu pentru operatii metadata-only / container-only, FARA re-encode:
+# Submeniu pentru operatii metadata-only, FARA re-encode:
 #   1) Transform RPU profile  — convert intre Profile 7/8.1/10 (cross-codec)
-#   2) Remux container         — MKV ↔ MP4/MOV cu tag:v fix + +faststart
-#   3) Inspect metadata        — dump RPU info + HDR10+ scenes (read-only)
+#   2) Inspect metadata       — dump RPU info + HDR10+ scenes (read-only)
+#   3) HDR10+ → DV hybrid     — sintetizeaza DV RPU din HDR10+ metadata
 #   4) Inapoi
 #
-# Toate functiile de baza traiesc in av_common.sh; acest script e DOAR UI
-# (sub-menu + dispatch).
+# Remux container + Demux streams traiesc in av_mux.sh (v49+).
+# Toate functiile de baza traiesc in av_common.sh; acest script e DOAR UI.
 # ══════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -161,74 +161,7 @@ hdv_flow_transform_rpu() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
-# Flow 2: Remux container
-# ─────────────────────────────────────────────────────────────────────
-hdv_flow_remux() {
-    echo ""
-    echo "╔══════════════════════════════════════════════╗"
-    echo "║  REMUX CONTAINER                             ║"
-    echo "║  MKV ↔ MP4/MOV cu tag:v fix, FARA re-encode. ║"
-    echo "╚══════════════════════════════════════════════╝"
-    _hdv_pick_file "Alege fisier" "$INPUT_DIR" || { echo "Anulat."; return 1; }
-    local file="$HDV_PICKED_FILE"
-    local src_ext="${file##*.}"; src_ext="${src_ext,,}"
-    echo "  Source ext: $src_ext"
-
-    echo ""
-    echo "  Container tinta:"
-    echo "    1) mp4   (recomandat pentru distribute / web)"
-    echo "    2) mov   (Apple ecosystem)"
-    echo "    3) mkv   (full feature, permisiv)"
-    read -p "  Alege [implicit: 1]: " tgt_choice
-    local target=mp4
-    case "${tgt_choice:-1}" in
-        1) target="mp4" ;;
-        2) target="mov" ;;
-        3) target="mkv" ;;
-        *) echo "Optiune invalida."; return 1 ;;
-    esac
-
-    # Pre-flight
-    _remux_preflight "$file" "$target"
-    local lvl=$REMUX_PREFLIGHT_LEVEL
-    if [ ${#REMUX_PREFLIGHT_NOTES[@]} -gt 0 ]; then
-        echo ""
-        echo "  Pre-flight check (level=$lvl):"
-        local n
-        for n in "${REMUX_PREFLIGHT_NOTES[@]}"; do
-            echo "    - $n"
-        done
-    fi
-    if [ "$lvl" -ge 2 ]; then
-        echo "  EROARE: Pre-flight FAIL — abort."
-        return 1
-    fi
-    if [ "$lvl" -ge 1 ]; then
-        read -p "  Continui? (D/n) [default: D]: " cont
-        if [[ "${cont,,}" == "n" ]]; then echo "  Anulat."; return 1; fi
-    fi
-
-    local final_out="${OUTPUT_DIR}/$(basename "${file%.*}").${target}"
-    mkdir -p "$OUTPUT_DIR"
-    echo ""
-    echo "  Re-mux: $file -> $final_out"
-    if remux_container_with_tag "$file" "$final_out" "$target"; then
-        echo "  ✓ Remux complet."
-        # Post-flight: verificare rapida
-        local sz_orig sz_new
-        sz_orig=$(av_stat_size "$file" 2>/dev/null || echo 0)
-        sz_new=$(av_stat_size "$final_out" 2>/dev/null || echo 0)
-        echo "  Original: $((sz_orig/1024/1024)) MB | Nou: $((sz_new/1024/1024)) MB"
-        return 0
-    else
-        echo "  EROARE: Re-mux esuat."
-        rm -f "$final_out"
-        return 1
-    fi
-}
-
-# ─────────────────────────────────────────────────────────────────────
-# Flow 3: Inspect metadata (read-only)
+# Flow 2: Inspect metadata (read-only)
 # ─────────────────────────────────────────────────────────────────────
 hdv_flow_inspect() {
     echo ""
@@ -293,7 +226,7 @@ hdv_flow_inspect() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
-# Flow 4: HDR10+ → DV hybrid (no re-encode) — v45
+# Flow 3: HDR10+ → DV hybrid (no re-encode) — v45
 # Pipeline: extract HDR10+ JSON → synthesize DV RPU → extract raw video
 #          → inject RPU → re-mux audio original.
 # Rezultat: sursa pastreaza HDR10 base + HDR10+ dinamic (deja in bitstream)
@@ -409,18 +342,17 @@ echo "║  HDR/DV TOOLS                        ║"
 echo "╠══════════════════════════════════════╣"
 echo "║  1) Transform RPU profile            ║"
 echo "║     (cross-codec convert, no encode) ║"
-echo "║  2) Remux container (MKV ↔ MP4/MOV)  ║"
-echo "║  3) Inspect metadata (read-only)     ║"
-echo "║  4) HDR10+ → DV hybrid (no re-encode)║"
-echo "║  5) Inapoi                           ║"
+echo "║  2) Inspect metadata (read-only)     ║"
+echo "║  3) HDR10+ → DV hybrid (no re-encode)║"
+echo "║  4) Inapoi                           ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Alege 1-5: " hdv_choice
+echo "  Nota: Remux container e acum in 'Mux tools' (opt 7 meniu principal)."
+read -p "Alege 1-4: " hdv_choice
 
 case "$hdv_choice" in
     1) hdv_flow_transform_rpu ;;
-    2) hdv_flow_remux ;;
-    3) hdv_flow_inspect ;;
-    4) hdv_flow_hdr10plus_to_dv ;;
-    5) echo "Inapoi."; exit 0 ;;
+    2) hdv_flow_inspect ;;
+    3) hdv_flow_hdr10plus_to_dv ;;
+    4) echo "Inapoi."; exit 0 ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

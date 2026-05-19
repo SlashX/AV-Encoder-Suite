@@ -47,10 +47,10 @@ grep -q 'ass_flow'      "$BURNIN"         && _pass || _fail "main dispatcher cal
 grep -q 'img_flow'      "$BURNIN"         && _pass || _fail "main dispatcher calls img_flow"
 
 # ─────────────────────────────────────────────────────────────────────
-# 3) Launcher integration (opt 8 + opt 9)
+# 3) Launcher integration (v49: opt 9 = Burn-in, opt 10 = Anulare)
 # ─────────────────────────────────────────────────────────────────────
-grep -qE '8\) Burn-in \(HUD/SRT/ASS/Image' "$LAUNCHER"  && _pass || _fail "launcher opt 8 = Burn-in"
-grep -qE '9\) Anulare'             "$LAUNCHER"  && _pass || _fail "launcher opt 9 = Anulare"
+grep -qE '9\) Burn-in \(HUD/SRT/ASS/Image' "$LAUNCHER"  && _pass || _fail "launcher opt 9 = Burn-in (v49)"
+grep -qE '10\) Anulare'            "$LAUNCHER"  && _pass || _fail "launcher opt 10 = Anulare (v49)"
 grep -q 'av_burnin.sh'             "$LAUNCHER"  && _pass || _fail "launcher dispatches av_burnin.sh"
 
 # ─────────────────────────────────────────────────────────────────────

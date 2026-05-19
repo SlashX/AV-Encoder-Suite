@@ -47,8 +47,9 @@ grep -q '^hdv_flow_hdr10plus_to_dv()' "$SCRIPT_DIR/av_hdr_dv_tools.sh" \
     && _pass || _fail "hdv_flow_hdr10plus_to_dv defined in av_hdr_dv_tools.sh"
 grep -q 'HDR10+ → DV hybrid' "$SCRIPT_DIR/av_hdr_dv_tools.sh" \
     && _pass || _fail "menu has HDR10+ → DV hybrid entry"
-grep -q '4) hdv_flow_hdr10plus_to_dv' "$SCRIPT_DIR/av_hdr_dv_tools.sh" \
-    && _pass || _fail "menu dispatch wires opt 4 to hdv_flow_hdr10plus_to_dv"
+# v49: renumerotat la opt 3 dupa scoaterea Remux container
+grep -q '3) hdv_flow_hdr10plus_to_dv' "$SCRIPT_DIR/av_hdr_dv_tools.sh" \
+    && _pass || _fail "menu dispatch wires opt 3 to hdv_flow_hdr10plus_to_dv (v49 renumerotare)"
 
 # ─────────────────────────────────────────────────────────────────────
 # 3) Helpers folosite de P1 (DV preserve x265) si P2 (HDR10+ → DV hybrid)

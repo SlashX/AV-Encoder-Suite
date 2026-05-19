@@ -26,10 +26,14 @@ function Global:ffprobe {
     [CmdletBinding()]
     param([Parameter(ValueFromRemainingArguments=$true)]$RemainingArgs)
     $argStr = ($RemainingArgs -join ' ')
-    if ($argStr -match 'select_streams a:0') { $script:_mock_audio; return }
-    if ($argStr -match 'select_streams s:0') { $script:_mock_sub;   return }
-    if ($argStr -match 'codec_tag_string')   { $script:_mock_tags;  return }
+    # v49: Get-RemuxPreflight foloseste select_streams a/s/t (toate stream-urile),
+    # nu :0 (primul). Mock raspunde la ambele forme pentru back-compat.
     if ($argStr -match 'select_streams v:0') { 'hevc'; return }
+    if ($argStr -match 'select_streams a')   { $script:_mock_audio; return }
+    if ($argStr -match 'select_streams s')   { $script:_mock_sub;   return }
+    if ($argStr -match 'select_streams t')   { ''; return }
+    if ($argStr -match 'codec_tag_string')   { $script:_mock_tags;  return }
+    if ($argStr -match 'show_chapters')      { ''; return }
     return ""
 }
 
@@ -63,7 +67,7 @@ try {
     $script:_mock_audio = "aac"; $script:_mock_sub = "subrip"
     $r = Get-RemuxPreflight -File $tmpFile -TargetContainer "mp4"
     Assert-Eq 1 $r.level "subrip+mp4 -> level 1"
-    Assert-Match ($r.notes -join ' ') "subrip" "note mentions subrip"
+    Assert-Match ($r.notes -join ' ') "mov_text" "note mentions mov_text conversion"
 
     # 1e) ass + mov -> level 1
     $script:_mock_sub = "ass"

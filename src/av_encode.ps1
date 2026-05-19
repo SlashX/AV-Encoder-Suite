@@ -1991,36 +1991,233 @@ function Get-RemuxPreflight {
     $level = 0
     $target = $TargetContainer.ToLowerInvariant()
 
-    $audioCodec = (& ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
-    $audioCodec = $audioCodec.Trim()
-    $subCodec   = (& ffprobe -v error -select_streams s:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
-    $subCodec   = $subCodec.Trim()
-    $codecTags  = (& ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 -- $File 2>$null) | Out-String
+    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String).Trim()
+    $audioCodecsRaw = (& ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
+    $subCodecsRaw   = (& ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
+    $codecTags      = (& ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 -- $File 2>$null) | Out-String
+    $attachIdxRaw   = (& ffprobe -v error -select_streams t -show_entries stream=index -of csv=p=0 -- $File 2>$null) | Out-String
 
+    $audioCodecs = $audioCodecsRaw -split "`r?`n" | Where-Object { $_ }
+    $subCodecs   = $subCodecsRaw   -split "`r?`n" | Where-Object { $_ }
+    $attachCount = ($attachIdxRaw -split "`r?`n" | Where-Object { $_ }).Count
     $djiPresent = $codecTags -match "(?i)\b(djmd|dbgi)\b"
 
+    function _Matches([string[]]$list, [string]$pat) {
+        foreach ($c in $list) { if ($c -match $pat) { return $true } }
+        return $false
+    }
+
     switch ($target) {
-        { $_ -in @("mp4","mov") } {
-            if ($target -eq "mov" -and $audioCodec -eq "eac3") {
-                $notes.Add("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4") | Out-Null
-                $level = 2
+        "mp4" {
+            if (_Matches $audioCodecs '^(truehd|dts|pcm_s24le|pcm_s16be)$') {
+                $notes.Add("Audio lossless (TrueHD/DTS-HD/PCM) — incompatibil cu MP4, va fi strip-uit") | Out-Null
+                if ($level -lt 1) { $level = 1 }
             }
-            if ($subCodec -match "(?i)^(subrip|srt|ass|ssa)$") {
-                $notes.Add("Subtitrari $subCodec necompatibile direct cu MP4/MOV — vor fi convertite la mov_text sau strip-uite") | Out-Null
+            if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') {
+                $notes.Add("Subtitrari text necompatibile direct cu MP4 — vor fi convertite la mov_text") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') {
+                $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MP4 — vor fi strip-uite") | Out-Null
                 if ($level -lt 1) { $level = 1 }
             }
             if ($djiPresent) {
-                $notes.Add("Track-uri DJI (djmd/dbgi) detectate — incompatibile cu .mp4 (vor fi strip-uite)") | Out-Null
+                $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MP4 — vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if ($attachCount -gt 0) {
+                $notes.Add("$attachCount atasament(e) — doar MKV suporta atasamente, vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+        }
+        "mov" {
+            if (_Matches $audioCodecs '^eac3$') {
+                $notes.Add("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4") | Out-Null
+                $level = 2
+            }
+            if (_Matches $audioCodecs '^(truehd|dts|opus)$') {
+                $notes.Add("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — va fi strip-uit") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') {
+                $notes.Add("Subtitrari text vor fi convertite la mov_text pentru MOV") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') {
+                $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MOV — vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if ($djiPresent) {
+                $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MOV — vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if ($attachCount -gt 0) {
+                $notes.Add("$attachCount atasament(e) — doar MKV suporta atasamente, vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+        }
+        "webm" {
+            if ($videoCodec -and $videoCodec -notmatch '^(vp8|vp9|av1)$') {
+                $notes.Add("Video '$videoCodec' incompatibil cu WEBM (doar VP8/VP9/AV1 suportate) — abort") | Out-Null
+                $level = 2
+            }
+            if (_Matches $audioCodecs '^(aac|ac3|eac3|mp3|dts|truehd|alac|pcm_s16le|pcm_s24le)$') {
+                $notes.Add("Audio incompatibil cu WEBM (doar Opus/Vorbis suportate) — va fi strip-uit") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if (_Matches $subCodecs '^(subrip|srt|ass|ssa|dvd_subtitle|hdmv_pgs_subtitle|mov_text)$') {
+                $notes.Add("Subtitrari incompatibile cu WEBM (doar WebVTT) — vor fi strip-uite") | Out-Null
+                if ($level -lt 1) { $level = 1 }
+            }
+            if ($attachCount -gt 0) {
+                $notes.Add("$attachCount atasament(e) — WEBM nu suporta, vor fi strip-uite") | Out-Null
                 if ($level -lt 1) { $level = 1 }
             }
         }
         "mkv" { }
         default {
-            $notes.Add("Container '$target' nesuportat (foloseste mp4 / mov / mkv)") | Out-Null
+            $notes.Add("Container '$target' nesuportat (foloseste mkv/mp4/mov/webm)") | Out-Null
             $level = 2
         }
     }
     return @{ level = $level; notes = @($notes) }
+}
+
+# v49: clasificare per-stream pentru target container.
+function Get-RemuxStreamCompat {
+    param([string]$Codec, [string]$CodecType, [string]$Target)
+    $codec = $Codec.ToLowerInvariant()
+    $ctype = $CodecType.ToLowerInvariant()
+    $t = $Target.ToLowerInvariant()
+    if ($t -eq "mkv") { return "copy" }
+    switch ($ctype) {
+        "video" {
+            switch ($t) {
+                "mp4" {
+                    if ($codec -in @("hevc","h264","av1","mpeg4","mpeg2video","vp9","prores")) { return "copy" }
+                    return "drop"
+                }
+                "mov" {
+                    if ($codec -in @("hevc","h264","prores","dnxhd","dnxhr","mpeg4","mjpeg")) { return "copy" }
+                    return "drop"
+                }
+                "webm" {
+                    if ($codec -in @("vp8","vp9","av1")) { return "copy" }
+                    return "drop"
+                }
+            }
+            return "drop"
+        }
+        "audio" {
+            switch ($t) {
+                "mp4" {
+                    if ($codec -in @("aac","ac3","eac3","mp3","opus","alac","flac")) { return "copy" }
+                    return "drop"
+                }
+                "mov" {
+                    if ($codec -in @("aac","ac3","mp3","alac","pcm_s16be","pcm_s24be","pcm_s16le","pcm_s24le")) { return "copy" }
+                    return "drop"
+                }
+                "webm" {
+                    if ($codec -in @("opus","vorbis")) { return "copy" }
+                    return "drop"
+                }
+            }
+            return "drop"
+        }
+        "subtitle" {
+            switch ($t) {
+                { $_ -in @("mp4","mov") } {
+                    if ($codec -in @("mov_text","tx3g")) { return "copy" }
+                    if ($codec -in @("subrip","srt","ass","ssa")) { return "convert:mov_text" }
+                    return "drop"
+                }
+                "webm" {
+                    if ($codec -eq "webvtt") { return "copy" }
+                    return "drop"
+                }
+            }
+            return "drop"
+        }
+        "attachment" { return "drop" }
+    }
+    return "drop"
+}
+
+# v49: enumerate streams + chapters din ffprobe (JSON-style via csv multiple queries).
+# Return: hashtable cu Video[]/Audio[]/Subtitle[]/Attachment[] + ChapterCount.
+# Fiecare element: @{ AbsIndex; Codec; Lang; Title; Extra }
+function Get-RemuxStreams {
+    param([string]$File)
+    $result = @{
+        Video = New-Object System.Collections.Generic.List[object]
+        Audio = New-Object System.Collections.Generic.List[object]
+        Subtitle = New-Object System.Collections.Generic.List[object]
+        Attachment = New-Object System.Collections.Generic.List[object]
+        ChapterCount = 0
+    }
+    # Video: index,codec_name,width,height,language,title
+    $raw = (& ffprobe -v error -select_streams v -show_entries stream=index,codec_name,width,height:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
+    foreach ($line in ($raw -split "`r?`n")) {
+        if (-not $line) { continue }
+        $parts = $line -split ',', 6
+        if ($parts.Count -lt 1) { continue }
+        $idx = $parts[0]
+        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $w = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        $h = if ($parts.Count -gt 3) { $parts[3] } else { "" }
+        $lang = if ($parts.Count -gt 4) { $parts[4] } else { "" }
+        $title = if ($parts.Count -gt 5) { $parts[5] } else { "" }
+        $result.Video.Add([PSCustomObject]@{
+            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = "${w}x${h}"
+        }) | Out-Null
+    }
+    # Audio
+    $raw = (& ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
+    foreach ($line in ($raw -split "`r?`n")) {
+        if (-not $line) { continue }
+        $parts = $line -split ',', 5
+        if ($parts.Count -lt 1) { continue }
+        $idx = $parts[0]
+        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $ch = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        $lang = if ($parts.Count -gt 3) { $parts[3] } else { "" }
+        $title = if ($parts.Count -gt 4) { $parts[4] } else { "" }
+        $result.Audio.Add([PSCustomObject]@{
+            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = "${ch}ch"
+        }) | Out-Null
+    }
+    # Subtitle
+    $raw = (& ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
+    foreach ($line in ($raw -split "`r?`n")) {
+        if (-not $line) { continue }
+        $parts = $line -split ',', 4
+        if ($parts.Count -lt 1) { continue }
+        $idx = $parts[0]
+        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $lang = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        $title = if ($parts.Count -gt 3) { $parts[3] } else { "" }
+        $result.Subtitle.Add([PSCustomObject]@{
+            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = ""
+        }) | Out-Null
+    }
+    # Attachments
+    $raw = (& ffprobe -v error -select_streams t -show_entries stream=index,codec_name:stream_tags=filename -of csv=p=0 -- $File 2>$null) | Out-String
+    foreach ($line in ($raw -split "`r?`n")) {
+        if (-not $line) { continue }
+        $parts = $line -split ',', 3
+        if ($parts.Count -lt 1) { continue }
+        $idx = $parts[0]
+        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $title = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        $result.Attachment.Add([PSCustomObject]@{
+            AbsIndex = $idx; Codec = $codec; Lang = ""; Title = $title; Extra = ""
+        }) | Out-Null
+    }
+    # Chapters
+    $rawCh = (& ffprobe -v error -show_chapters -of csv=p=0 -- $File 2>$null) | Out-String
+    $result.ChapterCount = ($rawCh -split "`r?`n" | Where-Object { $_ }).Count
+    return $result
 }
 
 # Invoke-Remux — re-mux container cu tag:v + faststart, no re-encode.
@@ -2189,57 +2386,6 @@ function Invoke-TransformRpu {
     }
 }
 
-function Invoke-RemuxContainer {
-    Write-Host ""
-    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║  REMUX CONTAINER                             ║" -ForegroundColor Cyan
-    Write-Host "║  MKV ↔ MP4/MOV cu tag:v fix, FARA re-encode. ║" -ForegroundColor Cyan
-    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-    $file = _Hdv-PickFile -Prompt "Alege fisier"
-    if (-not $file) { Write-Host "Anulat." -ForegroundColor Yellow; return }
-    $srcExt = [System.IO.Path]::GetExtension($file).TrimStart('.').ToLowerInvariant()
-    Write-Host "  Source ext: $srcExt"
-
-    Write-Host ""
-    Write-Host "  Container tinta:"
-    Write-Host "    1) mp4   (recomandat pentru distribute / web)"
-    Write-Host "    2) mov   (Apple ecosystem)"
-    Write-Host "    3) mkv   (full feature, permisiv)"
-    $tgtChoice = Read-Host "  Alege [implicit: 1]"
-    if (-not $tgtChoice) { $tgtChoice = "1" }
-    $target = switch ($tgtChoice) { "1" {"mp4"} "2" {"mov"} "3" {"mkv"} default { $null } }
-    if (-not $target) { Write-Host "Optiune invalida." -ForegroundColor Red; return }
-
-    $pre = Get-RemuxPreflight -File $file -TargetContainer $target
-    if ($pre.notes.Count -gt 0) {
-        Write-Host ""
-        Write-Host "  Pre-flight check (level=$($pre.level)):" -ForegroundColor Yellow
-        foreach ($n in $pre.notes) { Write-Host "    - $n" -ForegroundColor Yellow }
-    }
-    if ($pre.level -ge 2) {
-        Write-Host "  EROARE: Pre-flight FAIL — abort." -ForegroundColor Red
-        return
-    }
-    if ($pre.level -ge 1) {
-        $cont = Read-Host "  Continui? (D/n) [default: D]"
-        if ($cont -and $cont.ToLower() -eq "n") { Write-Host "  Anulat." -ForegroundColor Yellow; return }
-    }
-
-    if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
-    $finalOut = Join-Path $OutputDir ("{0}.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $target)
-    Write-Host ""
-    Write-Host "  Re-mux: $file -> $finalOut" -ForegroundColor Cyan
-    if (Invoke-Remux -InputFile $file -OutputFile $finalOut -TargetContainer $target) {
-        Write-Host "  ✓ Remux complet." -ForegroundColor Green
-        $szOrig = (Get-Item $file).Length
-        $szNew  = (Get-Item $finalOut).Length
-        Write-Host ("  Original: {0} MB | Nou: {1} MB" -f [int]($szOrig/1MB), [int]($szNew/1MB))
-    } else {
-        Write-Host "  EROARE: Re-mux esuat." -ForegroundColor Red
-        Remove-Item $finalOut -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Invoke-InspectMetadata {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -2384,18 +2530,17 @@ function Invoke-HdrDvTools {
     Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
     Write-Host "║  1) Transform RPU profile            ║"
     Write-Host "║     (cross-codec convert, no encode) ║"
-    Write-Host "║  2) Remux container (MKV ↔ MP4/MOV)  ║"
-    Write-Host "║  3) Inspect metadata (read-only)     ║"
-    Write-Host "║  4) HDR10+ → DV hybrid (no re-encode)║"
-    Write-Host "║  5) Inapoi                           ║"
+    Write-Host "║  2) Inspect metadata (read-only)     ║"
+    Write-Host "║  3) HDR10+ → DV hybrid (no re-encode)║"
+    Write-Host "║  4) Inapoi                           ║"
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-    $ch = Read-Host "Alege 1-5"
+    Write-Host "  Nota: Remux container e acum in 'Mux tools' (opt 7 meniu principal)." -ForegroundColor DarkGray
+    $ch = Read-Host "Alege 1-4"
     switch ($ch) {
         "1" { Invoke-TransformRpu }
-        "2" { Invoke-RemuxContainer }
-        "3" { Invoke-InspectMetadata }
-        "4" { Invoke-Hdr10PlusToDv }
-        "5" { return }
+        "2" { Invoke-InspectMetadata }
+        "3" { Invoke-Hdr10PlusToDv }
+        "4" { return }
         default { Write-Host "Optiune invalida." -ForegroundColor Red }
     }
 }
@@ -2976,11 +3121,20 @@ if ($fileCount -eq 0) { Write-Host "Nu am gasit fisiere." -ForegroundColor Red; 
 # Daca utilizatorul alege Verifica sau Iesire, nu mai parcurge intrebarile
 # ══════════════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Telemetrie video  5-Import GPS extern  6-Trim & Concat  7-HDR/DV tools  8-Burn-in (HUD/SRT/ASS/Image)  9-Iesire" -ForegroundColor Cyan
+Write-Host "1-Encode video+audio  2-Encode doar audio (video copy)  3-Verifica media  4-Telemetrie video  5-Import GPS extern  6-Trim & Concat  7-Mux tools (remux/demux)  8-HDR/DV tools  9-Burn-in (HUD/SRT/ASS/Image)  10-Iesire" -ForegroundColor Cyan
 $mainChoice = Read-Host "Selecteaza"
-if ($mainChoice -eq "9") { exit }
-if ($mainChoice -eq "7") { Invoke-HdrDvTools; exit }
-if ($mainChoice -eq "8") {
+if ($mainChoice -eq "10") { exit }
+if ($mainChoice -eq "8") { Invoke-HdrDvTools; exit }
+if ($mainChoice -eq "7") {
+    $muxScript = Join-Path $PSScriptRoot "av_mux.ps1"
+    if (-not (Test-Path $muxScript)) {
+        Write-Host "[EROARE] av_mux.ps1 nu a fost gasit langa av_encode.ps1" -ForegroundColor Red
+        exit 1
+    }
+    & pwsh -NoProfile -File $muxScript
+    exit $LASTEXITCODE
+}
+if ($mainChoice -eq "9") {
     $burninScript = Join-Path $PSScriptRoot "av_burnin.ps1"
     if (-not (Test-Path $burninScript)) {
         Write-Host "[EROARE] av_burnin.ps1 nu a fost gasit langa av_encode.ps1" -ForegroundColor Red

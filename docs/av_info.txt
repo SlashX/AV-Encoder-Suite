@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v48
+  Documentatie Setup & Utilizare — v49
 ═══════════════════════════════════════════════════════════════
 
 
@@ -15,15 +15,16 @@ CUPRINS
   7. Optiuni detaliate
   8. Dialoguri automate (HDR / DV / LOG / DJI / HLG / HDR10+)
   9. Trim & Concat pipeline
- 10. HDR/DV Tools (transform / remux / inspect / hybrid)
- 11. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
- 12. Import GPS extern (GPX / FIT / KML)
- 13. Burn-in overlay — HUD telemetrie / SRT / ASS
- 14. Hardware Encode (PS1 + MediaCodec + bash backends)
- 15. Profile system + Tests
- 16. Diferente intre platforme
- 17. Comenzi rapide Termux
- 18. Troubleshooting
+ 10. Mux tools (v49 — Remux container + Demux streams)
+ 11. HDR/DV Tools (transform / inspect / hybrid)
+ 12. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
+ 13. Import GPS extern (GPX / FIT / KML)
+ 14. Burn-in overlay — HUD telemetrie / SRT / ASS / Image subs
+ 15. Hardware Encode (PS1 + MediaCodec + bash backends)
+ 16. Profile system + Tests
+ 17. Diferente intre platforme
+ 18. Comenzi rapide Termux
+ 19. Troubleshooting
 
 
 ═══════════════════════════════════════════════════════════════
@@ -234,16 +235,17 @@ CUPRINS
     Windows:
       cd src; .\av_encode.ps1
 
-  MENIU PRINCIPAL (8 optiuni, identic pe toate platformele):
+  MENIU PRINCIPAL (10 optiuni, identic pe toate platformele):
     1) Encode video + audio
     2) Encode doar audio (video stream copy)
     3) Verifica fisiere media (analiza + CSV)
     4) Telemetrie video — DJI / GoPro / Sony / Garmin / QuickTime
     5) Import GPS extern — GPX / FIT / KML
     6) Trim & Concat — trim / concat / pipeline / batch trim
-    7) HDR/DV tools — transform RPU / remux / inspect / HDR10+ → DV
-    8) Burn-in HUD overlay — telemetrie HUD / subtitrari SRT / ASS
-    9) Anulare / iesire
+    7) Mux tools — remux container + demux streams (v49)
+    8) HDR/DV tools — transform RPU / inspect / HDR10+ → DV
+    9) Burn-in HUD overlay — telemetrie HUD / subtitrari SRT / ASS / Image
+   10) Anulare / iesire
 
   FISIERE OUTPUT:
     Termux:        /storage/emulated/0/Media/OutputVideos/
@@ -947,21 +949,264 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-10. HDR/DV TOOLS (v44/v45 — meniu principal opt 7)
+10. MUX TOOLS (v49 — meniu principal opt 7)
 ═══════════════════════════════════════════════════════════════
 
-  Submeniu pentru operatii metadata-only / container-only — toate
-  FARA re-encode video.
+  Script: av_mux.sh + av_mux.ps1 (mirror complet bash↔PS1).
+  Sub-meniu intern:
+    1) Remux container — pack streams in alt container (no re-encode)
+    2) Demux streams   — extract streams individuale (no re-encode)
+    3) Anulare
 
-  Submeniu (5 optiuni dupa v45):
+  Ambele flow-uri sunt lossless (-c copy) — operatii pe bitstream.
+
+  ─── 10.1. Formate suportate (input — comune remux + demux) ───
+
+  Input (10):
+    mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
+
+  Acopera:
+    - Containerele moderne mainstream: mkv, mp4, m4v, mov, webm
+    - Blu-ray: m2ts / mts / ts (BDMV/STREAM/*.m2ts)
+    - DVD: vob (VIDEO_TS/VTS_*.VOB — pentru titluri cu chunks multiple,
+      foloseste mai intai Trim & Concat pentru concatenare)
+    - Broadcast / profesional: mxf (DaVinci, Avid, Final Cut export)
+    - Apple ecosystem: m4v (iTunes / Apple TV)
+
+  Output remux (4):
+    mkv  - permisiv, recomandat pentru streams diverse
+    mp4  - distribute / web / mobile
+    mov  - Apple ecosystem (Final Cut, QuickTime)
+    webm - web open (cel mai restrictiv: VP8/VP9/AV1 + Opus/Vorbis + WebVTT)
+
+  Output demux: per-stream wrapping uniform (mkv pentru video, mka
+  pentru audio, ext nativ pentru subtitrari, xml pentru chapters).
+  Detalii in 10.B.
+
+
+  ═══════════════════════════════════════════════════════════════
+  PARTEA A — REMUX CONTAINER (sub-opt 1)
+  ═══════════════════════════════════════════════════════════════
+
+  ─── 10.2. Remux: flux complet ───
+
+    1. Scan: OutputVideos/ + InputVideos/ pentru extensiile suportate
+       (exclude *_remux pentru a evita re-procesarea)
+    2. Selectie fisiere (index unic / lista / interval / ALL)
+    3. Pick container tinta (o data pentru tot batch-ul)
+    4. Per fisier:
+       a) ffprobe enumerate: video + audio + subtitle + attachments + chapters
+       b) Display tabular pe categorii cu warn-uri incompat per stream
+       c) 5 prompt-uri selectie:
+          - Video (auto-select daca e unic)
+          - Audio (index/lista/ALL/NONE)
+          - Subtitle (index/lista/ALL/NONE; convert mov_text marcat cu →)
+          - Attachments (D/n — doar MKV preserva)
+          - Chapters (D/n)
+       d) Pre-flight: 0=ok / 1=warn (continue) / 2=fail (abort)
+       e) Build ffmpeg cu -map 0:v:N + -map 0:a:N + -map 0:s:N (drop sarit)
+       f) Run cu progress + tag:v (hvc1/av01/avc1) + faststart (mp4/mov)
+    5. Output: OutputVideos/<name>_remux.<ext>
+    6. Batch summary: Total / OK / Skip / Fail
+
+  ─── 10.3. Sintaxa selectie (comuna remux + demux) ───
+
+    Pentru toate prompt-urile stream:
+      1            - un singur index
+      1,3,5        - lista
+      1-3          - interval
+      1,3-5        - combinat
+      ALL          - selecteaza toate (implicit, daca dai Enter)
+      NONE         - elimina toate (dezactivat pentru video pe remux)
+
+  ─── 10.4. Remux: compat matrix per target container ───
+
+    Per stream, dispatcher `remux_stream_compat(codec, type, target)`:
+      "copy"             - stream pastrat unchanged
+      "convert:mov_text" - subtitrare text convertita (srt/ass → mov_text)
+      "drop"             - stream incompatibil cu container-ul tinta
+
+    MKV: permisiv — totul OK, atasamente preservate.
+
+    MP4:
+      Video: hevc, h264, av1, mpeg4, mpeg2video, vp9, prores
+      Audio: aac, ac3, eac3, mp3, opus, alac, flac
+      Sub:   mov_text, tx3g (text → convert; bitmap → drop)
+      Drop:  attachments (font/imagine), DJI djmd/dbgi
+      Audio strip: TrueHD, DTS-HD, PCM_S24LE/S16BE (lossless mari)
+
+    MOV:
+      Video: hevc, h264, prores, dnxhd, dnxhr, mpeg4, mjpeg
+      Audio: aac, ac3, mp3, alac, pcm_s16be/s24be/s16le/s24le
+      Sub:   mov_text (text → convert; bitmap → drop)
+      ABORT: eac3 (incompat container-level — preflight level 2)
+      Drop:  opus, truehd, dts, attachments
+
+    WEBM (cel mai restrictiv):
+      Video: vp8, vp9, av1 (orice altceva → preflight FAIL abort)
+      Audio: opus, vorbis (orice altceva → drop)
+      Sub:   webvtt (orice altceva → drop)
+      Drop:  attachments
+
+  ─── 10.5. Remux: pre-flight nivele ───
+
+    Level 0 (ok)    - niciun warning, continui silent
+    Level 1 (warn)  - cazuri "lossy compat" (strip sub/audio/attach),
+                      afiseaza warn-uri si continui automat
+    Level 2 (fail)  - incompatibilitate hard (eac3+mov, video non-VP/AV1+webm,
+                      container necunoscut) → abort fisier
+
+  ─── 10.6. Remux: cazuri practice ───
+
+    1) MKV Blu-ray remux (filme) → MP4 pentru iPad/iPhone:
+         hevc + truehd 5.1 + eng/ro subs + 24 fonts → MP4
+         Selectezi: video 1, audio 1 (eng dub) sau 2 (ro dub),
+                    sub 2 (ro) → convert mov_text
+         Attachments: strip (24 fonts → drop, MP4 nu suporta)
+         Output: file_remux.mp4 cu tag:v hvc1 + faststart
+
+    2) MTS de pe Sony cam → MP4 pentru editor:
+         m2ts container + h264 + ac3 + djmd track
+         Selectezi: video 1, audio 1, sub NONE
+         DJI track: strip (incompat MP4) — preflight level 1 warn
+         Output: file_remux.mp4
+
+    3) MKV → WEBM pentru web (gating strict):
+         Daca video e hevc → preflight FAIL (WEBM doar VP8/VP9/AV1)
+         Daca video e av1 → audio re-routing: eac3/aac → drop
+                          → trebuie sa ai stream opus/vorbis pentru audio
+
+    4) Subtitle-only swap:
+         Acelasi container, pastrezi tot, dezbifezi sub-urile pe care
+         nu le vrei. Output: <name>_remux.mkv
+
+  ─── 10.7. Remux: limitari cunoscute ───
+
+    - VOB multi-chunk (VIDEO_TS/VTS_01_1.VOB + VTS_01_2.VOB ...) trebuie
+      concatenate intai via Trim & Concat (flow demuxer); apoi pe rezultat
+      faci remux.
+    - Pure remux = no re-encode. Daca un stream e incompatibil cu target-ul
+      si NU exista un fallback "copy" sau "convert", el e drop-uit. Pentru
+      conversie audio (ex. eac3 → ac3 pentru MOV), foloseste meniul Encode
+      principal cu audio-only.
+    - Sintaxa range (`1-3`) pe selectie acopera doar consecutive; pentru
+      lista non-consecutiva ("1,3,5") foloseste virgula.
+
+
+  ═══════════════════════════════════════════════════════════════
+  PARTEA B — DEMUX STREAMS (sub-opt 2)
+  ═══════════════════════════════════════════════════════════════
+
+  ─── 10.8. Demux: strategie smart per-codec uniform wrapping ───
+
+  Demux NU dezambaleaza la bitstream pur (.hevc, .h264, .ac3) — in schimb
+  fiecare stream e wrapped intr-un container minimal care pastreaza toate
+  metadata + signaling-ul, lossless. Avantajul: poti reasambla curat in
+  mkvtoolnix, ffmpeg, sau MKVToolNix GUI fara pierdere.
+
+  Strategie:
+    Video    → `.mkv`  (pastreaza HDR10/HDR10+/DV RPU/timecode/color metadata)
+    Audio    → `.mka`  (Matroska audio; pastreaza Atmos / E-AC3 obj data /
+                        TrueHD metadata + tag-uri container language/title)
+    Subtitle → ext nativ + lang suffix:
+                  subrip      → .srt
+                  ass/ssa     → .ass
+                  webvtt      → .vtt
+                  PGS         → .sup        (Bluray, bitmap)
+                  dvd_subtitle→ .sub        (DVD VobSub, bitmap)
+                  mov_text/tx3g → .srt      (auto-convert text)
+    Cover    → ext nativ pentru attached_pic disposition:
+                  mjpeg/jpeg  → .jpg
+                  png/webp/bmp → .png/.webp/.bmp
+    Chapters → `<name>_chapters.xml` (Matroska XML format — DOCTYPE +
+               EditionEntry + ChapterAtom; import direct in mkvtoolnix)
+    Attach   → folder `<name>_attach/` (fonts, imagini)
+    Data     → folder `<name>_data/` opt-in (DJI djmd/dbgi, timecode
+               binary) — pentru parsing real GPS/gauges foloseste opt 4
+               Telemetrie din meniul principal
+
+  ─── 10.9. Demux: output naming ───
+
+    Video:     <name>_v<idx>_<codec>.mkv
+                 ex: clip_v0_hevc.mkv
+    Audio:     <name>_a<idx>_<codec>_<lang>.mka
+                 ex: movie_a0_eac3_eng.mka, movie_a1_dts_ro.mka
+    Subtitle:  <name>_s<idx>_<codec>_<lang>.<ext>
+                 ex: movie_s0_subrip_eng.srt, movie_s1_pgs_ro.sup
+    Cover:     <name>_cover_<idx>.<ext>
+                 ex: movie_cover_0.jpg
+    Chapters:  <name>_chapters.xml
+    Folders:   <name>_attach/  +  <name>_data/
+
+  Toate output-urile sunt in OutputVideos/. Sursa neatinsa.
+
+  ─── 10.10. Demux: flux complet ───
+
+    1. Scan: OutputVideos/ + InputVideos/ (exclude *_remux, *_v*_*, *_a*_*,
+       *_s*_*, *_cover_*)
+    2. Selectie fisiere (index unic / lista / interval / ALL)
+    3. Per fisier:
+       a) ffprobe enumerate: video + audio + subtitle + cover + data +
+          attachments + chapters
+       b) Display tabular pe categorii
+       c) Prompt-uri selectie per categorie (sintaxa identica cu remux)
+       d) Toggle opt-in pentru data streams + warning catre Telemetrie
+       e) Extract -c copy per stream cu wrapper container corespunzator
+       f) Chapters: ffprobe show_chapters JSON → Matroska XML (awk in bash,
+          ConvertFrom-Json + InvariantCulture in PS1)
+       g) Attachments: ffmpeg -dump_attachment cu cwd in <name>_attach/
+    4. Batch summary: Total / OK / Skip / Fail (per-fisier rollup)
+
+  ─── 10.11. Demux: cazuri practice ───
+
+    1) Bluray MKV cu multi-audio + multi-sub → arhivare individuala:
+         Selectezi: video ALL, audio ALL, sub ALL, cover ALL, chapters Y
+         Output: movie_v0_hevc.mkv + movie_a0_truehd_eng.mka +
+                 movie_a1_dts_ro.mka + movie_s0_subrip_eng.srt +
+                 movie_s1_pgs_ro.sup + movie_chapters.xml
+         Reasamblare ulterioara in mkvtoolnix GUI sau via:
+           ffmpeg -i video.mkv -i audio.mka -i sub.srt -i chapters.xml \
+                  -map 0 -map 1 -map 2 -c copy out.mkv
+
+    2) DJI MP4 cu telemetrie + cover → separare:
+         video (hevc) + audio (aac) + djmd track + cover
+         Selectezi: video 1, audio 1, data Y (opt-in)
+         Output: clip_v0_hevc.mkv + clip_a0_aac_und.mka + clip_data/
+         Nota: pentru parsing real GPS, foloseste opt 4 Telemetrie
+
+    3) Recoltare cover art din audio file:
+         Album MKA cu cover embedded
+         Selectezi doar cover (Y), restul N
+         Output: album_cover_0.jpg
+
+  ─── 10.12. Demux: limitari cunoscute ───
+
+    - Wrapping in MKV/MKA NU schimba codec-ul; daca tinta finala e MP4
+      pentru un device specific, foloseste apoi sub-opt 1 (Remux) pe
+      output-urile demux pentru re-pack final.
+    - Bitmap subs (PGS .sup, VobSub .sub) raman in formatul lor — pentru
+      OCR text foloseste tool extern (Subtitle Edit, SubExtractor).
+    - Data streams raman binare opaque; parsing-ul GPS/gauges se face in
+      opt 4 Telemetrie (DJI/GoPro/Sony/Garmin/QuickTime).
+
+
+═══════════════════════════════════════════════════════════════
+11. HDR/DV TOOLS (v44/v45 — meniu principal opt 8)
+═══════════════════════════════════════════════════════════════
+
+  Submeniu pentru operatii metadata-only — toate FARA re-encode video.
+  Remux container a fost mutat in scriptul standalone av_mux (v49 —
+  meniu principal opt 7, sub-opt 1). Aici raman doar fluxurile
+  RPU/inspect/HDR10+→DV.
+
+  Submeniu (4 optiuni dupa v49):
     1) Transform RPU profile      (v44)
-    2) Remux container            (v44)
-    3) Inspect metadata           (v44)
-    4) HDR10+ → DV hybrid         (v45)
-    5) Inapoi
+    2) Inspect metadata           (v44)
+    3) HDR10+ → DV hybrid         (v45)
+    4) Inapoi
 
 
-  ─── 10.1. Transform RPU profile ───
+  ─── 11.1. Transform RPU profile ───
 
   Cazuri tipice:
     - Ai DV Profile 7 (BL+EL+RPU) si vrei sa-l simplifici la 8.1
@@ -984,28 +1229,7 @@ CUPRINS
   100% lossless pe video — modifici DOAR metadata Dolby Vision.
 
 
-  ─── 10.2. Remux container (MKV ↔ MP4/MOV) ───
-
-  Pre-flight automat verifica compatibilitatea:
-
-    Container tinta MP4/MOV:
-      eac3 + .mov          → FAIL (level 2): converteste audio sau alege .mp4
-      SRT/ASS/SSA          → WARN (level 1): vor fi convertite la mov_text
-                                              sau strip-uite la fallback
-      track-uri DJI        → WARN (level 1): vor fi strip-uite
-
-    Container tinta MKV: permisiv (level 0 mereu).
-
-  Tag:v fix automat la MP4/MOV:
-    HEVC → -tag:v hvc1 (in loc de hev1, pentru playere Apple/streaming)
-    AV1  → -tag:v av01
-    H264 → -tag:v avc1
-    + faststart pentru toate (moov atom la inceput)
-
-  Retry automat fara subtitrari daca primul pass esueaza pe SRT/ASS.
-
-
-  ─── 10.3. Inspect metadata (read-only) ───
+  ─── 11.2. Inspect metadata (read-only) ───
 
   Dump rapid pentru diagnoza:
     - ffprobe summary (codec, dimensiuni, color_transfer/primaries)
@@ -1013,7 +1237,7 @@ CUPRINS
     - HDR10+ scene descriptors count
 
 
-  ─── 10.4. HDR10+ → DV hybrid (v45, no re-encode) ───
+  ─── 11.3. HDR10+ → DV hybrid (v45, no re-encode) ───
 
   Sintetizeaza un strat DV din metadata HDR10+ existenta si il
   injecteaza in bitstream FARA re-encode.
@@ -1033,7 +1257,7 @@ CUPRINS
   level cand sursa are doar HDR10+.
 
 
-  ─── 10.5. Sven-pke forks pentru AV1 ───
+  ─── 11.4. Sven-pke forks pentru AV1 ───
 
   Optiunile DV / HDR10+ pe surse sau target-uri AV1 necesita binare
   dedicate (instalate cu rename ca sa nu intre in coliziune cu cele HEVC):
@@ -1051,7 +1275,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-11. TELEMETRIE MULTI-BRAND (v40 — meniu principal opt 4)
+12. TELEMETRIE MULTI-BRAND (v40 — meniu principal opt 4)
 ═══════════════════════════════════════════════════════════════
 
   Extragere unificata telemetrie din video pentru 5 branduri majore.
@@ -1141,7 +1365,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-12. IMPORT GPS EXTERN (GPX/FIT/KML — meniu principal opt 5)
+13. IMPORT GPS EXTERN (GPX/FIT/KML — meniu principal opt 5)
 ═══════════════════════════════════════════════════════════════
 
   Necesita Python3.
@@ -1169,7 +1393,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-13. BURN-IN OVERLAY (v48 — meniu principal opt 8)
+14. BURN-IN OVERLAY (v48 — meniu principal opt 9)
 ═══════════════════════════════════════════════════════════════
 
   Script separat: src/av_burnin.sh + src/av_burnin.ps1 (mirror complet
@@ -1343,7 +1567,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-14. HARDWARE ENCODE
+15. HARDWARE ENCODE
 ═══════════════════════════════════════════════════════════════
 
   ─── 14.1. Windows PS1 — NVENC / QSV / AMF (v35) ───
@@ -1504,7 +1728,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-15. PROFILE SYSTEM + TESTS (v43)
+16. PROFILE SYSTEM + TESTS (v43)
 ═══════════════════════════════════════════════════════════════
 
   ─── 15.1. Profile .conf ───
@@ -1615,7 +1839,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-16. DIFERENTE INTRE PLATFORME
+17. DIFERENTE INTRE PLATFORME
 ═══════════════════════════════════════════════════════════════
 
   CE E IDENTIC:
@@ -1645,7 +1869,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-17. COMENZI RAPIDE TERMUX
+18. COMENZI RAPIDE TERMUX
 ═══════════════════════════════════════════════════════════════
 
   NAVIGARE LA SCRIPTURI:
@@ -1686,7 +1910,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-18. TROUBLESHOOTING
+19. TROUBLESHOOTING
 ═══════════════════════════════════════════════════════════════
 
   PROBLEMA: "Permission denied" la rulare script

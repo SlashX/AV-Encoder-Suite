@@ -1482,9 +1482,10 @@ extract_raw_video() {
 # ══════════════════════════════════════════════════════════════════════
 
 # Pre-flight check pentru remux container.
-# $1 = file, $2 = target_container (mp4 | mov | mkv)
+# $1 = file, $2 = target_container (mp4 | mov | mkv | webm)
 # Set: REMUX_PREFLIGHT_NOTES (array), REMUX_PREFLIGHT_LEVEL (0=ok, 1=warn, 2=fail).
 # Return: cod identic cu LEVEL (0/1/2).
+# v49: extins cu reguli pentru webm, image subs (PGS/VobSub), DTS-HD/TrueHD, attachments.
 declare -a REMUX_PREFLIGHT_NOTES
 REMUX_PREFLIGHT_LEVEL=0
 
@@ -1494,41 +1495,236 @@ _remux_preflight() {
     REMUX_PREFLIGHT_LEVEL=0
     target="${target,,}"
 
-    local audio_codec sub_codec codec_tags
-    audio_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name \
+    local video_codec audio_codecs sub_codecs codec_tags
+    video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
         -of csv=p=0 "$file" 2>/dev/null)
-    sub_codec=$(ffprobe -v error -select_streams s:0 -show_entries stream=codec_name \
+    audio_codecs=$(ffprobe -v error -select_streams a -show_entries stream=codec_name \
+        -of csv=p=0 "$file" 2>/dev/null)
+    sub_codecs=$(ffprobe -v error -select_streams s -show_entries stream=codec_name \
         -of csv=p=0 "$file" 2>/dev/null)
     codec_tags=$(ffprobe -v error -show_entries stream=codec_tag_string \
         -of csv=p=0 "$file" 2>/dev/null)
 
-    local dji_present=0
+    local dji_present=0 attach_count=0
     echo "$codec_tags" | grep -qiE "^(djmd|dbgi)" && dji_present=1
+    attach_count=$(ffprobe -v error -select_streams t -show_entries stream=index \
+        -of csv=p=0 "$file" 2>/dev/null | grep -c . || true)
 
     case "$target" in
-        mp4|mov)
-            if [[ "$target" == "mov" && "$audio_codec" == "eac3" ]]; then
+        mp4)
+            echo "$audio_codecs" | grep -qiE "^(truehd|dts|pcm_s24le|pcm_s16be)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Audio lossless (TrueHD/DTS-HD/PCM) — incompatibil cu MP4, va fi strip-uit")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            echo "$sub_codecs" | grep -qiE "^(subrip|srt|ass|ssa)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Subtitrari text necompatibile direct cu MP4 — vor fi convertite la mov_text")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            echo "$sub_codecs" | grep -qiE "^(dvd_subtitle|hdmv_pgs_subtitle)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Subtitrari bitmap (PGS/VobSub) incompatibile cu MP4 — vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            [ "$dji_present" -eq 1 ] && {
+                REMUX_PREFLIGHT_NOTES+=("Track-uri DJI (djmd/dbgi) incompatibile cu MP4 — vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            [ "$attach_count" -gt 0 ] && {
+                REMUX_PREFLIGHT_NOTES+=("$attach_count atasament(e) (fonts/imagini) — doar MKV suporta atasamente, vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            ;;
+        mov)
+            [[ "$audio_codecs" =~ eac3 ]] && {
                 REMUX_PREFLIGHT_NOTES+=("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4")
                 REMUX_PREFLIGHT_LEVEL=2
-            fi
-            if [[ -n "$sub_codec" ]] && echo "$sub_codec" | grep -qiE "^(subrip|srt|ass|ssa)$"; then
-                REMUX_PREFLIGHT_NOTES+=("Subtitrari $sub_codec necompatibile direct cu MP4/MOV — vor fi convertite la mov_text sau strip-uite")
+            }
+            echo "$audio_codecs" | grep -qiE "^(truehd|dts|opus)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — va fi strip-uit")
                 [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
-            fi
-            if [ "$dji_present" -eq 1 ]; then
-                REMUX_PREFLIGHT_NOTES+=("Track-uri DJI (djmd/dbgi) detectate — incompatibile cu .mp4 (vor fi strip-uite)")
+            }
+            echo "$sub_codecs" | grep -qiE "^(subrip|srt|ass|ssa)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Subtitrari text vor fi convertite la mov_text pentru MOV")
                 [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            echo "$sub_codecs" | grep -qiE "^(dvd_subtitle|hdmv_pgs_subtitle)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Subtitrari bitmap (PGS/VobSub) incompatibile cu MOV — vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            [ "$dji_present" -eq 1 ] && {
+                REMUX_PREFLIGHT_NOTES+=("Track-uri DJI (djmd/dbgi) incompatibile cu MOV — vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            [ "$attach_count" -gt 0 ] && {
+                REMUX_PREFLIGHT_NOTES+=("$attach_count atasament(e) — doar MKV suporta atasamente, vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            ;;
+        webm)
+            # WEBM e foarte restrictiv: doar VP8/VP9/AV1 + Opus/Vorbis + WebVTT
+            if [[ -n "$video_codec" ]] && ! echo "$video_codec" | grep -qiE "^(vp8|vp9|av1)$"; then
+                REMUX_PREFLIGHT_NOTES+=("Video '$video_codec' incompatibil cu WEBM (doar VP8/VP9/AV1 suportate) — abort")
+                REMUX_PREFLIGHT_LEVEL=2
             fi
+            echo "$audio_codecs" | grep -qiE "^(aac|ac3|eac3|mp3|dts|truehd|alac|pcm_s16le|pcm_s24le)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Audio incompatibil cu WEBM (doar Opus/Vorbis suportate) — va fi strip-uit")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            echo "$sub_codecs" | grep -qiE "^(subrip|srt|ass|ssa|dvd_subtitle|hdmv_pgs_subtitle|mov_text)$" && {
+                REMUX_PREFLIGHT_NOTES+=("Subtitrari incompatibile cu WEBM (doar WebVTT) — vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
+            [ "$attach_count" -gt 0 ] && {
+                REMUX_PREFLIGHT_NOTES+=("$attach_count atasament(e) — WEBM nu suporta, vor fi strip-uite")
+                [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
+            }
             ;;
         mkv)
             : # MKV permisiv — toate codec-urile/track-urile suportate
             ;;
         *)
-            REMUX_PREFLIGHT_NOTES+=("Container '$target' nesuportat (foloseste mp4 / mov / mkv)")
+            REMUX_PREFLIGHT_NOTES+=("Container '$target' nesuportat (foloseste mkv/mp4/mov/webm)")
             REMUX_PREFLIGHT_LEVEL=2
             ;;
     esac
     return $REMUX_PREFLIGHT_LEVEL
+}
+
+# v49: clasificare per-stream pentru target container.
+# $1 = codec_name, $2 = codec_type (video/audio/subtitle/attachment),
+# $3 = target_container (mkv|mp4|mov|webm)
+# Echo: "copy" | "convert:<codec>" | "drop"
+remux_stream_compat() {
+    local codec="$1" ctype="$2" target="$3"
+    codec="${codec,,}"; ctype="${ctype,,}"; target="${target,,}"
+    case "$target" in
+        mkv) echo "copy"; return 0 ;;
+    esac
+    case "$ctype" in
+        video)
+            case "$target" in
+                mp4)
+                    case "$codec" in
+                        hevc|h264|av1|mpeg4|mpeg2video|vp9|prores) echo "copy" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                mov)
+                    case "$codec" in
+                        hevc|h264|prores|dnxhd|dnxhr|mpeg4|mjpeg) echo "copy" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                webm)
+                    case "$codec" in
+                        vp8|vp9|av1) echo "copy" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                *) echo "drop" ;;
+            esac ;;
+        audio)
+            case "$target" in
+                mp4)
+                    case "$codec" in
+                        aac|ac3|eac3|mp3|opus|alac|flac) echo "copy" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                mov)
+                    case "$codec" in
+                        aac|ac3|mp3|alac|pcm_s16be|pcm_s24be|pcm_s16le|pcm_s24le) echo "copy" ;;
+                        eac3|opus|truehd|dts) echo "drop" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                webm)
+                    case "$codec" in
+                        opus|vorbis) echo "copy" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                *) echo "drop" ;;
+            esac ;;
+        subtitle)
+            case "$target" in
+                mp4|mov)
+                    case "$codec" in
+                        mov_text|tx3g) echo "copy" ;;
+                        subrip|srt|ass|ssa) echo "convert:mov_text" ;;
+                        *) echo "drop" ;;
+                    esac ;;
+                webm)
+                    case "$codec" in webvtt) echo "copy" ;; *) echo "drop" ;; esac ;;
+                *) echo "drop" ;;
+            esac ;;
+        attachment) echo "drop" ;;
+        *) echo "drop" ;;
+    esac
+}
+
+# v49: enumerate toate stream-urile + chapters + attachments.
+# $1 = file
+# Populeaza arrays globale:
+#   REMUX_STREAMS[idx]="type|codec|lang|title|extra"
+#     type: video|audio|subtitle|attachment
+#     extra: pentru video "WxH"; pentru audio "channels"; altele ""
+#   REMUX_VIDEO_INDICES[] / REMUX_AUDIO_INDICES[] / REMUX_SUB_INDICES[] / REMUX_ATTACH_INDICES[]
+#     valori absolute (stream_index din ffprobe)
+#   REMUX_CHAPTER_COUNT (int)
+declare -a REMUX_STREAMS=()
+declare -a REMUX_VIDEO_INDICES=()
+declare -a REMUX_AUDIO_INDICES=()
+declare -a REMUX_SUB_INDICES=()
+declare -a REMUX_ATTACH_INDICES=()
+REMUX_CHAPTER_COUNT=0
+
+remux_enumerate_streams() {
+    local file="$1"
+    REMUX_STREAMS=(); REMUX_VIDEO_INDICES=(); REMUX_AUDIO_INDICES=()
+    REMUX_SUB_INDICES=(); REMUX_ATTACH_INDICES=(); REMUX_CHAPTER_COUNT=0
+
+    local raw idx codec w h lang title ch
+
+    # Video: index,codec_name,width,height,language,title
+    raw=$(ffprobe -v error -select_streams v -show_entries \
+        stream=index,codec_name,width,height:stream_tags=language,title \
+        -of csv=p=0 "$file" 2>/dev/null || true)
+    while IFS=',' read -r idx codec w h lang title; do
+        [ -z "$idx" ] && continue
+        title="${title%$'\r'}"
+        REMUX_STREAMS[$idx]="video|${codec}|${lang}|${title}|${w}x${h}"
+        REMUX_VIDEO_INDICES+=("$idx")
+    done <<< "$raw"
+
+    # Audio: index,codec_name,channels,language,title
+    raw=$(ffprobe -v error -select_streams a -show_entries \
+        stream=index,codec_name,channels:stream_tags=language,title \
+        -of csv=p=0 "$file" 2>/dev/null || true)
+    while IFS=',' read -r idx codec ch lang title; do
+        [ -z "$idx" ] && continue
+        title="${title%$'\r'}"
+        REMUX_STREAMS[$idx]="audio|${codec}|${lang}|${title}|${ch}ch"
+        REMUX_AUDIO_INDICES+=("$idx")
+    done <<< "$raw"
+
+    # Subtitle: index,codec_name,language,title
+    raw=$(ffprobe -v error -select_streams s -show_entries \
+        stream=index,codec_name:stream_tags=language,title \
+        -of csv=p=0 "$file" 2>/dev/null || true)
+    while IFS=',' read -r idx codec lang title; do
+        [ -z "$idx" ] && continue
+        title="${title%$'\r'}"
+        REMUX_STREAMS[$idx]="subtitle|${codec}|${lang}|${title}|"
+        REMUX_SUB_INDICES+=("$idx")
+    done <<< "$raw"
+
+    # Attachments: index,codec_name + filename tag
+    raw=$(ffprobe -v error -select_streams t -show_entries \
+        stream=index,codec_name:stream_tags=filename \
+        -of csv=p=0 "$file" 2>/dev/null || true)
+    while IFS=',' read -r idx codec title; do
+        [ -z "$idx" ] && continue
+        title="${title%$'\r'}"
+        REMUX_STREAMS[$idx]="attachment|${codec}||${title}|"
+        REMUX_ATTACH_INDICES+=("$idx")
+    done <<< "$raw"
+
+    REMUX_CHAPTER_COUNT=$(ffprobe -v error -show_chapters -of csv=p=0 "$file" 2>/dev/null | grep -c . || true)
+    return 0
 }
 
 # Re-mux un container, fix tag:v pe MP4/MOV, +faststart, no re-encode.
