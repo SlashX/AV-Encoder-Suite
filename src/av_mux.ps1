@@ -1,10 +1,11 @@
-# av_mux.ps1 — Mux tools (v49) — PS1 mirror al av_mux.sh
-# Submeniu: 1) Remux 2) Demux 3) Anulare
-# Input:  mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
+# av_mux.ps1 — Mux tools (v50) — PS1 mirror al av_mux.sh
+# Submeniu: 1) Remux 2) Demux 3) Mux 4) Anulare
+# Input remux/demux: mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
 # Output remux: <name>_remux.<ext>
 # Output demux: <name>_v<idx>_<codec>.mkv / <name>_a<idx>_<codec>_<lang>.mka /
 #               <name>_s<idx>_<codec>_<lang>.<ext> / <name>_cover_<idx>.<ext> /
 #               <name>_chapters.xml / <name>_attach/* / <name>_data/* (opt-in)
+# Output mux:   <video_basename>_mux.<ext>
 
 $ErrorActionPreference = "Stop"
 
@@ -211,8 +212,8 @@ function Get-MuxCandidates {
             $ext = $_.Extension.TrimStart('.').ToLowerInvariant()
             if ($SupportedInputExt -contains $ext) {
                 $name = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-                # Exclude propriile output-uri remux/demux
-                if ($name -notlike "*_remux" -and $name -notmatch '_v\d+_' -and $name -notmatch '_a\d+_' -and $name -notmatch '_s\d+_' -and $name -notlike "*_cover_*") {
+                # Exclude propriile output-uri mux/remux/demux
+                if ($name -notlike "*_mux" -and $name -notlike "*_remux" -and $name -notmatch '_v\d+_' -and $name -notmatch '_a\d+_' -and $name -notmatch '_s\d+_' -and $name -notlike "*_cover_*") {
                     $list.Add([PSCustomObject]@{
                         Path = $_.FullName; Name = $_.Name; Label = "[$($d.Label)] $($_.Name)"
                     }) | Out-Null
@@ -866,6 +867,500 @@ function Invoke-DemuxFlow {
 }
 
 # ══════════════════════════════════════════════════════════════════════
+# MUX FLOW (v50)
+# ══════════════════════════════════════════════════════════════════════
+# Manual selection. Scan doar InputVideos. Output: <video_base>_mux.<ext>
+# Streams ordering = ordinea introdusa de user in prompts.
+
+$MuxExtVideo    = @("mkv","webm","mp4","m4v","mov","ts","m2ts","mts","vob","mxf","hevc","h265","h264","265","264","av1","ivf","vp9")
+$MuxExtAudio    = @("mka","m4a","eac3","ac3","aac","flac","opus","mp3","wav","oga","ogg")
+$MuxExtSub      = @("srt","ass","ssa","vtt","sup","idx")
+$MuxExtChapters = @("xml","txt")
+$MuxExtAttach   = @("ttf","otf","ttc","png","jpg","jpeg","webp","bmp")
+
+# Scan $InputDir pentru fisiere matching extensiile date.
+# Exclude propriile output-uri (_mux/_remux/_v<idx>_/etc).
+function Get-MuxInputFiles {
+    param([string[]]$Extensions)
+    $list = New-Object System.Collections.Generic.List[object]
+    if (-not (Test-Path $InputDir)) { return ,$list }
+    Get-ChildItem -LiteralPath $InputDir -File | ForEach-Object {
+        $ext = $_.Extension.TrimStart('.').ToLowerInvariant()
+        if ($Extensions -contains $ext) {
+            $name = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+            if ($name -like "*_mux" -or $name -like "*_remux") { return }
+            if ($name -match '_v\d+_' -or $name -match '_a\d+_' -or $name -match '_s\d+_') { return }
+            if ($name -match '_cover_\d+') { return }
+            $list.Add([PSCustomObject]@{ Path = $_.FullName; Name = $_.Name }) | Out-Null
+        }
+    }
+    return ,$list
+}
+
+# Codec detect pe input (raw stream sau container).
+function Get-MuxCodec {
+    param([string]$File, [string]$Type)
+    $spec = switch ($Type) { "video" {"v:0"} "audio" {"a:0"} "subtitle" {"s:0"} default {"v:0"} }
+    $c = ((& ffprobe -v error -select_streams $spec -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String).Trim()
+    return $c.ToLowerInvariant()
+}
+
+# Extract lang code (2-3 letter ISO) din numele fisierului.
+# Acceptate: name.eng.srt | name_eng.mka. Returneaza string gol daca nu detecteaza.
+function Get-MuxLangFromFilename {
+    param([string]$File)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($File)
+    if ($base -match '\.([a-z]{2,3})$') { return $Matches[1] }
+    if ($base -match '_([a-z]{2,3})$') {
+        $lang = $Matches[1]
+        $exclude = @("mkv","mp4","mov","aac","ac3","mp3","srt","ass","sup","idx","sub","hd","sd","hq","lq")
+        if ($exclude -notcontains $lang) { return $lang }
+    }
+    return ""
+}
+
+# Converteste Matroska chapter XML (output din Demux opt 2) la FFMETADATA1.
+# ffmpeg nu citeste XML chapter direct, doar FFMETADATA. Returneaza $true daca OK.
+function Convert-XmlChaptersToFFMetadata {
+    param([string]$XmlIn, [string]$OutFile)
+    if (-not (Test-Path -LiteralPath $XmlIn)) { return $false }
+    try {
+        [xml]$doc = Get-Content -LiteralPath $XmlIn -Raw -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine(";FFMETADATA1")
+    $atoms = $doc.SelectNodes("//ChapterAtom")
+    if ($null -eq $atoms -or $atoms.Count -eq 0) { return $false }
+    $emitted = 0
+    foreach ($a in $atoms) {
+        $tsStart = $a.ChapterTimeStart
+        $tsEnd = $a.ChapterTimeEnd
+        if (-not $tsStart -or -not $tsEnd) { continue }
+        # HH:MM:SS.fff... -> millisec
+        $partsS = $tsStart -split ':'
+        $partsE = $tsEnd -split ':'
+        if ($partsS.Count -ne 3 -or $partsE.Count -ne 3) { continue }
+        $hS = 0; $mS = 0; $sS = 0.0
+        $hE = 0; $mE = 0; $sE = 0.0
+        [void][int]::TryParse($partsS[0], [ref]$hS)
+        [void][int]::TryParse($partsS[1], [ref]$mS)
+        [void][double]::TryParse($partsS[2], [System.Globalization.NumberStyles]::Float, $inv, [ref]$sS)
+        [void][int]::TryParse($partsE[0], [ref]$hE)
+        [void][int]::TryParse($partsE[1], [ref]$mE)
+        [void][double]::TryParse($partsE[2], [System.Globalization.NumberStyles]::Float, $inv, [ref]$sE)
+        $startMs = [int][Math]::Round(($hS * 3600 + $mS * 60 + $sS) * 1000)
+        $endMs   = [int][Math]::Round(($hE * 3600 + $mE * 60 + $sE) * 1000)
+        $title = ""
+        $disp = $a.SelectSingleNode("ChapterDisplay/ChapterString")
+        if ($disp) { $title = [string]$disp.InnerText }
+        [void]$sb.AppendLine("")
+        [void]$sb.AppendLine("[CHAPTER]")
+        [void]$sb.AppendLine("TIMEBASE=1/1000")
+        [void]$sb.AppendLine("START=$startMs")
+        [void]$sb.AppendLine("END=$endMs")
+        if ($title) {
+            # Escape FFMETADATA: \ ; # =
+            $titleEsc = $title -replace '\\','\\\\' -replace ';','\;' -replace '#','\#' -replace '=','\='
+            [void]$sb.AppendLine("title=$titleEsc")
+        }
+        $emitted++
+    }
+    if ($emitted -eq 0) { return $false }
+    [System.IO.File]::WriteAllText($OutFile, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+    return (Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 0)
+}
+
+# Mime type pentru attachments (MKV).
+function Get-MuxAttachMime {
+    param([string]$Ext)
+    switch ($Ext.ToLowerInvariant()) {
+        "ttf" { return "application/x-truetype-font" }
+        "otf" { return "application/vnd.ms-opentype" }
+        "ttc" { return "font/collection" }
+        "png" { return "image/png" }
+        "jpg" { return "image/jpeg" }
+        "jpeg" { return "image/jpeg" }
+        "webp" { return "image/webp" }
+        "bmp" { return "image/bmp" }
+        default { return "application/octet-stream" }
+    }
+}
+
+# Display lista + selectie ordonata.
+# Returneaza array de Path-uri (in ordinea introdusa de user) sau $null pe eroare,
+# sau @() pentru NONE (cand AllowNone=true).
+function Read-MuxPickList {
+    param(
+        [object]$Files,        # System.Collections.Generic.List sau array
+        [string]$Mode,         # "single" / "multi"
+        [bool]$AllowNone,
+        [string]$Label
+    )
+    $arr = @($Files)
+    if ($arr.Count -eq 0) {
+        Write-Host "  ($Label`: niciun fisier disponibil in InputVideos)" -ForegroundColor DarkGray
+        if ($AllowNone) { return ,@() }
+        return $null
+    }
+    Write-Host ""
+    Write-Host "$Label disponibile in InputVideos:"
+    for ($i = 0; $i -lt $arr.Count; $i++) {
+        Write-Host ("  {0,2}) {1}" -f ($i+1), $arr[$i].Name)
+    }
+    $promptText = if ($Mode -eq "single") {
+        if ($AllowNone) { "Pick $Label (ex: 2) sau NONE [NONE]" }
+        else { "Pick $Label (1 index, ex: 2)" }
+    } else {
+        if ($AllowNone) { "Pick $Label (ex: 1,3,2 — ordinea conteaza) sau NONE [NONE]" }
+        else { "Pick $Label (ex: 1,3,2 — ordinea conteaza)" }
+    }
+    $inp = Read-Host $promptText
+    $clean = ($inp -replace '\s', '')
+    if ([string]::IsNullOrEmpty($clean) -or $clean -match '^(?i)none$') {
+        if ($AllowNone) { return ,@() }
+        Write-Host "  Selectie obligatorie pentru $Label." -ForegroundColor Red
+        return $null
+    }
+    $parts = $clean -split ','
+    if ($Mode -eq "single" -and $parts.Count -gt 1) {
+        Write-Host "  Eroare: doar un fisier permis pentru $Label." -ForegroundColor Red
+        return $null
+    }
+    $picks = New-Object System.Collections.Generic.List[object]
+    foreach ($p in $parts) {
+        if ($p -notmatch '^\d+$') {
+            Write-Host "  Index invalid: $p" -ForegroundColor Red
+            return $null
+        }
+        $idx = [int]$p - 1
+        if ($idx -lt 0 -or $idx -ge $arr.Count) {
+            Write-Host "  Index in afara range: $p" -ForegroundColor Red
+            return $null
+        }
+        $picks.Add($arr[$idx]) | Out-Null
+    }
+    return ,@($picks | ForEach-Object { $_.Path })
+}
+
+function Invoke-MuxFlow {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  MUX STREAMS                                 ║" -ForegroundColor Cyan
+    Write-Host "║  Combina fisiere raw/wrapped intr-un         ║" -ForegroundColor Cyan
+    Write-Host "║  container nou. Manual selection.            ║" -ForegroundColor Cyan
+    Write-Host "║  Source: InputVideos                         ║" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+    # ── Step 1: VIDEO (mandatory, single) ──
+    $videoFiles = Get-MuxInputFiles -Extensions $MuxExtVideo
+    $pickedVideo = Read-MuxPickList -Files $videoFiles -Mode "single" -AllowNone $false -Label "VIDEO"
+    if ($null -eq $pickedVideo -or $pickedVideo.Count -eq 0) { Write-Host "Abort: video lipsa." -ForegroundColor Red; return }
+    $video = $pickedVideo[0]
+    $videoName = [System.IO.Path]::GetFileNameWithoutExtension($video)
+
+    # ── Step 2: AUDIO (optional, multi) ──
+    $audioFiles = Get-MuxInputFiles -Extensions $MuxExtAudio
+    $pickedAudio = Read-MuxPickList -Files $audioFiles -Mode "multi" -AllowNone $true -Label "AUDIO"
+    if ($null -eq $pickedAudio) { return }
+
+    # ── Step 3: SUBTITRARI (optional, multi) ──
+    $subFilesAll = Get-MuxInputFiles -Extensions $MuxExtSub
+    # Filtreaza .sub orfan (pastreaza .sub doar daca nu exista .idx pereche)
+    $subFiles = New-Object System.Collections.Generic.List[object]
+    foreach ($sf in $subFilesAll) {
+        $sfExt = [System.IO.Path]::GetExtension($sf.Path).TrimStart('.').ToLowerInvariant()
+        if ($sfExt -eq "sub") {
+            $sfBase = [System.IO.Path]::GetFileNameWithoutExtension($sf.Path)
+            $sfDir  = [System.IO.Path]::GetDirectoryName($sf.Path)
+            $idxPath = Join-Path $sfDir "$sfBase.idx"
+            if (Test-Path -LiteralPath $idxPath) { continue }
+        }
+        $subFiles.Add($sf) | Out-Null
+    }
+    $pickedSubs = Read-MuxPickList -Files $subFiles -Mode "multi" -AllowNone $true -Label "SUBTITRARI"
+    if ($null -eq $pickedSubs) { return }
+
+    # ── Step 4: CHAPTERS (optional, single) ──
+    $chapterFiles = Get-MuxInputFiles -Extensions $MuxExtChapters
+    $pickedChapters = Read-MuxPickList -Files $chapterFiles -Mode "single" -AllowNone $true -Label "CHAPTERS (xml/txt)"
+    if ($null -eq $pickedChapters) { return }
+
+    # ── Step 5: ATTACHMENTS (optional, multi) ──
+    $attachFiles = Get-MuxInputFiles -Extensions $MuxExtAttach
+    $pickedAttach = Read-MuxPickList -Files $attachFiles -Mode "multi" -AllowNone $true -Label "ATTACHMENTS (fonts/images)"
+    if ($null -eq $pickedAttach) { return }
+
+    # ── Step 6: Container target ──
+    Write-Host ""
+    Write-Host "Container tinta:"
+    Write-Host "  1) mkv   - permisiv (recomandat pt streams diverse) [implicit]"
+    Write-Host "  2) mp4   - distribute / web / mobile"
+    Write-Host "  3) mov   - Apple ecosystem"
+    Write-Host "  4) webm  - VP8/VP9/AV1 + Opus/Vorbis"
+    Write-Host ""
+    $tc = Read-Host "Alege 1-4 [implicit: 1]"
+    $Target = switch ($tc) { "2" {"mp4"} "3" {"mov"} "4" {"webm"} "" {"mkv"} "1" {"mkv"} default { $null } }
+    if ($null -eq $Target) { Write-Host "Optiune invalida." -ForegroundColor Red; return }
+
+    # ── Output overwrite check (earlier — sa nu pierdem timpul cu metadata daca user anuleaza) ──
+    $finalOut = Join-Path $OutputDir ("{0}_mux.{1}" -f $videoName, $Target)
+    if (Test-Path -LiteralPath $finalOut) {
+        $ow = Read-Host "$([System.IO.Path]::GetFileName($finalOut)) exista. Suprascriu? (d/N) [N]"
+        if ($ow -notmatch '^[dD]') { Write-Host "Sarit." -ForegroundColor Yellow; return }
+        Remove-Item -LiteralPath $finalOut -Force
+    }
+
+    # ── Step 7: Per-stream compat check ──
+    $vc = Get-MuxCodec -File $video -Type "video"
+    if (-not $vc) { Write-Host "  EROARE: nu pot detecta codec video pentru $([System.IO.Path]::GetFileName($video))." -ForegroundColor Red; return }
+    $vCompat = Get-RemuxStreamCompat -Codec $vc -CodecType "video" -Target $Target
+    if ($vCompat -eq "drop") {
+        Write-Host ""
+        Write-Host "PRE-FLIGHT FAIL: codec video '$vc' incompatibil cu .$Target — abort." -ForegroundColor Red
+        return
+    }
+
+    $audioDropIdx = New-Object System.Collections.Generic.HashSet[int]
+    $audioCodec = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+        $ac = Get-MuxCodec -File $pickedAudio[$i] -Type "audio"
+        $audioCodec.Add($ac) | Out-Null
+        $aCompat = Get-RemuxStreamCompat -Codec $ac -CodecType "audio" -Target $Target
+        if ($aCompat -eq "drop") {
+            Write-Host "  WARN: audio '$([System.IO.Path]::GetFileName($pickedAudio[$i]))' ($ac) incompatibil cu .$Target — va fi sarit." -ForegroundColor Yellow
+            $audioDropIdx.Add($i) | Out-Null
+        }
+    }
+
+    $subDropIdx = New-Object System.Collections.Generic.HashSet[int]
+    $subCodec = New-Object System.Collections.Generic.List[string]
+    $subAction = New-Object System.Collections.Generic.List[string]
+    $needMovText = $false
+    for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+        $sc = Get-MuxCodec -File $pickedSubs[$i] -Type "subtitle"
+        $sfExt = [System.IO.Path]::GetExtension($pickedSubs[$i]).TrimStart('.').ToLowerInvariant()
+        if (-not $sc -and $sfExt -eq "idx") { $sc = "dvd_subtitle" }
+        if (-not $sc -and $sfExt -eq "sup") { $sc = "hdmv_pgs_subtitle" }
+        $subCodec.Add($sc) | Out-Null
+        $sCompat = Get-RemuxStreamCompat -Codec $sc -CodecType "subtitle" -Target $Target
+        $subAction.Add($sCompat) | Out-Null
+        if ($sCompat -eq "drop") {
+            Write-Host "  WARN: sub '$([System.IO.Path]::GetFileName($pickedSubs[$i]))' ($sc) incompatibil cu .$Target — va fi sarit." -ForegroundColor Yellow
+            $subDropIdx.Add($i) | Out-Null
+        } elseif ($sCompat -like "convert:*") {
+            Write-Host "  Sub '$([System.IO.Path]::GetFileName($pickedSubs[$i]))' ($sc) -> $($sCompat.Substring(8))"
+            if ($sCompat -eq "convert:mov_text") { $needMovText = $true }
+        }
+    }
+
+    if ($pickedAttach.Count -gt 0 -and $Target -ne "mkv") {
+        Write-Host "  WARN: attachments ($($pickedAttach.Count)) suportate doar pe MKV — ignorate pe .$Target." -ForegroundColor Yellow
+        $pickedAttach = @()
+    }
+
+    # ── Step 8: Per-track metadata edit (opt-in) ──
+    $audioLang = New-Object System.Collections.Generic.List[string]
+    $audioTitle = New-Object System.Collections.Generic.List[string]
+    $audioDefault = New-Object System.Collections.Generic.List[string]
+    $firstAudioSet = $false
+    for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+        $audioLang.Add((Get-MuxLangFromFilename -File $pickedAudio[$i])) | Out-Null
+        $audioTitle.Add("") | Out-Null
+        if ($audioDropIdx.Contains($i)) {
+            $audioDefault.Add("no") | Out-Null
+        } elseif (-not $firstAudioSet) {
+            $audioDefault.Add("yes") | Out-Null
+            $firstAudioSet = $true
+        } else {
+            $audioDefault.Add("no") | Out-Null
+        }
+    }
+    $subLang = New-Object System.Collections.Generic.List[string]
+    $subTitle = New-Object System.Collections.Generic.List[string]
+    $subDefault = New-Object System.Collections.Generic.List[string]
+    $subForced = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+        $subLang.Add((Get-MuxLangFromFilename -File $pickedSubs[$i])) | Out-Null
+        $subTitle.Add("") | Out-Null
+        $subDefault.Add("no") | Out-Null
+        $subForced.Add("no") | Out-Null
+    }
+
+    Write-Host ""
+    $editMd = Read-Host "Editezi metadata per-track (lang/title/default/forced)? (d/N) [N]"
+    if ($editMd -match '^[dD]') {
+        for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+            if ($audioDropIdx.Contains($i)) { continue }
+            Write-Host ""
+            Write-Host ("  Audio #{0}: {1} ({2})" -f ($i+1), [System.IO.Path]::GetFileName($pickedAudio[$i]), $audioCodec[$i])
+            $defLang = if ($audioLang[$i]) { $audioLang[$i] } else { "und" }
+            $v = Read-Host "    language [$defLang]"; if ($v) { $audioLang[$i] = $v }
+            $v = Read-Host "    title [$($audioTitle[$i])]"; if ($v) { $audioTitle[$i] = $v }
+            $v = Read-Host "    default flag (d/n) [$($audioDefault[$i])]"
+            if ($v -match '^(d|y|yes)$') { $audioDefault[$i] = "yes" }
+            elseif ($v -match '^(n|no)$') { $audioDefault[$i] = "no" }
+        }
+        for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+            if ($subDropIdx.Contains($i)) { continue }
+            Write-Host ""
+            Write-Host ("  Subtitle #{0}: {1} ({2})" -f ($i+1), [System.IO.Path]::GetFileName($pickedSubs[$i]), $subCodec[$i])
+            $defLang = if ($subLang[$i]) { $subLang[$i] } else { "und" }
+            $v = Read-Host "    language [$defLang]"; if ($v) { $subLang[$i] = $v }
+            $v = Read-Host "    title [$($subTitle[$i])]"; if ($v) { $subTitle[$i] = $v }
+            $v = Read-Host "    default flag (d/n) [$($subDefault[$i])]"
+            if ($v -match '^(d|y|yes)$') { $subDefault[$i] = "yes" }
+            elseif ($v -match '^(n|no)$') { $subDefault[$i] = "no" }
+            $v = Read-Host "    forced flag (d/n) [$($subForced[$i])]"
+            if ($v -match '^(d|y|yes)$') { $subForced[$i] = "yes" }
+            elseif ($v -match '^(n|no)$') { $subForced[$i] = "no" }
+        }
+    }
+
+    # ── Step 9: Build ffmpeg command ──
+    $inArgs = New-Object System.Collections.Generic.List[string]
+    $inArgs.Add("-i") | Out-Null; $inArgs.Add($video) | Out-Null
+    $inputIdx = 1
+    $audioInputIdx = New-Object System.Collections.Generic.List[int]
+    for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+        if ($audioDropIdx.Contains($i)) { $audioInputIdx.Add(-1) | Out-Null; continue }
+        $inArgs.Add("-i") | Out-Null; $inArgs.Add($pickedAudio[$i]) | Out-Null
+        $audioInputIdx.Add($inputIdx) | Out-Null
+        $inputIdx++
+    }
+    $subInputIdx = New-Object System.Collections.Generic.List[int]
+    for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+        if ($subDropIdx.Contains($i)) { $subInputIdx.Add(-1) | Out-Null; continue }
+        $inArgs.Add("-i") | Out-Null; $inArgs.Add($pickedSubs[$i]) | Out-Null
+        $subInputIdx.Add($inputIdx) | Out-Null
+        $inputIdx++
+    }
+    $chaptersInputIdx = -1
+    $chaptersTmpFFMeta = $null
+    if ($pickedChapters.Count -gt 0) {
+        $chFile = $pickedChapters[0]
+        $chExt = [System.IO.Path]::GetExtension($chFile).TrimStart('.').ToLowerInvariant()
+        if ($chExt -eq "xml") {
+            # Convert Matroska XML → FFMETADATA1 (ffmpeg nu citeste XML direct)
+            $chaptersTmpFFMeta = Join-Path ([System.IO.Path]::GetTempPath()) ("av_mux_ch_" + [guid]::NewGuid().ToString('N') + ".ffmetadata")
+            if (Convert-XmlChaptersToFFMetadata -XmlIn $chFile -OutFile $chaptersTmpFFMeta) {
+                $inArgs.Add("-i") | Out-Null; $inArgs.Add($chaptersTmpFFMeta) | Out-Null
+                $chaptersInputIdx = $inputIdx
+                $inputIdx++
+                Write-Host "  Chapters XML convertit la FFMETADATA1 (temp)." -ForegroundColor DarkGray
+            } else {
+                Write-Host "  WARN: nu pot converti $([System.IO.Path]::GetFileName($chFile)) la FFMETADATA1 — chapters ignorate." -ForegroundColor Yellow
+                Remove-Item -LiteralPath $chaptersTmpFFMeta -Force -ErrorAction SilentlyContinue
+                $chaptersTmpFFMeta = $null
+            }
+        } else {
+            $inArgs.Add("-i") | Out-Null; $inArgs.Add($chFile) | Out-Null
+            $chaptersInputIdx = $inputIdx
+            $inputIdx++
+        }
+    }
+
+    $mapArgs = New-Object System.Collections.Generic.List[string]
+    $mapArgs.Add("-map") | Out-Null; $mapArgs.Add("0:v:0") | Out-Null
+    $outAudioIdx = 0
+    for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+        if ($audioInputIdx[$i] -eq -1) { continue }
+        $mapArgs.Add("-map") | Out-Null; $mapArgs.Add("$($audioInputIdx[$i]):a") | Out-Null
+        $outAudioIdx++
+    }
+    $outSubIdx = 0
+    for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+        if ($subInputIdx[$i] -eq -1) { continue }
+        $mapArgs.Add("-map") | Out-Null; $mapArgs.Add("$($subInputIdx[$i]):s") | Out-Null
+        $outSubIdx++
+    }
+
+    $chaptersArgs = if ($chaptersInputIdx -ge 0) { @("-map_chapters", "$chaptersInputIdx") } else { @("-map_chapters", "-1") }
+
+    $codecArgs = @("-c:v","copy","-c:a","copy")
+    if ($Target -in @("mp4","mov")) {
+        if ($needMovText) { $codecArgs += @("-c:s","mov_text") } else { $codecArgs += @("-c:s","copy") }
+    } else {
+        $codecArgs += @("-c:s","copy")
+    }
+
+    $extraArgs = @()
+    if ($Target -in @("mp4","mov")) {
+        switch ($vc) {
+            "hevc" { $extraArgs += @("-tag:v","hvc1") }
+            "av1"  { $extraArgs += @("-tag:v","av01") }
+            "h264" { $extraArgs += @("-tag:v","avc1") }
+        }
+        $extraArgs += @("-movflags","+faststart")
+    }
+
+    $metaArgs = New-Object System.Collections.Generic.List[string]
+    $outAudioIdx = 0
+    for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
+        if ($audioInputIdx[$i] -eq -1) { continue }
+        $lang = if ($audioLang[$i]) { $audioLang[$i] } else { "und" }
+        $metaArgs.Add("-metadata:s:a:$outAudioIdx") | Out-Null; $metaArgs.Add("language=$lang") | Out-Null
+        if ($audioTitle[$i]) { $metaArgs.Add("-metadata:s:a:$outAudioIdx") | Out-Null; $metaArgs.Add("title=$($audioTitle[$i])") | Out-Null }
+        $metaArgs.Add("-disposition:a:$outAudioIdx") | Out-Null
+        if ($audioDefault[$i] -eq "yes") { $metaArgs.Add("default") | Out-Null } else { $metaArgs.Add("0") | Out-Null }
+        $outAudioIdx++
+    }
+    $outSubIdx = 0
+    for ($i = 0; $i -lt $pickedSubs.Count; $i++) {
+        if ($subInputIdx[$i] -eq -1) { continue }
+        $lang = if ($subLang[$i]) { $subLang[$i] } else { "und" }
+        $metaArgs.Add("-metadata:s:s:$outSubIdx") | Out-Null; $metaArgs.Add("language=$lang") | Out-Null
+        if ($subTitle[$i]) { $metaArgs.Add("-metadata:s:s:$outSubIdx") | Out-Null; $metaArgs.Add("title=$($subTitle[$i])") | Out-Null }
+        $disp = ""
+        if ($subDefault[$i] -eq "yes") { $disp += "default+" }
+        if ($subForced[$i] -eq "yes") { $disp += "forced+" }
+        $metaArgs.Add("-disposition:s:$outSubIdx") | Out-Null
+        if ($disp) { $metaArgs.Add($disp.TrimEnd('+')) | Out-Null } else { $metaArgs.Add("0") | Out-Null }
+        $outSubIdx++
+    }
+
+    # Attachments (doar MKV). Mimetype per-index — fara index, ffmpeg aplica
+    # global la toate attachment streams si ultimul override-aza pe restul.
+    $attachArgs = New-Object System.Collections.Generic.List[string]
+    if ($Target -eq "mkv" -and $pickedAttach.Count -gt 0) {
+        $attachIdx = 0
+        foreach ($af in $pickedAttach) {
+            $afExt = [System.IO.Path]::GetExtension($af).TrimStart('.')
+            $mime = Get-MuxAttachMime -Ext $afExt
+            $attachArgs.Add("-attach") | Out-Null; $attachArgs.Add($af) | Out-Null
+            $attachArgs.Add("-metadata:s:t:$attachIdx") | Out-Null; $attachArgs.Add("mimetype=$mime") | Out-Null
+            $attachIdx++
+        }
+    }
+
+    Write-Host ""
+    Write-Host "  -> $finalOut" -ForegroundColor Cyan
+    Write-Host ("  Video:       {0} ({1})" -f [System.IO.Path]::GetFileName($video), $vc)
+    Write-Host ("  Audio:       {0} track(s)" -f $outAudioIdx)
+    Write-Host ("  Subtitle:    {0} track(s)" -f $outSubIdx)
+    $chMsg = if ($chaptersInputIdx -ge 0) { "1 file" } else { "none" }
+    Write-Host ("  Chapters:    {0}" -f $chMsg)
+    Write-Host ("  Attachments: {0}" -f $pickedAttach.Count)
+
+    $startTs = Get-Date
+    $allArgs = @("-y","-v","warning","-nostats") + @($inArgs) + @($mapArgs) + $chaptersArgs + $codecArgs + $extraArgs + @($metaArgs) + @($attachArgs) + @($finalOut)
+    & ffmpeg @allArgs
+    $rc = $LASTEXITCODE
+    # Cleanup temp FFMETADATA daca a fost generat
+    if ($chaptersTmpFFMeta) { Remove-Item -LiteralPath $chaptersTmpFFMeta -Force -ErrorAction SilentlyContinue }
+    if ($rc -ne 0 -or -not (Test-Path -LiteralPath $finalOut) -or (Get-Item -LiteralPath $finalOut).Length -eq 0) {
+        Write-Host "  EROARE: mux esuat." -ForegroundColor Red
+        Remove-Item -LiteralPath $finalOut -Force -ErrorAction SilentlyContinue
+        return
+    }
+    $elapsed = [int]((Get-Date) - $startTs).TotalSeconds
+    $szNew = (Get-Item -LiteralPath $finalOut).Length
+    Write-Host ("  OK Mux in {0}s | output: {1} MB" -f $elapsed, [int]($szNew/1MB)) -ForegroundColor Green
+}
+
+# ══════════════════════════════════════════════════════════════════════
 # MAIN SUBMENU
 # ══════════════════════════════════════════════════════════════════════
 Write-Host ""
@@ -876,15 +1371,19 @@ Write-Host "║  1) Remux  - repackage in container  ║"
 Write-Host "║     (mkv/mp4/mov/webm, stream sel)   ║"
 Write-Host "║  2) Demux  - extract streams separat ║"
 Write-Host "║     (.mkv/.mka/native + attach/cover)║"
-Write-Host "║  3) Anulare                          ║"
+Write-Host "║  3) Mux    - combina streams separate║"
+Write-Host "║     (video + audio[N] + sub[N] +     ║"
+Write-Host "║      chapters + attachments)         ║"
+Write-Host "║  4) Anulare                          ║"
 Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-$muxChoice = Read-Host "Alege 1-3 [implicit: 1]"
+$muxChoice = Read-Host "Alege 1-4 [implicit: 1]"
 
 switch ($muxChoice) {
     "" { Invoke-RemuxFlow }
     "1" { Invoke-RemuxFlow }
     "2" { Invoke-DemuxFlow }
-    "3" { Write-Host "Anulat."; exit 0 }
+    "3" { Invoke-MuxFlow }
+    "4" { Write-Host "Anulat."; exit 0 }
     default { Write-Host "Optiune invalida." -ForegroundColor Red; exit 1 }
 }
 

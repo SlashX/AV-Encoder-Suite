@@ -15,7 +15,7 @@ CUPRINS
   7. Optiuni detaliate
   8. Dialoguri automate (HDR / DV / LOG / DJI / HLG / HDR10+)
   9. Trim & Concat pipeline
- 10. Mux tools (v49 — Remux container + Demux streams)
+ 10. Mux tools (v49 + v50 — Remux + Demux + Mux)
  11. HDR/DV Tools (transform / inspect / hybrid)
  12. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
  13. Import GPS extern (GPX / FIT / KML)
@@ -949,7 +949,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-10. MUX TOOLS (v49 — meniu principal opt 7)
+10. MUX TOOLS (v49 + v50 — meniu principal opt 7)
 ═══════════════════════════════════════════════════════════════
 
   Script: av_mux.sh + av_mux.ps1 (mirror complet bash↔PS1).
@@ -1188,6 +1188,135 @@ CUPRINS
       OCR text foloseste tool extern (Subtitle Edit, SubExtractor).
     - Data streams raman binare opaque; parsing-ul GPS/gauges se face in
       opt 4 Telemetrie (DJI/GoPro/Sony/Garmin/QuickTime).
+
+
+  ─── PARTEA C: MUX (v50 — sub-opt 3) ─────────────────────────
+
+  Combina un fisier video + N audio + N subtitrari + chapters
+  + attachments intr-un container nou. Operatie 100% lossless
+  (-c copy). Manual selection only — user picks fiecare track
+  prin index, fara auto-grouping by basename (decisie design:
+  previne mux gresite cu fisiere mismatched).
+
+
+  ─── 10.13. Mux: cazuri tipice ───
+
+    - Ai folosit demux (sub-opt 2) sa extragi streams si vrei sa
+      re-combini totul intr-un container nou (eventual cu subset
+      sau cu ordine schimbata).
+    - Ai un raw stream HEVC (.hevc / .265) + un E-AC3 si vrei
+      sa le pui intr-un MKV.
+    - Adaugi o subtitrare externa (.srt / .ass) la un video deja
+      encodat fara re-encode video.
+    - Inlocuiesti track-ul audio dintr-un MKV (demux → editeaza
+      audio extern → mux).
+
+
+  ─── 10.14. Mux: extensii input acceptate ───
+
+    Video:    mkv webm mp4 m4v mov ts m2ts mts vob mxf
+              hevc h265 h264 265 264 av1 ivf vp9
+    Audio:    mka m4a eac3 ac3 aac flac opus mp3 wav oga ogg
+    Subtitle: srt ass ssa vtt sup idx
+    Chapters: xml (Matroska) | txt (FFMETADATA1)
+    Attach:   ttf otf ttc png jpg jpeg webp bmp
+
+  Source unic: doar InputVideos (mutati fisierele acolo inainte
+  de a porni Mux). Excludem OutputVideos pentru a evita mux
+  accidental peste artefacte vechi.
+
+
+  ─── 10.15. Mux: flux complet ───
+
+    Pas 1: VIDEO (mandatory, single)
+      Listeaza video files din InputVideos. User picks index 1-N.
+
+    Pas 2: AUDIO (optional, multi)
+      Listeaza audio files. Sintaxa: "1,3,2" → ordinea introdusa
+      = ordinea track-urilor in output. "NONE" sau enter gol = skip.
+
+    Pas 3: SUBTITRARI (optional, multi)
+      VobSub pair handling: .idx + .sub combinati automat — .sub
+      orfan filtrat din lista daca .idx pereche exista.
+
+    Pas 4: CHAPTERS (optional, single)
+      Acceptat Matroska XML (recomandat din Demux sub-opt 2) si
+      FFMETADATA1 txt. ffmpeg face conversie best-effort la
+      formatul container target.
+
+    Pas 5: ATTACHMENTS (optional, multi)
+      Fonturi (ttf/otf/ttc) si imagini (png/jpg/webp/bmp) doar
+      pe MKV. Pe mp4/mov/webm → ignorat cu warning.
+
+    Pas 6: Container target (mkv/mp4/mov/webm)
+      Default mkv. Per-stream compat check (matricea Remux):
+        - video incompat → abort
+        - audio/sub incompat → WARN si skip pe tracks individuale
+        - text subs pe mp4/mov → auto-convert mov_text
+        - bitmap subs (PGS/VobSub) pe mp4/mov/webm → skip
+
+    Pas 7: Per-track metadata (opt-in)
+      Prompt unic "Editezi metadata per-track? (d/N)":
+        - default automate: language din suffix .eng/_ron
+          (regex [a-z]{2,3}, exclude mkv/mp4/aac/hd/sd/hq/lq),
+          title gol, first audio default=yes, subs forced=no
+        - daca D, walks prin fiecare audio + sub editabil
+          (language, title, default flag, forced flag pt subs)
+
+    Pas 8: Output
+      <video_basename>_mux.<ext> in OutputVideos.
+      Adaugat in scan exclude (preventie reprocessing).
+
+
+  ─── 10.16. Mux: per-stream compat (text subs auto-convert) ───
+
+  Matricea de compat e reutilizata din Remux (remux_stream_compat
+  / Get-RemuxStreamCompat). Reguli identice:
+
+    MKV       = permisiv (totul OK, attachments suportate)
+    MP4       = hevc/h264/av1 video + aac/eac3/ac3/mp3/opus audio
+                text subs → mov_text, bitmap → drop, attach → drop
+    MOV       = hevc/h264/prores video + aac/ac3/alac/pcm audio
+                eac3 → drop, text → mov_text, bitmap → drop
+    WEBM      = vp8/vp9/av1 + opus/vorbis + webvtt (cea mai
+                restrictiva tinta)
+
+
+  ─── 10.17. Mux: cazuri practice ───
+
+  A) Inlocuire track audio:
+       1. Demux pe original.mkv → original_a0_eac3_eng.mka extras
+       2. Edit audio extern (Audacity, ffmpeg) → original_new.mka
+       3. Mux: video = original.mkv, audio = original_new.mka, subs/
+          chapters/attach lasate goale → Output: original_mux.mkv
+
+  B) Adaugare subs SRT la video encodat:
+       1. Pune movie.mkv si movie.eng.srt in InputVideos
+       2. Mux: video = movie.mkv, audio NONE, subs = movie.eng.srt,
+          target = mkv → Output: movie_mux.mkv cu SRT bake-in soft
+
+  C) Asamblare din raw streams HEVC + EAC3:
+       1. Pune video.hevc + audio.eac3 in InputVideos
+       2. Mux: video=video.hevc, audio=audio.eac3, target=mkv
+       3. Output: video_mux.mkv (ffmpeg face wrap automat)
+
+
+  ─── 10.18. Mux: limitari cunoscute ───
+
+    - Toate streams trebuie sa fie in InputVideos. Daca vrei sa
+      reusezi output-uri demux, mutati-le manual din OutputVideos
+      → InputVideos. Decizie design: previne confuzie intre
+      surse si artefacte.
+    - Manual selection only — nu exista auto-grouping by basename
+      (movie_v0_*.mkv + movie_a0_*.mka). Foloseste numele
+      complete cum apar in lista.
+    - VobSub pair (.idx + .sub) doar prin .idx in lista; daca
+      lipseste .sub langa .idx, ffmpeg va esua la mux.
+    - Attachments doar pe MKV. Pe mp4/mov/webm vor fi ignorate
+      cu warning, mux continua fara ele.
+    - Chapters XML pe mp4/mov: ffmpeg face conversie automata, dar
+      formatul nativ MP4/MOV nu suporta toate feature-urile Matroska
+      (nested editions, language tag pe ChapterDisplay).
 
 
 ═══════════════════════════════════════════════════════════════

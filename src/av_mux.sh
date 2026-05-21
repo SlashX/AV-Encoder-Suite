@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# av_mux.sh — Mux tools (v49)
-# Submeniu cu doua flow-uri:
+# av_mux.sh — Mux tools (v50)
+# Submeniu cu trei flow-uri:
 #   1) Remux  — selectie streams + repackage in container nou (mkv/mp4/mov/webm)
 #   2) Demux  — extract streams ca fisiere separate (mkv/mka/native sub + attach)
-# Input:  mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
+#   3) Mux    — v50: combina fisiere separate (video + audio[N] + sub[N] + chapters + attach)
+#              intr-un container nou. Scan doar InputVideos. Manual selection.
+# Input remux/demux: mkv, webm, mp4, m4v, mov, ts, m2ts, mts, vob, mxf
 # Output remux: <name>_remux.<ext>
 # Output demux: <name>_v<idx>_<codec>.mkv / <name>_a<idx>_<codec>_<lang>.mka /
 #               <name>_s<idx>_<codec>_<lang>.<ext> / <name>_cover_<idx>.<ext> /
 #               <name>_chapters.xml / <name>_attach/* / <name>_data/* (opt-in)
+# Output mux:   <video_basename>_mux.<ext>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -39,7 +42,8 @@ mux_scan_input() {
         while IFS= read -r -d '' f; do
             local base; base="$(basename "$f")"
             local name="${base%.*}"
-            # Exclude propriile output-uri remux/demux
+            # Exclude propriile output-uri mux/remux/demux
+            [[ "$name" == *_mux ]] && continue
             [[ "$name" == *_remux ]] && continue
             # Demux: <name>_v<idx>_<codec> / _a<idx>_<codec>[_<lang>] / _s<idx>_<codec>[_<lang>]
             # Cere underscore dupa cifre pentru a evita false-positives pe fisiere ca "season1_v2.mkv".
@@ -891,6 +895,570 @@ demux_flow() {
 }
 
 # ═════════════════════════════════════════════════════════════════════
+# MUX FLOW (v50)
+# ═════════════════════════════════════════════════════════════════════
+# Manual selection. Scan doar InputVideos. Output: <video_base>_mux.<ext>
+# Streams ordering = ordinea introdusa de user in prompts.
+
+MUX_EXT_VIDEO=(mkv webm mp4 m4v mov ts m2ts mts vob mxf hevc h265 h264 265 264 av1 ivf vp9)
+MUX_EXT_AUDIO=(mka m4a eac3 ac3 aac flac opus mp3 wav oga ogg)
+MUX_EXT_SUB=(srt ass ssa vtt sup idx)
+MUX_EXT_CHAPTERS=(xml txt)
+MUX_EXT_ATTACH=(ttf otf ttc png jpg jpeg webp bmp)
+
+# Populeaza output array cu fisiere din $INPUT_DIR matching extensiile date.
+# Exclude propriile output-uri (_mux/_remux/_v<idx>_/etc).
+# Usage: mux_collect_files <out_array_name> ext1 ext2 ...
+mux_collect_files() {
+    local -n _out=$1; shift
+    local ext_list=("$@")
+    _out=()
+    local ext
+    for ext in "${ext_list[@]}"; do
+        while IFS= read -r -d '' f; do
+            local base; base="$(basename "$f")"
+            local name="${base%.*}"
+            [[ "$name" == *_mux ]] && continue
+            [[ "$name" == *_remux ]] && continue
+            [[ "$name" == *_v[0-9]_* || "$name" == *_v[0-9][0-9]_* ]] && continue
+            [[ "$name" == *_a[0-9]_* || "$name" == *_a[0-9][0-9]_* ]] && continue
+            [[ "$name" == *_s[0-9]_* || "$name" == *_s[0-9][0-9]_* ]] && continue
+            [[ "$name" == *_cover_[0-9]* ]] && continue
+            _out+=("$f")
+        done < <(find "$INPUT_DIR" -maxdepth 1 -type f -iname "*.${ext}" -print0 2>/dev/null)
+    done
+}
+
+# Extract lang code (2-3 letter ISO) din numele fisierului.
+# Acceptate: name.eng.srt | name_eng.mka | track_ron.eac3
+# Returneaza string gol daca nu detecteaza.
+mux_lang_from_filename() {
+    local file="$1"
+    local base; base="$(basename "$file")"
+    local name="${base%.*}"
+    # Pattern .<lang> la final (dupa stripping ext)
+    if [[ "$name" =~ \.([a-z]{2,3})$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return
+    fi
+    # Pattern _<lang> la final
+    if [[ "$name" =~ _([a-z]{2,3})$ ]]; then
+        # Exclude pattern-uri tehnice frecvente
+        local lang="${BASH_REMATCH[1]}"
+        case "$lang" in
+            mkv|mp4|mov|aac|ac3|mp3|srt|ass|sup|idx|sub|hd|sd|hq|lq) ;;
+            *) echo "$lang"; return ;;
+        esac
+    fi
+    echo ""
+}
+
+# Codec detect pe input (raw stream sau container).
+# $1=file, $2=type (video|audio|subtitle). Returneaza lowercase codec_name sau gol.
+mux_codec_of() {
+    local file="$1" type="$2"
+    local spec
+    case "$type" in
+        video) spec="v:0" ;;
+        audio) spec="a:0" ;;
+        subtitle) spec="s:0" ;;
+        *) spec="v:0" ;;
+    esac
+    local c
+    c=$(ffprobe -v error -select_streams "$spec" -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null || true)
+    c="${c%$'\r'}"
+    c="${c%$'\n'}"
+    echo "${c,,}"
+}
+
+# Display lista + selectie ordonata (ordinea = ordinea introdusa).
+# $1=mode (single|multi), $2=allow_none (0|1), $3=label, $4=nameref input array, $5=nameref output array
+mux_pick_from_list() {
+    local mode="$1" allow_none="$2" label="$3"
+    local -n _files=$4
+    local -n _picks=$5
+    _picks=()
+    if [ "${#_files[@]}" -eq 0 ]; then
+        echo "  ($label: niciun fisier disponibil in InputVideos)"
+        if [ "$allow_none" -eq 1 ]; then return 0; fi
+        return 1
+    fi
+    echo ""
+    echo "$label disponibile in InputVideos:"
+    local i
+    for i in "${!_files[@]}"; do
+        printf "  %2d) %s\n" "$((i+1))" "$(basename "${_files[$i]}")"
+    done
+    local prompt_text
+    if [ "$mode" = "single" ]; then
+        if [ "$allow_none" -eq 1 ]; then
+            prompt_text="Pick $label (ex: 2) sau NONE [NONE]"
+        else
+            prompt_text="Pick $label (1 index, ex: 2)"
+        fi
+    else
+        if [ "$allow_none" -eq 1 ]; then
+            prompt_text="Pick $label (ex: 1,3,2 — ordinea conteaza) sau NONE [NONE]"
+        else
+            prompt_text="Pick $label (ex: 1,3,2 — ordinea conteaza)"
+        fi
+    fi
+    local inp
+    read -p "${prompt_text}: " inp
+    local clean="${inp// /}"
+    if [ -z "$clean" ] || [[ "$clean" =~ ^[Nn][Oo][Nn][Ee]$ ]]; then
+        if [ "$allow_none" -eq 1 ]; then return 0; fi
+        echo "  Selectie obligatorie pentru $label."
+        return 1
+    fi
+    local -a parts
+    IFS=',' read -ra parts <<< "$clean"
+    if [ "$mode" = "single" ] && [ "${#parts[@]}" -gt 1 ]; then
+        echo "  Eroare: doar un fisier permis pentru $label."
+        return 1
+    fi
+    local p idx
+    for p in "${parts[@]}"; do
+        [[ "$p" =~ ^[0-9]+$ ]] || { echo "  Index invalid: $p"; return 1; }
+        idx=$((p-1))
+        if [ "$idx" -lt 0 ] || [ "$idx" -ge "${#_files[@]}" ]; then
+            echo "  Index in afara range: $p"; return 1
+        fi
+        _picks+=("${_files[$idx]}")
+    done
+    return 0
+}
+
+# Converteste Matroska chapter XML (output din Demux opt 2) la FFMETADATA1
+# pentru import in ffmpeg. ffmpeg nu citeste XML chapter direct, doar FFMETADATA.
+# $1=in xml, $2=out ffmetadata. Returneaza 0 ok / 1 fail.
+mux_xml_to_ffmetadata() {
+    local xml_in="$1" out="$2"
+    [ ! -f "$xml_in" ] && return 1
+    {
+        echo ";FFMETADATA1"
+        LC_ALL=C awk '
+            function parse_ts(s,   parts, h, m, sec, ms) {
+                # HH:MM:SS.fffffffff -> millisec
+                if (split(s, parts, ":") != 3) return -1
+                h = parts[1] + 0
+                m = parts[2] + 0
+                sec = parts[3] + 0
+                ms = int((h * 3600 + m * 60 + sec) * 1000 + 0.5)
+                return ms
+            }
+            BEGIN { start=-1; end=-1; title="" }
+            /<ChapterTimeStart>/ {
+                match($0, /<ChapterTimeStart>([^<]+)<\/ChapterTimeStart>/, m)
+                if (m[1]) start = parse_ts(m[1])
+            }
+            /<ChapterTimeEnd>/ {
+                match($0, /<ChapterTimeEnd>([^<]+)<\/ChapterTimeEnd>/, m)
+                if (m[1]) end = parse_ts(m[1])
+            }
+            /<ChapterString>/ {
+                match($0, /<ChapterString>([^<]*)<\/ChapterString>/, m)
+                if (m[1] != "") {
+                    title = m[1]
+                    gsub(/&amp;/, "\\&", title); gsub(/&lt;/, "<", title); gsub(/&gt;/, ">", title)
+                    # Escape pentru FFMETADATA: \ ; # = newline
+                    gsub(/\\/, "\\\\", title); gsub(/;/, "\\;", title); gsub(/#/, "\\#", title); gsub(/=/, "\\=", title)
+                }
+            }
+            /<\/ChapterAtom>/ {
+                if (start >= 0 && end >= 0) {
+                    printf "\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\n", start, end
+                    if (title != "") printf "title=%s\n", title
+                }
+                start=-1; end=-1; title=""
+            }
+        ' "$xml_in"
+    } > "$out"
+    [ -s "$out" ] && grep -q '\[CHAPTER\]' "$out" && return 0
+    rm -f "$out" 2>/dev/null
+    return 1
+}
+
+# Mime type pentru attachments (MKV).
+mux_attach_mime() {
+    local ext="${1,,}"
+    case "$ext" in
+        ttf) echo "application/x-truetype-font" ;;
+        otf) echo "application/vnd.ms-opentype" ;;
+        ttc) echo "font/collection" ;;
+        png) echo "image/png" ;;
+        jpg|jpeg) echo "image/jpeg" ;;
+        webp) echo "image/webp" ;;
+        bmp) echo "image/bmp" ;;
+        *) echo "application/octet-stream" ;;
+    esac
+}
+
+mux_flow() {
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  MUX STREAMS                                 ║"
+    echo "║  Combina fisiere raw/wrapped intr-un         ║"
+    echo "║  container nou. Manual selection.            ║"
+    echo "║  Source: InputVideos                         ║"
+    echo "╚══════════════════════════════════════════════╝"
+
+    # ── Step 1: VIDEO (mandatory, single) ──
+    local -a video_files=()
+    mux_collect_files video_files "${MUX_EXT_VIDEO[@]}"
+    local -a picked_video=()
+    if ! mux_pick_from_list single 0 "VIDEO" video_files picked_video; then
+        return 1
+    fi
+    [ "${#picked_video[@]}" -eq 0 ] && { echo "Abort: video lipsa."; return 1; }
+    local video="${picked_video[0]}"
+    local video_base; video_base="$(basename "$video")"
+    local video_name="${video_base%.*}"
+
+    # ── Step 2: AUDIO (optional, multi) ──
+    local -a audio_files=()
+    mux_collect_files audio_files "${MUX_EXT_AUDIO[@]}"
+    local -a picked_audio=()
+    mux_pick_from_list multi 1 "AUDIO" audio_files picked_audio || return 1
+
+    # ── Step 3: SUBTITRARI (optional, multi) ──
+    local -a sub_files_all=()
+    mux_collect_files sub_files_all "${MUX_EXT_SUB[@]}"
+    # Filtreaza .sub orfan: pastram doar .idx (perechea VobSub) si .sub doar daca nu exista .idx pereche
+    local -a sub_files=()
+    local sf sf_ext sf_base sf_name idx_path
+    for sf in "${sub_files_all[@]}"; do
+        sf_ext="${sf##*.}"; sf_ext="${sf_ext,,}"
+        if [ "$sf_ext" = "sub" ]; then
+            sf_base="$(basename "$sf")"; sf_name="${sf_base%.*}"
+            idx_path="$(dirname "$sf")/${sf_name}.idx"
+            [ -f "$idx_path" ] && continue
+        fi
+        sub_files+=("$sf")
+    done
+    local -a picked_subs=()
+    mux_pick_from_list multi 1 "SUBTITRARI" sub_files picked_subs || return 1
+
+    # ── Step 4: CHAPTERS (optional, single) ──
+    local -a chapter_files=()
+    mux_collect_files chapter_files "${MUX_EXT_CHAPTERS[@]}"
+    local -a picked_chapters=()
+    mux_pick_from_list single 1 "CHAPTERS (xml/txt)" chapter_files picked_chapters || return 1
+
+    # ── Step 5: ATTACHMENTS (optional, multi) ──
+    local -a attach_files=()
+    mux_collect_files attach_files "${MUX_EXT_ATTACH[@]}"
+    local -a picked_attach=()
+    mux_pick_from_list multi 1 "ATTACHMENTS (fonts/images)" attach_files picked_attach || return 1
+
+    # ── Step 6: Container target ──
+    echo ""
+    echo "Container tinta:"
+    echo "  1) mkv   — permisiv (recomandat pt streams diverse) [implicit]"
+    echo "  2) mp4   — distribute / web / mobile"
+    echo "  3) mov   — Apple ecosystem"
+    echo "  4) webm  — VP8/VP9/AV1 + Opus/Vorbis"
+    echo ""
+    local tgt_choice
+    read -p "Alege 1-4 [implicit: 1]: " tgt_choice
+    local TARGET
+    case "${tgt_choice:-1}" in
+        1) TARGET="mkv" ;;
+        2) TARGET="mp4" ;;
+        3) TARGET="mov" ;;
+        4) TARGET="webm" ;;
+        *) echo "Optiune invalida."; return 1 ;;
+    esac
+
+    # ── Output overwrite check (earlier — sa nu pierdem timpul cu metadata daca user anuleaza) ──
+    local final_out="${OUTPUT_DIR}/${video_name}_mux.${TARGET}"
+    if [ -f "$final_out" ]; then
+        local ow
+        read -p "$(basename "$final_out") exista. Suprascriu? (d/N) [N]: " ow
+        [[ "${ow,,}" != "d" ]] && { echo "Sarit."; return 1; }
+        rm -f "$final_out"
+    fi
+
+    # ── Step 7: Per-stream compat check ──
+    local vc; vc=$(mux_codec_of "$video" video)
+    [ -z "$vc" ] && { echo "  EROARE: nu pot detecta codec video pentru $(basename "$video")."; return 1; }
+    local v_compat; v_compat=$(remux_stream_compat "$vc" video "$TARGET")
+    if [[ "$v_compat" == "drop" ]]; then
+        echo ""
+        echo "PRE-FLIGHT FAIL: codec video '$vc' incompatibil cu .$TARGET — abort."
+        return 1
+    fi
+
+    local -a audio_drop_idx=() audio_codec=()
+    local i ac a_compat
+    for i in "${!picked_audio[@]}"; do
+        ac=$(mux_codec_of "${picked_audio[$i]}" audio)
+        audio_codec+=("$ac")
+        a_compat=$(remux_stream_compat "$ac" audio "$TARGET")
+        if [[ "$a_compat" == "drop" ]]; then
+            echo "  WARN: audio '$(basename "${picked_audio[$i]}")' ($ac) incompatibil cu .$TARGET — va fi sarit."
+            audio_drop_idx+=("$i")
+        fi
+    done
+
+    local -a sub_codec=() sub_action=() sub_drop_idx=()
+    local sc s_compat
+    local need_movtext=0
+    for i in "${!picked_subs[@]}"; do
+        sc=$(mux_codec_of "${picked_subs[$i]}" subtitle)
+        # Fallback pentru .idx detectie inconsistenta
+        local sf_ext="${picked_subs[$i]##*.}"; sf_ext="${sf_ext,,}"
+        [ -z "$sc" ] && [ "$sf_ext" = "idx" ] && sc="dvd_subtitle"
+        [ -z "$sc" ] && [ "$sf_ext" = "sup" ] && sc="hdmv_pgs_subtitle"
+        sub_codec+=("$sc")
+        s_compat=$(remux_stream_compat "$sc" subtitle "$TARGET")
+        sub_action+=("$s_compat")
+        if [[ "$s_compat" == "drop" ]]; then
+            echo "  WARN: sub '$(basename "${picked_subs[$i]}")' ($sc) incompatibil cu .$TARGET — va fi sarit."
+            sub_drop_idx+=("$i")
+        elif [[ "$s_compat" == convert:* ]]; then
+            echo "  Sub '$(basename "${picked_subs[$i]}")' ($sc) → ${s_compat#convert:}"
+            [[ "$s_compat" == "convert:mov_text" ]] && need_movtext=1
+        fi
+    done
+
+    if [ "${#picked_attach[@]}" -gt 0 ] && [ "$TARGET" != "mkv" ]; then
+        echo "  WARN: attachments (${#picked_attach[@]}) suportate doar pe MKV — ignorate pe .$TARGET."
+        picked_attach=()
+    fi
+
+    # ── Step 8: Per-track metadata edit (opt-in) ──
+    local -a audio_lang=() audio_title=() audio_default=()
+    local -a sub_lang=() sub_title=() sub_default=() sub_forced=()
+    local first_audio_set=0
+    for i in "${!picked_audio[@]}"; do
+        audio_lang+=("$(mux_lang_from_filename "${picked_audio[$i]}")")
+        audio_title+=("")
+        if [[ " ${audio_drop_idx[*]} " == *" $i "* ]]; then
+            audio_default+=("no")
+        elif [ "$first_audio_set" -eq 0 ]; then
+            audio_default+=("yes"); first_audio_set=1
+        else
+            audio_default+=("no")
+        fi
+    done
+    for i in "${!picked_subs[@]}"; do
+        sub_lang+=("$(mux_lang_from_filename "${picked_subs[$i]}")")
+        sub_title+=("")
+        sub_default+=("no")
+        sub_forced+=("no")
+    done
+
+    echo ""
+    local edit_md
+    read -p "Editezi metadata per-track (lang/title/default/forced)? (d/N) [N]: " edit_md
+    if [[ "${edit_md,,}" == "d" ]]; then
+        local v
+        for i in "${!picked_audio[@]}"; do
+            if [[ " ${audio_drop_idx[*]} " == *" $i "* ]]; then continue; fi
+            echo ""
+            echo "  Audio #$((i+1)): $(basename "${picked_audio[$i]}") (${audio_codec[$i]})"
+            read -p "    language [${audio_lang[$i]:-und}]: " v; [ -n "$v" ] && audio_lang[$i]="$v"
+            read -p "    title [${audio_title[$i]}]: " v; [ -n "$v" ] && audio_title[$i]="$v"
+            read -p "    default flag (d/n) [${audio_default[$i]}]: " v
+            case "${v,,}" in d|yes|y) audio_default[$i]="yes" ;; n|no) audio_default[$i]="no" ;; esac
+        done
+        for i in "${!picked_subs[@]}"; do
+            if [[ " ${sub_drop_idx[*]} " == *" $i "* ]]; then continue; fi
+            echo ""
+            echo "  Subtitle #$((i+1)): $(basename "${picked_subs[$i]}") (${sub_codec[$i]})"
+            read -p "    language [${sub_lang[$i]:-und}]: " v; [ -n "$v" ] && sub_lang[$i]="$v"
+            read -p "    title [${sub_title[$i]}]: " v; [ -n "$v" ] && sub_title[$i]="$v"
+            read -p "    default flag (d/n) [${sub_default[$i]}]: " v
+            case "${v,,}" in d|yes|y) sub_default[$i]="yes" ;; n|no) sub_default[$i]="no" ;; esac
+            read -p "    forced flag (d/n) [${sub_forced[$i]}]: " v
+            case "${v,,}" in d|yes|y) sub_forced[$i]="yes" ;; n|no) sub_forced[$i]="no" ;; esac
+        done
+    fi
+
+    # ── Step 9: Build ffmpeg command ──
+    local -a in_args=("-i" "$video")
+    local input_idx=1
+    local -a audio_input_idx=()
+    for i in "${!picked_audio[@]}"; do
+        if [[ " ${audio_drop_idx[*]} " == *" $i "* ]]; then
+            audio_input_idx+=("-1"); continue
+        fi
+        in_args+=("-i" "${picked_audio[$i]}")
+        audio_input_idx+=("$input_idx")
+        input_idx=$((input_idx+1))
+    done
+    local -a sub_input_idx=()
+    for i in "${!picked_subs[@]}"; do
+        if [[ " ${sub_drop_idx[*]} " == *" $i "* ]]; then
+            sub_input_idx+=("-1"); continue
+        fi
+        in_args+=("-i" "${picked_subs[$i]}")
+        sub_input_idx+=("$input_idx")
+        input_idx=$((input_idx+1))
+    done
+    local chapters_input_idx=-1
+    local chapters_tmp_ffmeta=""
+    if [ "${#picked_chapters[@]}" -gt 0 ]; then
+        local ch_file="${picked_chapters[0]}"
+        local ch_ext="${ch_file##*.}"; ch_ext="${ch_ext,,}"
+        if [ "$ch_ext" = "xml" ]; then
+            # Convert Matroska XML → FFMETADATA1 (ffmpeg nu citeste XML direct)
+            chapters_tmp_ffmeta=$(av_mktemp_ext ffmetadata)
+            if mux_xml_to_ffmetadata "$ch_file" "$chapters_tmp_ffmeta"; then
+                in_args+=("-i" "$chapters_tmp_ffmeta")
+                chapters_input_idx=$input_idx
+                input_idx=$((input_idx+1))
+                echo "  Chapters XML convertit la FFMETADATA1 (temp)."
+            else
+                echo "  WARN: nu pot converti $(basename "$ch_file") la FFMETADATA1 — chapters ignorate."
+                rm -f "$chapters_tmp_ffmeta" 2>/dev/null
+                chapters_tmp_ffmeta=""
+            fi
+        else
+            in_args+=("-i" "$ch_file")
+            chapters_input_idx=$input_idx
+            input_idx=$((input_idx+1))
+        fi
+    fi
+
+    local -a map_args=("-map" "0:v:0")
+    local out_audio_idx=0
+    for i in "${!picked_audio[@]}"; do
+        [ "${audio_input_idx[$i]}" = "-1" ] && continue
+        map_args+=("-map" "${audio_input_idx[$i]}:a")
+        out_audio_idx=$((out_audio_idx+1))
+    done
+    local out_sub_idx=0
+    for i in "${!picked_subs[@]}"; do
+        [ "${sub_input_idx[$i]}" = "-1" ] && continue
+        map_args+=("-map" "${sub_input_idx[$i]}:s")
+        out_sub_idx=$((out_sub_idx+1))
+    done
+
+    # Chapters: pe MKV cu .xml ffmpeg accepta -map_chapters direct. Pe alte container
+    # ffmpeg face conversie best-effort din xml/ffmetadata catre formatul container.
+    local -a chapters_args=()
+    if [ "$chapters_input_idx" -ge 0 ]; then
+        chapters_args=("-map_chapters" "$chapters_input_idx")
+    else
+        chapters_args=("-map_chapters" "-1")
+    fi
+
+    local -a codec_args=("-c:v" "copy" "-c:a" "copy")
+    case "$TARGET" in
+        mp4|mov)
+            if [ "$need_movtext" -eq 1 ]; then
+                codec_args+=("-c:s" "mov_text")
+            else
+                codec_args+=("-c:s" "copy")
+            fi
+            ;;
+        mkv|webm)
+            codec_args+=("-c:s" "copy")
+            ;;
+    esac
+
+    local -a extra_args=()
+    case "$TARGET" in
+        mp4|mov)
+            case "$vc" in
+                hevc) extra_args=("-tag:v" "hvc1") ;;
+                av1)  extra_args=("-tag:v" "av01") ;;
+                h264) extra_args=("-tag:v" "avc1") ;;
+            esac
+            extra_args+=("-movflags" "+faststart")
+            ;;
+    esac
+
+    # Metadata args (emis dupa codec args, inainte de output)
+    local -a meta_args=()
+    out_audio_idx=0
+    for i in "${!picked_audio[@]}"; do
+        [ "${audio_input_idx[$i]}" = "-1" ] && continue
+        local lang="${audio_lang[$i]}"
+        [ -z "$lang" ] && lang="und"
+        meta_args+=("-metadata:s:a:$out_audio_idx" "language=$lang")
+        [ -n "${audio_title[$i]}" ] && meta_args+=("-metadata:s:a:$out_audio_idx" "title=${audio_title[$i]}")
+        if [ "${audio_default[$i]}" = "yes" ]; then
+            meta_args+=("-disposition:a:$out_audio_idx" "default")
+        else
+            meta_args+=("-disposition:a:$out_audio_idx" "0")
+        fi
+        out_audio_idx=$((out_audio_idx+1))
+    done
+    out_sub_idx=0
+    for i in "${!picked_subs[@]}"; do
+        [ "${sub_input_idx[$i]}" = "-1" ] && continue
+        local lang="${sub_lang[$i]}"
+        [ -z "$lang" ] && lang="und"
+        meta_args+=("-metadata:s:s:$out_sub_idx" "language=$lang")
+        [ -n "${sub_title[$i]}" ] && meta_args+=("-metadata:s:s:$out_sub_idx" "title=${sub_title[$i]}")
+        local disp=""
+        [ "${sub_default[$i]}" = "yes" ] && disp+="default+"
+        [ "${sub_forced[$i]}" = "yes" ] && disp+="forced+"
+        if [ -n "$disp" ]; then
+            meta_args+=("-disposition:s:$out_sub_idx" "${disp%+}")
+        else
+            meta_args+=("-disposition:s:$out_sub_idx" "0")
+        fi
+        out_sub_idx=$((out_sub_idx+1))
+    done
+
+    # Attachments (doar MKV). Mimetype per-index — fara index, ffmpeg aplica
+    # global la toate attachment streams si ultimul -metadata:s:t overrides
+    # toate cele anterioare (toate primesc acelasi mime, ultimul setat).
+    local -a attach_args=()
+    if [ "$TARGET" = "mkv" ] && [ "${#picked_attach[@]}" -gt 0 ]; then
+        local af af_ext mime
+        local attach_idx=0
+        for af in "${picked_attach[@]}"; do
+            af_ext="${af##*.}"
+            mime=$(mux_attach_mime "$af_ext")
+            attach_args+=("-attach" "$af")
+            attach_args+=("-metadata:s:t:$attach_idx" "mimetype=$mime")
+            attach_idx=$((attach_idx+1))
+        done
+    fi
+
+    echo ""
+    echo "  → $final_out"
+    echo "  Video:       $(basename "$video") ($vc)"
+    echo "  Audio:       $out_audio_idx track(s)"
+    echo "  Subtitle:    $out_sub_idx track(s)"
+    echo "  Chapters:    $([ "$chapters_input_idx" -ge 0 ] && echo "1 file" || echo "none")"
+    echo "  Attachments: ${#picked_attach[@]}"
+
+    local start_ts; start_ts=$(date +%s)
+    local mux_rc=0
+    if ! ffmpeg -y -v warning -nostats \
+            "${in_args[@]}" \
+            "${map_args[@]}" "${chapters_args[@]}" \
+            "${codec_args[@]}" "${extra_args[@]}" \
+            "${meta_args[@]}" "${attach_args[@]}" \
+            "$final_out"; then
+        mux_rc=1
+    fi
+    # Cleanup temp FFMETADATA daca a fost generat
+    [ -n "$chapters_tmp_ffmeta" ] && rm -f "$chapters_tmp_ffmeta" 2>/dev/null
+    if [ "$mux_rc" -ne 0 ]; then
+        echo "  EROARE: mux esuat."
+        rm -f "$final_out"
+        return 1
+    fi
+    if [ ! -s "$final_out" ]; then
+        echo "  EROARE: output gol."
+        rm -f "$final_out"
+        return 1
+    fi
+    local end_ts; end_ts=$(date +%s)
+    local sz_new; sz_new=$(av_stat_size "$final_out" 2>/dev/null || echo 0)
+    echo "  ✓ Mux OK in $((end_ts-start_ts))s | output: $((sz_new/1024/1024)) MB"
+    av_notify_done "Mux complet" "Output: $(basename "$final_out")" 2>/dev/null || true
+    return 0
+}
+
+# ═════════════════════════════════════════════════════════════════════
 # MAIN SUBMENU
 # ═════════════════════════════════════════════════════════════════════
 echo ""
@@ -901,14 +1469,18 @@ echo "║  1) Remux  — repackage in container  ║"
 echo "║     (mkv/mp4/mov/webm, stream sel)   ║"
 echo "║  2) Demux  — extract streams separat ║"
 echo "║     (.mkv/.mka/native + attach/cover)║"
-echo "║  3) Anulare                          ║"
+echo "║  3) Mux    — combina streams separate║"
+echo "║     (video + audio[N] + sub[N] +     ║"
+echo "║      chapters + attachments)         ║"
+echo "║  4) Anulare                          ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Alege 1-3 [implicit: 1]: " mux_choice
+read -p "Alege 1-4 [implicit: 1]: " mux_choice
 
 case "${mux_choice:-1}" in
     1) remux_flow ;;
     2) demux_flow ;;
-    3) echo "Anulat."; exit 0 ;;
+    3) mux_flow ;;
+    4) echo "Anulat."; exit 0 ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac
 

@@ -3,9 +3,114 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v49 | 49 bug-uri fixate | 195+ features
-  69 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 29 tests) | ~21000 linii cod | ~4300 linii documentatie
+  TOTAL: v50 | 53 bug-uri fixate | 200+ features
+  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 30 tests) | ~21900 linii cod | ~4400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v50 — Mux flow standalone (combine raw/wrapped streams)
+═══════════════════════════════════════════════════════════════
+
+  ADD Mux tools submeniu opt 3 — flow nou "Mux" peste Remux + Demux.
+        Combina un fisier video cu mai multe audio + subtitrari +
+        chapters + atasamente intr-un container nou (mkv/mp4/mov/
+        webm). Lossless (no re-encode). Source: doar InputVideos.
+        Mirror complet bash↔PS1.
+
+  ADD Selectie manuala (nu auto-grouping dupa nume) — user picks
+        fiecare track prin index. Ordinea introdusa = ordinea
+        track-urilor in output. Decizie design: previne combinatii
+        gresite cand fisierele au nume similare dar continut diferit.
+
+  ─── Stream selection (5 prompts secventiali) ────────────────
+
+  ADD VIDEO (obligatoriu, 1 fisier) — accepta containere uzuale +
+        raw streams demuxate (.hevc / .h264 / .av1 / .ivf etc.).
+
+  ADD AUDIO (optional, mai multe) — accepta mka/m4a/eac3/ac3/aac/
+        flac/opus/mp3/wav. Ordinea selectiei = ordinea in output
+        (ex: "1,3,2" muteaza track 1 primul, apoi 3, apoi 2).
+
+  ADD SUBTITRARI (optional, mai multe) — srt/ass/ssa/vtt + PGS
+        (.sup) + VobSub (.idx + .sub). Perechea VobSub gestionata
+        automat (selectezi .idx, ffmpeg ia .sub langa).
+
+  ADD CHAPTERS (optional, 1 fisier) — XML Matroska (generat de
+        Demux opt 2) sau FFMETADATA text.
+
+  ADD ATASAMENTE (optional, mai multe) — fonturi (ttf/otf/ttc) si
+        imagini (png/jpg/webp/bmp). Doar MKV suporta atasamente;
+        pe mp4/mov/webm sunt ignorate cu warning.
+
+  ─── Container target + compat check ─────────────────────────
+
+  ADD Container target — meniu 1-4: mkv (recomandat, permisiv) /
+        mp4 / mov / webm. Compatibilitatea per-stream verificata
+        automat (aceleasi reguli ca Remux).
+
+  ADD Video incompatibil → abort cu mesaj clar. Audio/sub
+        incompatibile → warning si skip pe tracks individuale,
+        mux continua cu restul.
+
+  ADD Subtitrari text convertite automat la mov_text pe mp4/mov
+        (la fel ca Remux). Subtitrari bitmap (PGS/VobSub) ramin
+        doar pe MKV — pe mp4/mov/webm sunt sarite.
+
+  ─── Per-track metadata (opt-in) ─────────────────────────────
+
+  ADD Limba detectata automat din suffix-ul fisierului
+        (ex: "film.eng.srt" → eng, "track_ron.mka" → ron).
+        Suffix-urile tehnice (mkv/aac/hd/hq etc.) sunt ignorate
+        sa nu fie luate gresit ca limba.
+
+  ADD Prompt opt-in dupa selectie: "Editezi metadata per-track?".
+        Daca da, te plimba prin fiecare audio + sub si poti edita
+        limba, titlu, default flag (audio) si forced flag (sub).
+        Daca nu, primul audio devine default si lasi restul.
+
+  ─── Output ──────────────────────────────────────────────────
+
+  ADD Nume output: <video_basename>_mux.<ext> in OutputVideos.
+        Adaugat in scan exclude pentru a preveni reprocessing
+        accidental la urmatoarea rulare.
+
+  ─── Tests ───────────────────────────────────────────────────
+
+  ADD tests/unit/test_v50_mux.{sh,ps1} — coverage submeniu wiring,
+        helpers, ffmpeg cmd markers, output naming, VobSub pair
+        handling, container compat. Bash 70 asserts / PS1 71 asserts.
+
+  ─── Refactor + cleanup ──────────────────────────────────────
+
+  ADD Submeniu Mux tools renumerotat: 1) Remux, 2) Demux, 3) Mux,
+        4) Anulare (era 3 in v49). Launcher main menu ramane
+        neschimbat (opt 7 = Mux tools).
+
+  ADD Scan exclude actualizat in ambele scripturi sa filtreze
+        *_mux pe langa *_remux si artefactele Demux (asa output-ul
+        nu reapare ca input la urmatoarea rulare).
+
+  ─── Audit fixes (pre-release) ────────────────────────────────
+
+  FIX Chapters XML din Demux nu erau citite de ffmpeg — workflow-ul
+        documentat (extract chapters via Demux → re-import via Mux)
+        producea output fara chapters fara mesaj de eroare. Acum
+        scriptul detecteaza .xml si convereste pe loc la formatul
+        nativ ffmpeg (FFMETADATA1), apoi cleanup la final.
+
+  FIX Atasamentele multiple primeau acelasi mime type — cand puneai
+        ex: 2 fonturi + 1 imagine, toate ramaneau cu mime-ul ultimului
+        (image/png). Acum fiecare atasament are mime-ul corect.
+
+  FIX Promptul de overwrite aparea dupa editarea metadata — daca
+        userul edita 5 tracks si apoi raspundea N la suprascriere,
+        pierdea toata munca. Acum prompt-ul apare imediat dupa
+        alegerea containerului.
+
+  FIX PS1 filtra prea agresiv fisierele cu "_cover_" in nume (orice
+        urma dupa _cover_), in timp ce bash cerea cifre. Acum
+        ambele branch-uri folosesc aceeasi regula stricta.
 
 
 ═══════════════════════════════════════════════════════════════
