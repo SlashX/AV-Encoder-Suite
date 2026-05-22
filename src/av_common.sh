@@ -2734,16 +2734,27 @@ run_2pass_encode() {
 }
 
 # SVT-AV1 v1.4+ suportă sintaxa `pass=N:stats=path` în -svtav1-params.
-# Versiunile mai vechi cer fallback la -pass/-passlogfile generic.
-# Cache: SVTAV1_2PASS_CAPS_CHECKED + SVTAV1_2PASS_SUPPORTED.
+# Strategy 4 (v52): parse libsvtav1 version din ffmpeg -version; fallback
+# optimist (assume modern) cand version nedetectata.
+# Cache: SVTAV1_2PASS_CAPS_CHECKED + SVTAV1_2PASS_SUPPORTED + SVTAV1_DETECT_SOURCE.
 _check_svtav1_2pass_caps() {
     [[ "${SVTAV1_2PASS_CAPS_CHECKED:-0}" == "1" ]] && return 0
     SVTAV1_2PASS_CAPS_CHECKED=1
     SVTAV1_2PASS_SUPPORTED=0
+    SVTAV1_DETECT_SOURCE=""
     command -v ffmpeg >/dev/null 2>&1 || return 1
-    # Caută "pass" listat ca opțiune în libsvtav1 help (v1.4+ îl expune)
-    if ffmpeg -hide_banner -h encoder=libsvtav1 2>/dev/null | grep -qE '^\s*pass\s+'; then
+    # Parse "libsvtav1 1.7.0" sau "libsvtav1 1.4" din ffmpeg -version
+    local v
+    v=$(ffmpeg -version 2>/dev/null | grep -oE 'libsvtav1[[:space:]]+[0-9]+\.[0-9]+(\.[0-9]+)?' \
+        | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [[ -n "$v" ]]; then
+        # Comparare float via awk (bash nu suporta float comparison nativ)
+        SVTAV1_2PASS_SUPPORTED=$(awk -v ver="$v" 'BEGIN{print (ver+0 >= 1.4) ? 1 : 0}')
+        SVTAV1_DETECT_SOURCE="version=$v"
+    else
+        # Fallback optimist: assume modern build (ffmpeg n6.0+ statistical normal in 2026)
         SVTAV1_2PASS_SUPPORTED=1
+        SVTAV1_DETECT_SOURCE="assumed-modern"
     fi
     return 0
 }

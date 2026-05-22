@@ -152,7 +152,43 @@ shopt -u nullglob
 
 # Folder Luts pentru verificare LUT (definit sus)
 
-if [ ${#PROFILES[@]} -gt 0 ]; then
+# ── v52: AV_PROFILE env var (non-interactive profile auto-load pentru CI/cron) ──
+# Acceptat formate: path absolut .conf / nume cu .conf / nume fara .conf
+# Cautare in: path direct → UserProfiles/<name>.conf → profiles/*/<name>.conf
+AV_PROFILE_AUTO=0
+if [[ -n "${AV_PROFILE:-}" ]]; then
+    AV_PROFILE_PATH=""
+    if [[ -f "$AV_PROFILE" ]]; then
+        AV_PROFILE_PATH="$AV_PROFILE"
+    elif [[ -f "${AV_PROFILE}.conf" ]]; then
+        AV_PROFILE_PATH="${AV_PROFILE}.conf"
+    else
+        _ap_name=$(basename "$AV_PROFILE" .conf)
+        # Search UserProfiles/ first (user overrides built-ins), then profiles/*/
+        if [[ -f "$USER_PROFILES_DIR/${_ap_name}.conf" ]]; then
+            AV_PROFILE_PATH="$USER_PROFILES_DIR/${_ap_name}.conf"
+        else
+            for _p in "$PROFILES_DIR"/*/"${_ap_name}.conf"; do
+                [[ -f "$_p" ]] && { AV_PROFILE_PATH="$_p"; break; }
+            done
+        fi
+    fi
+    if [[ -z "$AV_PROFILE_PATH" ]]; then
+        echo "EROARE: AV_PROFILE='$AV_PROFILE' nu a fost gasit"
+        echo "  Cautat in: path direct, UserProfiles/, profiles/*/"
+        exit 1
+    fi
+    echo ""
+    echo "  ⓘ AV_PROFILE: auto-load $(basename "$AV_PROFILE_PATH" .conf)"
+    if ! load_profile_validated "$AV_PROFILE_PATH"; then
+        echo "EROARE: AV_PROFILE='$AV_PROFILE' nu a trecut validarea schemei"
+        exit 1
+    fi
+    LOAD_FILE="$AV_PROFILE_PATH"
+    AV_PROFILE_AUTO=1
+fi
+
+if [ ${#PROFILES[@]} -gt 0 ] && [ "$AV_PROFILE_AUTO" -eq 0 ]; then
     echo ""
     echo "╔══════════════════════════════════════╗"
     echo "║  Profile disponibile                  ║"
@@ -239,6 +275,25 @@ if [ ${#PROFILES[@]} -gt 0 ]; then
         fi
     fi
 fi
+
+# ── v52: AV_PROFILE auto-confirm — bypass user confirm prompt ────────
+# (LOAD_FILE deja setat sus, profile loaded; trecem direct la SKIP_CONFIG)
+if [ "${AV_PROFILE_AUTO:-0}" -eq 1 ] && [[ -n "${LOAD_FILE:-}" ]]; then
+    # Verifica LUT daca profilul necesita unul (fail-fast — non-interactive)
+    if [[ -n "${LUT_PATH:-}" ]]; then
+        LUT_FULL_PATH="$LUTS_DIR/$LUT_PATH"
+        if [[ ! -f "$LUT_FULL_PATH" ]]; then
+            echo "EROARE: AV_PROFILE cere LUT '$LUT_PATH' dar lipseste din $LUTS_DIR/"
+            exit 1
+        fi
+    fi
+    echo "  AV_PROFILE auto-confirm — skip meniu, lansare directa"
+    echo "  Encoder      : $ENCODER_NAME"
+    echo "  Container    : $CONTAINER"
+    echo "  Mod          : ${ENCODE_MODE:-1} ${VBR_PARAM:+(VBR $VBR_PARAM)}"
+    goto_launch=1
+fi
+
 # Variabila goto_launch semnaleaza ca trebuie sa sarim direct la lansare
 # Daca profil incarcat cu succes, skip tot meniul — salt direct la lansare
 if [[ "${goto_launch:-0}" == "1" ]]; then

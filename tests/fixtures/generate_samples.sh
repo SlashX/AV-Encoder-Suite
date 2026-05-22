@@ -55,23 +55,25 @@ if ! _skip_if_exists "$out"; then
 fi
 
 # 2) HDR10 — 320x240, 2s, libx265 yuv420p10le, BT.2020 PQ
+# v52 fix: NU folosim ffmpeg -color_primaries/-color_trc/-colorspace (scriu
+# Matroska "Colour" element care override VUI stream → sample produs cu
+# color_transfer=unknown si testele HDR detect cad). Doar x265-params.
 out="$SAMPLES_DIR/hdr10_320p.mkv"
 if ! _skip_if_exists "$out"; then
     _ff "$out" \
         -f lavfi -i "testsrc2=duration=2:size=320x240:rate=30" \
         -c:v libx265 -pix_fmt yuv420p10le -preset ultrafast \
-        -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc \
         -x265-params "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400" \
         -an
 fi
 
 # 3) HLG — 320x240, 2s, libx265 yuv420p10le, BT.2020 HLG (arib-std-b67)
+# v52 fix: same as above — doar x265-params, fara ffmpeg color flags
 out="$SAMPLES_DIR/hlg_320p.mkv"
 if ! _skip_if_exists "$out"; then
     _ff "$out" \
         -f lavfi -i "testsrc2=duration=2:size=320x240:rate=30" \
         -c:v libx265 -pix_fmt yuv420p10le -preset ultrafast \
-        -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc \
         -x265-params "transfer=arib-std-b67:colormatrix=bt2020nc:colorprim=bt2020:repeat-headers=1" \
         -an
 fi

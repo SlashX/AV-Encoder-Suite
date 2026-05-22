@@ -32,7 +32,13 @@ try {
 }
 
 # 2. Gasim arhiva corecta pentru Windows (x86_64 msvc)
-$WindowsAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "x86_64.*windows.*msvc.zip" }
+# v52 fix: prefix '^dovi_tool-' explicit — release-urile noi (2.3.2+) includ si
+# 'libdovi-X.Y.Z-x86_64-pc-windows-msvc.zip' (library), care match-uia regex-ul
+# anterior si producea $DownloadUrl array → Invoke-WebRequest cadea.
+# Select-Object -First 1 = defensive in caz ca asset-uri viitoare ar repeta numele.
+$WindowsAsset = $ReleaseInfo.assets |
+    Where-Object { $_.name -match "^dovi_tool-.*x86_64.*windows.*msvc\.zip$" } |
+    Select-Object -First 1
 if (-not $WindowsAsset) {
     Write-Host "[!] Nu s-a gasit arhiva pentru Windows in acest release." -ForegroundColor Red
     Read-Host "Apasa Enter pentru a iesi"

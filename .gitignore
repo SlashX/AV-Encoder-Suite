@@ -50,3 +50,28 @@ tests/fixtures/samples/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# v52: Binare locale (testing only — NU se commit, fiecare user le descarca local)
+# Acoperite atat src/ cat si src/tools/ (depinde de unde le-a pus user / installer)
+# ── ffmpeg suite (gyan.dev / BtbN, ~200MB combinate) ───────────────
+src/ffmpeg.exe
+src/ffprobe.exe
+src/ffplay.exe
+src/tools/ffmpeg.exe
+src/tools/ffprobe.exe
+src/tools/ffplay.exe
+# ── Dolby Vision tools (quietvoid + sven-pke fork) ─────────────────
+src/dovi_tool.exe
+src/av1dovi_tool.exe
+src/tools/dovi_tool.exe
+src/tools/av1dovi_tool.exe
+# ── HDR10+ tools (quietvoid + sven-pke fork) ───────────────────────
+src/hdr10plus_tool.exe
+src/av1hdr10plus_tool.exe
+src/tools/hdr10plus_tool.exe
+src/tools/av1hdr10plus_tool.exe
+# ── ExifTool (binar + Perl runtime folder ~32MB) ───────────────────
+src/exiftool.exe
+src/exiftool_files/
+src/tools/exiftool.exe
+src/tools/exiftool_files/

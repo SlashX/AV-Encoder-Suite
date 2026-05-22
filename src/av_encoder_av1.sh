@@ -439,6 +439,21 @@ encoder_setup_file() {
     fi
 
     # ── Comanda ffmpeg ────────────────────────────────────────────────
+    # v52: VUI color signaling EXPLICIT in svtav1-params — ffmpeg -color_primaries
+    # / -color_trc nu propaga la libsvtav1 (rezultat: stream bt2020nc/unknown/unknown).
+    # Valori numerice AV1 spec: BT.2020=9, BT.709=1, PQ=16, HLG=18, BT.2020NC=9.
+    # Derive din $color_params (set per branch HDR10/HDR10+/HLG/HLG→HDR10/HLG→SDR/SDR_tonemap).
+    local _av1_vui=""
+    if [[ "$color_params" == *"smpte2084"* ]]; then
+        _av1_vui="color-primaries=9:transfer-characteristics=16:matrix-coefficients=9"
+    elif [[ "$color_params" == *"arib-std-b67"* ]]; then
+        _av1_vui="color-primaries=9:transfer-characteristics=18:matrix-coefficients=9"
+    elif [[ "$color_params" == *"bt709"* ]]; then
+        _av1_vui="color-primaries=1:transfer-characteristics=1:matrix-coefficients=1"
+    fi
+    if [[ -n "$_av1_vui" ]] && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+        av1_params="${av1_params}:${_av1_vui}"
+    fi
     # Daca avem HDR10+ JSON, il adaugam la svtav1-params
     if [[ -n "$hdr10plus_av1_param" ]] && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
         av1_params="${av1_params}${hdr10plus_av1_param}"
@@ -488,15 +503,19 @@ encoder_setup_file() {
                 _pass_flag_p1="-pass 1 -passlogfile \"$STATS_FILE\""
                 _pass_flag_p2="-pass 2 -passlogfile \"$STATS_FILE\""
             fi
+            # v52: NU adaugam $color_params la libsvtav1 (VUI deja in svtav1-params;
+            # ffmpeg -color_primaries scrie Matroska "Colour" element care override
+            # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
             FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
                 -c:v libsvtav1 $_av1_level_flag -pix_fmt $av1_pixfmt \
-                $_svt_p1_params $VIDEO_FILTER $color_params $rate_flag $_pass_flag_p1 \
+                $_svt_p1_params $VIDEO_FILTER $rate_flag $_pass_flag_p1 \
                 -an -sn -f null /dev/null"
             FFMPEG_CMD_PASS2="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
                 -c:v libsvtav1 $_av1_level_flag -pix_fmt $av1_pixfmt \
-                $_svt_p2_params $VIDEO_FILTER $color_params $rate_flag $_pass_flag_p2 $AUDIO_PARAMS"
+                $_svt_p2_params $VIDEO_FILTER $rate_flag $_pass_flag_p2 $AUDIO_PARAMS"
         else
             # libaom-av1: --fpf=PATH pentru first pass file (sau -passlogfile generic via ffmpeg)
+            # v52: pastram $color_params la libaom (fara alt mecanism VUI inject prin ffmpeg)
             FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
                 -c:v libaom-av1 -pix_fmt $av1_pixfmt \
                 $av1_params $VIDEO_FILTER $color_params $rate_flag \
@@ -509,9 +528,10 @@ encoder_setup_file() {
         FFMPEG_CMD=""
     else
         if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+            # v52: NU adaugam $color_params (vezi nota la 2-pass branch)
             FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
                 -c:v libsvtav1 $_av1_level_flag $crf_flag -pix_fmt $av1_pixfmt \
-                $av1_params $VIDEO_FILTER $color_params $rate_flag $AUDIO_PARAMS"
+                $av1_params $VIDEO_FILTER $rate_flag $AUDIO_PARAMS"
         else
             local libaom_bv=""
             [ "$is_vbr" -eq 0 ] && libaom_bv="-b:v 0"

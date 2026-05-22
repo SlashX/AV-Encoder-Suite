@@ -3,9 +3,112 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v51 | 53 bug-uri fixate | 200+ features
-  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 31 tests) | ~22600 linii cod | ~4500 linii documentatie
+  TOTAL: v52 | 56 bug-uri fixate | 200+ features
+  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 31 tests) | ~22800 linii cod | ~4700 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v52 — HDR10 spec-compliant + AV_PROFILE + installer fixes
+═══════════════════════════════════════════════════════════════
+
+  FIX BUG CRITIC HDR10/HLG semnalizare — stream-urile HDR10 si HLG
+        produse de toate versiunile anterioare aveau semnalizarea
+        de culoare incompleta in stream (lipsea declararea BT.2020
+        si PQ/HLG la nivel SPS/OBU). TV-urile HDR aveau probleme
+        sa intre automat in mod HDR10 si sa faca tone-mapping
+        corect pe display-uri cu peak diferit de master. In plus,
+        x265 dezactiva tacit optimizarea hdr10-opt → calitate
+        HDR10 redusa fara avertisment.
+
+  FIX Solutie HDR10: setarile de culoare se aplica acum direct in
+        encoder (x265-params si svtav1-params), nu la nivel
+        container. Output v52 raporteaza corect BT.2020/PQ pentru
+        HDR10, BT.2020/HLG pentru HLG, BT.709/SDR pentru tonemap.
+        hdr10-opt devine activ pentru prima data. Aplicat pe toate
+        fluxurile: HDR10, HDR10+, HLG nativ, HLG→HDR10, HLG→SDR,
+        DV→HDR10. Bash si PowerShell identic.
+
+        Re-encodeaza fisierele HDR10 vechi daca vrei beneficii
+        complete pe TV-urile noi (mod HDR auto + tone-mapping
+        corect + boost calitate hdr10-opt).
+
+  ADD AV_PROFILE — variabila de mediu pentru auto-load profil
+        fara prompt-uri. Util pentru CI/cron/batch overnight care
+        ruleaza launcher-ul fara interactiune. Exemple:
+          AV_PROFILE=drone_4k bash av_launcher.sh
+          $env:AV_PROFILE = "drone_4k"; .\av_encode.ps1
+        Cauta profilul: path direct → UserProfiles/ → profiles/*.
+        Auto-confirma + sare la encode direct. Daca profilul cere
+        un LUT care lipseste, exit cu eroare clara (non-interactive).
+
+  ADD SVT-AV1 2-pass detect imbunatatit — versiunile vechi ale
+        proiectului afisau intotdeauna mesaj "folosesc sintaxa
+        generica" la encode 2-pass pe AV1, chiar daca SVT-AV1 era
+        v1.4+. v52 detecteaza corect versiunea libsvtav1 si alege
+        sintaxa optima. Pe versiuni vechi (sub 1.4) ramane
+        fallback functional.
+
+  ─── Installer fixes (Windows) ───────────────────────────────
+
+  FIX dovi_parser.ps1 — installer-ul cadea cu eroare la versiunea
+        2.3.2+ a dovi_tool, pentru ca release-ul include acum si
+        un fisier separat de librarie. Acum installer-ul selecteaza
+        corect binarul x86_64 si ignora restul.
+
+  FIX hdr10plus_parser.ps1 — la versiunile 1.7.2+, installer-ul
+        descarca din greseala varianta ARM (aarch64) si Windows
+        x86_64 raporta "Machine Type Mismatch" la rulare. Acum
+        cere explicit x86_64.
+
+  FIX exiftool_update.ps1 — exiftool.org nu mai distribuie ca
+        fisier .exe unic, doar ca arhiva ZIP cu folder de runtime
+        Perl. Installer-ul rescris: descarca ZIP, extrage, copiaza
+        atat exe-ul cat si folderul exiftool_files/ (mandatory).
+        Testat live: exiftool 13.58 instalat curat.
+
+  ─── Calitate output ─────────────────────────────────────────
+
+  FIX Parametri custom EXTRA respecta acum prioritatea user — daca
+        user-ul pune in EXTRA_X265/EXTRA_X264/EXTRA_AV1 setari care
+        suprapun pe cele auto-injectate de proiect (master-display,
+        level, HRD), valorile user-ului castiga. Anterior valorile
+        auto-injectate erau ultimele si user-ul nu putea suprascrie.
+
+  ─── Infrastructure & docs ───────────────────────────────────
+
+  ADD .gitignore extins — toate binarele descarcate local pentru
+        testing (ffmpeg, ffprobe, ffplay, dovi_tool, hdr10plus_tool,
+        av1dovi_tool, av1hdr10plus_tool, exiftool + folder
+        exiftool_files) sunt acum gitignored. Sunt local-only, NU
+        intra in repo (fiecare user le descarca singur).
+
+  FIX generate_samples.sh (test fixtures) — sample-urile HDR10/HLG
+        generate pentru integration tests aveau acelasi bug VUI ca
+        production code, asa ca testele cadeau silent. Fix-uit cu
+        aceeasi solutie ca encodere.
+
+  FIX test_telemetry_brand.sh — pattern de regex bash corectat
+        (varianta cu alternatie empty-first nu match-uia, quirk
+        bash).
+
+  ─── Field testing ───────────────────────────────────────────
+
+  ADD Toate fluxurile HDR10/HLG verificate cu ffmpeg 8.1.1 real:
+        - x265 HDR10: stream complet semnalizat + hdr10-opt activ
+        - SVT-AV1 HDR10: stream complet semnalizat
+        - libaom-av1: limitare confirmata (ffmpeg nu expune
+          mastering-display la libaom) — pentru HDR10 AV1
+          recomandam libsvtav1
+        - Toate installer-ele Windows ruleaza live curat
+
+  ─── Tests ───────────────────────────────────────────────────
+
+  ADD Pentru prima data in istoria proiectului, suita de teste
+        ruleaza complet end-to-end cu binare reale, fara skip:
+          Bash: 23/23 PASS (anterior 3 skip pentru ffprobe lipsa)
+          PS1:  15/15 PASS (anterior 1 skip)
+          Total 38/38, zero fail, zero skip.
 
 
 ═══════════════════════════════════════════════════════════════

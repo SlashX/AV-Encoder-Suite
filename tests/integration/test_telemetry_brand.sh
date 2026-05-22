@@ -23,4 +23,6 @@ assert_eq "function" "$(type -t detect_brand)" "detect_brand definit"
 
 brand=$(detect_brand "$SDR")
 # SDR lavfi-generated nu are codec_tag specific; e probabil fallback "" sau "quicktime" daca exiftool prinde un atom random
-assert_match "$brand" "^(|quicktime|unknown)$" "SDR plain → brand vid/quicktime/unknown"
+# v52 fix: bash regex `^(|alt1|alt2)$` cu empty-first NU match-uieste (quirk).
+# Folosim optional group `^(quicktime|unknown)?$` care match-uieste si empty.
+assert_match "$brand" "^(quicktime|unknown)?$" "SDR plain → brand vid/quicktime/unknown"

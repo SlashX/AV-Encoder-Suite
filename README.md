@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v51** — 53 bugs fixed · 200+ features · ~22 600 LoC · 70 files
+**v52** — 56 bugs fixed · 200+ features · ~22 800 LoC · 70 files
 
 ---
 
@@ -20,6 +20,8 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 18-column normalized CSV + SRT overlay tracks
 - **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), HDR10+→DV hybrid synthesis (lossless on video)
 - **Mux tools** (v49 + v50) — standalone script with three flows. **Remux**: per-stream selection (video / audio / subtitles / attachments / chapters) with per-target compat matrix and pre-flight warnings. **Demux**: smart per-codec uniform wrapping — video→`.mkv` (preserves HDR/DV), audio→`.mka` (preserves Atmos / E-AC3 / TrueHD metadata), subtitles→native ext (.srt/.ass/.sup/.sub/.vtt), cover art auto-extracted, chapters→Matroska XML, attachments+data in folders. **Mux** (v50): combine separate files — video + N audio + N subs + chapters + attachments into a fresh container. Manual selection (no auto-grouping for safety), VobSub `.idx+.sub` pair handling, per-track metadata (lang/title/default/forced) opt-in, container compat matrix reused from Remux. Input remux/demux: mkv · webm · mp4 · m4v · mov · ts · m2ts · mts · vob · mxf (Blu-ray / DVD / broadcast covered)
+- **Spec-compliant HDR10 output** (v52) — pre-v52, all HDR10/HLG output had incomplete VUI signaling at the stream level (`color_primaries=unknown`, `color_transfer=unknown`) because ffmpeg's `-color_primaries`/`-color_trc` flags wrote Matroska container "Colour" element that overrode stream VUI when read by `ffprobe` and players. Side-effect: x265 silently disabled `hdr10-opt` on every encode. **v52 fix:** dropped the conflicting ffmpeg color flags; VUI now lives in `-x265-params` (`colorprim/transfer/colormatrix`) and `-svtav1-params` (numeric AV1 spec values: `color-primaries=9`, `transfer-characteristics=16` for PQ / `=18` for HLG, `matrix-coefficients=9`). Output now reports `bt2020nc/bt2020/smpte2084` end-to-end and `hdr10-opt` is active for the first time
+- **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch. `AV_PROFILE=drone_4k bash av_launcher.sh` (or `$env:AV_PROFILE = "drone_4k"; .\av_encode.ps1`). Resolves path → `UserProfiles/` → `profiles/*/`. EXTENDS chain + schema validation preserved; auto-confirms; fails fast on missing LUTs
 - **Rate control: CRF, 1-pass VBR, 2-pass VBR** (v51) — SW encoders (libx265 / libx264 / libsvtav1 / libaom-av1) now support true 2-pass encoding for better quality at the same target bitrate. Automatic VBV/Level/Tier (HEVC Main→High Tier escalation when bitrate exceeds Main caps; H.264/AV1 level bump). HDR10 static metadata (Mastering Display + MaxCLL/MaxFALL) extracted from source or fallback BT.2020/1000-nit defaults, injected into all PQ output (CRF + 1-pass + 2-pass)
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
@@ -369,4 +371,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v51** — 53 bugs fixed · 200+ features · ~22 600 LoC · 70 files
+Current: **v52** — 56 bugs fixed · 200+ features · ~22 800 LoC · 70 files

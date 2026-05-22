@@ -34,7 +34,12 @@ try {
 }
 
 # 2. Gasim arhiva corecta pentru Windows (x86_64 msvc)
-$WindowsAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "windows-msvc.zip" }
+# v52 fix: regex specific 'x86_64' EXPLICIT — release-urile 1.7.2+ includ si varianta
+# aarch64 (ARM Windows) care vine alphabetic primul si match-uia regex-ul lax
+# anterior → installer descarca binarul ARM care nu poate rula pe x86_64 Windows.
+$WindowsAsset = $ReleaseInfo.assets |
+    Where-Object { $_.name -match "^hdr10plus_tool-.*x86_64.*windows-msvc\.zip$" } |
+    Select-Object -First 1
 if (-not $WindowsAsset) {
     Write-Host "[!] Nu s-a gasit arhiva pentru Windows in acest release." -ForegroundColor Red
     Read-Host "Apasa Enter pentru a iesi"

@@ -1336,13 +1336,24 @@ function Invoke-2PassEncode {
 }
 
 # SVT-AV1 v1.4+ inline pass=N:stats= caps
+# Strategy 4 (v52): parse libsvtav1 version din ffmpeg -version; fallback
+# optimist (assume modern) cand version nedetectata.
 function Test-SvtAv1TwoPassCaps {
     if ($script:svtav1TwoPassChecked) { return $script:svtav1TwoPassSupported }
     $script:svtav1TwoPassChecked = $true
     $script:svtav1TwoPassSupported = $false
+    $script:svtav1DetectSource = ""
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return $false }
-    $help = & ffmpeg -hide_banner -h encoder=libsvtav1 2>$null | Out-String
-    if ($help -match '(?m)^\s*pass\s+') { $script:svtav1TwoPassSupported = $true }
+    $verOutput = & ffmpeg -version 2>$null | Out-String
+    if ($verOutput -match 'libsvtav1\s+(\d+)\.(\d+)') {
+        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+        $script:svtav1TwoPassSupported = ($major -gt 1) -or ($major -eq 1 -and $minor -ge 4)
+        $script:svtav1DetectSource = "version=$major.$minor"
+    } else {
+        # Fallback optimist: assume modern build
+        $script:svtav1TwoPassSupported = $true
+        $script:svtav1DetectSource = "assumed-modern"
+    }
     return $script:svtav1TwoPassSupported
 }
 
@@ -4149,7 +4160,63 @@ $profLoaded = $false
 
 # Folder Luts pentru verificare LUT (definit sus)
 
-if ($profiles.Count -gt 0) {
+# ── v52: AV_PROFILE env var (non-interactive profile auto-load pentru CI/cron) ──
+# Acceptat formate: path absolut .conf / nume cu .conf / nume fara .conf
+# Cautare: path direct -> UserProfiles\<name>.conf -> profiles\*\<name>.conf
+$avProfileAuto = $false
+if ($env:AV_PROFILE) {
+    $avProfilePath = ""
+    if (Test-Path -LiteralPath $env:AV_PROFILE -PathType Leaf) {
+        $avProfilePath = (Resolve-Path -LiteralPath $env:AV_PROFILE).Path
+    } elseif (Test-Path -LiteralPath "$($env:AV_PROFILE).conf" -PathType Leaf) {
+        $avProfilePath = (Resolve-Path -LiteralPath "$($env:AV_PROFILE).conf").Path
+    } else {
+        $apName = [System.IO.Path]::GetFileNameWithoutExtension($env:AV_PROFILE)
+        $candidate = Join-Path $UserProfilesDir "$apName.conf"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $avProfilePath = $candidate
+        } elseif (Test-Path $ProfilesDir) {
+            $found = Get-ChildItem -Path $ProfilesDir -Filter "$apName.conf" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $avProfilePath = $found.FullName }
+        }
+    }
+    if (-not $avProfilePath) {
+        Write-Host "EROARE: AV_PROFILE='$($env:AV_PROFILE)' nu a fost gasit" -ForegroundColor Red
+        Write-Host "  Cautat in: path direct, UserProfiles\, profiles\*\" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host ""
+    Write-Host "  ⓘ AV_PROFILE: auto-load $([System.IO.Path]::GetFileNameWithoutExtension($avProfilePath))" -ForegroundColor Cyan
+
+    # Build EXTENDS chain + validate (paritate cu flow interactive)
+    $chainRes = Build-ExtendsChain -LeafPath $avProfilePath
+    if (-not $chainRes.ok) {
+        Write-Host "EROARE: $($chainRes.error)" -ForegroundColor Red
+        exit 1
+    }
+    $loadChain = $chainRes.chain
+    $totalErrors = 0
+    foreach ($link in $loadChain) {
+        $vr = Test-ProfileFile -Path $link
+        if (-not $vr.ok) { $totalErrors += $vr.errors }
+    }
+    if ($totalErrors -gt 0) {
+        Write-Host "EROARE: AV_PROFILE='$($env:AV_PROFILE)' nu a trecut validarea schemei ($totalErrors erori)" -ForegroundColor Red
+        exit 1
+    }
+    # Parse .conf (key=value) — root..leaf, leaf overrides parent
+    foreach ($link in $loadChain) {
+        Get-Content -LiteralPath $link | ForEach-Object {
+            if ($_ -match '^([A-Za-z_]\w*)=(.*)$') {
+                Set-Variable -Name $Matches[1] -Value $Matches[2] -Scope Script
+            }
+        }
+    }
+    $loadFile = $avProfilePath
+    $avProfileAuto = $true
+}
+
+if ($profiles.Count -gt 0 -and -not $avProfileAuto) {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  Profile disponibile                  ║" -ForegroundColor Cyan
@@ -4344,6 +4411,70 @@ if ($profiles.Count -gt 0) {
         }
         }  # if ($loadFile)
     }
+}
+
+# ── v52: AV_PROFILE auto-confirm — bypass user confirm prompt + map vars ────
+if ($avProfileAuto -and $loadFile) {
+    # Map loaded conf vars la $script: (identic cu interactive load)
+    if ($ENCODER_NAME -and -not $ENCODER) { $script:ENCODER = $ENCODER_NAME }
+    # Verifica LUT (fail-fast — non-interactive)
+    if ($LUT_PATH) {
+        $LutFullPath = Join-Path $LutsDir $LUT_PATH
+        if (-not (Test-Path $LutFullPath)) {
+            Write-Host "EROARE: AV_PROFILE cere LUT '$LUT_PATH' dar lipseste din $LutsDir\" -ForegroundColor Red
+            exit 1
+        }
+    }
+    # Map vars (paritate cu blocul interactive ~line 4255-4292)
+    $useX264   = ($ENCODER -eq "libx264")
+    $useAV1    = ($ENCODER -eq "av1")
+    $useDNxHR  = ($ENCODER -eq "dnxhr")
+    $useProRes = ($ENCODER -eq "prores")
+    $useHWEnc  = ($ENCODER -eq "hwenc")
+    $av1Impl   = if ($AV1_IMPL) { $AV1_IMPL } else { "libsvtav1" }
+    $container = $CONTAINER
+    $scaleWidth = if ($SCALE_WIDTH) { [int]$SCALE_WIDTH } else { $null }
+    $targetFps = $TARGET_FPS
+    $fpsMethod = $FPS_METHOD
+    $vfPreset = $VF_PRESET
+    $vfIsVidstab = ($VF_PRESET -eq "vidstab")
+    $vfIsUpscale4K = ($VF_PRESET -match "scale=3840")
+    if ($vfIsVidstab) { $vfPreset = $null }
+    $audioCodec = $AUDIO_CODEC
+    $audioBitrate = $AUDIO_BITRATE
+    $audioCopy = ($AUDIO_COPY -eq "1")
+    $audioFlacLevel = if ($AUDIO_FLAC_LEVEL) { $AUDIO_FLAC_LEVEL } else { "8" }
+    $pcmDepth = if ($PCM_DEPTH) { $PCM_DEPTH } else { "16le" }
+    $audioNormalize = ($AUDIO_NORMALIZE -eq "1")
+    $encMode = if ($ENCODE_MODE) { $ENCODE_MODE } else { "1" }
+    $customCrf = $CUSTOM_CRF
+    $selectedPreset = if ($PRESET) { $PRESET } else { "slow" }
+    $selectedTune = $TUNE
+    $extraParams = $EXTRA_PARAMS
+    $vbrTarget = $VBR_TARGET
+    $vbrMaxrate = $VBR_MAXRATE
+    $vbrBufsize = $VBR_BUFSIZE
+    $dnxhrProfile = if ($DNXHR_PROFILE) { $DNXHR_PROFILE } else { "sq" }
+    $proresProfile = if ($PRORES_PROFILE) { $PRORES_PROFILE } else { "hq" }
+    $x264ProfileGlobal = if ($X264_PROFILE) { $X264_PROFILE } else { "auto" }
+    $forceLogDetection = ($FORCE_LOG_DETECTION -eq "1")
+    $interactiveMode = ($INTERACTIVE_MODE -eq "1")
+    $hwEncCodec  = if ($HW_ENC_CODEC)  { $HW_ENC_CODEC }  else { "" }
+    $hwEncPreset = if ($HW_ENC_PRESET) { $HW_ENC_PRESET } else { "" }
+    $hwEncQP     = if ($HW_ENC_QP)     { $HW_ENC_QP }     else { "23" }
+    $hwEncName   = $hwEncCodec
+    $hwForce     = ($HW_FORCE -eq "1")
+
+    $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
+    $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
+    $containerFlags = Get-ContainerFlags $container
+    $LogFile = Join-Path $OutputDir "av_encode_log_$encoderName.txt"
+
+    Write-Host "  AV_PROFILE auto-confirm — skip meniu, lansare directa" -ForegroundColor Cyan
+    Write-Host "  Encoder      : $encoderName" -ForegroundColor White
+    Write-Host "  Container    : $container" -ForegroundColor White
+    Write-Host "  Mod          : $encMode $(if ($vbrTarget) { '(VBR ' + $vbrTarget + ')' } else { '' })" -ForegroundColor White
+    $profLoaded = $true
 }
 
 if (-not $profLoaded) {
@@ -5966,10 +6097,21 @@ foreach ($f in $inputFiles) {
         } elseif ($av1HasPq -and $av1Impl -eq "libaom-av1") {
             Write-Host "  ⓘ libaom-av1: mastering-display + content-light nu se pot injecta prin ffmpeg (HDR10 color signaling ramane functional)" -ForegroundColor DarkGray
         }
+        # v52: VUI color signaling EXPLICIT in svtav1-params — ffmpeg -color_primaries
+        # / -color_trc nu propaga la libsvtav1. Valori numerice AV1 spec.
+        $av1VuiParam = ""
+        $av1ColorJoined = if ($av1Color) { $av1Color -join " " } else { "" }
+        if ($av1ColorJoined -match "smpte2084") {
+            $av1VuiParam = ":color-primaries=9:transfer-characteristics=16:matrix-coefficients=9"
+        } elseif ($av1ColorJoined -match "arib-std-b67") {
+            $av1VuiParam = ":color-primaries=9:transfer-characteristics=18:matrix-coefficients=9"
+        } elseif ($av1ColorJoined -match "bt709") {
+            $av1VuiParam = ":color-primaries=1:transfer-characteristics=1:matrix-coefficients=1"
+        }
         $svtParams = if ($isVbr) {
-            "preset=${av1Preset}:rc=1:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
+            "preset=${av1Preset}:rc=1:lp=$([Environment]::ProcessorCount)${fgSuffix}${av1VuiParam}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
         } else {
-            "preset=${av1Preset}:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
+            "preset=${av1Preset}:lp=$([Environment]::ProcessorCount)${fgSuffix}${av1VuiParam}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
         }
         if ($extraParams -and $av1Impl -eq "libsvtav1") { $svtParams += ":$extraParams" }
         $libaomExtra = if ($extraParams -and $av1Impl -eq "libaom-av1") { $extraParams -split '\s+' | Where-Object { $_ } } else { @() }
@@ -5995,20 +6137,24 @@ foreach ($f in $inputFiles) {
                     $passFlagP1 = @("-pass","1","-passlogfile",$script:statsFile)
                     $passFlagP2 = @("-pass","2","-passlogfile",$script:statsFile)
                 }
+                # v52: NU adaugam $av1Color la libsvtav1 (VUI deja in svtav1-params;
+                # ffmpeg -color_primaries scrie Matroska "Colour" element care override
+                # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
                 $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                     @("-c:v","libsvtav1") + $av1LevelFlag +
                     @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParamsP1) +
-                    $videoFilter + $fpsFlag + $av1Color + $rateParams + $passFlagP1 +
+                    $videoFilter + $fpsFlag + $rateParams + $passFlagP1 +
                     @("-an","-sn","-f","null","NUL")
                 $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                     @("-c:v","libsvtav1") + $av1LevelFlag +
                     @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParamsP2) +
-                    $videoFilter + $fpsFlag + $av1Color + $rateParams + $passFlagP2 + $audioParams
+                    $videoFilter + $fpsFlag + $rateParams + $passFlagP2 + $audioParams
             } else {
+                # v52: NU adaugam $av1Color (vezi nota la 2-pass branch)
                 $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                           @("-c:v","libsvtav1") + $av1LevelFlag + $crfFlag +
                           @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParams) +
-                          $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
+                          $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                           (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                           $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
             }
@@ -6443,6 +6589,18 @@ foreach ($f in $inputFiles) {
         if ($encMode -eq "2" -or $encMode -eq "3") {
             $x265LevelParams += ":hrd=1"
         }
+        # v52: VUI color signaling EXPLICIT in x265-params — ffmpeg -color_primaries
+        # / -color_trc nu propaga la libx265 (x265 dezactiveaza hdr10-opt automat
+        # fara VUI corect). Derive din $colorParams setat per branch.
+        $x265VuiParams = ""
+        $colorJoined = if ($colorParams) { $colorParams -join " " } else { "" }
+        if ($colorJoined -match "smpte2084") {
+            $x265VuiParams = "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+        } elseif ($colorJoined -match "arib-std-b67") {
+            $x265VuiParams = "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
+        } elseif ($colorJoined -match "bt709") {
+            $x265VuiParams = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+        }
         # v51: HDR10 static metadata pe branch-uri HDR10 (PQ transfer)
         $x265StaticParams = ""
         if ($x265Hdr -match "hdr10=1") {
@@ -6456,6 +6614,7 @@ foreach ($f in $inputFiles) {
             }
         }
         $x265Params = "${x265Hdr}pools=${nProc}:aq-mode=3:aq-strength=1.0:${x265LevelParams}"
+        if ($x265VuiParams) { $x265Params += ":${x265VuiParams}" }
         if ($x265StaticParams) { $x265Params += ":${x265StaticParams}" }
         if ($extraParams) { $x265Params += ":$extraParams" }
         # Remove trailing colon if present
@@ -6465,22 +6624,26 @@ foreach ($f in $inputFiles) {
 
         if ($is2Pass) {
             # v51: 2-pass x265 — pass=N:stats= injectat in x265-params
+            # v52: NU adaugam $colorParams (VUI deja in x265-params; ffmpeg
+            # -color_primaries scrie Matroska "Colour" element care override
+            # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
             Initialize-2PassState -File $f.FullName
             $x265ParamsP1 = "${x265Params}:pass=1:stats=$($script:statsFile):slow-firstpass=0"
             $x265ParamsP2 = "${x265Params}:pass=2:stats=$($script:statsFile)"
             $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag +
                 @("-pix_fmt",$x265PixFmt,"-x265-params",$x265ParamsP1) +
-                $videoFilter + $fpsFlag + $colorParams + $rateParams + @("-an","-sn","-f","null","NUL")
+                $videoFilter + $fpsFlag + $rateParams + @("-an","-sn","-f","null","NUL")
             $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag +
                 @("-pix_fmt",$x265PixFmt,"-x265-params",$x265ParamsP2) +
-                $videoFilter + $fpsFlag + $colorParams + $rateParams + $audioParams
+                $videoFilter + $fpsFlag + $rateParams + $audioParams
         } else {
+            # v52: NU adaugam $colorParams (vezi nota la 2-pass branch)
             $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                       @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
                       @("-pix_fmt",$x265PixFmt,"-x265-params",$x265Params) +
-                      $videoFilter + $fpsFlag + $colorParams + $rateParams + $audioParams + $loudnormFlag +
+                      $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                       (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                       $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
         }

@@ -333,8 +333,13 @@ encoder_setup_file() {
         fi
         # hdr10p_rc=1: HDR10 static (fara dhdr10-info)
         hdr10_static_resolve "$file"; _set_x265_hdr10_static
-        x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1${hdr10plus_param}")
-        video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+        # v52: colorprim/transfer/colormatrix EXPLICIT in x265-params SI scoatem
+        # ffmpeg -color_primaries/-color_trc/-colorspace pentru ca acelea scriu
+        # Matroska container "Colour" element care override-uia VUI-ul stream
+        # cand ffprobe citea (rezultat anterior: bt2020nc/unknown/unknown).
+        # Fix: numai x265-params → stream + container preserve VUI corect.
+        x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc${hdr10plus_param}")
+        video_params="-pix_fmt yuv420p10le -x265-params $x265params"
     elif [[ "${IS_HLG:-0}" == "1" ]]; then
         # ── HLG (BT.2100 HLG) ─────────────────────────────────────────
         handle_hlg_dialog "$file" "$filename" "x265"
@@ -346,15 +351,17 @@ encoder_setup_file() {
         fi
         case "$HLG_DIALOG_MODE" in
             hlg_native)
+                # v52: doar x265-params, fara ffmpeg color flags
                 x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc")
-                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 ;;
             hlg_to_hdr10)
                 # v51: HLG→HDR10 transform — sursa nu are master_display real,
                 # folosim defaults BT.2020 + 1000 nits
+                # v52: colorprim/transfer/colormatrix EXPLICIT in x265-params (fara ffmpeg flags)
                 hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"; _set_x265_hdr10_static
-                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
-                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
                 if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
                     VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hlg2hdr10_vf},}"
@@ -363,8 +370,9 @@ encoder_setup_file() {
                 fi
                 ;;
             hlg_to_sdr)
-                x265params=$(build_x265_params "")
-                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt709 -color_trc bt709 -colorspace bt709"
+                # v52: SDR Rec.709 VUI in x265-params, fara ffmpeg color flags
+                x265params=$(build_x265_params "colorprim=bt709:transfer=bt709:colormatrix=bt709")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 local _hlg2sdr_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p10le"
                 if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
                     VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hlg2sdr_vf},}"
@@ -399,9 +407,10 @@ encoder_setup_file() {
         if [[ -n "$DOVI" ]]; then
             log "  DV re-encode: HDR10 10-bit (best-effort)"
             # v51: DV→HDR10 — extrage din sursa daca disponibil, altfel defaults
+            # v52: colorprim/transfer/colormatrix EXPLICIT in x265-params (fara ffmpeg flags)
             hdr10_static_resolve "$file"; _set_x265_hdr10_static
-            x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
-            video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+            x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")
+            video_params="-pix_fmt yuv420p10le -x265-params $x265params"
         else
         handle_source_dialog "$file" "$filename" "x265"
         local src_rc=$?
@@ -415,13 +424,15 @@ encoder_setup_file() {
         case "${SRC_DIALOG_MODE:-sdr}" in
             hdr10)
                 # v51: HDR10 source — extract real metadata (fallback defaults)
+                # v52: colorprim/transfer/colormatrix EXPLICIT in x265-params (fara ffmpeg flags)
                 hdr10_static_resolve "$file"; _set_x265_hdr10_static
-                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
-                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 ;;
             sdr_tonemap)
-                x265params=$(build_x265_params "")
-                video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt709 -color_trc bt709 -colorspace bt709"
+                # v52: VUI Rec.709 explicit in x265-params (fara ffmpeg flags)
+                x265params=$(build_x265_params "colorprim=bt709:transfer=bt709:colormatrix=bt709")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 local _tonemap_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p10le"
                 if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
                     VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_tonemap_vf},}"

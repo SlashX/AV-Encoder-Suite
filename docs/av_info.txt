@@ -638,6 +638,37 @@ CUPRINS
   Aceste setari fac stream-urile HRD-compliant (decodabile sigur pe TV-uri
   hardware care impun limite VBV stricte, ex Sony Bravia / LG OLED).
 
+  ─── 7.11.1.5. VUI color signaling (v52 BUG FIX critic) ───
+
+  Pre-v52, toate stream-urile HDR10/HLG produse de proiect aveau VUI
+  incomplet la nivel stream (color_primaries + transfer = "unknown")
+  desi setam explicit BT.2020 + PQ via ffmpeg flags. Cauza: ffmpeg
+  `-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc`
+  scriu Matroska container "Colour" element care override-uia VUI-ul
+  din stream. Plus consecinta tacuta: x265 dezactiva automat
+  hdr10-opt cu mesajul "Recommended Settings for HDR10-opt: colour
+  primaries should be BT.2020, transfer characteristics should be
+  SMPTE ST.2084, Disabling hdr10-opt."
+
+  Impact pe stream-urile vechi: HDR TV-urile care citesc VUI puteau
+  sa nu intre in mod HDR10 automat; hdr10-opt (HDR10 optimization
+  quality boost) era inactiv complet → calitate HDR10 suboptimala.
+
+  Fix v52: removed ffmpeg color flags de la nivel container.
+  Pastrat doar colorprim/transfer/colormatrix EXPLICIT in
+  -x265-params (string: bt2020, smpte2084, arib-std-b67, bt709) si
+  valori numerice in -svtav1-params (AV1 spec: color-primaries=9
+  BT.2020, transfer-characteristics=16 PQ / =18 HLG, matrix-
+  coefficients=9). Verificat live pe ffmpeg 8.1.1: stream produce
+  `bt2020nc/bt2020/smpte2084` + Mastering display + max-cll +
+  hdr10-opt ACTIV.
+
+  Beneficiu: HDR10 streams produse de v52+ sunt complet semnalizate
+  catre TV → mod HDR se activeaza correct + hdr10-opt e activ pentru
+  prima data in istoria proiectului. Re-encodeaza fisierele vechi
+  daca vrei sa beneficiezi de quality boost.
+
+
   ─── 7.11.2. HDR10 static metadata (v51) ───
 
   Aplica pe TOATE modurile (CRF, 1-pass, 2-pass) cand output-ul e HDR10.
@@ -1949,6 +1980,46 @@ CUPRINS
 
     src/profiles/example_profile.conf documenteaza toate campurile disponibile —
     util ca referinta cand creezi profile noi.
+
+
+  ─── 15.1.1. AV_PROFILE env var (v52) — non-interactive auto-load ───
+
+  Pentru CI/cron/batch overnight: lanseaza launcher-ul cu profil
+  pre-selectat fara prompt-uri interactive.
+
+    Bash:
+      AV_PROFILE=drone_4k bash av_launcher.sh
+      AV_PROFILE=/path/abs.conf bash av_launcher.sh < /dev/null
+
+    PowerShell:
+      $env:AV_PROFILE = "drone_4k"; .\av_encode.ps1
+
+  Acceptat formate:
+    - Path absolut .conf: AV_PROFILE=/home/user/myprofile.conf
+    - Nume fara .conf:    AV_PROFILE=drone_4k
+    - Nume cu .conf:      AV_PROFILE=drone_4k.conf
+
+  Resolve order:
+    1. Path direct (Test-Path / [ -f ])
+    2. UserProfiles/<name>.conf (user overrides built-ins)
+    3. src/profiles/*/<name>.conf (built-in DJI Action 6, etc.)
+
+  Comportament:
+    - EXTENDS chain rezolvat (root→leaf, leaf overrides parent)
+    - Schema validation pe fiecare link in chain
+    - Auto-confirm — bypass user prompt "Lanseaza cu aceste setari?"
+    - Direct la encode, fara meniuri intermediare
+    - LUT fail-fast: daca profilul cere LUT si lipseste din Luts/,
+      exit 1 cu mesaj (non-interactive context)
+
+  Pentru tweak partial fara override profil:
+    Foloseste profilul ca template + edit .conf inainte de rulare.
+    NU exista override per-field env var (decizie design: profilurile
+    sunt unitati atomice).
+
+  Diferenta vs profile load interactive (din meniu):
+    - Profile load interactive: prompt selectie + confirm la launch
+    - AV_PROFILE auto-load: zero prompt-uri, direct la encode
 
 
   ─── 15.2. Schema validation ───
