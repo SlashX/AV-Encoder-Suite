@@ -3,9 +3,116 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v50 | 53 bug-uri fixate | 200+ features
-  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 30 tests) | ~21900 linii cod | ~4400 linii documentatie
+  TOTAL: v51 | 53 bug-uri fixate | 200+ features
+  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 31 tests) | ~22600 linii cod | ~4500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v51 — 2-pass VBR + VBV/Level automation + HDR10 static metadata
+═══════════════════════════════════════════════════════════════
+
+  ADD Mod encodare 2-pass VBR (opt 3 in meniul Mod encodare) —
+        encoder analizeaza fisierul integral in Pass 1 (fara audio,
+        output null) ca sa distribuie optim bitrate-ul in Pass 2.
+        Rezultat: aceeasi marime tinta cu calitate mai buna decat
+        1-pass VBR (in special pe scene complexe/cu miscare).
+        Disponibil pe SW encoders: libx265, libx264, libsvtav1,
+        libaom-av1. HW backends (NVENC/QSV/VAAPI/VT/AMF/MediaCodec)
+        nu suporta 2-pass — meniul ascunde optiunea automat cand
+        e selectat un backend HW.
+
+  ADD VBV / Level / Tier automation — encoderul calculeaza
+        automat nivelul minim conform rezolutiei × framerate (ex:
+        HEVC 4K30=5.0, 4K60=5.1; H.264 1080p=4.1; AV1 4K=5.0).
+        Pe VBR/2-pass, daca bitrate-ul tinta depaseste cap-ul
+        Main Tier la nivelul ales, escaladeaza automat la High
+        Tier (HEVC) sau bump level (H.264/AV1). Adauga `hrd=1`
+        (x265) si `nal-hrd=vbr` (x264) pentru stream-uri
+        HRD-compliant. Mirror complet bash↔PS1.
+
+  ADD HDR10 static metadata — encoderul extrage din sursa
+        Mastering Display + MaxCLL/MaxFALL via ffprobe si le
+        injecteaza in stream-ul de iesire (x265-params
+        master-display=...+max-cll=...; svtav1-params
+        mastering-display=...+content-light=...). Player-ele HDR
+        TV folosesc valorile pentru tone-mapping corect pe
+        display-uri cu peak diferit de master. Aplica pe TOATE
+        modurile (CRF, 1-pass VBR, 2-pass VBR).
+
+  ADD Fallback defaults HDR10 — cand sursa nu raporteaza
+        master_display (ex: LOG→HDR10 transform, HLG→HDR10,
+        DV→HDR10), foloseste defaults BT.2020 + 1000 nits peak
+        (Apple/Netflix master) cu MaxCLL/MaxFALL 1000,400. Mai
+        bun decat absent — player-ul oricum trebuie sa fie
+        defensive cu acele valori.
+
+  ─── Detalii per encoder ─────────────────────────────────────
+
+  ADD libx265 2-pass: `-x265-params pass=1:stats=PATH:
+        slow-firstpass=0` (Pass 1 rapid, doar pt stats) /
+        `pass=2:stats=PATH`. Mostenire complete params (HDR10,
+        AQ, pools, level, master-display) intre passuri.
+
+  ADD libx264 2-pass: `-pass 1 -passlogfile PATH` /
+        `-pass 2 -passlogfile PATH`. Genereaza PATH.log +
+        PATH.log.mbtree.
+
+  ADD libsvtav1 2-pass: detecteaza automat caps v1.4+ pentru
+        sintaxa inline `pass=N:stats=PATH` (cleaner). Pe versiuni
+        vechi fallback la `-pass/-passlogfile` generic.
+
+  ADD libaom-av1 2-pass: `-pass N -passlogfile PATH`. Atentie:
+        libaom HDR10 static metadata nu poate fi injectata prin
+        ffmpeg (limitare wrapper) — color signaling ramane OK.
+
+  ─── UI changes ──────────────────────────────────────────────
+
+  ADD Meniu encodare actualizat (bash si PS1):
+        1) CRF — calitate constanta
+        2) VBR 1-pass — bitrate mediu tinta
+        3) VBR 2-pass — pass 1 + pass 2 (calitate mai buna)
+        Cand HW backend e activ, optiunea 3 e ascunsa cu
+        mesaj informativ. Defensive: profile bypass care
+        ar seta ENCODE_MODE=3 + HW e revertit la 2 cu warning.
+
+  ADD Smart stream copy skip pe mode=3 — daca user-ul cere
+        explicit 2-pass VBR pentru bitrate-control, NU mai
+        oferim stream copy ca alternativa (ar contrazice
+        intentia). Pe mode=1 si mode=2 ramane disponibil.
+
+  ─── Schema profile ──────────────────────────────────────────
+
+  ADD ENCODE_MODE enum extins: 1,2,3 (bash + PS1 schema).
+        Profile vechi cu ENCODE_MODE=1 sau 2 raman valide.
+
+  ─── Internals ───────────────────────────────────────────────
+
+  ADD Helperi noi in av_common.sh:
+        - run_2pass_encode (orchestrare 2 passuri)
+        - init_2pass_state / cleanup_2pass_state
+        - _check_svtav1_2pass_caps (cache version detect)
+        - hw_2pass_allowed
+        - get_vbv_caps / _min_level_for_res /
+          suggest_vbv_for_target / parse_bitrate_kbps
+        - extract_hdr10_static_metadata /
+          hdr10_static_defaults / hdr10_static_resolve
+
+  ADD Helperi noi in av_encode.ps1 (PS1 mirror):
+        - Invoke-2PassEncode / Initialize-2PassState /
+          Clear-2PassState / Test-SvtAv1TwoPassCaps
+        - Get-VbvCaps / Get-MinLevelForResolution /
+          Suggest-VbvForTarget / Get-BitrateKbps
+        - Get-Hdr10StaticMetadata / Set-Hdr10StaticDefaults /
+          Resolve-Hdr10Static
+
+  ADD Tests: test_v51_features.{sh,ps1} — bash 76 asserts,
+        PS1 74 asserts. Coverage: VBV tables (HEVC Main/High,
+        H.264, AV1), min level per resolution, escaladare
+        Main→High Tier, parse bitrate, HDR10 defaults + fallback
+        resolve, 2-pass state lifecycle, hw_2pass_allowed,
+        markers per encoder integration (level/hdr10/2-pass),
+        launcher gate, schema enum extins, smart-copy skip.
 
 
 ═══════════════════════════════════════════════════════════════

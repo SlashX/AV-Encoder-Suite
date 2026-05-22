@@ -591,7 +591,7 @@ CUPRINS
   necesita compilare ffmpeg cu --enable-libopenapv (nu in build Termux).
 
 
-  ─── 7.11. CRF / VBR ───
+  ─── 7.11. CRF / VBR 1-pass / VBR 2-pass (v51) ───
 
   CRF — calitate constanta (recomandat default). Scriptul alege per rezolutie:
     x265: 4K=22 / 1080p=21 / 720p=20
@@ -599,8 +599,64 @@ CUPRINS
     AV1:  4K=30 / 1080p=28 / 720p=26
   Sau alegi CRF custom (0=lossless, valori mai mari = fisier mai mic).
 
-  VBR — bitrate mediu tinta (ex: 4000k, 4M). Maxrate=1.5x, bufsize=2x auto.
-        Poti suprascrie maxrate/bufsize manual.
+  VBR 1-pass — bitrate mediu tinta (ex: 4000k, 4M). Maxrate=1.5x, bufsize=2x
+        auto. Poti suprascrie maxrate/bufsize manual. Encoder vede fisierul
+        secvential — distributia bitrate intre scene e bazata pe euristic.
+
+  VBR 2-pass (v51) — pleaca de la acelasi target bitrate, dar encoder face
+        un Pass 1 (analiza, fara audio, output null) ca sa stie unde sa
+        aloce mai mult/mai putin bit-budget in Pass 2. Pe acelasi target
+        kbps obtii calitate vizibil mai buna pe scene complexe (miscare,
+        grain, fadeuri). Durata totala ~1.5x fata de 1-pass.
+        Disponibil DOAR pe SW encoders: libx265, libx264, libsvtav1,
+        libaom-av1. HW backends (NVENC/QSV/VAAPI/VT/AMF/MediaCodec) NU
+        suporta 2-pass — meniul ascunde optiunea automat.
+
+  ─── 7.11.1. VBV / Level / Tier automation (v51) ───
+
+  Encoderul calculeaza automat nivelul minim cerut de rezolutie × framerate
+  si tier-ul (HEVC Main vs High) corespunzator bitrate-ului tinta. Logica
+  in suggest_vbv_for_target (av_common.sh) si Suggest-VbvForTarget (PS1).
+
+  Tabel level minim per codec:
+    HEVC: 1080p30=4.0  1080p60=4.1  4K30=5.0  4K60=5.1  4K120=5.2  8K=6.1
+    H.264: 1080p=4.1   4K30=5.1     4K60+=6.0
+    AV1:   1080p=4.0   4K30=5.0     4K60=5.1   8K=6.1
+
+  Pe VBR/2-pass, daca target_kbps × 1.5 (maxrate) depaseste MaxBR-ul Main
+  Tier la nivelul ales, encoderul escaladeaza automat:
+    HEVC: Main → High Tier (ex: 4K30 Main=25Mbps, High=100Mbps); daca si
+          High e prea mic, urca level (ex: 5.0 High → 5.1 High = 160Mbps)
+    H.264: urca level direct (4.1=62.5Mbps → 5.0=168.75Mbps → 5.1=300Mbps)
+    AV1:   urca level (5.0=30Mbps → 5.1=40Mbps → 5.2=60Mbps)
+
+  HRD signaling adaugat pe VBR/2-pass:
+    x265: hrd=1 (in x265-params)
+    x264: nal-hrd=vbr (in x264-params, combinat cu EXTRA_X264)
+    AV1:  N/A (level signaling suficient)
+
+  Aceste setari fac stream-urile HRD-compliant (decodabile sigur pe TV-uri
+  hardware care impun limite VBV stricte, ex Sony Bravia / LG OLED).
+
+  ─── 7.11.2. HDR10 static metadata (v51) ───
+
+  Aplica pe TOATE modurile (CRF, 1-pass, 2-pass) cand output-ul e HDR10.
+  Encoder extrage din sursa (via ffprobe) Mastering Display + MaxCLL/MaxFALL
+  si le injecteaza in stream:
+    x265: master-display=G(gx,gy)B(bx,by)R(rx,ry)WP(wx,wy)L(maxL,minL):
+          max-cll=MaxCLL,MaxFALL (chromaticity ×50000, luminance ×10000)
+    SVT-AV1: mastering-display=G(g.x,g.y)... + content-light=N,M (float)
+    libaom-av1: NU suporta — color signaling OK, dar fara master display
+
+  Daca sursa nu raporteaza (LOG→HDR10, HLG→HDR10, DV→HDR10 cand sursa nu
+  are side_data complet), foloseste defaults BT.2020 + 1000 nits peak
+  (Apple/Netflix master) cu MaxCLL/MaxFALL 1000,400. Log clarity: campul
+  HDR10_STATIC_SOURCE indica `probe` sau `default-*` per fisier.
+
+  Beneficiu vizibil: player-ele HDR (Apple TV, LG OLED, Samsung QLED) fac
+  tone-mapping corect pe display-uri cu peak diferit de master. Fara
+  static metadata, player-ul ghiceste (1000 nits implicit) — cu metadata
+  corecta, highlights nu sunt clipped/crushed.
 
 
   ─── 7.12. Preset ───

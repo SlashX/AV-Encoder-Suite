@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v50** — 53 bugs fixed · 200+ features · ~21 900 LoC · 70 files
+**v51** — 53 bugs fixed · 200+ features · ~22 600 LoC · 70 files
 
 ---
 
@@ -20,6 +20,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 18-column normalized CSV + SRT overlay tracks
 - **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), HDR10+→DV hybrid synthesis (lossless on video)
 - **Mux tools** (v49 + v50) — standalone script with three flows. **Remux**: per-stream selection (video / audio / subtitles / attachments / chapters) with per-target compat matrix and pre-flight warnings. **Demux**: smart per-codec uniform wrapping — video→`.mkv` (preserves HDR/DV), audio→`.mka` (preserves Atmos / E-AC3 / TrueHD metadata), subtitles→native ext (.srt/.ass/.sup/.sub/.vtt), cover art auto-extracted, chapters→Matroska XML, attachments+data in folders. **Mux** (v50): combine separate files — video + N audio + N subs + chapters + attachments into a fresh container. Manual selection (no auto-grouping for safety), VobSub `.idx+.sub` pair handling, per-track metadata (lang/title/default/forced) opt-in, container compat matrix reused from Remux. Input remux/demux: mkv · webm · mp4 · m4v · mov · ts · m2ts · mts · vob · mxf (Blu-ray / DVD / broadcast covered)
+- **Rate control: CRF, 1-pass VBR, 2-pass VBR** (v51) — SW encoders (libx265 / libx264 / libsvtav1 / libaom-av1) now support true 2-pass encoding for better quality at the same target bitrate. Automatic VBV/Level/Tier (HEVC Main→High Tier escalation when bitrate exceeds Main caps; H.264/AV1 level bump). HDR10 static metadata (Mastering Display + MaxCLL/MaxFALL) extracted from source or fallback BT.2020/1000-nit defaults, injected into all PQ output (CRF + 1-pass + 2-pass)
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
 - **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 layout presets with map M2 + animated dot · linear interpolation per frame), SRT (libass with FontSize 18/24/32 styling), ASS (anime/styled subs with embedded styling + scale 1.0x/1.25x/1.5x), Image subs PGS/VobSub (Bluray/DVD, external `.sup`/`.idx+.sub` + embedded tracks via ffprobe). **Preview mode** opt-in per flow — 5s clip at mid-point for quick check before full encode
@@ -368,4 +369,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v50** — 53 bugs fixed · 200+ features · ~21 900 LoC · 70 files
+Current: **v51** — 53 bugs fixed · 200+ features · ~22 600 LoC · 70 files

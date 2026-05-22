@@ -48,16 +48,17 @@ build_av1_params() {
     elif [ "$width" -ge 1920 ]; then tc=1; tr=1
     else tc=1; tr=0; fi
 
+    # v51: NU includem EXTRA_AV1 aici — se aplica LAST in encoder_setup_file,
+    # dupa hdr10plus-json si mastering-display, ca user-ul sa poata suprascrie
+    # cheile auto-injectate.
     if [[ "$encoder" == "libsvtav1" ]]; then
         local p="preset=$preset"; [ "$is_vbr" -eq 1 ] && p="$p:rc=1"
         p="$p:tile-columns=$tc:tile-rows=$tr:lp=$THREADS"
         [ "${film_grain:-0}" -gt 0 ] && p="$p:film-grain=$film_grain:film-grain-denoise=0"
-        [[ -n "$EXTRA_AV1" ]] && p="$p:$EXTRA_AV1"
         echo "-svtav1-params $p"
     else
         local f="-cpu-used $preset -tile-columns $tc -tile-rows $tr -row-mt 1 -threads $THREADS"
         [ "${film_grain:-0}" -gt 0 ] && f="$f -denoise-noise-level $film_grain"
-        [[ -n "$EXTRA_AV1" ]] && f="$f $EXTRA_AV1"
         echo "$f"
     fi
 }
@@ -68,8 +69,10 @@ encoder_get_suffix() { echo "_av1"; }
 encoder_get_label()  { echo "$AV1_ENCODER"; }
 
 encoder_log_header() {
-    if [[ "$ENCODE_MODE" == "2" ]]; then
-        log "Mod encodare   : VBR | $VBR_TARGET / $VBR_MAXRATE"
+    if [[ "$ENCODE_MODE" == "3" ]]; then
+        log "Mod encodare   : VBR 2-pass | $VBR_TARGET / $VBR_MAXRATE / $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" ]]; then
+        log "Mod encodare   : VBR 1-pass | $VBR_TARGET / $VBR_MAXRATE"
     else
         log "Mod encodare   : CRF AV1 (4K=30, 1080p=28, 720p=26)"
         log "CRF custom     : ${CUSTOM_CRF:-auto}"
@@ -239,19 +242,47 @@ encoder_setup_file() {
 
     # ── Rate control ──────────────────────────────────────────────────
     local crf_flag="" rate_flag="" is_vbr=0
-    if [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
+    local _is_2pass=0
+    if [[ "$ENCODE_MODE" == "3" && -n "$VBR_TARGET" ]]; then
+        # v51: 2-pass VBR
+        rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
+        is_vbr=1; _is_2pass=1
+        log "  2-PASS VBR: $VBR_TARGET / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
         rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
         is_vbr=1; log "  VBR: $VBR_TARGET / max $VBR_MAXRATE"
     else
         crf_flag="-crf $CRF"; log "  CRF: $CRF | ${WIDTH}x${HEIGHT}"
     fi
 
+    # ── v51: Level (informational pe CRF; HRD-relevant pe VBR/2-pass) ──
+    local _av1_target_kbps=0
+    [ "$is_vbr" -eq 1 ] && _av1_target_kbps=$(parse_bitrate_kbps "$VBR_TARGET")
+    local _av1_suggest _av1_lvl
+    _av1_suggest=$(suggest_vbv_for_target av1 "$_av1_target_kbps" "$WIDTH" "${HEIGHT:-1080}" "${SRC_FPS_DEC:-30}")
+    _av1_lvl=$(echo "$_av1_suggest" | awk '{print $1}')
+    # libsvtav1 ffmpeg expune -level "4.0".."6.3"; libaom-av1 nu are level direct (gestionat intern)
+    local _av1_level_flag=""
+    [[ "$AV1_ENCODER" == "libsvtav1" ]] && _av1_level_flag="-level $_av1_lvl"
+    log "  AV1 level: $_av1_lvl"
+
     local av1_params
     av1_params=$(build_av1_params "$AV1_ENCODER" "$ENCODER_PRESET" \
         "${TUNE_OPT:-0}" "$WIDTH" "$HEIGHT" "$is_vbr")
 
     # ── HDR color params ──────────────────────────────────────────────
-    local color_params="" hdr10plus_av1_param=""
+    local color_params="" hdr10plus_av1_param="" hdr10_static_av1_param=""
+    # v51: helper local — construieste fragmentul ":mastering-display=...:content-light=..."
+    # pentru svtav1-params. Apel: _set_av1_hdr10_static (foloseste globalele HDR10_*)
+    _set_av1_hdr10_static() {
+        hdr10_static_av1_param=""
+        [[ "$AV1_ENCODER" != "libsvtav1" ]] && return 1
+        [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ] || return 1
+        hdr10_static_av1_param=":mastering-display=${HDR10_MASTER_DISPLAY_SVTAV1}"
+        [[ -n "$HDR10_MAX_CLL" ]] && hdr10_static_av1_param="${hdr10_static_av1_param}:content-light=${HDR10_MAX_CLL}"
+        log "  HDR10 static (AV1): $HDR10_STATIC_SOURCE | content-light=${HDR10_MAX_CLL:-default}"
+        return 0
+    }
     if [[ -n "$HDR_PLUS" ]]; then
         log "  HDR10+ detectat (target=$AV1_ENCODER)"
         # Caps check pentru hdr10plus-json inline (svtav1-params); afecteaza
@@ -300,6 +331,8 @@ encoder_setup_file() {
             log "  HDR10+: Metadata extrasa dar inline injection indisponibila — fallback HDR10 static"
             log "    (Triple-layer DV RPU post-encode ramane functional)"
         fi
+        # v51: HDR10 static metadata (mastering display + content-light)
+        hdr10_static_resolve "$file"; _set_av1_hdr10_static
         color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
     elif [[ "${IS_HLG:-0}" == "1" ]]; then
         # ── HLG (BT.2100 HLG) ─────────────────────────────────────────
@@ -315,6 +348,8 @@ encoder_setup_file() {
                 color_params="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
                 ;;
             hlg_to_hdr10)
+                # v51: HLG→HDR10 — defaults BT.2020 + 1000 nits
+                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"; _set_av1_hdr10_static
                 color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
                 local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
                 if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
@@ -350,6 +385,8 @@ encoder_setup_file() {
         # Skip dialog daca DV re-encode (user a ales deja din DV dialog)
         if [[ -n "$DOVI" ]]; then
             log "  DV re-encode: HDR10 10-bit (AV1)"
+            # v51: DV→HDR10 — extrage real daca exista, altfel defaults
+            hdr10_static_resolve "$file"; _set_av1_hdr10_static
             color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
         else
         handle_source_dialog "$file" "$filename" "av1"
@@ -363,6 +400,8 @@ encoder_setup_file() {
         # src_rc=0 — encode cu setarile alese
         case "${SRC_DIALOG_MODE:-sdr}" in
             hdr10)
+                # v51: HDR10 source — extract real metadata (fallback defaults)
+                hdr10_static_resolve "$file"; _set_av1_hdr10_static
                 color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
                 ;;
             sdr_tonemap)
@@ -379,6 +418,11 @@ encoder_setup_file() {
                 ;;
         esac
         fi  # end DOVI check
+    fi
+    # v51: fallback HDR10 static — daca color_params indica PQ (smpte2084) si
+    # niciun branch nu a setat hdr10_static_av1_param, aplica defaults (LOG→HDR10 etc)
+    if [[ "$color_params" == *"smpte2084"* ]] && [[ -z "$hdr10_static_av1_param" ]]; then
+        hdr10_static_defaults; HDR10_STATIC_SOURCE="default-fallback-pq"; _set_av1_hdr10_static
     fi
     log "  Encoder: $AV1_ENCODER | Preset: $ENCODER_PRESET | Film-grain: ${TUNE_OPT:-0}"
 
@@ -399,17 +443,82 @@ encoder_setup_file() {
     if [[ -n "$hdr10plus_av1_param" ]] && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
         av1_params="${av1_params}${hdr10plus_av1_param}"
     fi
+    # v51: HDR10 static (mastering-display + content-light) — doar libsvtav1
+    if [[ -n "$hdr10_static_av1_param" ]] && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+        av1_params="${av1_params}${hdr10_static_av1_param}"
+    fi
+    # libaom-av1: nu expune mastering-display direct prin ffmpeg → log warning
+    if [[ "$AV1_ENCODER" == "libaom-av1" ]] && [[ "$color_params" == *"smpte2084"* ]]; then
+        log "  ⚠ libaom-av1: mastering display + content-light nu pot fi injectate prin ffmpeg"
+        log "    (HDR10 signaling color via -color_* ramane functional)"
+    fi
+    # v51: EXTRA_AV1 user — LAST (suprascrie auto-injected hdr10plus-json /
+    # mastering-display / content-light la nivel svtav1-params; libaom-av1 il
+    # primeste ca tokens separate prin string split)
+    if [[ -n "$EXTRA_AV1" ]]; then
+        if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+            av1_params="${av1_params}:${EXTRA_AV1}"
+        else
+            av1_params="${av1_params} ${EXTRA_AV1}"
+        fi
+    fi
     local av1_pixfmt="${LOG_PIX_FMT:-yuv420p10le}"
-    if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
-        FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-            -c:v libsvtav1 $crf_flag -pix_fmt $av1_pixfmt \
-            $av1_params $VIDEO_FILTER $color_params $rate_flag $AUDIO_PARAMS"
+
+    if [ $_is_2pass -eq 1 ]; then
+        # v51: 2-pass AV1
+        init_2pass_state "$file"
+        if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+            # SVT-AV1: detect inline pass=N:stats= caps (v1.4+); fallback la -pass/-passlogfile
+            _check_svtav1_2pass_caps
+            local _svt_p1_params _svt_p2_params
+            local _pass_flag_p1="" _pass_flag_p2=""
+            if [[ "${SVTAV1_2PASS_SUPPORTED:-0}" == "1" ]]; then
+                # Inline syntax — adauga la av1_params (extrage continutul curent dupa -svtav1-params)
+                local _svt_inner="${av1_params#-svtav1-params }"
+                _svt_p1_params="-svtav1-params ${_svt_inner}:pass=1:stats=${STATS_FILE}"
+                _svt_p2_params="-svtav1-params ${_svt_inner}:pass=2:stats=${STATS_FILE}"
+            else
+                # Sintaxa inline `pass=N:stats=PATH` (libsvtav1 v1.4+) nu a fost
+                # detectata in help-ul ffmpeg — folosim sintaxa generica
+                # ffmpeg `-pass N -passlogfile PATH` care e tradusa intern de
+                # ffmpeg catre svtav1-params pe versiuni compatibile.
+                log "  ℹ SVT-AV1 2-pass: folosesc sintaxa generica -pass/-passlogfile"
+                _svt_p1_params="$av1_params"
+                _svt_p2_params="$av1_params"
+                _pass_flag_p1="-pass 1 -passlogfile \"$STATS_FILE\""
+                _pass_flag_p2="-pass 2 -passlogfile \"$STATS_FILE\""
+            fi
+            FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libsvtav1 $_av1_level_flag -pix_fmt $av1_pixfmt \
+                $_svt_p1_params $VIDEO_FILTER $color_params $rate_flag $_pass_flag_p1 \
+                -an -sn -f null /dev/null"
+            FFMPEG_CMD_PASS2="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libsvtav1 $_av1_level_flag -pix_fmt $av1_pixfmt \
+                $_svt_p2_params $VIDEO_FILTER $color_params $rate_flag $_pass_flag_p2 $AUDIO_PARAMS"
+        else
+            # libaom-av1: --fpf=PATH pentru first pass file (sau -passlogfile generic via ffmpeg)
+            FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libaom-av1 -pix_fmt $av1_pixfmt \
+                $av1_params $VIDEO_FILTER $color_params $rate_flag \
+                -pass 1 -passlogfile \"$STATS_FILE\" -an -sn -f null /dev/null"
+            FFMPEG_CMD_PASS2="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libaom-av1 -pix_fmt $av1_pixfmt \
+                $av1_params $VIDEO_FILTER $color_params $rate_flag \
+                -pass 2 -passlogfile \"$STATS_FILE\" $AUDIO_PARAMS"
+        fi
+        FFMPEG_CMD=""
     else
-        local libaom_bv=""
-        [ "$is_vbr" -eq 0 ] && libaom_bv="-b:v 0"
-        FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-            -c:v libaom-av1 $crf_flag -pix_fmt $av1_pixfmt $libaom_bv \
-            $av1_params $VIDEO_FILTER $color_params $rate_flag $AUDIO_PARAMS"
+        if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+            FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libsvtav1 $_av1_level_flag $crf_flag -pix_fmt $av1_pixfmt \
+                $av1_params $VIDEO_FILTER $color_params $rate_flag $AUDIO_PARAMS"
+        else
+            local libaom_bv=""
+            [ "$is_vbr" -eq 0 ] && libaom_bv="-b:v 0"
+            FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+                -c:v libaom-av1 $crf_flag -pix_fmt $av1_pixfmt $libaom_bv \
+                $av1_params $VIDEO_FILTER $color_params $rate_flag $AUDIO_PARAMS"
+        fi
     fi
     return 0
 }

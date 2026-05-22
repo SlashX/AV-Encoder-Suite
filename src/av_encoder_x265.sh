@@ -31,16 +31,36 @@ build_x265_params() {
     local base="$1" result
     [[ -n "$base" ]] && result="pools=$THREADS:$base:aq-mode=3:aq-strength=1.0" \
                       || result="pools=$THREADS:aq-mode=3:aq-strength=1.0"
+    # v51: append auto params PRIMUL (level-idc/high-tier/hrd + HDR10 static)
+    [[ -n "${X265_LEVEL_PARAMS:-}" ]] && result="$result:$X265_LEVEL_PARAMS"
+    # v51: HDR10 static metadata (mastering display + max-cll) — setat doar pe
+    # branch-uri HDR10 (HDR10/HDR10+/LOG→HDR10/HLG→HDR10/DV→HDR10)
+    [[ -n "${X265_HDR10_STATIC_PARAMS:-}" ]] && result="$result:$X265_HDR10_STATIC_PARAMS"
+    # EXTRA_X265 user — LAST (x265 ia ultima valoare la chei duplicate, user-ul poate
+    # suprascrie auto-injected master-display / level-idc / hrd daca doreste)
     [[ -n "$EXTRA_X265" ]] && result="$result:$EXTRA_X265"
     echo "$result"
+}
+
+# v51: helper care construiește string-ul "master-display=...:max-cll=..."
+# după ce hdr10_static_resolve a populat globalele
+_set_x265_hdr10_static() {
+    X265_HDR10_STATIC_PARAMS=""
+    [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ] || return 1
+    X265_HDR10_STATIC_PARAMS="master-display=${HDR10_MASTER_DISPLAY_X265}"
+    [[ -n "$HDR10_MAX_CLL" ]] && X265_HDR10_STATIC_PARAMS="${X265_HDR10_STATIC_PARAMS}:max-cll=${HDR10_MAX_CLL}"
+    log "  HDR10 static: $HDR10_STATIC_SOURCE | max-cll=${HDR10_MAX_CLL:-default}"
+    return 0
 }
 
 encoder_get_suffix() { echo "_x265"; }
 encoder_get_label()  { echo "libx265"; }
 
 encoder_log_header() {
-    if [[ "$ENCODE_MODE" == "2" ]]; then
-        log "Mod encodare   : VBR | $VBR_TARGET / $VBR_MAXRATE"
+    if [[ "$ENCODE_MODE" == "3" ]]; then
+        log "Mod encodare   : VBR 2-pass | $VBR_TARGET / $VBR_MAXRATE / $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" ]]; then
+        log "Mod encodare   : VBR 1-pass | $VBR_TARGET / $VBR_MAXRATE"
     else
         log "Mod encodare   : CRF (4K=22, 1080p=21, 720p=20)"
         log "CRF custom     : ${CUSTOM_CRF:-auto}"
@@ -240,16 +260,43 @@ encoder_setup_file() {
 
     # ── Rate control ──────────────────────────────────────────────────
     local tune_flag="" crf_flag="" rate_flag=""
+    local _is_2pass=0
     [[ -n "$TUNE_OPT" ]] && tune_flag="-tune $TUNE_OPT"
-    if [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
+    if [[ "$ENCODE_MODE" == "3" && -n "$VBR_TARGET" ]]; then
+        # v51: 2-pass VBR — rate_flag aplicat in ambele passuri;
+        # stats path injectat via -x265-params (suplimentar la build_x265_params)
+        rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
+        _is_2pass=1
+        log "  2-PASS VBR: $VBR_TARGET / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
         rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
         log "  VBR: $VBR_TARGET / max $VBR_MAXRATE"
     else
         crf_flag="-crf $CRF"; log "  CRF: $CRF | ${WIDTH}px"
     fi
 
+    # ── v51: Level / Tier / HRD compute (informational pe CRF, HRD-binding pe VBR/2-pass) ──
+    local _target_kbps=0
+    [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]] && _target_kbps=$(parse_bitrate_kbps "$VBR_TARGET")
+    local _vbv_suggest _lvl _tier
+    _vbv_suggest=$(suggest_vbv_for_target hevc "$_target_kbps" "$WIDTH" "${HEIGHT:-1080}" "${SRC_FPS_DEC:-30}")
+    _lvl=$(echo "$_vbv_suggest"  | awk '{print $1}')
+    _tier=$(echo "$_vbv_suggest" | awk '{print $2}')
+    local _lvl_idc="${_lvl//./}"   # 4.1 → 41
+    local _high_tier_flag=0; [ "$_tier" = "high" ] && _high_tier_flag=1
+    X265_LEVEL_PARAMS="level-idc=${_lvl_idc}:high-tier=${_high_tier_flag}"
+    # HRD compliance doar pe VBR/2-pass (encoder respecta caps level)
+    if [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
+        X265_LEVEL_PARAMS="${X265_LEVEL_PARAMS}:hrd=1"
+        log "  HEVC level: $_lvl ${_tier^^} tier | HRD=on"
+    else
+        log "  HEVC level: $_lvl ${_tier^^} tier (informational)"
+    fi
+
     # ── HDR params ────────────────────────────────────────────────────
     local x265params video_params hdr10plus_param=""
+    # v51: reset HDR10 static per fisier (set doar pe branch-uri HDR10)
+    X265_HDR10_STATIC_PARAMS=""
     if [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
         log "  HDR10+ detectat"
         handle_hdr10plus_dialog "$file"
@@ -285,6 +332,7 @@ encoder_setup_file() {
             log "  HDR10+: Metadata va fi injectata (dhdr10-info)"
         fi
         # hdr10p_rc=1: HDR10 static (fara dhdr10-info)
+        hdr10_static_resolve "$file"; _set_x265_hdr10_static
         x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1${hdr10plus_param}")
         video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
     elif [[ "${IS_HLG:-0}" == "1" ]]; then
@@ -302,6 +350,9 @@ encoder_setup_file() {
                 video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
                 ;;
             hlg_to_hdr10)
+                # v51: HLG→HDR10 transform — sursa nu are master_display real,
+                # folosim defaults BT.2020 + 1000 nits
+                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"; _set_x265_hdr10_static
                 x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
                 video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
                 local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
@@ -334,7 +385,8 @@ encoder_setup_file() {
         # LOG dialog returned 0 — apply LOG settings
         _apply_log_filters
         if [[ -n "${LOG_EXTRA_X265:-}" ]]; then
-            # HDR10 conversion from Log
+            # HDR10 conversion from Log → injectează defaults (peak 1000 nits)
+            hdr10_static_defaults; HDR10_STATIC_SOURCE="default-log-to-hdr10"; _set_x265_hdr10_static
             x265params=$(build_x265_params "$LOG_EXTRA_X265")
             video_params="-pix_fmt ${LOG_PIX_FMT:-yuv420p10le} -x265-params $x265params ${LOG_COLOR_FLAGS:-}"
         else
@@ -346,6 +398,8 @@ encoder_setup_file() {
         # Skip dialog daca DV re-encode (user a ales deja din DV dialog)
         if [[ -n "$DOVI" ]]; then
             log "  DV re-encode: HDR10 10-bit (best-effort)"
+            # v51: DV→HDR10 — extrage din sursa daca disponibil, altfel defaults
+            hdr10_static_resolve "$file"; _set_x265_hdr10_static
             x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
             video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
         else
@@ -360,6 +414,8 @@ encoder_setup_file() {
         # src_rc=0 — encode cu setarile alese
         case "${SRC_DIALOG_MODE:-sdr}" in
             hdr10)
+                # v51: HDR10 source — extract real metadata (fallback defaults)
+                hdr10_static_resolve "$file"; _set_x265_hdr10_static
                 x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1")
                 video_params="-pix_fmt yuv420p10le -x265-params $x265params -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
                 ;;
@@ -395,9 +451,40 @@ encoder_setup_file() {
     fi
 
     # ── Comanda ffmpeg ────────────────────────────────────────────────
-    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-        -c:v libx265 -preset $PRESET $tune_flag $crf_flag \
-        $video_params $VIDEO_FILTER $rate_flag $AUDIO_PARAMS"
+    if [ $_is_2pass -eq 1 ]; then
+        # v51: 2-pass — STATS_FILE shared; pass=1 sample doar luma+geometrie (no audio, null output)
+        init_2pass_state "$file"
+        # Injecteaza pass=N + stats=path in x265-params (concateneaza la sfarsit)
+        # video_params contine "-x265-params <params>" — sparge si re-asambleaza
+        local _vp_pre _vp_params _vp_post
+        # Extract x265-params value din video_params (intre "-x265-params " si urmatorul " -" sau end)
+        if [[ "$video_params" =~ (.*)-x265-params\ ([^\ ]+)(.*) ]]; then
+            _vp_pre="${BASH_REMATCH[1]}"
+            _vp_params="${BASH_REMATCH[2]}"
+            _vp_post="${BASH_REMATCH[3]}"
+        else
+            _vp_pre="$video_params"; _vp_params="pools=$THREADS"; _vp_post=""
+        fi
+        local _x265_pass1="${_vp_params}:pass=1:stats=${STATS_FILE}:slow-firstpass=0"
+        local _x265_pass2="${_vp_params}:pass=2:stats=${STATS_FILE}"
+        local _video_params_p1="${_vp_pre}-x265-params ${_x265_pass1}${_vp_post}"
+        local _video_params_p2="${_vp_pre}-x265-params ${_x265_pass2}${_vp_post}"
+
+        # Pass 1: self-contained, fara audio/subs/output (terminat in /dev/null)
+        FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx265 -preset $PRESET $tune_flag \
+            $_video_params_p1 $VIDEO_FILTER $rate_flag -an -sn -f null /dev/null"
+        # Pass 2: urmeaza pattern FFMPEG_CMD — run_2pass_encode adauga
+        # LOUDNORM_FILTER + SUB_CODEC + CONTAINER_FLAGS + output
+        FFMPEG_CMD_PASS2="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx265 -preset $PRESET $tune_flag \
+            $_video_params_p2 $VIDEO_FILTER $rate_flag $AUDIO_PARAMS"
+        FFMPEG_CMD=""
+    else
+        FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx265 -preset $PRESET $tune_flag $crf_flag \
+            $video_params $VIDEO_FILTER $rate_flag $AUDIO_PARAMS"
+    fi
     return 0
 }
 

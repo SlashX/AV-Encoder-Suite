@@ -399,6 +399,8 @@ setup_trap() { trap '_cleanup_on_exit' INT TERM; }
 
 _cleanup_on_exit() {
     [ -n "${PROGRESS_FILE:-}" ] && rm -f "$PROGRESS_FILE"
+    # v51: cleanup 2-pass stats dir daca user intrerupe in mijlocul encode-ului
+    [ -n "${STATS_DIR:-}" ] && [ -d "${STATS_DIR:-}" ] && rm -rf "$STATS_DIR"
     av_wake_unlock
     echo ""; log "  INTRERUPT de utilizator."; exit 1
 }
@@ -2628,6 +2630,453 @@ get_adaptive_bitrate() {
 }
 
 # ══════════════════════════════════════════════════════════════════════
+# v51: 2-PASS VBR INFRASTRUCTURE (SW encoders only: x265/x264/SVT-AV1/libaom)
+# Pattern (consistent cu FFMPEG_CMD string + eval folosit in proiect):
+#   1. Encoderul setează:
+#        - FFMPEG_CMD_PASS1 (string evaluabil — eval cu $file/\$file escaping)
+#        - FFMPEG_CMD_PASS2 (string evaluabil)
+#        - STATS_FILE (path stats partajat)
+#        - USE_2PASS=1 (flag detectat de run_encode_loop)
+#   2. run_encode_loop verifica USE_2PASS si apeleaza run_2pass_encode
+#      in loc de eval $FFMPEG_CMD standard
+#   3. Cleanup automat stats file + USE_2PASS reset in defensive block
+# ══════════════════════════════════════════════════════════════════════
+
+# Inițializează state-ul 2-pass pentru fișierul curent.
+# Setează STATS_FILE (path absolut, fără extensie de tip-encoder) + STATS_DIR.
+# Encoderele adaugă propriile extensii (x265: .stats + .stats.cutree, x264:
+# .log + .log.mbtree, SVT-AV1: file unic, libaom: --fpf=).
+init_2pass_state() {
+    local file="$1"
+    local name; name=$(basename "${file%.*}")
+    # Sanitize name: înlocuiește caractere non-portabile cu underscore
+    name="${name//[^A-Za-z0-9._-]/_}"
+    STATS_DIR=$(av_mktemp_dir)
+    STATS_FILE="$STATS_DIR/${name}.passlog"
+    USE_2PASS=1
+}
+
+# Cleanup stats file + dir creat de init_2pass_state.
+cleanup_2pass_state() {
+    [[ -n "${STATS_DIR:-}" && -d "$STATS_DIR" ]] && rm -rf "$STATS_DIR"
+    STATS_FILE=""; STATS_DIR=""; USE_2PASS=0
+    FFMPEG_CMD_PASS1=""; FFMPEG_CMD_PASS2=""
+}
+
+# Rulează 2-pass encode. Encoderele populează FFMPEG_CMD_PASS1/PASS2 (strings
+# eval-abile) înainte de apel. Pass 1 produce stats fără output util; Pass 2
+# produce fișierul final folosind stats.
+# Args: 1=file (pentru _show_progress), 2=encoder_label
+run_2pass_encode() {
+    local file="$1" label="$2"
+
+    [[ -z "${FFMPEG_CMD_PASS1:-}" ]] && { log "  EROARE: FFMPEG_CMD_PASS1 string gol"; return 1; }
+    [[ -z "${FFMPEG_CMD_PASS2:-}" ]] && { log "  EROARE: FFMPEG_CMD_PASS2 string gol"; return 1; }
+    [[ -z "${STATS_FILE:-}" ]] && { log "  EROARE: STATS_FILE neinițializat (apelează init_2pass_state)"; return 1; }
+
+    log ""
+    log "  ── 2-PASS: Pass 1/2 (analiză, fără audio, output null) ──"
+    local prog_file1 stderr_file1
+    prog_file1=$(mktemp)
+    stderr_file1=$(mktemp)
+
+    # Pass 1 e self-contained (terminat cu /dev/null sau echivalent).
+    # shellcheck disable=SC2086
+    eval $FFMPEG_CMD_PASS1 -progress '"$prog_file1"' -nostats '2>"$stderr_file1"' '&'
+    local pid1=$!
+    _show_progress "$pid1" "$prog_file1" "$file" "$label P1"
+    wait "$pid1"
+    local rc1=$?
+
+    [[ -s "$stderr_file1" ]] && cat "$stderr_file1" >> "$LOG_FILE"
+
+    if [ $rc1 -ne 0 ]; then
+        log "  EROARE Pass 1 (rc=$rc1):"
+        if [[ -s "$stderr_file1" ]]; then
+            echo "  ⚠ ffmpeg Pass 1 exit $rc1 — ultimele linii stderr:"
+            tail -10 "$stderr_file1" | sed 's/^/    /'
+        fi
+        rm -f "$prog_file1" "$stderr_file1"
+        return $rc1
+    fi
+    rm -f "$prog_file1" "$stderr_file1"
+
+    log "  ── 2-PASS: Pass 2/2 (encodare finală + audio) ──"
+    local prog_file2 stderr_file2
+    prog_file2=$(mktemp)
+    stderr_file2=$(mktemp)
+
+    # Pass 2 urmeaza pattern-ul standard FFMPEG_CMD: trailing args (loudnorm,
+    # sub codec, container flags, output) sunt appendate din scope-ul apelantului
+    # (run_encode_loop) ca sa pastram un singur loc unde se gestioneaza fluxul.
+    # shellcheck disable=SC2086
+    eval $FFMPEG_CMD_PASS2 $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
+        $CONTAINER_FLAGS -progress '"$prog_file2"' -nostats '"$output"' '2>"$stderr_file2"' '&'
+    local pid2=$!
+    _show_progress "$pid2" "$prog_file2" "$file" "$label P2"
+    wait "$pid2"
+    local rc2=$?
+
+    [[ -s "$stderr_file2" ]] && cat "$stderr_file2" >> "$LOG_FILE"
+
+    if [ $rc2 -ne 0 ]; then
+        log "  EROARE Pass 2 (rc=$rc2):"
+        if [[ -s "$stderr_file2" ]]; then
+            echo "  ⚠ ffmpeg Pass 2 exit $rc2 — ultimele linii stderr:"
+            tail -10 "$stderr_file2" | sed 's/^/    /'
+        fi
+        rm -f "$prog_file2" "$stderr_file2"
+        return $rc2
+    fi
+    rm -f "$prog_file2" "$stderr_file2"
+
+    return 0
+}
+
+# SVT-AV1 v1.4+ suportă sintaxa `pass=N:stats=path` în -svtav1-params.
+# Versiunile mai vechi cer fallback la -pass/-passlogfile generic.
+# Cache: SVTAV1_2PASS_CAPS_CHECKED + SVTAV1_2PASS_SUPPORTED.
+_check_svtav1_2pass_caps() {
+    [[ "${SVTAV1_2PASS_CAPS_CHECKED:-0}" == "1" ]] && return 0
+    SVTAV1_2PASS_CAPS_CHECKED=1
+    SVTAV1_2PASS_SUPPORTED=0
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    # Caută "pass" listat ca opțiune în libsvtav1 help (v1.4+ îl expune)
+    if ffmpeg -hide_banner -h encoder=libsvtav1 2>/dev/null | grep -qE '^\s*pass\s+'; then
+        SVTAV1_2PASS_SUPPORTED=1
+    fi
+    return 0
+}
+
+# Verifică dacă backend-ul HW activ permite 2-pass. Actualmente: NICIUNUL.
+# Returnează 0 dacă 2-pass e permis (SW path), 1 dacă HW activ → fallback necesar.
+hw_2pass_allowed() {
+    case "${HW_BACKEND:-sw}" in
+        sw|"") return 0 ;;
+        *)     return 1 ;;  # nvenc/qsv/vaapi/videotoolbox/amf/mediacodec
+    esac
+}
+
+# Returnează target-ul null output platform-aware (bash rulează doar pe
+# Termux/Linux/macOS → /dev/null mereu OK).
+get_null_output() { echo "/dev/null"; }
+
+# ══════════════════════════════════════════════════════════════════════
+# v51: VBV / LEVEL AUTOMATION
+# Tabele MaxBR/MaxCPB per codec×level (kbps, conform spec).
+# - HEVC Main 10 4:2:0 Main Tier + High Tier
+# - H.264 High profile MaxBR (CABAC factor inclus)
+# - AV1 Main profile level limits (kbps, derivate din MaxBitrate)
+# get_vbv_caps echo "maxbr_kbps maxcpb_kbps"
+# suggest_vbv_for_target echo "level tier maxrate_kbps bufsize_kbps"
+# ══════════════════════════════════════════════════════════════════════
+
+# Args: codec(hevc|h264|av1) level(ex 4.1) tier(main|high) → "maxbr maxcpb"
+get_vbv_caps() {
+    local codec="$1" level="$2" tier="${3:-main}"
+    case "$codec" in
+        hevc)
+            case "$level" in
+                3.0)  [ "$tier" = "high" ] && echo "6000 6000"     || echo "6000 6000" ;;
+                3.1)  [ "$tier" = "high" ] && echo "10000 10000"   || echo "10000 10000" ;;
+                4.0)  [ "$tier" = "high" ] && echo "30000 30000"   || echo "12000 12000" ;;
+                4.1)  [ "$tier" = "high" ] && echo "50000 50000"   || echo "20000 20000" ;;
+                5.0)  [ "$tier" = "high" ] && echo "100000 100000" || echo "25000 25000" ;;
+                5.1)  [ "$tier" = "high" ] && echo "160000 160000" || echo "40000 40000" ;;
+                5.2)  [ "$tier" = "high" ] && echo "240000 240000" || echo "60000 60000" ;;
+                6.0)  [ "$tier" = "high" ] && echo "240000 240000" || echo "60000 60000" ;;
+                6.1)  [ "$tier" = "high" ] && echo "480000 480000" || echo "120000 120000" ;;
+                6.2)  [ "$tier" = "high" ] && echo "800000 800000" || echo "240000 240000" ;;
+                *)    echo "40000 40000" ;;
+            esac
+            ;;
+        h264)
+            # H.264 High profile MaxBR (kbps); factor 1.25 vs baseline inclus
+            case "$level" in
+                3.0)  echo "12500 12500" ;;
+                3.1)  echo "17500 17500" ;;
+                3.2)  echo "25000 25000" ;;
+                4.0)  echo "25000 25000" ;;
+                4.1)  echo "62500 62500" ;;
+                4.2)  echo "62500 62500" ;;
+                5.0)  echo "168750 168750" ;;
+                5.1)  echo "300000 300000" ;;
+                5.2)  echo "300000 300000" ;;
+                6.0)  echo "300000 300000" ;;
+                6.1)  echo "600000 600000" ;;
+                6.2)  echo "1200000 1200000" ;;
+                *)    echo "62500 62500" ;;
+            esac
+            ;;
+        av1)
+            # AV1 Main profile MaxBitrate (kbps); 10-bit valori conform spec 5.9
+            case "$level" in
+                4.0)  echo "12000 30000" ;;
+                4.1)  echo "20000 50000" ;;
+                5.0)  echo "30000 100000" ;;
+                5.1)  echo "40000 160000" ;;
+                5.2)  echo "60000 240000" ;;
+                5.3)  echo "60000 240000" ;;
+                6.0)  echo "60000 240000" ;;
+                6.1)  echo "100000 480000" ;;
+                6.2)  echo "160000 800000" ;;
+                6.3)  echo "160000 800000" ;;
+                *)    echo "30000 100000" ;;
+            esac
+            ;;
+        *) echo "0 0" ;;
+    esac
+}
+
+# Determină level minim conform rezoluției × fps (luma sample rate).
+# Returnează string level "X.Y".
+_min_level_for_res() {
+    local codec="$1" w="$2" h="$3" fps="${4:-30}"
+    # Folosim aproximari pragmatice. Conversie fps real cu awk pentru float.
+    local fps_int
+    fps_int=$(awk "BEGIN{printf \"%d\", ($fps + 0.5)}")
+    [ -z "$fps_int" ] || [ "$fps_int" -lt 1 ] && fps_int=30
+
+    case "$codec" in
+        hevc)
+            if   [ "$w" -ge 7680 ]; then echo "6.1"
+            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "5.2"
+            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 30 ]; then echo "5.1"
+            elif [ "$w" -ge 3840 ]; then echo "5.0"
+            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.1"
+            elif [ "$w" -ge 1920 ]; then echo "4.0"
+            elif [ "$w" -ge 1280 ]; then echo "3.1"
+            else echo "3.0"; fi
+            ;;
+        h264)
+            if   [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "6.0"
+            elif [ "$w" -ge 3840 ]; then echo "5.1"
+            elif [ "$w" -ge 2560 ]; then echo "5.0"
+            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.2"
+            elif [ "$w" -ge 1920 ]; then echo "4.1"
+            elif [ "$w" -ge 1280 ]; then echo "3.1"
+            else echo "3.0"; fi
+            ;;
+        av1)
+            if   [ "$w" -ge 7680 ]; then echo "6.1"
+            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "5.2"
+            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 30 ]; then echo "5.1"
+            elif [ "$w" -ge 3840 ]; then echo "5.0"
+            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.1"
+            elif [ "$w" -ge 1920 ]; then echo "4.0"
+            else echo "4.0"; fi
+            ;;
+    esac
+}
+
+# Sugerează nivelul + tier-ul + maxrate + bufsize pentru un target bitrate dat.
+# Args: codec target_kbps width height [fps]
+# Echo: "level tier maxrate_kbps bufsize_kbps"
+# Logica:
+#   1. Pleacă de la level minim cerut de rezoluție/fps
+#   2. Verifică dacă target_kbps × 1.5 (maxrate) încape în level.maxbr Main Tier
+#   3. Dacă NU: pe HEVC promovează tier=high; pe H.264/AV1 escaladează nivelul
+#   4. maxrate = min(target × 1.5, level.maxbr); bufsize = min(target × 2.0, level.maxcpb)
+suggest_vbv_for_target() {
+    local codec="$1" target_kbps="$2" w="$3" h="$4" fps="${5:-30}"
+    local level tier maxbr maxcpb caps
+    level=$(_min_level_for_res "$codec" "$w" "$h" "$fps")
+    tier="main"
+
+    local desired_maxrate=$(( target_kbps * 3 / 2 ))
+    local desired_bufsize=$(( target_kbps * 2 ))
+
+    # Pana la 8 escaladari (suficient pt orice secventa rezonabila)
+    local i=0
+    while [ $i -lt 8 ]; do
+        caps=$(get_vbv_caps "$codec" "$level" "$tier")
+        maxbr="${caps%% *}"; maxcpb="${caps##* }"
+        if [ "$desired_maxrate" -le "$maxbr" ]; then
+            break
+        fi
+        # Promoveaza tier (HEVC) sau level
+        if [ "$codec" = "hevc" ] && [ "$tier" = "main" ]; then
+            tier="high"
+        else
+            # Escaladare level la urmatorul plauzibil
+            case "$level" in
+                3.0) level="3.1" ;;
+                3.1) level="4.0" ;;
+                4.0) level="4.1" ;;
+                4.1) level="5.0" ;;
+                5.0) level="5.1" ;;
+                5.1) level="5.2" ;;
+                5.2) level="6.0" ;;
+                6.0) level="6.1" ;;
+                6.1) level="6.2" ;;
+                6.2) break ;;
+                *)   break ;;
+            esac
+            # Pe HEVC, dupa escaladare nivel revenim la Main Tier inainte de a urca din nou la High
+            [ "$codec" = "hevc" ] && tier="main"
+        fi
+        i=$((i+1))
+    done
+
+    # Clamp final maxrate/bufsize la limita level-ului ales
+    local final_maxrate=$desired_maxrate
+    local final_bufsize=$desired_bufsize
+    [ "$final_maxrate" -gt "$maxbr" ] && final_maxrate=$maxbr
+    [ "$final_bufsize" -gt "$maxcpb" ] && final_bufsize=$maxcpb
+
+    echo "$level $tier $final_maxrate $final_bufsize"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v51: HDR10 STATIC METADATA EXTRACTION (Mastering Display + MaxCLL/MaxFALL)
+# Extrage din ffprobe side_data_list (frame 0) si formateaza pentru:
+#   - x265-params: chromaticity ×50000, luminance ×10000 (integer)
+#   - svtav1-params: floating decimal direct
+# Setează variabile globale:
+#   HDR10_STATIC_AVAILABLE       = 0|1
+#   HDR10_MASTER_DISPLAY_X265    = "G(gx,gy)B(bx,by)R(rx,ry)WP(wx,wy)L(maxL,minL)"
+#   HDR10_MASTER_DISPLAY_SVTAV1  = "G(g.x,g.y)B(b.x,b.y)R(r.x,r.y)WP(w.x,w.y)L(maxN,minN)"
+#   HDR10_MAX_CLL                = "MaxCLL,MaxFALL" (gol daca nu e prezent)
+# ══════════════════════════════════════════════════════════════════════
+extract_hdr10_static_metadata() {
+    local file="$1"
+    HDR10_STATIC_AVAILABLE=0
+    HDR10_MASTER_DISPLAY_X265=""
+    HDR10_MASTER_DISPLAY_SVTAV1=""
+    HDR10_MAX_CLL=""
+
+    command -v ffprobe >/dev/null 2>&1 || return 1
+    [ -f "$file" ] || return 1
+
+    # ffprobe single-frame side_data — primul keyframe pentru viteza
+    local probe
+    probe=$(LC_ALL=C ffprobe -v error -select_streams v:0 \
+        -read_intervals "%+#1" \
+        -show_entries frame=side_data_list \
+        -of default=noprint_wrappers=1 \
+        "$file" 2>/dev/null)
+    [ -z "$probe" ] && return 1
+
+    # Awk extract — emit shell vars pe stdout, eval-ate apoi
+    local extracted
+    extracted=$(echo "$probe" | LC_ALL=C awk '
+        BEGIN { mode="" }
+        /side_data_type=Mastering display metadata/ { mode="m"; next }
+        /side_data_type=Content light level metadata/ { mode="c"; next }
+        /side_data_type=/ { mode=""; next }
+        {
+            n = index($0, "=")
+            if (n == 0) next
+            key = substr($0, 1, n-1)
+            val = substr($0, n+1)
+            gsub(/^[ \t]+|[ \t]+$/, "", key)
+            gsub(/^[ \t]+|[ \t]+$/, "", val)
+            if (mode == "m") {
+                if (val ~ /\//) {
+                    split(val, frac, "/")
+                    num = frac[1]; den = frac[2]
+                } else {
+                    num = val; den = 1
+                }
+                if (key == "red_x")        printf "RX_N=%s; RX_D=%s; ", num, den
+                else if (key == "red_y")   printf "RY_N=%s; RY_D=%s; ", num, den
+                else if (key == "green_x") printf "GX_N=%s; GX_D=%s; ", num, den
+                else if (key == "green_y") printf "GY_N=%s; GY_D=%s; ", num, den
+                else if (key == "blue_x")  printf "BX_N=%s; BX_D=%s; ", num, den
+                else if (key == "blue_y")  printf "BY_N=%s; BY_D=%s; ", num, den
+                else if (key == "white_point_x") printf "WX_N=%s; WX_D=%s; ", num, den
+                else if (key == "white_point_y") printf "WY_N=%s; WY_D=%s; ", num, den
+                else if (key == "max_luminance") printf "MAXL_N=%s; MAXL_D=%s; ", num, den
+                else if (key == "min_luminance") printf "MINL_N=%s; MINL_D=%s; ", num, den
+            } else if (mode == "c") {
+                if (key == "max_content") printf "MAXC=%s; ", val
+                else if (key == "max_average") printf "MAXA=%s; ", val
+            }
+        }
+    ')
+
+    local RX_N RX_D RY_N RY_D GX_N GX_D GY_N GY_D BX_N BX_D BY_N BY_D
+    local WX_N WX_D WY_N WY_D MAXL_N MAXL_D MINL_N MINL_D MAXC MAXA
+    eval "$extracted"
+
+    if [[ -n "${RX_N:-}" && -n "${GX_N:-}" && -n "${BX_N:-}" && -n "${WX_N:-}" && -n "${MAXL_N:-}" ]]; then
+        # x265 format: chromaticity ×50000, luminance ×10000 (rotunjit la integer)
+        local gx_i gy_i bx_i by_i rx_i ry_i wx_i wy_i maxl_i minl_i
+        gx_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $GX_N * 50000 / $GX_D + 0.5}")
+        gy_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $GY_N * 50000 / $GY_D + 0.5}")
+        bx_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $BX_N * 50000 / $BX_D + 0.5}")
+        by_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $BY_N * 50000 / $BY_D + 0.5}")
+        rx_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $RX_N * 50000 / $RX_D + 0.5}")
+        ry_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $RY_N * 50000 / $RY_D + 0.5}")
+        wx_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $WX_N * 50000 / $WX_D + 0.5}")
+        wy_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $WY_N * 50000 / $WY_D + 0.5}")
+        maxl_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $MAXL_N * 10000 / $MAXL_D + 0.5}")
+        minl_i=$(LC_ALL=C awk "BEGIN{printf \"%d\", $MINL_N * 10000 / $MINL_D + 0.5}")
+        HDR10_MASTER_DISPLAY_X265="G(${gx_i},${gy_i})B(${bx_i},${by_i})R(${rx_i},${ry_i})WP(${wx_i},${wy_i})L(${maxl_i},${minl_i})"
+
+        # SVT-AV1 format: float (4 zecimale chromaticity, 4 zecimale luminance)
+        local gx_f gy_f bx_f by_f rx_f ry_f wx_f wy_f maxl_f minl_f
+        gx_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $GX_N / $GX_D}")
+        gy_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $GY_N / $GY_D}")
+        bx_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $BX_N / $BX_D}")
+        by_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $BY_N / $BY_D}")
+        rx_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $RX_N / $RX_D}")
+        ry_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $RY_N / $RY_D}")
+        wx_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $WX_N / $WX_D}")
+        wy_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $WY_N / $WY_D}")
+        maxl_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $MAXL_N / $MAXL_D}")
+        minl_f=$(LC_ALL=C awk "BEGIN{printf \"%.4f\", $MINL_N / $MINL_D}")
+        HDR10_MASTER_DISPLAY_SVTAV1="G(${gx_f},${gy_f})B(${bx_f},${by_f})R(${rx_f},${ry_f})WP(${wx_f},${wy_f})L(${maxl_f},${minl_f})"
+
+        HDR10_STATIC_AVAILABLE=1
+    fi
+
+    [[ -n "${MAXC:-}" && -n "${MAXA:-}" ]] && HDR10_MAX_CLL="${MAXC},${MAXA}"
+    return 0
+}
+
+# Defaults BT.2020 + 1000 nits master (folosit cand sursa nu raporteaza
+# master_display dar e clar HDR10 target — sau LOG → HDR10 transform).
+hdr10_static_defaults() {
+    HDR10_STATIC_AVAILABLE=1
+    # BT.2020 chromaticity primaries
+    HDR10_MASTER_DISPLAY_X265="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)"
+    HDR10_MASTER_DISPLAY_SVTAV1="G(0.1700,0.7970)B(0.1310,0.0460)R(0.7080,0.2920)WP(0.3127,0.3290)L(1000.0000,0.0001)"
+    HDR10_MAX_CLL="1000,400"
+}
+
+# Helper combinat: extract daca exista, altfel defaults; setează _SOURCE marker
+# pentru log. Apel: hdr10_static_resolve "$file"
+hdr10_static_resolve() {
+    local file="$1"
+    extract_hdr10_static_metadata "$file"
+    if [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ]; then
+        HDR10_STATIC_SOURCE="probe"
+    else
+        hdr10_static_defaults
+        HDR10_STATIC_SOURCE="default-bt2020-1000nit"
+    fi
+    [ -z "$HDR10_MAX_CLL" ] && HDR10_MAX_CLL="1000,400"
+}
+
+# Helper: extrage bitrate kbps dintr-un input "4000k" / "4M" / "4000000".
+parse_bitrate_kbps() {
+    local br="$1"
+    [ -z "$br" ] && { echo 0; return; }
+    if [[ "$br" =~ ^([0-9]+)[mM]$ ]]; then
+        echo $(( ${BASH_REMATCH[1]} * 1000 ))
+    elif [[ "$br" =~ ^([0-9]+)[kK]$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    elif [[ "$br" =~ ^([0-9]+)$ ]]; then
+        # Plain number: assume kbps daca <100000, altfel bps
+        if [ "$br" -lt 100000 ]; then echo "$br"
+        else echo $(( br / 1000 )); fi
+    else
+        echo 0
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════
 # v38: MEDIACODEC DETECTION (Termux/Android)
 # Set vars globale: MC_AVAILABLE, MC_ENCODERS (h264/hevc/av1 list),
 #   MC_SOC_VENDOR, MC_SOC_MODEL, MC_ANDROID_VER, MC_SOC_VERIFIED,
@@ -3322,7 +3771,7 @@ build_mediacodec_cmd() {
 
     # Rate control: respecta ENCODE_MODE=2 (VBR custom) daca user a setat target
     local bitrate maxrate bufsize rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         # VBR_TARGET vine ca "8M" sau "8000k" — extrage numarul ca kbps
         local vt="$VBR_TARGET"
         if [[ "$vt" =~ ^([0-9]+)[Mm]$ ]]; then bitrate=$(( ${BASH_REMATCH[1]} * 1000 ))
@@ -3455,7 +3904,7 @@ build_nvenc_cmd() {
     local preset="p${slot}"
 
     local rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         rate_flags="-rc vbr -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}} -bufsize ${VBR_TARGET}"
     else
         local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
@@ -3482,7 +3931,7 @@ build_qsv_cmd() {
     local preset="${qsv_n[$((slot-1))]}"
 
     local rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         rate_flags="-b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
     else
         local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
@@ -3509,7 +3958,7 @@ build_vaapi_cmd() {
     local slot="${HW_PRESET_SLOT:-4}"
 
     local rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         rate_flags="-rc_mode VBR -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}}"
     else
         local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
@@ -3549,7 +3998,7 @@ build_videotoolbox_cmd() {
     local q="${vt_q[$((slot-1))]}"
 
     local rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         rate_flags="-b:v ${VBR_TARGET}"
     else
         rate_flags="-q:v $q"
@@ -3580,7 +4029,7 @@ build_amf_cmd() {
 
     # v42.1: VBR_BUFSIZE propagat (lipsea); AV1 AMF nu suporta B-frames -> fara -qp_b
     local rate_flags
-    if [[ "${ENCODE_MODE:-1}" == "2" ]] && [[ -n "${VBR_TARGET:-}" ]]; then
+    if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         local maxrate="${VBR_MAXRATE:-${VBR_TARGET}}"
         local bufsize="${VBR_BUFSIZE:-${maxrate}}"
         rate_flags="-rc vbr_peak -b:v ${VBR_TARGET} -maxrate ${maxrate} -bufsize ${bufsize}"
@@ -3893,7 +4342,8 @@ dry_run_report() {
     printf "  ║  Sursa    : %-42s║\n" "$src_fmt | ${width}px | ${orig_mb} MB"
     printf "  ║  Output   : %-42s║\n" "$(basename "$output")"
     printf "  ║  Encoder  : %-42s║\n" "$enc_label"
-    if [[ "${ENCODE_MODE:-1}" == "2" ]]; then printf "  ║  Mode     : %-42s║\n" "VBR ${VBR_TARGET:-}"
+    if [[ "${ENCODE_MODE:-1}" == "3" ]]; then printf "  ║  Mode     : %-42s║\n" "VBR 2-pass ${VBR_TARGET:-}"
+    elif [[ "${ENCODE_MODE:-1}" == "2" ]]; then printf "  ║  Mode     : %-42s║\n" "VBR 1-pass ${VBR_TARGET:-}"
     else printf "  ║  Mode     : %-42s║\n" "CRF ${CUSTOM_CRF:-auto}"; fi
     if [[ -n "${SCALE_WIDTH:-}" ]]; then printf "  ║  Resize   : %-42s║\n" "${width}px → ${SCALE_WIDTH}px"
     else printf "  ║  Resize   : %-42s║\n" "fara (original)"; fi
@@ -4230,11 +4680,13 @@ run_encode_loop() {
         # v45: defensive reset DV/HDR10+ state — daca encoder_setup_file a
         # esuat / setup_rc=98 in iteratia anterioara fara cleanup, evitam leak
         # v46: include si HW_HDR_MODE pentru hw_preserve cleanup
+        # v51: include 2-pass state (stats file + cmd strings + flag)
         [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"
         HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
         HW_HDR_MODE=""
+        cleanup_2pass_state
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
         CRF=$(get_adaptive_crf "${ENCODER_TYPE:-x265}" "$WIDTH")
@@ -4269,7 +4721,8 @@ run_encode_loop() {
            && [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] \
            && [[ "${IS_LOG:-0}" != "1" ]] \
            && [[ -z "${HDR_PLUS:-}" ]] && [[ -z "${DOVI:-}" ]] \
-           && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]]; then
+           && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]] \
+           && [[ "${ENCODE_MODE:-1}" != "3" ]]; then
             # Bonus: bitrate sanity info
             local _src_br _br_str=""
             _src_br=$(ffprobe -v error -select_streams v:0 \
@@ -4304,11 +4757,20 @@ run_encode_loop() {
         local _enc_err; _enc_err=$(mktemp)
         # v38: label dinamic — uppercase ENCODER_NAME (ex: LIBX265, AV1, DNXHR)
         local _enc_label; _enc_label="${ENCODER_NAME:-FFmpeg}"; _enc_label="${_enc_label^^}"
-        # shellcheck disable=SC2086
-        eval $FFMPEG_CMD $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
-            $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>"$_enc_err"' '&'
-        FFMPEG_PID=$!; _show_progress "$FFMPEG_PID" "$PROGRESS_FILE" "$file" "$_enc_label"
-        wait "$FFMPEG_PID"; FFMPEG_EXIT=$?
+
+        if [[ "${USE_2PASS:-0}" == "1" ]]; then
+            # v51: 2-pass branch — encoderul a populat FFMPEG_CMD_PASS1/PASS2 + STATS_FILE
+            run_2pass_encode "$file" "$_enc_label"
+            FFMPEG_EXIT=$?
+            # Cleanup stats file dupa pass 2 (success sau fail)
+            cleanup_2pass_state
+        else
+            # shellcheck disable=SC2086
+            eval $FFMPEG_CMD $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
+                $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>"$_enc_err"' '&'
+            FFMPEG_PID=$!; _show_progress "$FFMPEG_PID" "$PROGRESS_FILE" "$file" "$_enc_label"
+            wait "$FFMPEG_PID"; FFMPEG_EXIT=$?
+        fi
         # Append stderr la LOG_FILE pentru istoric complet
         [[ -s "$_enc_err" ]] && cat "$_enc_err" >> "$LOG_FILE"
         [[ -n "${TRF_FILE:-}" ]] && rm -f "$TRF_FILE"; TRF_FILE=""
@@ -5671,7 +6133,7 @@ profile_schema_get() {
         DOVI_PRESERVE_POLICY) echo "enum:,auto,preserve,convert,copy,skip" ;;
         HW_FORCE)             echo "enum:0,1" ;;
         AUDIO_NORMALIZE)      echo "enum:0,1" ;;
-        ENCODE_MODE)          echo "enum:1,2" ;;
+        ENCODE_MODE)          echo "enum:1,2,3" ;;
         FORCE_LOG_DETECTION)  echo "enum:0,1" ;;
         INTERACTIVE_MODE)     echo "enum:0,1" ;;
         LOG_PROFILE)          echo "enum:,apple_log,samsung_log,dlog_m" ;;

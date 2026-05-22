@@ -31,8 +31,10 @@ encoder_get_suffix() { echo "_x264"; }
 encoder_get_label()  { echo "libx264"; }
 
 encoder_log_header() {
-    if [[ "$ENCODE_MODE" == "2" ]]; then
-        log "Mod encodare   : VBR | $VBR_TARGET / $VBR_MAXRATE"
+    if [[ "$ENCODE_MODE" == "3" ]]; then
+        log "Mod encodare   : VBR 2-pass | $VBR_TARGET / $VBR_MAXRATE / $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" ]]; then
+        log "Mod encodare   : VBR 1-pass | $VBR_TARGET / $VBR_MAXRATE"
     else
         log "Mod encodare   : CRF (4K=20, 1080p=19, 720p=18)"
         log "CRF custom     : ${CUSTOM_CRF:-auto}"
@@ -233,26 +235,53 @@ encoder_setup_file() {
 
     # ── Rate control ──────────────────────────────────────────────────
     local tune_flag="" crf_flag="" rate_flag=""
+    local _is_2pass=0
     [[ -n "$TUNE_OPT" ]] && tune_flag="-tune $TUNE_OPT"
-    if [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
+    if [[ "$ENCODE_MODE" == "3" && -n "$VBR_TARGET" ]]; then
+        # v51: 2-pass VBR pentru libx264 — stats path injectat via -passlogfile
+        rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
+        _is_2pass=1
+        log "  2-PASS VBR: $VBR_TARGET / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
+    elif [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
         rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
         log "  VBR: $VBR_TARGET / max $VBR_MAXRATE"
     else
         crf_flag="-crf $CRF"; log "  CRF: $CRF | ${WIDTH}px"
     fi
 
-    # ── Level ────────────────────────────────────────────────────────
-    local x264_level
-    if [ "$WIDTH" -ge 3840 ] || [ "$local_profile" = "high422" ]; then x264_level="5.1"
-    elif [ "$WIDTH" -ge 2560 ]; then x264_level="5.0"
-    else x264_level="4.1"; fi
+    # ── v51: Level / HRD ─ via suggest_vbv_for_target (rezolutie+fps+target_kbps)
+    local _h264_target_kbps=0
+    [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]] && _h264_target_kbps=$(parse_bitrate_kbps "$VBR_TARGET")
+    local _h264_suggest _h264_lvl
+    _h264_suggest=$(suggest_vbv_for_target h264 "$_h264_target_kbps" "$WIDTH" "${HEIGHT:-1080}" "${SRC_FPS_DEC:-30}")
+    _h264_lvl=$(echo "$_h264_suggest" | awk '{print $1}')
+    local x264_level="$_h264_lvl"
+    # high422 cere minim level 5.1 pe profil — clamp daca suggester a returnat mai jos
+    [ "$local_profile" = "high422" ] && {
+        case "$x264_level" in 3.0|3.1|3.2|4.0|4.1|4.2|5.0) x264_level="5.1" ;; esac
+    }
 
     local x264_bf="-bf 3"
     local x264_refs=$([ "$local_profile" = "high10" ] || [ "$local_profile" = "high422" ] && echo "-refs 4" || echo "-refs 3")
     local x264extra=""
-    [[ -n "$EXTRA_X264" ]] && x264extra="-x264-params $EXTRA_X264"
+    # v51: HRD compliance pe VBR/2-pass — append nal-hrd=vbr la -x264-params
+    local _x264_hrd_param=""
+    [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]] && _x264_hrd_param="nal-hrd=vbr"
+    # v51 fix: auto HRD primul, EXTRA_X264 user LAST (x264 ia ultima valoare la chei
+    # duplicate — user-ul poate suprascrie nal-hrd=vbr cu propria valoare daca doreste)
+    if [[ -n "$EXTRA_X264" && -n "$_x264_hrd_param" ]]; then
+        x264extra="-x264-params ${_x264_hrd_param}:${EXTRA_X264}"
+    elif [[ -n "$EXTRA_X264" ]]; then
+        x264extra="-x264-params $EXTRA_X264"
+    elif [[ -n "$_x264_hrd_param" ]]; then
+        x264extra="-x264-params $_x264_hrd_param"
+    fi
     local video_params="-profile:v $local_profile -level:v $x264_level -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-} ${x264_hlg_color_flags}"
-    log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt"
+    if [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
+        log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt | HRD=vbr"
+    else
+        log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt"
+    fi
     log "  Container: $CONTAINER | Preset: $PRESET | Tune: ${TUNE_OPT:-fara}"
 
     # ── Dry-run ──────────────────────────────────────────────────────
@@ -264,9 +293,23 @@ encoder_setup_file() {
         return 0
     fi
 
-    FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-        -c:v libx264 -preset $PRESET $tune_flag $crf_flag \
-        $video_params $VIDEO_FILTER $x264extra $rate_flag $AUDIO_PARAMS"
+    if [ $_is_2pass -eq 1 ]; then
+        # v51: 2-pass x264 — -pass N + -passlogfile PATH (genereaza PATH.log + PATH.log.mbtree)
+        init_2pass_state "$file"
+        FFMPEG_CMD_PASS1="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx264 -preset $PRESET $tune_flag \
+            $video_params $VIDEO_FILTER $x264extra $rate_flag \
+            -pass 1 -passlogfile \"$STATS_FILE\" -an -sn -f null /dev/null"
+        FFMPEG_CMD_PASS2="ffmpeg -y -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx264 -preset $PRESET $tune_flag \
+            $video_params $VIDEO_FILTER $x264extra $rate_flag \
+            -pass 2 -passlogfile \"$STATS_FILE\" $AUDIO_PARAMS"
+        FFMPEG_CMD=""
+    else
+        FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
+            -c:v libx264 -preset $PRESET $tune_flag $crf_flag \
+            $video_params $VIDEO_FILTER $x264extra $rate_flag $AUDIO_PARAMS"
+    fi
     return 0
 }
 

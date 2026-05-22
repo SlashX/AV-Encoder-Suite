@@ -1244,6 +1244,363 @@ function Convert-ToKbps {
     if ($br -match '[mM]$') { [int]$n * 1000 } else { [int]$n }
 }
 
+# ══════════════════════════════════════════════════════════════════════
+# v51: 2-PASS VBR INFRASTRUCTURE (mirror av_common.sh)
+# Encoderele setează:
+#   $script:ffmpegCmdPass1 (array)
+#   $script:ffmpegCmdPass2 (array)
+#   $script:statsFile (path stats partajat)
+#   $script:use2Pass = $true
+# Invoke-2PassEncode rulează cele 2 passuri; Pass 1 self-contained la NUL,
+# Pass 2 primește output + audio/sub args appendate de chemator.
+# ══════════════════════════════════════════════════════════════════════
+
+function Initialize-2PassState {
+    param([string]$File)
+    $name = [IO.Path]::GetFileNameWithoutExtension($File)
+    $name = $name -replace '[^A-Za-z0-9._-]','_'
+    $script:statsDir = Join-Path $env:TEMP ("av2pass_"+[guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $script:statsDir -Force | Out-Null
+    $script:statsFile = Join-Path $script:statsDir "$name.passlog"
+    $script:use2Pass = $true
+}
+
+function Clear-2PassState {
+    if ($script:statsDir -and (Test-Path $script:statsDir)) {
+        Remove-Item -Recurse -Force $script:statsDir -ErrorAction SilentlyContinue
+    }
+    $script:statsDir = ""; $script:statsFile = ""
+    $script:use2Pass = $false
+    $script:ffmpegCmdPass1 = @(); $script:ffmpegCmdPass2 = @()
+}
+
+# Rulează 2-pass cu progress per pass. Args: $File, $Label, $TrailingArgs2 (array
+# care se appendează la pass 2: audio, loudnorm, sub, container, progress, output).
+function Invoke-2PassEncode {
+    param(
+        [string]$File,
+        [string]$Label,
+        [int]$DurationSec,
+        [array]$TrailingArgs2,
+        [string]$ProgressFile,
+        [string]$LogFile
+    )
+    if (-not $script:ffmpegCmdPass1 -or $script:ffmpegCmdPass1.Count -eq 0) {
+        Write-Host "  EROARE: ffmpegCmdPass1 array gol" -ForegroundColor Red; return 1
+    }
+    if (-not $script:ffmpegCmdPass2 -or $script:ffmpegCmdPass2.Count -eq 0) {
+        Write-Host "  EROARE: ffmpegCmdPass2 array gol" -ForegroundColor Red; return 1
+    }
+    if (-not $script:statsFile) {
+        Write-Host "  EROARE: statsFile neinitializat (Initialize-2PassState)" -ForegroundColor Red; return 1
+    }
+
+    Write-Host ""
+    Write-Host "  -- 2-PASS: Pass 1/2 (analiza, fara audio, output NUL) --" -ForegroundColor Cyan
+    $errFile1 = "$env:TEMP\fferr_p1_$PID.txt"
+    $prog1 = "$env:TEMP\ffprog_p1_$PID.txt"
+    $p1Args = $script:ffmpegCmdPass1 + @("-progress",$prog1,"-nostats")
+    $startP1 = Get-Date
+    $proc1 = Start-Process ffmpeg -ArgumentList $p1Args -NoNewWindow -PassThru -RedirectStandardError $errFile1
+    Show-Progress -proc $proc1 -progFile $prog1 -durSec $DurationSec -startTime $startP1 -Label "$Label P1"
+    $proc1.WaitForExit()
+    if (Test-Path $errFile1) { Get-Content $errFile1 | Add-Content -Path $LogFile }
+    if ($proc1.ExitCode -ne 0) {
+        Write-Host "  EROARE Pass 1 (exit $($proc1.ExitCode)):" -ForegroundColor Red
+        if (Test-Path $errFile1) {
+            Get-Content $errFile1 -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+        Remove-Item $errFile1,$prog1 -Force -ErrorAction SilentlyContinue
+        return $proc1.ExitCode
+    }
+    Remove-Item $errFile1,$prog1 -Force -ErrorAction SilentlyContinue
+
+    Write-Host "  -- 2-PASS: Pass 2/2 (encodare finala + audio) --" -ForegroundColor Cyan
+    $errFile2 = "$env:TEMP\fferr_p2_$PID.txt"
+    $p2Args = $script:ffmpegCmdPass2 + $TrailingArgs2 + @("-progress",$ProgressFile,"-nostats")
+    $startP2 = Get-Date
+    $proc2 = Start-Process ffmpeg -ArgumentList $p2Args -NoNewWindow -PassThru -RedirectStandardError $errFile2
+    Show-Progress -proc $proc2 -progFile $ProgressFile -durSec $DurationSec -startTime $startP2 -Label "$Label P2"
+    $proc2.WaitForExit()
+    if (Test-Path $errFile2) { Get-Content $errFile2 | Add-Content -Path $LogFile }
+    if ($proc2.ExitCode -ne 0) {
+        Write-Host "  EROARE Pass 2 (exit $($proc2.ExitCode)):" -ForegroundColor Red
+        if (Test-Path $errFile2) {
+            Get-Content $errFile2 -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+        Remove-Item $errFile2 -Force -ErrorAction SilentlyContinue
+        return $proc2.ExitCode
+    }
+    Remove-Item $errFile2 -Force -ErrorAction SilentlyContinue
+    return 0
+}
+
+# SVT-AV1 v1.4+ inline pass=N:stats= caps
+function Test-SvtAv1TwoPassCaps {
+    if ($script:svtav1TwoPassChecked) { return $script:svtav1TwoPassSupported }
+    $script:svtav1TwoPassChecked = $true
+    $script:svtav1TwoPassSupported = $false
+    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return $false }
+    $help = & ffmpeg -hide_banner -h encoder=libsvtav1 2>$null | Out-String
+    if ($help -match '(?m)^\s*pass\s+') { $script:svtav1TwoPassSupported = $true }
+    return $script:svtav1TwoPassSupported
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v51: VBV / LEVEL AUTOMATION
+# ══════════════════════════════════════════════════════════════════════
+
+function Get-VbvCaps {
+    param([string]$Codec, [string]$Level, [string]$Tier = "main")
+    switch ($Codec) {
+        "hevc" {
+            switch ($Level) {
+                "3.0" { return @{ MaxBR = 6000;   MaxCPB = 6000 } }
+                "3.1" { return @{ MaxBR = 10000;  MaxCPB = 10000 } }
+                "4.0" { if ($Tier -eq "high") { return @{ MaxBR = 30000;  MaxCPB = 30000 } }  else { return @{ MaxBR = 12000;  MaxCPB = 12000 } } }
+                "4.1" { if ($Tier -eq "high") { return @{ MaxBR = 50000;  MaxCPB = 50000 } }  else { return @{ MaxBR = 20000;  MaxCPB = 20000 } } }
+                "5.0" { if ($Tier -eq "high") { return @{ MaxBR = 100000; MaxCPB = 100000 } } else { return @{ MaxBR = 25000;  MaxCPB = 25000 } } }
+                "5.1" { if ($Tier -eq "high") { return @{ MaxBR = 160000; MaxCPB = 160000 } } else { return @{ MaxBR = 40000;  MaxCPB = 40000 } } }
+                "5.2" { if ($Tier -eq "high") { return @{ MaxBR = 240000; MaxCPB = 240000 } } else { return @{ MaxBR = 60000;  MaxCPB = 60000 } } }
+                "6.0" { if ($Tier -eq "high") { return @{ MaxBR = 240000; MaxCPB = 240000 } } else { return @{ MaxBR = 60000;  MaxCPB = 60000 } } }
+                "6.1" { if ($Tier -eq "high") { return @{ MaxBR = 480000; MaxCPB = 480000 } } else { return @{ MaxBR = 120000; MaxCPB = 120000 } } }
+                "6.2" { if ($Tier -eq "high") { return @{ MaxBR = 800000; MaxCPB = 800000 } } else { return @{ MaxBR = 240000; MaxCPB = 240000 } } }
+                default { return @{ MaxBR = 40000; MaxCPB = 40000 } }
+            }
+        }
+        "h264" {
+            switch ($Level) {
+                "3.0" { return @{ MaxBR = 12500;   MaxCPB = 12500 } }
+                "3.1" { return @{ MaxBR = 17500;   MaxCPB = 17500 } }
+                "3.2" { return @{ MaxBR = 25000;   MaxCPB = 25000 } }
+                "4.0" { return @{ MaxBR = 25000;   MaxCPB = 25000 } }
+                "4.1" { return @{ MaxBR = 62500;   MaxCPB = 62500 } }
+                "4.2" { return @{ MaxBR = 62500;   MaxCPB = 62500 } }
+                "5.0" { return @{ MaxBR = 168750;  MaxCPB = 168750 } }
+                "5.1" { return @{ MaxBR = 300000;  MaxCPB = 300000 } }
+                "5.2" { return @{ MaxBR = 300000;  MaxCPB = 300000 } }
+                "6.0" { return @{ MaxBR = 300000;  MaxCPB = 300000 } }
+                "6.1" { return @{ MaxBR = 600000;  MaxCPB = 600000 } }
+                "6.2" { return @{ MaxBR = 1200000; MaxCPB = 1200000 } }
+                default { return @{ MaxBR = 62500; MaxCPB = 62500 } }
+            }
+        }
+        "av1" {
+            switch ($Level) {
+                "4.0" { return @{ MaxBR = 12000;  MaxCPB = 30000 } }
+                "4.1" { return @{ MaxBR = 20000;  MaxCPB = 50000 } }
+                "5.0" { return @{ MaxBR = 30000;  MaxCPB = 100000 } }
+                "5.1" { return @{ MaxBR = 40000;  MaxCPB = 160000 } }
+                "5.2" { return @{ MaxBR = 60000;  MaxCPB = 240000 } }
+                "5.3" { return @{ MaxBR = 60000;  MaxCPB = 240000 } }
+                "6.0" { return @{ MaxBR = 60000;  MaxCPB = 240000 } }
+                "6.1" { return @{ MaxBR = 100000; MaxCPB = 480000 } }
+                "6.2" { return @{ MaxBR = 160000; MaxCPB = 800000 } }
+                "6.3" { return @{ MaxBR = 160000; MaxCPB = 800000 } }
+                default { return @{ MaxBR = 30000; MaxCPB = 100000 } }
+            }
+        }
+        default { return @{ MaxBR = 0; MaxCPB = 0 } }
+    }
+}
+
+function Get-MinLevelForResolution {
+    param([string]$Codec, [int]$Width, [int]$Height, [double]$Fps = 30)
+    $fpsInt = [int][Math]::Round($Fps)
+    if ($fpsInt -lt 1) { $fpsInt = 30 }
+    switch ($Codec) {
+        "hevc" {
+            if     ($Width -ge 7680) { return "6.1" }
+            elseif ($Width -ge 3840 -and $fpsInt -gt 60) { return "5.2" }
+            elseif ($Width -ge 3840 -and $fpsInt -gt 30) { return "5.1" }
+            elseif ($Width -ge 3840) { return "5.0" }
+            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.1" }
+            elseif ($Width -ge 1920) { return "4.0" }
+            elseif ($Width -ge 1280) { return "3.1" }
+            else { return "3.0" }
+        }
+        "h264" {
+            if     ($Width -ge 3840 -and $fpsInt -gt 60) { return "6.0" }
+            elseif ($Width -ge 3840) { return "5.1" }
+            elseif ($Width -ge 2560) { return "5.0" }
+            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.2" }
+            elseif ($Width -ge 1920) { return "4.1" }
+            elseif ($Width -ge 1280) { return "3.1" }
+            else { return "3.0" }
+        }
+        "av1" {
+            if     ($Width -ge 7680) { return "6.1" }
+            elseif ($Width -ge 3840 -and $fpsInt -gt 60) { return "5.2" }
+            elseif ($Width -ge 3840 -and $fpsInt -gt 30) { return "5.1" }
+            elseif ($Width -ge 3840) { return "5.0" }
+            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.1" }
+            elseif ($Width -ge 1920) { return "4.0" }
+            else { return "4.0" }
+        }
+    }
+}
+
+function Suggest-VbvForTarget {
+    param(
+        [string]$Codec,
+        [int]$TargetKbps,
+        [int]$Width,
+        [int]$Height,
+        [double]$Fps = 30
+    )
+    $level = Get-MinLevelForResolution -Codec $Codec -Width $Width -Height $Height -Fps $Fps
+    $tier = "main"
+    $desiredMaxrate = [int]($TargetKbps * 1.5)
+    $desiredBufsize = $TargetKbps * 2
+    $caps = $null
+
+    for ($i = 0; $i -lt 8; $i++) {
+        $caps = Get-VbvCaps -Codec $Codec -Level $level -Tier $tier
+        if ($desiredMaxrate -le $caps.MaxBR) { break }
+        if ($Codec -eq "hevc" -and $tier -eq "main") {
+            $tier = "high"
+        } else {
+            switch ($level) {
+                "3.0" { $level = "3.1" }
+                "3.1" { $level = "4.0" }
+                "4.0" { $level = "4.1" }
+                "4.1" { $level = "5.0" }
+                "5.0" { $level = "5.1" }
+                "5.1" { $level = "5.2" }
+                "5.2" { $level = "6.0" }
+                "6.0" { $level = "6.1" }
+                "6.1" { $level = "6.2" }
+                default { break }
+            }
+            if ($Codec -eq "hevc") { $tier = "main" }
+        }
+    }
+
+    $finalMaxrate = [Math]::Min($desiredMaxrate, $caps.MaxBR)
+    $finalBufsize = [Math]::Min($desiredBufsize, $caps.MaxCPB)
+    return @{
+        Level   = $level
+        Tier    = $tier
+        Maxrate = $finalMaxrate
+        Bufsize = $finalBufsize
+    }
+}
+
+function Get-BitrateKbps {
+    param([string]$Bitrate)
+    if (-not $Bitrate) { return 0 }
+    if ($Bitrate -match '^(\d+)[mM]$') { return [int]$Matches[1] * 1000 }
+    if ($Bitrate -match '^(\d+)[kK]$') { return [int]$Matches[1] }
+    if ($Bitrate -match '^(\d+)$') {
+        $n = [int]$Matches[1]
+        if ($n -lt 100000) { return $n } else { return [int]($n / 1000) }
+    }
+    return 0
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v51: HDR10 STATIC METADATA EXTRACTION (mirror extract_hdr10_static_metadata)
+# Setează:
+#   $script:hdr10StaticAvailable     ([bool])
+#   $script:hdr10MasterDisplayX265   (string format chromaticity ×50000)
+#   $script:hdr10MasterDisplaySvtAv1 (string format float)
+#   $script:hdr10MaxCll              ("MaxCLL,MaxFALL" sau gol)
+#   $script:hdr10StaticSource        ("probe" / "default-*")
+# ══════════════════════════════════════════════════════════════════════
+
+function Get-Hdr10StaticMetadata {
+    param([string]$File)
+    $script:hdr10StaticAvailable = $false
+    $script:hdr10MasterDisplayX265 = ""
+    $script:hdr10MasterDisplaySvtAv1 = ""
+    $script:hdr10MaxCll = ""
+
+    if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-Path $File)) { return $false }
+
+    $probe = & ffprobe -v error -select_streams v:0 `
+        -read_intervals "%+#1" `
+        -show_entries frame=side_data_list `
+        -of default=noprint_wrappers=1 `
+        $File 2>$null | Out-String
+    if (-not $probe) { return $false }
+
+    $mode = ""
+    $vals = @{}
+    foreach ($line in ($probe -split "`r?`n")) {
+        if ($line -match 'side_data_type=Mastering display metadata') { $mode = "m"; continue }
+        if ($line -match 'side_data_type=Content light level metadata') { $mode = "c"; continue }
+        if ($line -match 'side_data_type=') { $mode = ""; continue }
+        $i = $line.IndexOf("=")
+        if ($i -lt 0) { continue }
+        $key = $line.Substring(0, $i).Trim()
+        $val = $line.Substring($i + 1).Trim()
+        if ($mode -eq "m") {
+            if ($val -match '^(\d+)/(\d+)$') {
+                $num = [double]$Matches[1]; $den = [double]$Matches[2]
+            } else { continue }
+            $vals[$key] = @{ Num = $num; Den = $den }
+        } elseif ($mode -eq "c") {
+            if ($key -eq "max_content") { $vals.maxc = $val }
+            elseif ($key -eq "max_average") { $vals.maxa = $val }
+        }
+    }
+
+    $required = @("red_x","red_y","green_x","green_y","blue_x","blue_y","white_point_x","white_point_y","max_luminance","min_luminance")
+    $haveAll = $true
+    foreach ($k in $required) { if (-not $vals.ContainsKey($k)) { $haveAll = $false; break } }
+
+    if ($haveAll) {
+        $fI = { param($v, $scale) [int][Math]::Round($v.Num * $scale / $v.Den) }
+        $fF = { param($v) [Math]::Round($v.Num / $v.Den, 4) }
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        # v51 audit: format "0.0000" pentru paritate cu bash awk %.4f (4 zecimale fixe,
+        # inclusiv trailing zeros). Anterior "0.0###" strip-uia trailing zeros pe svtav1.
+        $fmt = { param($d) ([double]$d).ToString("0.0000", $inv) }
+
+        $gxi = & $fI $vals.green_x 50000; $gyi = & $fI $vals.green_y 50000
+        $bxi = & $fI $vals.blue_x  50000; $byi = & $fI $vals.blue_y  50000
+        $rxi = & $fI $vals.red_x   50000; $ryi = & $fI $vals.red_y   50000
+        $wxi = & $fI $vals.white_point_x 50000; $wyi = & $fI $vals.white_point_y 50000
+        $mxi = & $fI $vals.max_luminance 10000
+        $mni = & $fI $vals.min_luminance 10000
+        $script:hdr10MasterDisplayX265 = "G($gxi,$gyi)B($bxi,$byi)R($rxi,$ryi)WP($wxi,$wyi)L($mxi,$mni)"
+
+        $gxf = & $fmt (& $fF $vals.green_x); $gyf = & $fmt (& $fF $vals.green_y)
+        $bxf = & $fmt (& $fF $vals.blue_x);  $byf = & $fmt (& $fF $vals.blue_y)
+        $rxf = & $fmt (& $fF $vals.red_x);   $ryf = & $fmt (& $fF $vals.red_y)
+        $wxf = & $fmt (& $fF $vals.white_point_x); $wyf = & $fmt (& $fF $vals.white_point_y)
+        $mxf = & $fmt (& $fF $vals.max_luminance)
+        $mnf = & $fmt (& $fF $vals.min_luminance)
+        $script:hdr10MasterDisplaySvtAv1 = "G($gxf,$gyf)B($bxf,$byf)R($rxf,$ryf)WP($wxf,$wyf)L($mxf,$mnf)"
+
+        $script:hdr10StaticAvailable = $true
+    }
+    if ($vals.maxc -and $vals.maxa) {
+        $script:hdr10MaxCll = "$($vals.maxc),$($vals.maxa)"
+    }
+    return $script:hdr10StaticAvailable
+}
+
+function Set-Hdr10StaticDefaults {
+    $script:hdr10StaticAvailable = $true
+    $script:hdr10MasterDisplayX265 = "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)"
+    $script:hdr10MasterDisplaySvtAv1 = "G(0.1700,0.7970)B(0.1310,0.0460)R(0.7080,0.2920)WP(0.3127,0.3290)L(1000.0000,0.0001)"
+    $script:hdr10MaxCll = "1000,400"
+}
+
+function Resolve-Hdr10Static {
+    param([string]$File)
+    Get-Hdr10StaticMetadata -File $File | Out-Null
+    if ($script:hdr10StaticAvailable) {
+        $script:hdr10StaticSource = "probe"
+    } else {
+        Set-Hdr10StaticDefaults
+        $script:hdr10StaticSource = "default-bt2020-1000nit"
+    }
+    if (-not $script:hdr10MaxCll) { $script:hdr10MaxCll = "1000,400" }
+}
+
 function Get-ContainerFlags {
     param([string]$c)
     if ($c -in @("mkv","mxf","webm")) { @() } else { @("-movflags","+faststart") }
@@ -3602,7 +3959,7 @@ function Get-ProfileSchema {
         'DOVI_PRESERVE_POLICY' { 'enum:,auto,preserve,convert,copy,skip'; return }
         'HW_FORCE'             { 'enum:0,1'; return }
         'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
-        'ENCODE_MODE'          { 'enum:1,2'; return }
+        'ENCODE_MODE'          { 'enum:1,2,3'; return }
         'FORCE_LOG_DETECTION'  { 'enum:0,1'; return }
         'INTERACTIVE_MODE'     { 'enum:0,1'; return }
         'LOG_PROFILE'          { 'enum:,apple_log,samsung_log,dlog_m'; return }
@@ -4332,9 +4689,23 @@ $encMode = "1"; $customCrf = ""; $vbrTarget = ""; $vbrMaxrate = ""; $vbrBufsize 
 $selectedPreset = "slow"; $selectedTune = ""; $extraParams = ""
 if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc) {
 
-Write-Host ""; Write-Host "Mod: 1-CRF [implicit]  2-VBR" -ForegroundColor Cyan
-$encMode = Read-Host "Alege [implicit: 1]"
-if ($encMode -ne "2") { $encMode = "1" }
+Write-Host ""
+$isHwActive = $useHWEnc
+if ($isHwActive) {
+    Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass" -ForegroundColor Cyan
+    Write-Host "  ⓘ 2-pass dezactivat — HW backend activ nu suporta 2-pass." -ForegroundColor DarkGray
+    $encMode = Read-Host "Alege [implicit: 1]"
+    if ($encMode -notin @("1","2")) { $encMode = "1" }
+} else {
+    Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass  3-VBR 2-pass" -ForegroundColor Cyan
+    $encMode = Read-Host "Alege [implicit: 1]"
+    if ($encMode -notin @("1","2","3")) { $encMode = "1" }
+}
+# Defensive: respinge mode=3 cu HW activ (profile bypass safety)
+if ($encMode -eq "3" -and $isHwActive) {
+    Write-Host "  ⚠ 2-pass nu e suportat pe HW backend — fallback la VBR 1-pass." -ForegroundColor Yellow
+    $encMode = "2"
+}
 $customCrf = ""; $vbrTarget = ""; $vbrMaxrate = ""; $vbrBufsize = ""
 if ($encMode -eq "1") {
     Write-Host "CRF: A-Auto  B-Custom" -ForegroundColor Cyan
@@ -4350,21 +4721,21 @@ if ($encMode -eq "1") {
         }
     }
 } else {
-    $vi = Read-Host "Bitrate tinta (ex: 4000k, 4M)"
+    $modeLabel = if ($encMode -eq "3") { "2-pass" } else { "1-pass" }
+    $vi = Read-Host "VBR $modeLabel — Bitrate tinta (ex: 4000k, 4M)"
     if (-not (Test-BitrateFormat $vi)) { Write-Host "Format invalid!" -ForegroundColor Red; Read-Host; exit }
     $vbrTarget = $vi; $kbps = Convert-ToKbps $vi
     $vbrMaxrate = "$([int]($kbps*1.5))k"; $vbrBufsize = "$($kbps*2)k"
-    Write-Host "  VBR: $vbrTarget / max $vbrMaxrate" -ForegroundColor Green
+    Write-Host "  VBR $modeLabel : $vbrTarget / max $vbrMaxrate" -ForegroundColor Green
     $ov = Read-Host "Modifica maxrate/bufsize? (d/N)"
     if ($ov -ieq "d") {
         $mr = Read-Host "Maxrate"; $bs = Read-Host "Bufsize"
-        # FIX: avertisment explicit la valori invalide (nu cade silently)
         if (Test-BitrateFormat $mr) { $vbrMaxrate = $mr }
         else { Write-Host "  AVERTISMENT: Maxrate invalid — se pastreaza $vbrMaxrate" -ForegroundColor Yellow }
         if (Test-BitrateFormat $bs) { $vbrBufsize = $bs }
         else { Write-Host "  AVERTISMENT: Bufsize invalid — se pastreaza $vbrBufsize" -ForegroundColor Yellow }
     }
-    Write-Host "  VBR final: $vbrTarget / max $vbrMaxrate / buf $vbrBufsize" -ForegroundColor Green
+    Write-Host "  VBR $modeLabel final: $vbrTarget / max $vbrMaxrate / buf $vbrBufsize" -ForegroundColor Green
 }
 
 # Preset
@@ -4927,6 +5298,7 @@ foreach ($f in $inputFiles) {
     $mapFlags  = Get-DJIMapFlags $f.FullName $keepDjmd $keepDbgi $keepTmcd $dji $container
     $si        = Get-SourceInfo $f.FullName
     $width     = Get-FFprobeValue $f.FullName "v:0" "width"
+    $height    = Get-FFprobeValue $f.FullName "v:0" "height"
     $durRaw    = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
     $durSec    = if ($durRaw -match '^\d+') { [int]([double]$durRaw) } else { 0 }
@@ -5169,9 +5541,11 @@ foreach ($f in $inputFiles) {
     }
 
     $rateParams = @(); $crfFlag = @()
-    if ($encMode -eq "2") {
+    $is2Pass = ($encMode -eq "3")
+    if ($encMode -eq "2" -or $encMode -eq "3") {
         $rateParams = @("-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize)
-        Write-Host "  VBR: $vbrTarget" -ForegroundColor White
+        if ($is2Pass) { Write-Host "  VBR 2-pass: $vbrTarget" -ForegroundColor White }
+        else { Write-Host "  VBR 1-pass: $vbrTarget" -ForegroundColor White }
     } else {
         $crf = if ($customCrf) { [int]$customCrf }
                elseif ($useX264) { if ([int]$width -ge 3840){20}elseif([int]$width -ge 1920){19}else{18} }
@@ -5180,6 +5554,26 @@ foreach ($f in $inputFiles) {
         $crfFlag = @("-crf",$crf)
         Write-Host "  CRF: $crf | ${width}px" -ForegroundColor White
     }
+
+    # v51: VBV/Level suggestion (informational pe CRF, HRD-binding pe VBR/2-pass)
+    $targetKbpsV = 0
+    if ($encMode -eq "2" -or $encMode -eq "3") { $targetKbpsV = Get-BitrateKbps $vbrTarget }
+    # $srcFpsDec si $height sunt computate mai sus in run loop (FPS section + sourceInfo)
+    $srcFps = if ($srcFpsDec -and $srcFpsDec -gt 0) { [double]$srcFpsDec } else { 30.0 }
+    $heightV = if ($height -and ([int]$height) -gt 0) { [int]$height } else { 1080 }
+    $codecKey = if ($useX264) { "h264" } elseif ($useAV1) { "av1" } else { "hevc" }
+    $vbvSug = Suggest-VbvForTarget -Codec $codecKey -TargetKbps $targetKbpsV -Width ([int]$width) -Height $heightV -Fps $srcFps
+    $script:autoLevel = $vbvSug.Level
+    $script:autoTier  = $vbvSug.Tier
+    Write-Host "  $($codecKey.ToUpper()) level: $($vbvSug.Level) $($vbvSug.Tier.ToUpper()) tier" -ForegroundColor DarkGray
+    # Reset 2-pass state per fisier
+    Clear-2PassState
+    # Reset HDR10 static state per fisier
+    $script:hdr10StaticAvailable = $false
+    $script:hdr10MasterDisplayX265 = ""
+    $script:hdr10MasterDisplaySvtAv1 = ""
+    $script:hdr10MaxCll = ""
+    $script:hdr10StaticSource = ""
 
     $progFile  = Join-Path $env:TEMP ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
     $startTime = Get-Date
@@ -5216,7 +5610,8 @@ foreach ($f in $inputFiles) {
         -and -not $logInfo.logProfile `
         -and -not $si.isHDRPlus `
         -and -not $doviSmart `
-        -and -not $targetFps) {
+        -and -not $targetFps `
+        -and ($encMode -ne "3")) {
         $srcBr = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
         $brStr = if ($srcBr -match '^\d+$') { " (bitrate sursa ~$([int]([int]$srcBr/1000)) kbps)" } else { "" }
         Write-Host ""
@@ -5303,21 +5698,55 @@ foreach ($f in $inputFiles) {
             $x264Profile = "high"; $x264PixFmt = "yuv420p"
         }
         if (-not $x264PixFmt) { $x264PixFmt = switch ($x264Profile) { "high422"{"yuv422p10le"} "high10"{"yuv420p10le"} default{"yuv420p"} } }
-        $x264Level = if ([int]$width -ge 3840 -or $x264Profile -eq "high422") { "5.1" }
-                     elseif ([int]$width -ge 2560) { "5.0" } else { "4.1" }
+        # v51: level via Suggest-VbvForTarget (rezolutie + fps + target_kbps)
+        $x264Level = $script:autoLevel
+        if ($x264Profile -eq "high422" -and $x264Level -in @("3.0","3.1","3.2","4.0","4.1","4.2","5.0")) { $x264Level = "5.1" }
         $x264BF = @("-bf","3")
         $x264Refs = if ($x264Profile -in @("high10","high422")) { @("-refs","4") } else { @("-refs","3") }
-        $x264ExtraFlag = if ($extraParams) { @("-x264-params",$extraParams) } else { @() }
+        # v51: HRD compliance pe VBR/2-pass — append nal-hrd=vbr la -x264-params
+        $x264HrdParam = ""
+        if ($encMode -eq "2" -or $encMode -eq "3") { $x264HrdParam = "nal-hrd=vbr" }
+        $x264ExtraFlag = @()
+        # v51 fix: auto HRD primul, EXTRA user LAST (x264 ia ultima valoare la chei
+        # duplicate — user-ul poate suprascrie nal-hrd=vbr cu propria valoare)
+        if ($extraParams -and $x264HrdParam) {
+            $x264ExtraFlag = @("-x264-params","${x264HrdParam}:${extraParams}")
+        } elseif ($extraParams) {
+            $x264ExtraFlag = @("-x264-params",$extraParams)
+        } elseif ($x264HrdParam) {
+            $x264ExtraFlag = @("-x264-params",$x264HrdParam)
+        }
         $x264ColorFlags = if ($script:logColorFlags) { $script:logColorFlags } else { @() }
-        Write-Host "  Profil: $x264Profile | Level: $x264Level | Container: $container" -ForegroundColor White
+        if ($encMode -eq "2" -or $encMode -eq "3") {
+            Write-Host "  Profil: $x264Profile | Level: $x264Level | HRD=vbr | Container: $container" -ForegroundColor White
+        } else {
+            Write-Host "  Profil: $x264Profile | Level: $x264Level | Container: $container" -ForegroundColor White
+        }
 
-        $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                  @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
-                  @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
-                  $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
-                  $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
-                  (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                  $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+        if ($is2Pass) {
+            # v51: 2-pass x264 — -pass N + -passlogfile
+            Initialize-2PassState -File $f.FullName
+            $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag +
+                @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
+                $videoFilter + $fpsFlag + $rateParams +
+                @("-pass","1","-passlogfile",$script:statsFile,"-an","-sn","-f","null","NUL")
+            $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag +
+                @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
+                $videoFilter + $fpsFlag + $rateParams +
+                @("-pass","2","-passlogfile",$script:statsFile) + $audioParams
+        } else {
+            $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
+                      @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
+                      @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                      $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
+                      $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
+                      (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+        }
 
     } elseif ($useAV1) {
         # ── AV1 per-file dialog ──────────────────────────────────────
@@ -5521,31 +5950,91 @@ foreach ($f in $inputFiles) {
         }
 
         Write-Host "  $av1Impl | Preset: $av1Preset | Film-grain: $fgLevel" -ForegroundColor White
-        $isVbr = ($encMode -eq "2")
+        $isVbr = ($encMode -eq "2" -or $encMode -eq "3")
+        # v51: HDR10 static — pe branch-uri PQ (color_trc=smpte2084)
+        $av1Hdr10StaticParam = ""
+        $av1HasPq = ($av1Color -join " ") -match "smpte2084"
+        if ($av1HasPq -and $av1Impl -eq "libsvtav1") {
+            $isRealHdr10 = $si.isHDRPlus -or $doViAv1
+            if ($isRealHdr10) { Resolve-Hdr10Static -File $f.FullName }
+            else { Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit" }
+            if ($script:hdr10StaticAvailable) {
+                $av1Hdr10StaticParam = ":mastering-display=$($script:hdr10MasterDisplaySvtAv1)"
+                if ($script:hdr10MaxCll) { $av1Hdr10StaticParam += ":content-light=$($script:hdr10MaxCll)" }
+                Write-Host "  HDR10 static (AV1): $($script:hdr10StaticSource) | content-light=$($script:hdr10MaxCll)" -ForegroundColor DarkGray
+            }
+        } elseif ($av1HasPq -and $av1Impl -eq "libaom-av1") {
+            Write-Host "  ⓘ libaom-av1: mastering-display + content-light nu se pot injecta prin ffmpeg (HDR10 color signaling ramane functional)" -ForegroundColor DarkGray
+        }
         $svtParams = if ($isVbr) {
-            "preset=${av1Preset}:rc=1:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}"
+            "preset=${av1Preset}:rc=1:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
         } else {
-            "preset=${av1Preset}:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}"
+            "preset=${av1Preset}:lp=$([Environment]::ProcessorCount)${fgSuffix}${hdr10PlusAv1Param}${av1Hdr10StaticParam}"
         }
         if ($extraParams -and $av1Impl -eq "libsvtav1") { $svtParams += ":$extraParams" }
         $libaomExtra = if ($extraParams -and $av1Impl -eq "libaom-av1") { $extraParams -split '\s+' | Where-Object { $_ } } else { @() }
+        # v51: -level pe libsvtav1
+        $av1LevelFlag = @()
+        if ($av1Impl -eq "libsvtav1") { $av1LevelFlag = @("-level",$script:autoLevel) }
 
         if ($av1Impl -eq "libsvtav1") {
-            $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                      @("-c:v","libsvtav1") + $crfFlag +
-                      @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParams) +
-                      $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
-                      (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+            if ($is2Pass) {
+                Initialize-2PassState -File $f.FullName
+                Test-SvtAv1TwoPassCaps | Out-Null
+                $svtParamsP1 = $svtParams; $svtParamsP2 = $svtParams
+                $passFlagP1 = @(); $passFlagP2 = @()
+                if ($script:svtav1TwoPassSupported) {
+                    $svtParamsP1 = "${svtParams}:pass=1:stats=$($script:statsFile)"
+                    $svtParamsP2 = "${svtParams}:pass=2:stats=$($script:statsFile)"
+                } else {
+                    # Inline `pass=N:stats=PATH` (libsvtav1 v1.4+) nedetectat in
+                    # ffmpeg help — folosim sintaxa generica `-pass/-passlogfile`
+                    # tradusa intern de ffmpeg catre svtav1-params pe versiuni
+                    # compatibile.
+                    Write-Host "  ℹ SVT-AV1 2-pass: folosesc sintaxa generica -pass/-passlogfile" -ForegroundColor DarkGray
+                    $passFlagP1 = @("-pass","1","-passlogfile",$script:statsFile)
+                    $passFlagP2 = @("-pass","2","-passlogfile",$script:statsFile)
+                }
+                $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                    @("-c:v","libsvtav1") + $av1LevelFlag +
+                    @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParamsP1) +
+                    $videoFilter + $fpsFlag + $av1Color + $rateParams + $passFlagP1 +
+                    @("-an","-sn","-f","null","NUL")
+                $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                    @("-c:v","libsvtav1") + $av1LevelFlag +
+                    @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParamsP2) +
+                    $videoFilter + $fpsFlag + $av1Color + $rateParams + $passFlagP2 + $audioParams
+            } else {
+                $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
+                          @("-c:v","libsvtav1") + $av1LevelFlag + $crfFlag +
+                          @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParams) +
+                          $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
+                          (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+                          $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+            }
         } else {
             $libaomBv = if (-not $isVbr) { @("-b:v","0") } else { @() }
             $libaomFg = if ($fgLevel -gt 0) { @("-denoise-noise-level",$fgLevel) } else { @() }
-            $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                      @("-c:v","libaom-av1") + $crfFlag + $libaomBv +
-                      @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
-                      $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
-                      (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+            if ($is2Pass) {
+                Initialize-2PassState -File $f.FullName
+                $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                    @("-c:v","libaom-av1") + $libaomBv +
+                    @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
+                    $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams +
+                    @("-pass","1","-passlogfile",$script:statsFile,"-an","-sn","-f","null","NUL")
+                $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                    @("-c:v","libaom-av1") + $libaomBv +
+                    @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
+                    $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams +
+                    @("-pass","2","-passlogfile",$script:statsFile) + $audioParams
+            } else {
+                $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
+                          @("-c:v","libaom-av1") + $crfFlag + $libaomBv +
+                          @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
+                          $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
+                          (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+                          $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+            }
         }
 
     } elseif ($useHWEnc) {
@@ -5947,19 +6436,54 @@ foreach ($f in $inputFiles) {
         }
 
         $nProc = [Environment]::ProcessorCount
-        $x265Params = "${x265Hdr}pools=${nProc}:aq-mode=3:aq-strength=1.0"
+        # v51: Level / Tier / HRD (informational pe CRF, HRD-binding pe VBR/2-pass)
+        $x265LvlIdc = ($script:autoLevel -replace '\.','')
+        $x265HighTier = if ($script:autoTier -eq "high") { 1 } else { 0 }
+        $x265LevelParams = "level-idc=${x265LvlIdc}:high-tier=${x265HighTier}"
+        if ($encMode -eq "2" -or $encMode -eq "3") {
+            $x265LevelParams += ":hrd=1"
+        }
+        # v51: HDR10 static metadata pe branch-uri HDR10 (PQ transfer)
+        $x265StaticParams = ""
+        if ($x265Hdr -match "hdr10=1") {
+            $isRealHdr10 = ($srcResult -eq "hdr10") -or $si.isHDRPlus -or $doVi
+            if ($isRealHdr10) { Resolve-Hdr10Static -File $f.FullName }
+            else { Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit" }
+            if ($script:hdr10StaticAvailable) {
+                $x265StaticParams = "master-display=$($script:hdr10MasterDisplayX265)"
+                if ($script:hdr10MaxCll) { $x265StaticParams += ":max-cll=$($script:hdr10MaxCll)" }
+                Write-Host "  HDR10 static: $($script:hdr10StaticSource) | max-cll=$($script:hdr10MaxCll)" -ForegroundColor DarkGray
+            }
+        }
+        $x265Params = "${x265Hdr}pools=${nProc}:aq-mode=3:aq-strength=1.0:${x265LevelParams}"
+        if ($x265StaticParams) { $x265Params += ":${x265StaticParams}" }
         if ($extraParams) { $x265Params += ":$extraParams" }
         # Remove trailing colon if present
         $x265Params = $x265Params -replace '::+',':'
         $x265Params = $x265Params.TrimEnd(':')
         Write-Host "  Container: $container | Preset: $selectedPreset" -ForegroundColor White
 
-        $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                  @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
-                  @("-pix_fmt",$x265PixFmt,"-x265-params",$x265Params) +
-                  $videoFilter + $fpsFlag + $colorParams + $rateParams + $audioParams + $loudnormFlag +
-                  (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                  $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+        if ($is2Pass) {
+            # v51: 2-pass x265 — pass=N:stats= injectat in x265-params
+            Initialize-2PassState -File $f.FullName
+            $x265ParamsP1 = "${x265Params}:pass=1:stats=$($script:statsFile):slow-firstpass=0"
+            $x265ParamsP2 = "${x265Params}:pass=2:stats=$($script:statsFile)"
+            $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag +
+                @("-pix_fmt",$x265PixFmt,"-x265-params",$x265ParamsP1) +
+                $videoFilter + $fpsFlag + $colorParams + $rateParams + @("-an","-sn","-f","null","NUL")
+            $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
+                @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag +
+                @("-pix_fmt",$x265PixFmt,"-x265-params",$x265ParamsP2) +
+                $videoFilter + $fpsFlag + $colorParams + $rateParams + $audioParams
+        } else {
+            $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
+                      @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
+                      @("-pix_fmt",$x265PixFmt,"-x265-params",$x265Params) +
+                      $videoFilter + $fpsFlag + $colorParams + $rateParams + $audioParams + $loudnormFlag +
+                      (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+        }
     }
 
     # v38: label dinamic pentru progress bar — bazat pe $rtEncoder (var globala)
@@ -5977,19 +6501,34 @@ foreach ($f in $inputFiles) {
         default     { if ($rtEncoder) { $rtEncoder.ToUpper() } else { "FFmpeg" } }
     }
     $errFile = "$env:TEMP\fferr_$PID.txt"
-    $proc = Start-Process ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru `
-        -RedirectStandardError $errFile
-    Show-Progress -proc $proc -progFile $progFile -durSec $durSec -startTime $startTime -Label $encLabel
-    $proc.WaitForExit()
+    $exitCode = 0
+    if ($script:use2Pass) {
+        # v51: 2-pass branch — encoderul a populat ffmpegCmdPass1/Pass2 + statsFile.
+        # NOTA: $audioParams e DEJA inclus in ffmpegCmdPass2 de encoder branches
+        # (paritate cu bash AUDIO_PARAMS in FFMPEG_CMD_PASS2). Aici adaugam doar
+        # loudnorm + sub + container + output (paritate cu trailing eval bash).
+        $trailing2 = $loudnormFlag +
+            (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+            $containerFlags + @($outFile)
+        $exitCode = Invoke-2PassEncode -File $f.FullName -Label $encLabel -DurationSec $durSec `
+            -TrailingArgs2 $trailing2 -ProgressFile $progFile -LogFile $LogFile
+        Clear-2PassState
+    } else {
+        $proc = Start-Process ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru `
+            -RedirectStandardError $errFile
+        Show-Progress -proc $proc -progFile $progFile -durSec $durSec -startTime $startTime -Label $encLabel
+        $proc.WaitForExit()
+        $exitCode = $proc.ExitCode
+    }
 
     # Cleanup vidstab .trf
     if ($trfFile -and (Test-Path $trfFile)) { Remove-Item $trfFile -Force -ErrorAction SilentlyContinue }
 
-    if ($proc.ExitCode -ne 0) {
+    if ($exitCode -ne 0) {
         Write-Host "  EROARE encode!" -ForegroundColor Red
         # v38: tail stderr inline pentru diagnoza rapida
         if (Test-Path $errFile) {
-            Write-Host "  ⚠ ffmpeg exit $($proc.ExitCode) — ultimele linii stderr:" -ForegroundColor Yellow
+            Write-Host "  ⚠ ffmpeg exit $exitCode — ultimele linii stderr:" -ForegroundColor Yellow
             Get-Content $errFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue
         }

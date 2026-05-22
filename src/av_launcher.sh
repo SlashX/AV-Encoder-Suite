@@ -722,15 +722,33 @@ if [[ "$ENCODER_NAME" == "dnxhr" ]] || [[ "$ENCODER_NAME" == "apv" ]] || [[ "$EN
 else
 
 # ── Mod encodare ──────────────────────────────────────────────────────
+# v51: gate pentru 2-pass — disponibil doar pe SW encoders
+_is_hw_active=0
+[[ "${HW_BACKEND:-sw}" != "sw" ]] && _is_hw_active=1
+
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║  Mod encodare video                  ║"
 echo "║  1) CRF — calitate constanta [impl]  ║"
-echo "║  2) VBR — bitrate mediu tinta        ║"
+echo "║  2) VBR 1-pass — bitrate tinta       ║"
+if [ $_is_hw_active -eq 0 ]; then
+echo "║  3) VBR 2-pass — pass 1 + pass 2     ║"
+echo "║     (calitate mai buna la bitrate=)  ║"
+fi
 echo "╚══════════════════════════════════════╝"
-read -p "Alege 1 sau 2 [implicit: 1]: " encode_mode
+if [ $_is_hw_active -eq 1 ]; then
+    echo "  ⓘ 2-pass dezactivat — HW backend activ ($HW_BACKEND) nu suporta 2-pass."
+    read -p "Alege 1 sau 2 [implicit: 1]: " encode_mode
+else
+    read -p "Alege 1, 2 sau 3 [implicit: 1]: " encode_mode
+fi
 
 ENCODE_MODE="${encode_mode:-1}"
+# Sanity: respinge mode=3 cand HW e activ (defensive — meniul deja l-a ascuns)
+if [[ "$ENCODE_MODE" == "3" ]] && [ $_is_hw_active -eq 1 ]; then
+    echo "  ⚠ 2-pass nu e suportat pe HW backend ($HW_BACKEND) — fallback la VBR 1-pass."
+    ENCODE_MODE=2
+fi
 CRF_PARAM=""; VBR_PARAM=""; VBR_MAXRATE=""; VBR_BUFSIZE=""
 
 if [[ "$ENCODE_MODE" == "1" ]]; then
@@ -751,13 +769,15 @@ if [[ "$ENCODE_MODE" == "1" ]]; then
         fi
     fi
 
-elif [[ "$ENCODE_MODE" == "2" ]]; then
+elif [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
     validate_bitrate() { [[ "$1" =~ ^[0-9]+[kKmM]$ ]]; }
     to_kbps() {
         local br="$1" num="${1//[kKmM]/}"
         [[ "$br" =~ [mM]$ ]] && echo $(( num * 1000 )) || echo "$num"
     }
-    echo ""; echo "VBR — Bitrate tinta (ex: 2000k, 4000k, 4M):"
+    _mode_label="1-pass"
+    [[ "$ENCODE_MODE" == "3" ]] && _mode_label="2-pass"
+    echo ""; echo "VBR $_mode_label — Bitrate tinta (ex: 2000k, 4000k, 4M):"
     read -p "Bitrate tinta: " vbr_input
     if ! validate_bitrate "$vbr_input"; then
         echo "  EROARE: Format invalid '$vbr_input'"; exit 1
@@ -780,7 +800,7 @@ elif [[ "$ENCODE_MODE" == "2" ]]; then
     else
         VBR_MAXRATE="$VBR_MAXRATE_AUTO"; VBR_BUFSIZE="$VBR_BUFSIZE_AUTO"
     fi
-    echo "  VBR final: $VBR_PARAM / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
+    echo "  VBR $_mode_label final: $VBR_PARAM / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
 fi
 
 # ── Preset ────────────────────────────────────────────────────────────
