@@ -146,7 +146,7 @@ Write-Host "╔═════════════════════�
 Write-Host "║     AV CHECK — ANALIZA FISIERE MEDIA     ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 
-$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File
+$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.webm" -File
 $fileCount  = $inputFiles.Count
 $totalSz    = ($inputFiles | Measure-Object -Property Length -Sum).Sum
 Write-Host "INPUT: $InputDir | Fisiere: $fileCount | $(Format-Bytes $totalSz)" -ForegroundColor Yellow

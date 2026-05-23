@@ -45,7 +45,7 @@ echo "────────────────────────�
 if [ -d "$INPUT_DIR" ]; then
     # FIX: shopt -u reseteaza si nullglob, nu doar nocaseglob
     shopt -s nullglob nocaseglob
-    IN_FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
+    IN_FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm})
     shopt -u nocaseglob nullglob
     IN_COUNT=${#IN_FILES[@]}
     if [ "$IN_COUNT" -gt 0 ]; then
@@ -778,20 +778,28 @@ else
 
 # ── Mod encodare ──────────────────────────────────────────────────────
 # v51: gate pentru 2-pass — disponibil doar pe SW encoders
+# v53: NVENC suporta 2-pass intern via -multipass fullres → mode 3 disponibil
 _is_hw_active=0
+_hw_supports_2pass=0
 [[ "${HW_BACKEND:-sw}" != "sw" ]] && _is_hw_active=1
+[[ "${HW_BACKEND:-}" == "nvenc" ]] && _hw_supports_2pass=1
 
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║  Mod encodare video                  ║"
 echo "║  1) CRF — calitate constanta [impl]  ║"
 echo "║  2) VBR 1-pass — bitrate tinta       ║"
-if [ $_is_hw_active -eq 0 ]; then
+if [ $_is_hw_active -eq 0 ] || [ $_hw_supports_2pass -eq 1 ]; then
+    if [ $_hw_supports_2pass -eq 1 ]; then
+echo "║  3) VBR 2-pass — NVENC multipass     ║"
+echo "║     (intern, calitate superioara)    ║"
+    else
 echo "║  3) VBR 2-pass — pass 1 + pass 2     ║"
 echo "║     (calitate mai buna la bitrate=)  ║"
+    fi
 fi
 echo "╚══════════════════════════════════════╝"
-if [ $_is_hw_active -eq 1 ]; then
+if [ $_is_hw_active -eq 1 ] && [ $_hw_supports_2pass -eq 0 ]; then
     echo "  ⓘ 2-pass dezactivat — HW backend activ ($HW_BACKEND) nu suporta 2-pass."
     read -p "Alege 1 sau 2 [implicit: 1]: " encode_mode
 else
@@ -799,8 +807,8 @@ else
 fi
 
 ENCODE_MODE="${encode_mode:-1}"
-# Sanity: respinge mode=3 cand HW e activ (defensive — meniul deja l-a ascuns)
-if [[ "$ENCODE_MODE" == "3" ]] && [ $_is_hw_active -eq 1 ]; then
+# Sanity: respinge mode=3 cand HW activ DAR NU suporta 2-pass
+if [[ "$ENCODE_MODE" == "3" ]] && [ $_is_hw_active -eq 1 ] && [ $_hw_supports_2pass -eq 0 ]; then
     echo "  ⚠ 2-pass nu e suportat pe HW backend ($HW_BACKEND) — fallback la VBR 1-pass."
     ENCODE_MODE=2
 fi
@@ -978,11 +986,13 @@ echo "║  5) FLAC lossless                                ║"
 echo "║  6) FLAC custom (compression level)              ║"
 echo "║  7) E-AC3 (Dolby Digital Plus)                   ║"
 echo "║     Stereo 224k / 5.1 640k / 7.1 1024k          ║"
-echo "║  8) LPCM (PCM necomprimat)                      ║"
+echo "║  8) AC3 (Dolby Digital legacy)                  ║"
+echo "║     TV-uri vechi pre-2010 / max 5.1 / 640k      ║"
+echo "║  9) LPCM (PCM necomprimat)                      ║"
 echo "║     16bit / 24bit / 32bit                        ║"
-echo "║  9) Pastreaza audio original (copy)              ║"
+echo "║ 10) Pastreaza audio original (copy)              ║"
 echo "╚══════════════════════════════════════════════════╝"
-read -p "Alege 1-9 [implicit: 1]: " audio_choice
+read -p "Alege 1-10 [implicit: 1]: " audio_choice
 
 AUDIO_CODEC_ARG=""
 case "${audio_choice:-1}" in
@@ -1018,7 +1028,10 @@ case "${audio_choice:-1}" in
        fi ;;
     7) AUDIO_CODEC_ARG="eac3:224k"
        echo "  Audio: E-AC3 (Dolby Digital Plus) — stereo 224k / 5.1 640k / 7.1 1024k" ;;
-    8) echo "  LPCM bit depth:"
+    8) AUDIO_CODEC_ARG="ac3:224k"
+       echo "  Audio: AC3 (Dolby Digital legacy) — stereo 224k / 5.1 448k (max 640k spec)"
+       echo "  Note: AC3 doesn't suporta >5.1 channels; sursa 7.1 sera downmix-uita la 5.1" ;;
+    9) echo "  LPCM bit depth:"
        echo "  1) 16bit [implicit]   2) 24bit (studio)   3) 32bit"
        read -p "  Alege 1-3 [implicit: 1]: " pcm_depth
        case "${pcm_depth:-1}" in
@@ -1026,7 +1039,7 @@ case "${audio_choice:-1}" in
            3) AUDIO_CODEC_ARG="pcm:32le"; echo "  Audio: LPCM 32bit" ;;
            *) AUDIO_CODEC_ARG="pcm:16le"; echo "  Audio: LPCM 16bit" ;;
        esac ;;
-    9) AUDIO_CODEC_ARG="copy"
+    10) AUDIO_CODEC_ARG="copy"
        echo "  Audio: pastreaza original (copy)" ;;
     *) AUDIO_CODEC_ARG="aac:192k"
        echo "  Audio: AAC 192k / 5.1 384k / 7.1 768k" ;;

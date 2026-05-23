@@ -343,9 +343,15 @@ CUPRINS
           Recomandat default.
   mp4   — Compatibil maxim (web, Smart TV, telefoane). +faststart.
           Incompatibil cu PGS/DVDSUB si track-uri DJI (codec "none").
-  mov   — Apple / Final Cut Pro. Aceleasi limitari ca mp4. + E-AC3 incompat.
+  mov   — Apple / Final Cut Pro. Aceleasi limitari ca mp4. + E-AC3 / AC3
+          incompat.
   mxf   — Avid native. Folosit exclusiv cu DNxHR.
-  webm  — Doar AV1 + Opus (vezi 7.10).
+  webm  — Doar VP8/VP9/AV1 + Opus (vezi 7.10). Disponibil acum si in
+          audio-only encoder (v53) — util cand sursa e deja WebM/VP9/AV1
+          si vrei doar re-encode audio (Opus) fara sa schimbi containerul.
+          Constrangeri verificate per-fisier: video sursa trebuie sa fie
+          vp8/vp9/av1; subtitrarile/attachment-urile sunt strip (WebM
+          accepta doar WebVTT).
 
 
   ─── 7.3. DNxHR — codec mezzanine profesional ───
@@ -538,10 +544,37 @@ CUPRINS
      NOTA: ffmpeg NU encodeaza Atmos JOC. TrueHD→E-AC3 produce surround
      bun, dar pierde obiectele spatiale. Pentru E-AC3+Atmos: Dolby
      Encoding Engine (extern, comercial).
-  8) LPCM (PCM necomprimat) — 16/24/32 bit.
+  8) AC3 (Dolby Digital legacy) [v53] — stereo 224k / 5.1 448k (max 640k spec).
+     Pentru TV-uri pre-2010 / set-top box vechi / console PS3-PS4 fara
+     decoder E-AC3. AC3 nu suporta peste 5.1 canale — sursa 7.1 e
+     auto-downmixed la 5.1 cu warning. Pe TV-uri moderne foloseste
+     E-AC3 (mai eficient).
+  9) LPCM (PCM necomprimat) — 16/24/32 bit.
      Necomprimat, calitate maxima, fisier foarte mare. Doar mkv/mov.
      Ideal pentru mastering, DaVinci Resolve.
-  9) Pastreaza audio original (copy) — fara re-encode.
+ 10) Pastreaza audio original (copy) — fara re-encode.
+
+  ─── 7.9.1. AV_DOWNMIX_STEREO=1 env var (v53) ───
+
+  Forteaza downmix la 2.0 stereo pe TOATE codec-urile re-encode (AAC,
+  Opus, FLAC, E-AC3, AC3, PCM). Cand sursa e 5.1/7.1, output-ul devine
+  stereo cu matricea de downmix default ffmpeg.
+
+  Bitrate target ramane stereo (NU se auto-scaleaza la 5.1/7.1). Ex:
+  default AAC 192k stereo + sursa 5.1 + AV_DOWNMIX_STEREO=1 → output
+  stereo 192k (in loc de 384k pentru 5.1).
+
+  Folosire:
+    bash:        AV_DOWNMIX_STEREO=1 bash av_launcher.sh
+    PowerShell:  $env:AV_DOWNMIX_STEREO = "1"; .\av_encode.ps1
+    Profile:     adauga AV_DOWNMIX_STEREO=1 inainte de comanda
+
+  Use cases:
+    - Output portabil / mobile / casti (mai usor de manevrat la sursa)
+    - Car audio (multe sisteme moderne stereo-only sau cu downmix propriu)
+    - Streaming bandwidth limited
+    - Master 5.1/7.1 → versiune stereo pentru distribuit (pastreaza
+      varianta surround in alta lansare)
 
   LOUDNORM (v23, EBU R128 2-pass):
     Meniu separat dupa Audio output. Target -24 LUFS, True Peak -2.0 dB,
@@ -580,6 +613,7 @@ CUPRINS
     Opus                      → mp4 (4.3+), mkv, webm
     FLAC                      → mkv
     E-AC3                     → mp4, mkv (incompat .mov)
+    AC3                       → mp4, mkv (incompat .mov)
     LPCM                      → mkv, mov, mxf
     Copy                      → orice container compatibil cu sursa
 
@@ -638,6 +672,22 @@ CUPRINS
   Aceste setari fac stream-urile HRD-compliant (decodabile sigur pe TV-uri
   hardware care impun limite VBV stricte, ex Sony Bravia / LG OLED).
 
+  ─── 7.11.1.4. HW VUI fix via BSF (v53 BUG FIX paralel) ───
+
+  Acelasi bug VUI ca SW pre-v52 a fost confirmat pe HW encoders (NVENC,
+  QSV, VAAPI, VideoToolbox, AMF, MediaCodec) prin field test live pe
+  hevc_qsv real (Intel iGPU). Stream-urile HDR10 produse de HW aveau
+  color_primaries + transfer = "unknown" identic cu SW pre-v52.
+
+  Fix v53: bitstream filter post-encode (hevc_metadata pentru HEVC,
+  av1_metadata pentru AV1, h264_metadata pentru H.264) rescrie VUI in
+  SPS/OBU dupa ce HW encoder a produs frame-urile. Verificat live: HW
+  output v53 produce bt2020nc/bt2020/smpte2084 corect ca SW.
+
+  Aplicat pe TOATE 6 HW backends. Fara cost de viteza (BSF post-process
+  ruleaza alaturi de muxer, nu re-encode).
+
+
   ─── 7.11.1.5. VUI color signaling (v52 BUG FIX critic) ───
 
   Pre-v52, toate stream-urile HDR10/HLG produse de proiect aveau VUI
@@ -688,6 +738,31 @@ CUPRINS
   tone-mapping corect pe display-uri cu peak diferit de master. Fara
   static metadata, player-ul ghiceste (1000 nits implicit) — cu metadata
   corecta, highlights nu sunt clipped/crushed.
+
+
+  ─── 7.11.3. NVENC 2-pass quality boost (v53) ───
+
+  NVENC suporta mod multipass intern — adevarat 2-pass intr-un singur
+  encode. v53 expune asta via ENCODE_MODE=3 cand HW_BACKEND=nvenc:
+
+    User flow:
+      1) Selecteaza HW backend = NVENC
+      2) La meniul "Mod encodare", apare optiunea 3 (anterior ascunsa pe HW)
+      3) Alegi mode 3 → encoder activeaza automat:
+           - -multipass fullres (true 2-pass intern)
+           - -bf 4 (B-frames 4 vs default 3, compresie mai buna)
+           - -rc-lookahead 32 (allocare bitrate inteligenta)
+           - -aq-strength 10 (anti-banding scene flat areas)
+           - -weighted_pred 1 (fade-uri/dizolvari) — DOAR HEVC/H.264, AV1 skip
+
+    Cost: encode ~30-50% mai lent decat NVENC 1-pass. Tot mult mai rapid
+    decat SW 2-pass (10-30x faster overall).
+
+    Cand sa folosesti: encode-uri arhivare, master-uri pentru distribuit,
+    cinematic content. NU pentru proxy / preview / live streaming.
+
+    Mode 1 (CRF) si mode 2 (1-pass VBR) raman cu defaults conservatoare
+    pentru maximum speed.
 
 
   ─── 7.12. Preset ───

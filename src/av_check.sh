@@ -22,7 +22,7 @@ echo "────────────────────────�
 
 # FIX: shopt -u reseteaza si nullglob, nu doar nocaseglob
 shopt -s nullglob nocaseglob
-FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
+FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm})
 shopt -u nocaseglob nullglob
 TOTAL=${#FILES[@]}
 
@@ -506,7 +506,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # ── Comparatie Input vs Output (inainte/dupa) ────────────────────────
 if [ -d "$OUTPUT_DIR" ]; then
     shopt -s nullglob nocaseglob
-    OUT_FILES=("$OUTPUT_DIR"/*.{mp4,mov,mkv,mxf})
+    OUT_FILES=("$OUTPUT_DIR"/*.{mp4,mov,mkv,mxf,webm})
     shopt -u nocaseglob nullglob
     if [ ${#OUT_FILES[@]} -gt 0 ]; then
         echo ""

@@ -3347,7 +3347,7 @@ function Show-InteractiveSettingsDialog {
         "2" {
             Write-Host ""
             Write-Host "  Audio curent: $audioCodec $audioBitrate" -ForegroundColor White
-            Write-Host "  Schimbi? (Enter = pastreaza, sau: aac 192k / opus 128k / eac3 224k / flac / pcm / copy)" -ForegroundColor DarkGray
+            Write-Host "  Schimbi? (Enter = pastreaza, sau: aac 192k / opus 128k / eac3 224k / ac3 224k / flac / pcm / copy)" -ForegroundColor DarkGray
             $newAudio = Read-Host "  Audio nou"
             if ($newAudio) {
                 $parts = $newAudio -split '\s+'
@@ -3478,7 +3478,7 @@ Clear-Host
 Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║     FFmpeg SMART ADAPTIVE ENCODER        ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
-$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File
+$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.webm" -File
 $fileCount  = $inputFiles.Count
 $totalSz    = ($inputFiles | Measure-Object -Property Length -Sum).Sum
 Write-Host "INPUT: $InputDir | Fisiere: $fileCount | $(Format-Bytes $totalSz)" -ForegroundColor Yellow
@@ -3548,8 +3548,8 @@ if ($mainChoice -eq "2") {
     $eaContainer = switch ($eaCont) { "1"{"mp4"} "3"{"mov"} "4"{"webm"} default{"mkv"} }
     $eaFlags = if ($eaContainer -in @("mkv","webm")) { @() } else { @("-movflags","+faststart") }
 
-    Write-Host "Audio: 1-AAC 192k/384k/768k [impl] 2-AAC custom 3-Opus 128k/256k/512k 4-Opus custom 5-FLAC 6-FLAC custom 7-E-AC3 8-LPCM" -ForegroundColor Cyan
-    $eaAC = Read-Host "Alege 1-8 [implicit: 1]"
+    Write-Host "Audio: 1-AAC 192k/384k/768k [impl] 2-AAC custom 3-Opus 128k/256k/512k 4-Opus custom 5-FLAC 6-FLAC custom 7-E-AC3 8-AC3 9-LPCM" -ForegroundColor Cyan
+    $eaAC = Read-Host "Alege 1-9 [implicit: 1]"
     $eaCodec = "aac"; $eaBr = "192k"; $eaFlvl = 8; $eaPcmDepth = "16le"
     switch ($eaAC) {
         "2" { $eaBr = Read-Host "  Bitrate AAC"; if ($eaBr -notmatch '^\d+[kK]$') { $eaBr = "192k" } }
@@ -3559,6 +3559,12 @@ if ($mainChoice -eq "2") {
         "6" { $eaCodec = "flac"; $fl = Read-Host "  Compression 0-12"; if ($fl -match '^\d+$' -and [int]$fl -le 12) { $eaFlvl = [int]$fl } }
         "7" { $eaCodec = "eac3"; $eaBr = "224k" }
         "8" {
+            # v53: AC3 (Dolby Digital legacy) — pre-2010 TVs, console PS3/PS4
+            $eaCodec = "ac3"; $eaBr = "224k"
+            Write-Host "  Audio: AC3 (Dolby Digital legacy) — stereo 224k / 5.1 448k (max 640k spec)" -ForegroundColor Green
+            Write-Host "  Note: AC3 nu suporta >5.1 — sursa 7.1 va fi downmix-uita la 5.1" -ForegroundColor DarkGray
+        }
+        "9" {
             $eaCodec = "pcm"
             Write-Host "  LPCM: 1-16bit [impl] 2-24bit 3-32bit" -ForegroundColor Cyan
             $epd = Read-Host "  Alege [impl: 1]"
@@ -3591,6 +3597,16 @@ if ($mainChoice -eq "2") {
             default { $eaContainer = "mkv"; $eaFlags = @() }
         }
     }
+    # v53: AC3 + mov (paralel cu E-AC3 — mov nu suporta AC3 muxat stabil)
+    if ($eaCodec -eq "ac3" -and $eaContainer -eq "mov") {
+        Write-Host "  AC3 incompatibil cu mov. 1-MKV 2-MP4 3-AAC 192k" -ForegroundColor Red
+        $af = Read-Host "  Alege [impl: 1]"
+        switch ($af) {
+            "2" { $eaContainer = "mp4"; $eaFlags = @("-movflags","+faststart") }
+            "3" { $eaCodec = "aac"; $eaBr = "192k" }
+            default { $eaContainer = "mkv"; $eaFlags = @() }
+        }
+    }
     # WebM: doar Opus/Vorbis audio suportat
     if ($eaContainer -eq "webm" -and $eaCodec -ne "opus") {
         Write-Host "  WebM suporta doar Opus audio. 1-Opus 128k [impl] 2-MKV" -ForegroundColor Red
@@ -3613,10 +3629,28 @@ if ($mainChoice -eq "2") {
         }
         if (Test-Path $outFile) { Remove-Item $outFile -Force }
 
+        # v53: WebM — verifica codec video sursa (DOAR vp8/vp9/av1 pot fi stream-copied in webm)
+        if ($eaContainer -eq "webm") {
+            $srcVcodec = Get-FFprobeValue $f.FullName "v:0" "codec_name"
+            if ($srcVcodec -notmatch '^(vp8|vp9|av1)$') {
+                Write-Host "  SKIP: WebM accepta DOAR vp8/vp9/av1 ca video (sursa: $srcVcodec)" -ForegroundColor Yellow
+                $eaSkip++; $eaDone--; continue
+            }
+        }
+
         # Surround detect
         $eaCh = Get-FFprobeValue $f.FullName "a:0" "channels"
         $eaChN = if ($eaCh -match '^\d+$') { [int]$eaCh } else { 2 }
         $abr = $eaBr
+
+        # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix
+        $eaDownmix = @()
+        if ($env:AV_DOWNMIX_STEREO -eq "1" -and $eaChN -gt 2) {
+            Write-Host "  AV_DOWNMIX_STEREO=1 → downmix ${eaChN}ch → 2.0" -ForegroundColor Cyan
+            $eaChN = 2
+            $eaDownmix = @("-ac:a:0","2")
+        }
+
         if ($eaCodec -eq "aac" -and $abr -eq "192k") {
             if ($eaChN -gt 6) { $abr = "768k" }
             elseif ($eaChN -gt 2) { $abr = "384k" }
@@ -3629,13 +3663,24 @@ if ($mainChoice -eq "2") {
             if ($eaChN -gt 6) { $abr = "1024k" }
             elseif ($eaChN -gt 2) { $abr = "640k" }
         }
+        # v53: AC3 — auto-scale bitrate + force downmix la 5.1 daca sursa 7.1
+        $ac3DownmixFlag = @()
+        if ($eaCodec -eq "ac3") {
+            if ($abr -eq "224k" -and $eaChN -gt 2) { $abr = "448k" }
+            if ($eaChN -gt 6 -and $eaDownmix.Count -eq 0) {
+                # 7.1 → force 5.1 (AC3 spec limit) doar daca nu e deja downmix la stereo
+                $ac3DownmixFlag = @("-ac:a:0","6")
+                Write-Host "  AC3: sursa 7.1 → downmix la 5.1 (AC3 nu suporta >5.1)" -ForegroundColor Yellow
+            }
+        }
 
         $eaAP = switch ($eaCodec) {
-            "aac"  { @("-c:a:0","aac","-b:a:0",$abr,"-c:a","copy") }
-            "opus" { @("-c:a:0","libopus","-b:a:0",$abr,"-c:a","copy") }
-            "flac" { @("-c:a:0","flac","-compression_level",$eaFlvl,"-c:a","copy") }
-            "eac3" { @("-c:a:0","eac3","-b:a:0",$abr,"-c:a","copy") }
-            "pcm"  { @("-c:a:0","pcm_s${eaPcmDepth}","-c:a","copy") }
+            "aac"  { @("-c:a:0","aac","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
+            "opus" { @("-c:a:0","libopus","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
+            "flac" { @("-c:a:0","flac","-compression_level",$eaFlvl) + $eaDownmix + @("-c:a","copy") }
+            "eac3" { @("-c:a:0","eac3","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
+            "ac3"  { @("-c:a:0","ac3","-b:a:0",$abr) + $eaDownmix + $ac3DownmixFlag + @("-c:a","copy") }
+            "pcm"  { @("-c:a:0","pcm_s${eaPcmDepth}") + $eaDownmix + @("-c:a","copy") }
         }
         Write-Host "  Audio: $eaCodec $abr | Canale: $eaChN" -ForegroundColor White
 
@@ -3657,8 +3702,10 @@ if ($mainChoice -eq "2") {
             }
         }
 
+        # v53: WebM accepta DOAR WebVTT — strip alte subs/attachments
+        $eaSubArgs = if ($eaContainer -eq "webm") { @("-sn") } else { @("-c:s","copy","-c:t","copy") }
         $eaArgs = @("-i",$f.FullName,"-map","0","-map_metadata","0","-map_chapters","0",
-                     "-c:v","copy") + $eaAP + @("-c:s","copy","-c:t","copy") +
+                     "-c:v","copy") + $eaAP + $eaSubArgs +
                   $eaFlags + @("-nostats",$outFile)
         & ffmpeg @eaArgs 2>>$eaLog
 
@@ -4822,18 +4869,24 @@ if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc) {
 
 Write-Host ""
 $isHwActive = $useHWEnc
-if ($isHwActive) {
+# v53: NVENC suporta 2-pass intern via -multipass fullres
+$hwSupports2Pass = ($useHWEnc -and ($hwEncCodec -match "nvenc"))
+if ($isHwActive -and -not $hwSupports2Pass) {
     Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass" -ForegroundColor Cyan
     Write-Host "  ⓘ 2-pass dezactivat — HW backend activ nu suporta 2-pass." -ForegroundColor DarkGray
     $encMode = Read-Host "Alege [implicit: 1]"
     if ($encMode -notin @("1","2")) { $encMode = "1" }
 } else {
-    Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass  3-VBR 2-pass" -ForegroundColor Cyan
+    if ($hwSupports2Pass) {
+        Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass  3-VBR 2-pass (NVENC multipass)" -ForegroundColor Cyan
+    } else {
+        Write-Host "Mod: 1-CRF [implicit]  2-VBR 1-pass  3-VBR 2-pass" -ForegroundColor Cyan
+    }
     $encMode = Read-Host "Alege [implicit: 1]"
     if ($encMode -notin @("1","2","3")) { $encMode = "1" }
 }
-# Defensive: respinge mode=3 cu HW activ (profile bypass safety)
-if ($encMode -eq "3" -and $isHwActive) {
+# Defensive: respinge mode=3 cu HW activ dar fara support 2-pass
+if ($encMode -eq "3" -and $isHwActive -and -not $hwSupports2Pass) {
     Write-Host "  ⚠ 2-pass nu e suportat pe HW backend — fallback la VBR 1-pass." -ForegroundColor Yellow
     $encMode = "2"
 }
@@ -4976,10 +5029,12 @@ Write-Host "║  5) FLAC lossless                                ║" -Foregroun
 Write-Host "║  6) FLAC custom (compression level)              ║" -ForegroundColor White
 Write-Host "║  7) E-AC3 (Dolby Digital Plus)                   ║" -ForegroundColor White
 Write-Host "║     Stereo 224k / 5.1 640k / 7.1 1024k          ║" -ForegroundColor White
-Write-Host "║  8) LPCM (PCM necomprimat) 16/24/32bit          ║" -ForegroundColor White
-Write-Host "║  9) Pastreaza audio original (copy)              ║" -ForegroundColor White
+Write-Host "║  8) AC3 (Dolby Digital legacy)                  ║" -ForegroundColor White
+Write-Host "║     Stereo 224k / 5.1 448k (max 640k spec)      ║" -ForegroundColor White
+Write-Host "║  9) LPCM (PCM necomprimat) 16/24/32bit          ║" -ForegroundColor White
+Write-Host "║ 10) Pastreaza audio original (copy)              ║" -ForegroundColor White
 Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
-$audioChoice = Read-Host "Alege 1-9 [implicit: 1]"
+$audioChoice = Read-Host "Alege 1-10 [implicit: 1]"
 $audioCodec = "aac"; $audioBitrate = "192k"; $audioFlacLevel = 8; $audioCopy = $false; $pcmDepth = "16le"
 switch ($audioChoice) {
     "1" { Write-Host "  Audio: AAC 192k / 5.1 384k / 7.1 768k" -ForegroundColor Green }
@@ -5004,13 +5059,18 @@ switch ($audioChoice) {
     }
     "7" { $audioCodec = "eac3"; $audioBitrate = "224k"; Write-Host "  Audio: E-AC3 (Dolby Digital Plus) — stereo 224k / 5.1 640k / 7.1 1024k" -ForegroundColor Green }
     "8" {
+        $audioCodec = "ac3"; $audioBitrate = "224k"
+        Write-Host "  Audio: AC3 (Dolby Digital legacy) — stereo 224k / 5.1 448k (max 640k spec)" -ForegroundColor Green
+        Write-Host "  Note: AC3 nu suporta >5.1 — sursa 7.1 va fi downmix-uita la 5.1" -ForegroundColor DarkGray
+    }
+    "9" {
         $audioCodec = "pcm"
         Write-Host "  LPCM bit depth: 1-16bit [impl] 2-24bit 3-32bit" -ForegroundColor Cyan
         $pd = Read-Host "  Alege [impl: 1]"
         switch ($pd) { "2" { $pcmDepth = "24le" } "3" { $pcmDepth = "32le" } default { $pcmDepth = "16le" } }
         Write-Host "  Audio: LPCM pcm_s${pcmDepth}" -ForegroundColor Green
     }
-    "9" { $audioCopy = $true; Write-Host "  Audio: copy (original)" -ForegroundColor Green }
+    "10" { $audioCopy = $true; Write-Host "  Audio: copy (original)" -ForegroundColor Green }
     default { Write-Host "  Audio: AAC 192k / 5.1 384k / 7.1 768k" -ForegroundColor Green }
 }
 
@@ -5034,6 +5094,18 @@ if ($audioCodec -eq "eac3" -and $container -eq "mov") {
     Write-Host "  1-MKV [recomandat]  2-MP4  3-AAC 192k" -ForegroundColor Yellow
     $eac3Fix = Read-Host "  Alege [implicit: 1]"
     switch ($eac3Fix) {
+        "2" { $container = "mp4"; $containerFlags = @("-movflags","+faststart"); Write-Host "  Container schimbat la MP4" -ForegroundColor Yellow }
+        "3" { $audioCodec = "aac"; $audioBitrate = "192k"; Write-Host "  Audio schimbat la AAC 192k" -ForegroundColor Yellow }
+        default { $container = "mkv"; $containerFlags = @(); Write-Host "  Container schimbat la MKV" -ForegroundColor Yellow }
+    }
+}
+
+# AC3 + mov avertisment (v53 — AC3 in mov technically possible dar nestandard)
+if ($audioCodec -eq "ac3" -and $container -eq "mov") {
+    Write-Host "`n  ATENTIE: AC3 in mov este nestandard (compat variabil)." -ForegroundColor Red
+    Write-Host "  1-MKV [recomandat]  2-MP4  3-AAC 192k" -ForegroundColor Yellow
+    $ac3Fix = Read-Host "  Alege [implicit: 1]"
+    switch ($ac3Fix) {
         "2" { $container = "mp4"; $containerFlags = @("-movflags","+faststart"); Write-Host "  Container schimbat la MP4" -ForegroundColor Yellow }
         "3" { $audioCodec = "aac"; $audioBitrate = "192k"; Write-Host "  Audio schimbat la AAC 192k" -ForegroundColor Yellow }
         default { $container = "mkv"; $containerFlags = @(); Write-Host "  Container schimbat la MKV" -ForegroundColor Yellow }
@@ -5219,7 +5291,7 @@ if ($preserveFolderStructure) {
     Write-Host "  Structura foldere: PASTRATA (recursiv)" -ForegroundColor Green
     "Structura foldere: PASTRATA" | Out-File $LogFile -Append -Encoding UTF8
     # Re-scan cu -Recurse
-    $inputFiles = @(Get-ChildItem -Path $InputDir -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv" -File -Recurse)
+    $inputFiles = @(Get-ChildItem -Path $InputDir -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.webm" -File -Recurse)
     $fileCount = $inputFiles.Count
     $subfolderCount = ($inputFiles | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique).Count
     Write-Host "  Gasite: $fileCount fisiere in $subfolderCount foldere" -ForegroundColor Yellow
@@ -5529,6 +5601,15 @@ foreach ($f in $inputFiles) {
     } else {
         $srcChannels = Get-FFprobeValue $f.FullName "a:0" "channels"
         $srcCh = if ($srcChannels -match '^\d+$') { [int]$srcChannels } else { 2 }
+
+        # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix (applied before bitrate scaling)
+        $downmixFlag = @()
+        if ($env:AV_DOWNMIX_STEREO -eq "1" -and $srcCh -gt 2) {
+            Write-Host "  AV_DOWNMIX_STEREO=1 → downmix ${srcCh}ch → 2.0" -ForegroundColor Cyan
+            $srcCh = 2
+            $downmixFlag = @("-ac:a:0","2")
+        }
+
         switch ($audioCodec) {
             "aac" {
                 $abr = $audioBitrate
@@ -5536,7 +5617,7 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "768k" }
                     elseif ($srcCh -gt 2) { $abr = "384k" }
                 }
-                $audioParams = @("-c:a:0","aac","-b:a:0",$abr,"-c:a","copy")
+                $audioParams = @("-c:a:0","aac","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
             }
             "opus" {
                 $abr = $audioBitrate
@@ -5544,10 +5625,10 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "512k" }
                     elseif ($srcCh -gt 2) { $abr = "256k" }
                 }
-                $audioParams = @("-c:a:0","libopus","-b:a:0",$abr,"-c:a","copy")
+                $audioParams = @("-c:a:0","libopus","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
             }
             "flac" {
-                $audioParams = @("-c:a:0","flac","-compression_level",$audioFlacLevel,"-c:a","copy")
+                $audioParams = @("-c:a:0","flac","-compression_level",$audioFlacLevel) + $downmixFlag + @("-c:a","copy")
             }
             "eac3" {
                 $abr = $audioBitrate
@@ -5555,13 +5636,26 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "1024k" }
                     elseif ($srcCh -gt 2) { $abr = "640k" }
                 }
-                $audioParams = @("-c:a:0","eac3","-b:a:0",$abr,"-c:a","copy")
+                $audioParams = @("-c:a:0","eac3","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
+            }
+            "ac3" {
+                # v53: AC3 — auto-scale + force downmix la 5.1 daca sursa 7.1
+                $abr = $audioBitrate
+                $ac3ForceDownmix = @()
+                if ($abr -eq "224k") {
+                    if ($srcCh -gt 2) { $abr = "448k" }
+                }
+                if ($srcCh -gt 6 -and $downmixFlag.Count -eq 0) {
+                    $ac3ForceDownmix = @("-ac:a:0","6")
+                    Write-Host "  AC3: sursa ${srcCh}ch → downmix la 5.1 (AC3 nu suporta >5.1)" -ForegroundColor Yellow
+                }
+                $audioParams = @("-c:a:0","ac3","-b:a:0",$abr) + $downmixFlag + $ac3ForceDownmix + @("-c:a","copy")
             }
             "pcm" {
-                $audioParams = @("-c:a:0","pcm_s${pcmDepth}","-c:a","copy")
+                $audioParams = @("-c:a:0","pcm_s${pcmDepth}") + $downmixFlag + @("-c:a","copy")
             }
             default {
-                $audioParams = @("-c:a:0","aac","-b:a:0","192k","-c:a","copy")
+                $audioParams = @("-c:a:0","aac","-b:a:0","192k") + $downmixFlag + @("-c:a","copy")
             }
         }
 
@@ -5628,6 +5722,7 @@ foreach ($f in $inputFiles) {
                             "opus" { $customAudioParams += @("-c:a:$ai","libopus","-b:a:$ai",$audioBitrate) }
                             "flac" { $customAudioParams += @("-c:a:$ai","flac") }
                             "eac3" { $customAudioParams += @("-c:a:$ai","eac3","-b:a:$ai",$audioBitrate) }
+                            "ac3"  { $customAudioParams += @("-c:a:$ai","ac3","-b:a:$ai",$audioBitrate) }
                             "pcm"  { $customAudioParams += @("-c:a:$ai","pcm_s${pcmDepth}") }
                             default { $customAudioParams += @("-c:a:$ai","aac","-b:a:$ai","192k") }
                         }
@@ -6186,12 +6281,41 @@ foreach ($f in $inputFiles) {
     } elseif ($useHWEnc) {
         # ── HW Encode (NVENC/QSV/AMF) per-file ──────────────────────
         Write-Host "  HW Encode: $hwEncName | Preset: $hwEncPreset | QP: $hwEncQP" -ForegroundColor Green
-        $hwQpFlag = if ($hwEncCodec -match "nvenc") {
+        # v53: mode 3 (2-pass) pe NVENC → multipass fullres + quality boost flags
+        $nvencMultipassFlag = @()
+        $nvencQualityFlag = @()
+        # v53 audit: NVENC default tune hq + spatial/temporal AQ (paritate bash)
+        $nvencTuneFlag = @()
+        if ($hwEncCodec -match "nvenc") {
+            $nvencTuneFlag = @("-tune","hq","-spatial_aq","1","-temporal_aq","1")
+        }
+        if ($encMode -eq "3" -and ($hwEncCodec -match "nvenc")) {
+            $nvencMultipassFlag = @("-multipass","fullres")
+            # Quality boost flags (sigure pe NVENC — well-documented):
+            # bf=4, rc-lookahead=32, aq-strength=10, weighted_pred=1 (NU pe AV1)
+            if ($hwEncCodec -eq "av1_nvenc") {
+                $nvencQualityFlag = @("-bf","4","-rc-lookahead","32","-aq-strength","10")
+            } else {
+                $nvencQualityFlag = @("-bf","4","-rc-lookahead","32","-aq-strength","10","-weighted_pred","1")
+            }
+            Write-Host "  NVENC mode 3 boost: multipass fullres + bf=4 + lookahead=32 + aq-strength=10" -ForegroundColor Cyan
+        }
+        # Rate control: mode 2/3 = VBR cu bitrate target; mode 1 = CRF (QP-based)
+        $hwQpFlag = if ($encMode -in @("2","3") -and $vbrTarget) {
+            if ($hwEncCodec -match "nvenc") {
+                @("-rc","vbr","-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize) + $nvencMultipassFlag
+            } elseif ($hwEncCodec -match "qsv") {
+                @("-b:v",$vbrTarget,"-maxrate",$vbrMaxrate)
+            } else {
+                # AMF VBR peak
+                @("-rc","vbr_peak","-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize)
+            }
+        } elseif ($hwEncCodec -match "nvenc") {
             @("-rc","constqp","-qp",$hwEncQP)
         } elseif ($hwEncCodec -match "qsv") {
             @("-global_quality",$hwEncQP)
         } else {
-            # AMF
+            # AMF CQP
             @("-rc","cqp","-qp_i",$hwEncQP,"-qp_p",$hwEncQP)
         }
         $hwPresetFlag = if ($hwEncCodec -match "nvenc") {
@@ -6206,6 +6330,26 @@ foreach ($f in $inputFiles) {
         $hwSupports10bit = ($hwEncCodec -match "nvenc|qsv" -or $hwEncCodec -eq "av1_amf")
         if ($si.is10bit -and $hwSupports10bit) {
             $hwPixFmt = "p010le"
+        }
+
+        # v53: VUI inject via BSF (paritate cu bash _hw_hdr_setup). Inlocuieste
+        # ffmpeg -color_primaries/-color_trc/-colorspace care nu propaga la HW
+        # encoder VUI (verificat live pe hevc_qsv: stream cu bt2020nc/unknown/
+        # unknown). hevc_metadata foloseste 'colour_*' naming, av1/h264 'color_*'.
+        function Get-HwVuiBsf {
+            param([string]$EncCodec, [string]$Mode)
+            $codecKey = if ($EncCodec -match "^hevc_") { "hevc" }
+                        elseif ($EncCodec -match "^av1_")  { "av1" }
+                        elseif ($EncCodec -match "^h264_") { "h264" }
+                        else { return @() }
+            $bsfName = "${codecKey}_metadata"
+            $primKey = if ($codecKey -eq "hevc") { "colour_primaries" } else { "color_primaries" }
+            switch ($Mode) {
+                "hdr10" { return @("-bsf:v","${bsfName}=${primKey}=9:transfer_characteristics=16:matrix_coefficients=9") }
+                "hlg"   { return @("-bsf:v","${bsfName}=${primKey}=9:transfer_characteristics=18:matrix_coefficients=9") }
+                "sdr"   { return @("-bsf:v","${bsfName}=${primKey}=1:transfer_characteristics=1:matrix_coefficients=1") }
+                default { return @() }
+            }
         }
 
         # v46: DV source detection + DV preserve via HW (HEVC/AV1 target only)
@@ -6271,17 +6415,18 @@ foreach ($f in $inputFiles) {
                     Write-Host "  v46 HW DV preserve: Extract RPU esuat — fallback HDR10" -ForegroundColor Yellow
                     Remove-Item $srcRpu -Force -ErrorAction SilentlyContinue
                 }
-                $hwColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+                # v53: VUI via BSF (paritate bash _hw_hdr_setup)
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
                 if ($hwSupports10bit) { $hwPixFmt = "p010le" }
             }
             elseif ($hwDvc -eq "1") {
                 # Strip DV → HDR10
-                $hwColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
                 if ($hwSupports10bit) { $hwPixFmt = "p010le" }
             }
             else {
                 # SDR tonemap
-                $hwColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "sdr"
                 $hwPixFmt = "yuv420p"
                 $tmHwVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p"
                 if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$tmHwVf,$($videoFilter[1])") }
@@ -6305,18 +6450,19 @@ foreach ($f in $inputFiles) {
                 }
                 "skip" { $totalSkipped++; continue }
                 "hlg_native" {
-                    $hwColorFlags = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
+                    # v53: VUI via BSF
+                    $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hlg"
                     if ($hwSupports10bit) { $hwPixFmt = "p010le" }
                 }
                 "hlg_to_hdr10" {
-                    $hwColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+                    $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
                     if ($hwSupports10bit) { $hwPixFmt = "p010le" }
                     $hlgVf = "zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=p010le"
                     if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$hlgVf,$($videoFilter[1])") }
                     else { $videoFilter = @("-vf",$hlgVf) }
                 }
                 "hlg_to_sdr" {
-                    $hwColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
+                    $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "sdr"
                     $hwPixFmt = "yuv420p"
                     $hlgSdrVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p"
                     if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$hlgSdrVf,$($videoFilter[1])") }
@@ -6325,8 +6471,10 @@ foreach ($f in $inputFiles) {
             }
         }
 
+        # v53: $hwColorFlags conține acum BSF (Get-HwVuiBsf), nu mai e -color_primaries
+        # care nu propaga la encoder. $nvencQualityFlag e empty cand nu mode 3 nvenc.
         $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                  @("-c:v",$hwEncCodec) + $hwQpFlag + $hwPresetFlag +
+                  @("-c:v",$hwEncCodec) + $hwQpFlag + $hwPresetFlag + $nvencTuneFlag + $nvencQualityFlag +
                   @("-pix_fmt",$hwPixFmt) +
                   $videoFilter + $fpsFlag + $hwColorFlags + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +

@@ -960,25 +960,49 @@ get_audio_params() {
             -show_entries stream=channels -of csv=p=0 "$file" 2>/dev/null)
         [[ "$ch_raw" =~ ^[0-9]+$ ]] && channels=$ch_raw
     fi
+    # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix (5.1/7.1 → 2.0) cu matricea
+    # default ffmpeg. Util pentru output portable / mobile / car audio.
+    # Override channel count INAINTE de auto-scale bitrate (stereo bitrate normal).
+    local downmix_flag=""
+    if [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$channels" -gt 2 ]; then
+        log "  AV_DOWNMIX_STEREO=1 → downmix ${channels}ch → 2.0"
+        channels=2
+        downmix_flag="-ac:a:0 2"
+    fi
     [[ -n "$file" ]] && _warn_audio_metadata "$file"
     case "$codec" in
         aac)
             if [[ "$br" == "192k" ]]; then
                 [ "$channels" -gt 6 ] && br="768k" || { [ "$channels" -gt 2 ] && br="384k"; }
-            fi; echo "-c:a:0 aac -b:a:0 $br -c:a copy" ;;
+            fi; echo "-c:a:0 aac -b:a:0 $br $downmix_flag -c:a copy" ;;
         opus)
             if [[ "$br" == "128k" ]]; then
                 [ "$channels" -gt 6 ] && br="512k" || { [ "$channels" -gt 2 ] && br="256k"; }
-            fi; echo "-c:a:0 libopus -b:a:0 $br -c:a copy" ;;
-        flac) echo "-c:a:0 flac -compression_level $br -c:a copy" ;;
+            fi; echo "-c:a:0 libopus -b:a:0 $br $downmix_flag -c:a copy" ;;
+        flac) echo "-c:a:0 flac -compression_level $br $downmix_flag -c:a copy" ;;
         eac3)
             if [[ "$br" == "224k" ]]; then
                 [ "$channels" -gt 6 ] && br="1024k" || { [ "$channels" -gt 2 ] && br="640k"; }
-            fi; echo "-c:a:0 eac3 -b:a:0 $br -c:a copy" ;;
+            fi; echo "-c:a:0 eac3 -b:a:0 $br $downmix_flag -c:a copy" ;;
+        ac3)
+            # v53: legacy AC3 (Dolby Digital) — TV-uri pre-2010 fara E-AC3.
+            # AC3 max 5.1 ch / 640k bitrate spec (7.1 nesuportat — fallback 5.1)
+            if [[ "$br" == "224k" ]]; then
+                [ "$channels" -gt 2 ] && br="448k"
+            fi
+            # AC3 spec limit: 640k absolut, 5.1 max
+            local ac3_ch="$channels"
+            [ "$ac3_ch" -gt 6 ] && { ac3_ch=6; log "  ATENTIE: AC3 nu suporta >5.1 — downmix la 5.1"; }
+            if [ "$ac3_ch" -lt "$channels" ]; then
+                echo "-c:a:0 ac3 -b:a:0 $br -ac:a:0 $ac3_ch -c:a copy"
+            else
+                echo "-c:a:0 ac3 -b:a:0 $br -c:a copy"
+            fi
+            ;;
         pcm)
             local pcm_fmt="pcm_s${br}"
-            echo "-c:a:0 $pcm_fmt -c:a copy" ;;
-        *) echo "-c:a:0 aac -b:a:0 192k -c:a copy" ;;
+            echo "-c:a:0 $pcm_fmt $downmix_flag -c:a copy" ;;
+        *) echo "-c:a:0 aac -b:a:0 192k $downmix_flag -c:a copy" ;;
     esac
 }
 
@@ -1950,7 +1974,7 @@ show_hdr_mediacodec_dialog() {
             echo "  ║  1) SW libx265 — pastreaza DV complet (recomandat)"
             echo "  ║  2) SW libx265 — strip DV, pastreaza HDR10 BL"
             if [ $_can_hw_preserve -eq 1 ]; then
-                echo "  ║  3) MediaCodec — DV preserve (HDR10 base + inject RPU) [v46]"
+                echo "  ║  3) MediaCodec — DV preserve (HDR10 base + inject RPU)"
                 echo "  ║     extrage RPU sursa ($src_codec) -> MC encode -> repair SEI -> inject"
                 echo "  ║  4) MediaCodec — strip DV → HDR10 10-bit + repair"
                 echo "  ║  5) MediaCodec — strip DV → SDR tonemap 8-bit (proxy)"
@@ -3812,6 +3836,14 @@ build_mediacodec_cmd() {
 
     local pix_fmt color_flags="" mc_extra_vf="" profile_flag=""
 
+    # v53: VUI inject via BSF (acelasi pattern ca celelalte HW backends).
+    # Naming sub-options difera: HEVC foloseste 'colour_*', H.264/AV1 foloseste 'color_*'.
+    local bsf_name="" vui_bsf=""
+    case "$enc_codec" in
+        hevc) bsf_name="hevc_metadata" ;;
+        h264) bsf_name="h264_metadata" ;;
+        av1)  bsf_name="av1_metadata" ;;
+    esac
     case "${MC_HDR_MODE:-}" in
         hw_repair)
             # 10-bit HDR10: BT.2020 + PQ + main10 (doar HEVC suporta main10)
@@ -3822,7 +3854,11 @@ build_mediacodec_cmd() {
                 pix_fmt="yuv420p"
                 log "  ATENTIE: SoC nu suporta 10-bit (sau codec != HEVC), fallback la 8-bit"
             fi
-            color_flags="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+            if [[ "$enc_codec" == "hevc" ]]; then
+                vui_bsf="-bsf:v ${bsf_name}=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9"
+            else
+                vui_bsf="-bsf:v ${bsf_name}=color_primaries=9:transfer_characteristics=16:matrix_coefficients=9"
+            fi
             MC_NEEDS_REPAIR=1
             ;;
         hw_hlg)
@@ -3836,12 +3872,20 @@ build_mediacodec_cmd() {
                 pix_fmt="yuv420p"
                 log "  ATENTIE: SoC nu suporta 10-bit pentru HLG, fallback la 8-bit"
             fi
-            color_flags="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+            if [[ "$enc_codec" == "hevc" ]]; then
+                vui_bsf="-bsf:v ${bsf_name}=colour_primaries=9:transfer_characteristics=18:matrix_coefficients=9"
+            else
+                vui_bsf="-bsf:v ${bsf_name}=color_primaries=9:transfer_characteristics=18:matrix_coefficients=9"
+            fi
             ;;
         hw_sdr)
             # Tonemap HDR→SDR 8-bit
             pix_fmt="yuv420p"
-            color_flags="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+            if [[ "$enc_codec" == "hevc" ]]; then
+                vui_bsf="-bsf:v ${bsf_name}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+            else
+                vui_bsf="-bsf:v ${bsf_name}=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+            fi
             mc_extra_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
             ;;
         *)
@@ -3861,9 +3905,10 @@ build_mediacodec_cmd() {
     log "  MediaCodec: $enc_name | bitrate ${bitrate}k / max ${maxrate}k | pix_fmt $pix_fmt"
     [[ -n "${MC_HDR_MODE:-}" ]] && log "  Mod HDR    : $MC_HDR_MODE"
 
+    # v53: $vui_bsf inlocuieste $color_flags broken (vezi nota _hw_hdr_setup)
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v $enc_name $rate_flags \
-        $profile_flag -pix_fmt $pix_fmt $color_flags $VIDEO_FILTER $AUDIO_PARAMS"
+        $profile_flag -pix_fmt $pix_fmt $VIDEO_FILTER $vui_bsf $AUDIO_PARAMS"
 
     return 0
 }
@@ -3876,27 +3921,60 @@ build_mediacodec_cmd() {
 # HW_HDR_MODE valori: ""/sdr | hw_hdr10 | hw_hlg | hw_sdr (tonemap)
 # ══════════════════════════════════════════════════════════════════════
 
-# Helper comun: returneaza color_flags + pix_fmt + profile pe baza HW_HDR_MODE
-# Args: $1 = enc_codec ; output via globals _HW_PIX_FMT / _HW_COLOR_FLAGS / _HW_PROFILE
+# Helper comun: returneaza pix_fmt + profile + BSF (VUI inject) pe baza HW_HDR_MODE
+# Args: $1 = enc_codec (hevc/h264/av1)
+# Output globals: _HW_PIX_FMT / _HW_PROFILE / _HW_VUI_BSF
+#
+# v53 fix: ffmpeg -color_primaries/-color_trc/-colorspace flags NU propaga corect
+# la HW encoders (verificat live pe hevc_qsv: stream produs cu bt2020nc/unknown/
+# unknown chiar cu flags setate, paralel cu bug-ul SW v52 din x265). Soluție:
+# bitstream filter post-encode (hevc_metadata/av1_metadata/h264_metadata) care
+# rescrie VUI in SPS/OBU. Verificat live: bt2020nc/bt2020/smpte2084 corect.
+# Valori AV1/HEVC/H.264 (toate folosesc același tabel ITU-T H.273):
+#   BT.2020 primaries=9 / BT.709 primaries=1
+#   PQ transfer=16 / HLG transfer=18 / BT.709 transfer=1
+#   BT.2020nc matrix=9 / BT.709 matrix=1
 _hw_hdr_setup() {
     local enc_codec="$1"
     _HW_PIX_FMT="yuv420p"
-    _HW_COLOR_FLAGS=""
+    _HW_VUI_BSF=""
     _HW_PROFILE=""
+
+    # BSF name per codec
+    local bsf_name=""
+    case "$enc_codec" in
+        hevc) bsf_name="hevc_metadata" ;;
+        h264) bsf_name="h264_metadata" ;;
+        av1)  bsf_name="av1_metadata" ;;
+    esac
+
     case "${HW_HDR_MODE:-}" in
         hw_hdr10|hw_repair)
             _HW_PIX_FMT="p010le"
             [[ "$enc_codec" == "hevc" ]] && _HW_PROFILE="-profile:v main10"
-            _HW_COLOR_FLAGS="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+            # BSF cere variantele de naming diferite (HEVC: colour_*, H.264/AV1: color_*)
+            if [[ "$enc_codec" == "hevc" ]]; then
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9"
+            else
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=color_primaries=9:transfer_characteristics=16:matrix_coefficients=9"
+            fi
             ;;
         hw_hlg)
             _HW_PIX_FMT="p010le"
             [[ "$enc_codec" == "hevc" ]] && _HW_PROFILE="-profile:v main10"
-            _HW_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+            if [[ "$enc_codec" == "hevc" ]]; then
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=colour_primaries=9:transfer_characteristics=18:matrix_coefficients=9"
+            else
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=color_primaries=9:transfer_characteristics=18:matrix_coefficients=9"
+            fi
             ;;
         hw_sdr)
             _HW_PIX_FMT="yuv420p"
-            _HW_COLOR_FLAGS="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+            if [[ "$enc_codec" == "hevc" ]]; then
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+            else
+                _HW_VUI_BSF="-bsf:v ${bsf_name}=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1"
+            fi
             local sdr_vf="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
             if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == "-vf "* ]]; then
                 VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${sdr_vf},}"
@@ -3905,6 +3983,10 @@ _hw_hdr_setup() {
             fi
             ;;
     esac
+
+    # Back-compat: _HW_COLOR_FLAGS pastrat ca empty pentru ramurile care il citesc
+    # in alte parti (ex: profile dialogs). v53: nu mai contine flags care strica VUI.
+    _HW_COLOR_FLAGS=""
 }
 
 # ── NVENC (NVIDIA) ────────────────────────────────────────────────────
@@ -3914,9 +3996,28 @@ build_nvenc_cmd() {
     local slot="${HW_PRESET_SLOT:-4}"
     local preset="p${slot}"
 
-    local rate_flags
+    local rate_flags multipass_flag="" quality_flags=""
     if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
         rate_flags="-rc vbr -b:v ${VBR_TARGET} -maxrate ${VBR_MAXRATE:-${VBR_TARGET}} -bufsize ${VBR_TARGET}"
+        # v53: NVENC suporta multipass intern (single command, internal 2-pass).
+        # ENCODE_MODE=3 (2-pass VBR) activeaza -multipass fullres pentru calitate
+        # superioara la acelasi bitrate. Cost: encode ~30-50% mai lent (tot mult
+        # mai rapid decat SW 2-pass).
+        if [[ "${ENCODE_MODE:-1}" == "3" ]]; then
+            multipass_flag="-multipass fullres"
+            # v53 quality boost (mode 3 explicit cere calitate):
+            #   -bf 4               : B-frames 4 (default 3 hevc, +B = compresie mai buna)
+            #   -rc-lookahead 32    : lookahead 32 cadre (mai buna alocare bitrate)
+            #   -aq-strength 10     : AQ aggressive (anti-banding flat areas)
+            #   -weighted_pred 1    : prediction ponderat pe fade-uri/dizolvari
+            # Pe codec av1: -weighted_pred nu se aplica, restul OK
+            if [[ "$enc_codec" == "av1" ]]; then
+                quality_flags="-bf 4 -rc-lookahead 32 -aq-strength 10"
+            else
+                quality_flags="-bf 4 -rc-lookahead 32 -aq-strength 10 -weighted_pred 1"
+            fi
+            log "  NVENC mode 3 boost: multipass fullres + bf=4 + lookahead=32 + aq-strength=10"
+        fi
     else
         local crf="${CUSTOM_CRF:-$(get_adaptive_crf "$enc_codec" "$WIDTH")}"
         rate_flags="-rc vbr -cq $crf -b:v 0"
@@ -3926,10 +4027,14 @@ build_nvenc_cmd() {
 
     log "  NVENC: $enc_name | preset $preset | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
+    # v53: $_HW_VUI_BSF post-encode injecteaza VUI corect (BT.2020+PQ/HLG sau BT.709)
+    # via hevc_metadata/av1_metadata/h264_metadata BSF. Inlocuieste vechile
+    # ffmpeg -color_primaries/-color_trc/-colorspace flags care nu propagau la
+    # encoder VUI corect → stream cu bt2020nc/unknown/unknown.
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-        -c:v $enc_name -preset $preset -tune hq $rate_flags \
+        -c:v $enc_name -preset $preset -tune hq $rate_flags $multipass_flag $quality_flags \
         -spatial_aq 1 -temporal_aq 1 \
-        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
 
@@ -3955,9 +4060,10 @@ build_qsv_cmd() {
 
     log "  QSV: $enc_name | preset $preset | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
+    # v53: $_HW_VUI_BSF — vezi nota la NVENC
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v $enc_name -preset $preset $rate_flags \
-        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
 
@@ -3990,9 +4096,10 @@ build_vaapi_cmd() {
 
     log "  VAAPI: $enc_name | quality $slot | device $VAAPI_DEVICE${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
+    # v53: $_HW_VUI_BSF — vezi nota la NVENC
     FFMPEG_CMD="ffmpeg -threads $THREADS -vaapi_device $VAAPI_DEVICE -i \"\$file\" $MAP_FLAGS \
         -c:v $enc_name -quality $slot $rate_flags \
-        $_HW_PROFILE $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+        $_HW_PROFILE $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
 
@@ -4019,9 +4126,13 @@ build_videotoolbox_cmd() {
 
     log "  VideoToolbox: $enc_name | q $q (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
+    # v53: $_HW_VUI_BSF — vezi nota la NVENC. NOTA: VideoToolbox + ProRes nu
+    # produc HDR10 cu mastering-display via BSF — pentru full HDR10 quality pe
+    # macOS Apple Silicon, foloseste SW (x265) sau VideoToolbox cu post-process
+    # mkvmerge/mkvpropedit (out of scope v53).
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v $enc_name $rate_flags -allow_sw 0 \
-        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
 
@@ -4066,9 +4177,10 @@ build_amf_cmd() {
 
     log "  AMF: $enc_name | quality $quality (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}${AMF_GPU_ARCH:+ | arch=$AMF_GPU_ARCH}"
 
+    # v53: $_HW_VUI_BSF — vezi nota la NVENC
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v $enc_name $usage_flags -quality $quality $rate_flags $codec_flags \
-        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $_HW_COLOR_FLAGS $VIDEO_FILTER $AUDIO_PARAMS"
+        $_HW_PROFILE -pix_fmt $_HW_PIX_FMT $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
 
@@ -4128,7 +4240,7 @@ show_hdr_hw_dialog() {
             echo "  |  1) SW - pastreaza DV complet (recomandat baseline)"
             echo "  |  2) SW - strip DV, pastreaza HDR10 BL"
             if [ $_can_hw_preserve -eq 1 ]; then
-                echo "  |  3) $bl - DV preserve (HDR10 base + inject RPU) [v46]"
+                echo "  |  3) $bl - DV preserve (HDR10 base + inject RPU)"
                 echo "  |     extrage RPU sursa ($src_codec) -> HW encode -> inject"
                 echo "  |  4) $bl - strip DV -> HDR10 10-bit"
                 echo "  |  5) $bl - strip DV -> SDR tonemap 8-bit"
@@ -4432,7 +4544,7 @@ _interactive_settings_dialog() {
             echo ""
             # ── Audio ──────────────────────────────────────────────
             echo "  Audio curent: $AUDIO_CODEC_ARG"
-            echo "  Schimbi? (Enter = pastreaza, sau introdu nou: aac:192k / opus:128k / eac3:224k / flac:8 / pcm:16le / copy)"
+            echo "  Schimbi? (Enter = pastreaza, sau introdu nou: aac:192k / opus:128k / eac3:224k / ac3:224k / flac:8 / pcm:16le / copy)"
             read -p "  Audio nou: " new_audio
             [[ -n "$new_audio" ]] && { AUDIO_CODEC_ARG="$new_audio"; echo "  → Audio: $AUDIO_CODEC_ARG"; }
 
@@ -4614,11 +4726,11 @@ run_encode_loop() {
         mapfile -t FILES < <(find "$INPUT_DIR" -type f \( \
             -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o \
             -iname "*.m2ts" -o -iname "*.mts" -o -iname "*.vob" -o \
-            -iname "*.mxf" -o -iname "*.apv" \) 2>/dev/null | sort)
+            -iname "*.mxf" -o -iname "*.apv" -o -iname "*.webm" \) 2>/dev/null | sort)
     else
         log "Structura foldere: FLAT (toate in output/)"
         shopt -s nullglob nocaseglob
-        FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
+        FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm})
         shopt -u nocaseglob nullglob
     fi
     TOTAL=${#FILES[@]}
@@ -4697,6 +4809,7 @@ run_encode_loop() {
         HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
         HW_HDR_MODE=""
+        HLG_DIALOG_MODE=""
         cleanup_2pass_state
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"

@@ -3,9 +3,126 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v52 | 56 bug-uri fixate | 200+ features
-  70 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 31 tests) | ~22800 linii cod | ~4700 linii documentatie
+  TOTAL: v53 | 58 bug-uri fixate | 200+ features
+  71 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 32 tests) | ~23000 linii cod | ~4800 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v53 — HW HDR10 fix + NVENC multipass + audio AC3 + downmix
+═══════════════════════════════════════════════════════════════
+
+  FIX BUG CRITIC HDR10/HLG pe encodere hardware — toate encoderele
+        hardware (NVIDIA NVENC, Intel QSV, AMD AMF, Apple VideoToolbox,
+        Linux VAAPI, Android MediaCodec) produceau stream-uri HDR10 cu
+        semnalizarea de culoare incompleta. Acelasi bug ca pe encoderele
+        software pre-v52, dar pe HW. TV-urile HDR nu intrau automat in
+        mod HDR si nu faceau tone-mapping corect din output-ul HW.
+
+        Solutie: scriem semnalizarea direct in stream dupa encode,
+        garantand BT.2020 + PQ pentru HDR10, BT.2020 + HLG pentru HLG,
+        BT.709 pentru SDR. Aplicat pe toate cele 6 encodere hardware.
+
+        Verificat real pe Intel QSV: stream-ul rezultat are acum
+        semnalizare completa. Daca ai fisiere HDR10 produse cu encoder
+        hardware in versiuni anterioare → re-encodeaza-le pentru
+        compatibilitate completa cu TV-urile noi.
+
+  ADD NVENC 2-pass real (single command) — placile NVIDIA suporta un
+        mod de encodare care face 2-pass intern intr-un singur run,
+        producand calitate vizibil mai buna la acelasi bitrate fata de
+        1-pass. Disponibil acum cand alegi modul VBR 2-pass (optiunea
+        3) si encoder-ul NVENC. Anterior optiunea 3 era ascunsa pentru
+        toate encoderele HW; acum apare doar pentru NVENC (singurul cu
+        suport stabil documentat).
+
+        Cost: encode ~30-50% mai lent decat NVENC 1-pass, dar tot mult
+        mai rapid decat 2-pass software.
+
+  ADD Boost calitate automat pe NVENC mod 3 — cand alegi VBR 2-pass
+        pe NVENC, activam automat setari suplimentare pentru calitate
+        maxima:
+          - Mai multe B-frames (compresie mai buna la acelasi bitrate)
+          - Predictie mai lunga (encoder vede inainte si aloca bitrate
+            inteligent — mai mult pentru scene cu miscare)
+          - Reducere banding pe suprafete plate (cer, perete uniform)
+          - Prediction ponderat pe fade-uri / dizolvari (HEVC, H.264)
+        Modul 1 (CRF) si modul 2 (1-pass) raman pe setari conservatoare
+        pentru viteza. Boost-ul se activeaza DOAR cand alegi explicit
+        modul 3.
+
+  ─── Audio ───────────────────────────────────────────────────
+
+  ADD AC3 audio codec (Dolby Digital classic) — pentru TV-uri vechi
+        (pre-2010) sau receivere care nu decodeaza E-AC3. Optiune noua
+        8) in meniul audio. Bitrate ajustat automat in functie de
+        canale: stereo 224 kbps, 5.1 la 448 kbps (max permis de spec
+        este 640 kbps). Daca sursa e 7.1, downmix automat la 5.1
+        (AC3 nu suporta mai mult de 5.1 canale).
+
+  ADD Variabila de mediu AV_DOWNMIX_STEREO=1 — daca o setezi inainte
+        de a porni encoder-ul, forteaza output-ul audio la stereo 2.0
+        indiferent ce era sursa (5.1, 7.1). Functioneaza pe orice
+        codec audio (AAC, Opus, FLAC, E-AC3, AC3, PCM). Bitrate-ul
+        ramane cel ales — fara bump automat pentru canale (cum se
+        intampla normal cand sursa e 5.1/7.1).
+
+        Cand e util:
+          - Output pentru telefon / casti / boxa portabila
+          - Sistem audio din masina (mono / stereo)
+          - Streaming pe bandwidth limitat
+          - Vrei o versiune stereo a unui master 5.1/7.1
+
+        Utilizare:
+          - bash: `AV_DOWNMIX_STEREO=1 bash av_launcher.sh`
+          - PowerShell: `$env:AV_DOWNMIX_STEREO = "1"; .\av_encode.ps1`
+
+  ADD WebM disponibil acum si in encoder-ul audio-only (optiunea 4
+        in meniul container). Anterior puteai alege doar mp4 / mkv /
+        mov. Util cand sursa e deja un WebM (YouTube, web) cu video
+        VP9 sau AV1 si vrei doar sa re-encodezi audio-ul, pastrand
+        containerul.
+
+        WebM are restrictii stricte (spec Google):
+          - Video: doar VP8, VP9 sau AV1
+          - Audio: doar Opus
+          - Subtitrari: doar WebVTT
+
+        Encoder-ul aplica automat:
+          - Daca alegi WebM dar nu Opus → te intreaba sa schimbi la
+            Opus sau sa pici la MKV
+          - Per-fisier: daca sursa nu are video VP8/VP9/AV1, fisierul
+            e sarit cu mesaj clar (HEVC/H.264 nu pot fi puse intr-un
+            WebM fara re-encode)
+          - Subtitrarile si fonturile incluse sunt scoase automat
+            (WebM nu le suporta)
+
+  ─── Limitari documentate ────────────────────────────────────
+
+  NOTE Level / Tier automat pe encoderele hardware — amanat pentru v54.
+        Unele GPU-uri Intel mai vechi resping anumite combinatii de
+        Level + Tier la rulare. Necesita testare pe hardware NVIDIA si
+        AMD real pentru a evita probleme intamplatoare.
+
+  NOTE Metadata HDR10 mastering display + max-cll pe HW — amanat
+        pentru v54. ffmpeg actual nu permite scrierea acestor campuri
+        prin metoda folosita pentru semnalizarea de baza. Fiecare
+        encoder hardware are propria metoda (specifica brandului) si
+        cere validare pe hardware real inainte de implementare.
+
+  NOTE HDR10+ dinamic pe NVENC — amanat pentru v54. Caz de utilizare
+        nisa (doar TV-uri Samsung + sursa HDR10+); cere cercetare in
+        plus inainte de implementare.
+
+  ─── Tests ───────────────────────────────────────────────────
+
+  ADD Tests v53 dedicate — verifica HW HDR10 signaling pe toate cele
+        6 encodere hardware, activarea NVENC 2-pass + boost calitate
+        doar pe modul 3, AC3 stereo / 5.1 / downmix din 7.1, variabila
+        de mediu AV_DOWNMIX_STEREO, WebM in encoder-ul audio.
+
+  ADD Total tests: 40/40 trec end-to-end cu binare reale (anterior
+        38/38). Bash 24 / PowerShell 16. Zero fail, zero skip.
 
 
 ═══════════════════════════════════════════════════════════════

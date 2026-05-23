@@ -21,11 +21,13 @@ echo "║  Format container output             ║"
 echo "║  1) mp4 — compatibil maxim           ║"
 echo "║  2) mkv — flexibil [implicit]        ║"
 echo "║  3) mov — Apple / Final Cut          ║"
+echo "║  4) webm — VP8/VP9/AV1 + Opus        ║"
 echo "╚══════════════════════════════════════╝"
-read -p "Alege 1-3 [implicit: 2]: " container_choice
+read -p "Alege 1-4 [implicit: 2]: " container_choice
 case "${container_choice:-2}" in
     1) CONTAINER="mp4" ;;
     3) CONTAINER="mov" ;;
+    4) CONTAINER="webm" ;;
     *) CONTAINER="mkv" ;;
 esac
 echo "  Container: $CONTAINER"
@@ -42,10 +44,12 @@ echo "║  5) FLAC lossless                                ║"
 echo "║  6) FLAC custom (compression level)              ║"
 echo "║  7) E-AC3 (Dolby Digital Plus)                   ║"
 echo "║     Stereo 224k / 5.1 640k / 7.1 1024k          ║"
-echo "║  8) LPCM (PCM necomprimat)                      ║"
+echo "║  8) AC3 (Dolby Digital legacy)                  ║"
+echo "║     TV-uri vechi pre-2010 / max 5.1 / 640k      ║"
+echo "║  9) LPCM (PCM necomprimat)                      ║"
 echo "║     16bit / 24bit / 32bit                        ║"
 echo "╚══════════════════════════════════════════════════╝"
-read -p "Alege 1-8 [implicit: 1]: " audio_choice
+read -p "Alege 1-9 [implicit: 1]: " audio_choice
 
 AUDIO_CODEC="aac"
 AUDIO_BITRATE="192k"
@@ -78,7 +82,10 @@ case "${audio_choice:-1}" in
        fi ;;
     7) AUDIO_CODEC="eac3"; AUDIO_BITRATE="224k"
        echo "  Audio: E-AC3 (Dolby Digital Plus) — stereo 224k / 5.1 640k / 7.1 1024k" ;;
-    8) AUDIO_CODEC="pcm"
+    8) AUDIO_CODEC="ac3"; AUDIO_BITRATE="224k"
+       echo "  Audio: AC3 (Dolby Digital legacy) — stereo 224k / 5.1 448k (max 640k spec)"
+       echo "  Note: AC3 nu suporta >5.1 — sursa 7.1 se downmix-eaza la 5.1 automat" ;;
+    9) AUDIO_CODEC="pcm"
        echo "  LPCM bit depth:"
        echo "  1) 16bit [implicit]   2) 24bit (studio)   3) 32bit"
        read -p "  Alege 1-3 [implicit: 1]: " pcm_depth
@@ -120,6 +127,21 @@ if [[ "$AUDIO_CODEC" == "eac3" ]] && [[ "$CONTAINER" == "mov" ]]; then
     esac
 fi
 
+# v53: AC3 + mov warning (paralel cu EAC3 — mov nu suporta AC3 muxat stabil)
+if [[ "$AUDIO_CODEC" == "ac3" ]] && [[ "$CONTAINER" == "mov" ]]; then
+    echo ""
+    echo "  ATENTIE: AC3 nu este compatibil cu mov."
+    echo "  1) Schimba container la MKV [recomandat]"
+    echo "  2) Schimba container la MP4"
+    echo "  3) Schimba audio la AAC 192k"
+    read -p "  Alege 1, 2 sau 3 [implicit: 1]: " ac3_fix
+    case "${ac3_fix:-1}" in
+        2) CONTAINER="mp4"; echo "  Container schimbat la MP4" ;;
+        3) AUDIO_CODEC="aac"; AUDIO_BITRATE="192k"; echo "  Audio schimbat la AAC 192k" ;;
+        *) CONTAINER="mkv"; echo "  Container schimbat la MKV" ;;
+    esac
+fi
+
 # LPCM + mp4 warning
 if [[ "$AUDIO_CODEC" == "pcm" ]] && [[ "$CONTAINER" == "mp4" ]]; then
     echo ""
@@ -135,9 +157,25 @@ if [[ "$AUDIO_CODEC" == "pcm" ]] && [[ "$CONTAINER" == "mp4" ]]; then
     esac
 fi
 
+# v53: WebM compat — accepta DOAR Opus audio (Vorbis nu e expus in proiect)
+if [[ "$CONTAINER" == "webm" ]] && [[ "$AUDIO_CODEC" != "opus" ]]; then
+    echo ""
+    echo "  ATENTIE: WebM accepta DOAR Opus audio (spec: vp8/vp9/av1 + opus/vorbis)."
+    echo "  1) Schimba audio la Opus 128k [recomandat]"
+    echo "  2) Schimba container la MKV"
+    read -p "  Alege 1 sau 2 [implicit: 1]: " webm_fix
+    if [[ "${webm_fix:-1}" == "2" ]]; then
+        CONTAINER="mkv"; echo "  Container schimbat la MKV"
+    else
+        AUDIO_CODEC="opus"; AUDIO_BITRATE="128k"
+        echo "  Audio schimbat la Opus 128k"
+    fi
+fi
+
 # ── Container flags ──────────────────────────────────────────────────
+# +faststart aplicabil doar la mp4/mov/m4v (MOV-derived); MKV/WebM nu il accepta
 CONTAINER_FLAGS=""
-[[ "$CONTAINER" != "mkv" ]] && CONTAINER_FLAGS="-movflags +faststart"
+[[ "$CONTAINER" == "mp4" || "$CONTAINER" == "mov" ]] && CONTAINER_FLAGS="-movflags +faststart"
 
 # ── Wake lock ────────────────────────────────────────────────────────
 echo ""
@@ -147,7 +185,7 @@ av_wake_lock
 
 # ── Scanare fisiere ──────────────────────────────────────────────────
 shopt -s nullglob nocaseglob
-FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv})
+FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm})
 shopt -u nocaseglob nullglob
 TOTAL=${#FILES[@]}
 
@@ -190,6 +228,14 @@ for file in "${FILES[@]}"; do
         -show_entries stream=channels -of csv=p=0 "$file" 2>/dev/null)
     [[ ! "$SRC_CHANNELS" =~ ^[0-9]+$ ]] && SRC_CHANNELS=2
 
+    # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix pe orice codec
+    DOWNMIX_FLAG=""
+    if [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$SRC_CHANNELS" -gt 2 ]; then
+        echo "  AV_DOWNMIX_STEREO=1 → downmix ${SRC_CHANNELS}ch → 2.0"
+        SRC_CHANNELS=2
+        DOWNMIX_FLAG="-ac:a:0 2"
+    fi
+
     # Build audio params
     case "$AUDIO_CODEC" in
         aac)
@@ -198,7 +244,7 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="768k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="384k"
             fi
-            AUDIO_PARAMS="-c:a:0 aac -b:a:0 $A_BR -c:a copy"
+            AUDIO_PARAMS="-c:a:0 aac -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
             ;;
         opus)
             A_BR="$AUDIO_BITRATE"
@@ -206,10 +252,10 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="512k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="256k"
             fi
-            AUDIO_PARAMS="-c:a:0 libopus -b:a:0 $A_BR -c:a copy"
+            AUDIO_PARAMS="-c:a:0 libopus -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
             ;;
         flac)
-            AUDIO_PARAMS="-c:a:0 flac -compression_level $AUDIO_FLAC_LEVEL -c:a copy"
+            AUDIO_PARAMS="-c:a:0 flac -compression_level $AUDIO_FLAC_LEVEL $DOWNMIX_FLAG -c:a copy"
             ;;
         eac3)
             A_BR="$AUDIO_BITRATE"
@@ -217,10 +263,31 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="1024k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="640k"
             fi
-            AUDIO_PARAMS="-c:a:0 eac3 -b:a:0 $A_BR -c:a copy"
+            AUDIO_PARAMS="-c:a:0 eac3 -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+            ;;
+        ac3)
+            # v53: AC3 — Dolby Digital legacy (TV-uri pre-2010, console PS3-PS4)
+            # AC3 nu suporta peste 5.1 → force downmix la 5.1 cand sursa e 7.1
+            A_BR="$AUDIO_BITRATE"
+            local ac3_ch="$SRC_CHANNELS"
+            if [[ "$A_BR" == "224k" ]]; then
+                [ "$SRC_CHANNELS" -gt 2 ] && A_BR="448k"
+            fi
+            local AC3_FORCE_DOWNMIX=""
+            if [ "$ac3_ch" -gt 6 ]; then
+                ac3_ch=6
+                AC3_FORCE_DOWNMIX="-ac:a:0 6"
+                echo "  AC3: sursa 7.1 → downmix la 5.1 (AC3 nu suporta >5.1)" | tee -a "$LOG_FILE"
+            fi
+            # Daca AV_DOWNMIX_STEREO activ, $DOWNMIX_FLAG are prioritate (stereo)
+            if [[ -n "$DOWNMIX_FLAG" ]]; then
+                AUDIO_PARAMS="-c:a:0 ac3 -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+            else
+                AUDIO_PARAMS="-c:a:0 ac3 -b:a:0 $A_BR $AC3_FORCE_DOWNMIX -c:a copy"
+            fi
             ;;
         pcm)
-            AUDIO_PARAMS="-c:a:0 pcm_s${AUDIO_BITRATE} -c:a copy"
+            AUDIO_PARAMS="-c:a:0 pcm_s${AUDIO_BITRATE} $DOWNMIX_FLAG -c:a copy"
             ;;
     esac
 
@@ -245,9 +312,23 @@ for file in "${FILES[@]}"; do
 
     echo "  Audio: $AUDIO_CODEC ${A_BR:-lossless} | Canale sursa: $SRC_CHANNELS"
 
+    # v53: WebM — verifica codec video sursa (DOAR vp8/vp9/av1 pot fi stream-copied in webm)
+    if [[ "$CONTAINER" == "webm" ]]; then
+        SRC_VCODEC=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
+        if [[ ! "$SRC_VCODEC" =~ ^(vp8|vp9|av1)$ ]]; then
+            echo "  SKIP: WebM accepta DOAR vp8/vp9/av1 ca video (sursa: ${SRC_VCODEC:-necunoscut})" | tee -a "$LOG_FILE"
+            TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+            continue
+        fi
+    fi
+
     # Subtitle codec
     SUB_CODEC="-c:s copy"
-    if [[ "$CONTAINER" != "mkv" ]]; then
+    if [[ "$CONTAINER" == "webm" ]]; then
+        # WebM accepta DOAR WebVTT — strip alte subs (subrip/ass/pgs/etc)
+        SUB_CODEC="-sn"
+    elif [[ "$CONTAINER" != "mkv" ]]; then
         SUB_CHECK=$(ffprobe -v error -select_streams s \
             -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
         if echo "$SUB_CHECK" | grep -qi "hdmv_pgs\|dvd_subtitle\|dvb_subtitle"; then
