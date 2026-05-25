@@ -65,6 +65,10 @@ def parse_gpx(file_path):
         p['alt'] = ele.text.strip() if ele is not None and ele.text else ''
         t = trkpt.find(f'{ns}time')
         p['time'] = t.text.strip() if t is not None and t.text else ''
+        # Native GPX 1.1 trkpt children: sat / hdop / fix / course
+        for tag, key in (('hdop','hdop'),('sat','num_sats'),('fix','fix_quality'),('course','heading')):
+            el = trkpt.find(f'{ns}{tag}')
+            if el is not None and el.text: p[key] = el.text.strip()
         p['speed'] = ''
         for ext_tag in [f'{ns}extensions', 'extensions']:
             ext_el = trkpt.find(ext_tag)
@@ -76,6 +80,7 @@ def parse_gpx(file_path):
                     if ('cad' in tag or 'cadence' in tag) and child.text: p['cad'] = child.text.strip()
                     if 'power' in tag and child.text: p['power'] = child.text.strip()
                     if ('temp' in tag or 'atemp' in tag) and child.text: p['temp'] = child.text.strip()
+                    if ('course' in tag or 'heading' in tag or 'bearing' in tag) and child.text and not p.get('heading'): p['heading'] = child.text.strip()
         points.append(p)
     # Calculate speed if missing
     for i in range(1, len(points)):
@@ -102,15 +107,45 @@ def parse_kml(file_path):
     root = tree.getroot()
     ns = root.tag.split('}')[0]+'}' if root.tag.startswith('{') else ''
     points = []
-    for coords_el in list(root.iter(f'{ns}coordinates'))+list(root.iter('coordinates')):
-        if coords_el.text:
-            for token in re.split(r'[\s]+', coords_el.text.strip()):
-                token = token.strip()
-                if not token: continue
-                parts = token.split(',')
+    # Strategy 1: <gx:Track> (Strava / Garmin Connect modern exports)
+    for elem in root.iter():
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        if tag == 'Track':
+            times=[]; coords=[]
+            for child in elem:
+                ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                if ctag=='when': times.append((child.text or '').strip())
+                elif ctag=='coord': coords.append((child.text or '').strip())
+            n=min(len(times),len(coords))
+            for i in range(n):
+                parts=coords[i].split()
                 if len(parts)>=2:
-                    p = {'lon':parts[0].strip(),'lat':parts[1].strip(),'alt':parts[2].strip() if len(parts)>=3 else '','speed':'','time':''}
+                    p={'lon':parts[0],'lat':parts[1],'alt':parts[2] if len(parts)>=3 else '','speed':'','time':times[i]}
                     points.append(p)
+    # Strategy 2: classic <coordinates> with optional Placemark <TimeStamp>
+    if not points:
+        parent_map={c:p for p in root.iter() for c in p}
+        for coords_el in list(root.iter(f'{ns}coordinates'))+list(root.iter('coordinates')):
+            ts_text=''
+            par=coords_el
+            for _ in range(6):
+                par=parent_map.get(par)
+                if par is None: break
+                ptag=par.tag.split('}')[-1] if '}' in par.tag else par.tag
+                if ptag=='Placemark':
+                    for ts in par.iter():
+                        tstag=ts.tag.split('}')[-1] if '}' in ts.tag else ts.tag
+                        if tstag=='when':
+                            ts_text=(ts.text or '').strip(); break
+                    break
+            if coords_el.text:
+                for token in re.split(r'[\s]+', coords_el.text.strip()):
+                    token=token.strip()
+                    if not token: continue
+                    parts=token.split(',')
+                    if len(parts)>=2:
+                        p={'lon':parts[0].strip(),'lat':parts[1].strip(),'alt':parts[2].strip() if len(parts)>=3 else '','speed':'','time':ts_text}
+                        points.append(p)
     return points
 
 def parse_fit(file_path):
@@ -152,13 +187,20 @@ def parse_fit(file_path):
                     if lat_sc>0x7FFFFFFF: lat_sc-=0x100000000
                     if lon_sc>0x7FFFFFFF: lon_sc-=0x100000000
                     p={'lat':f"{lat_sc*(180.0/2**31):.8f}",'lon':f"{lon_sc*(180.0/2**31):.8f}"}
-                    p['alt']=f"{(fv[2]/5.0)-500:.1f}" if 2 in fv and fv[2]!=0xFFFF else ''
-                    p['speed']=f"{fv[6]/1000.0:.2f}" if 6 in fv else ''
+                    if 78 in fv: p['alt']=f"{(fv[78]/5.0)-500:.1f}"
+                    elif 2 in fv and fv[2]!=0xFFFF: p['alt']=f"{(fv[2]/5.0)-500:.1f}"
+                    else: p['alt']=''
+                    if 73 in fv: p['speed']=f"{fv[73]/1000.0:.2f}"
+                    elif 6 in fv: p['speed']=f"{fv[6]/1000.0:.2f}"
+                    else: p['speed']=''
                     p['time']=(FIT_EPOCH+timedelta(seconds=fv[253])).strftime('%Y-%m-%d %H:%M:%S') if 253 in fv else ''
                     if 3 in fv: p['hr']=str(fv[3])
                     if 4 in fv: p['cad']=str(fv[4])
                     if 7 in fv: p['power']=str(fv[7])
-                    if 23 in fv: p['temp']=str(fv[23])
+                    if 13 in fv:
+                        t=fv[13]
+                        if t>127: t-=256
+                        p['temp']=str(t)
                     if -90<=float(p['lat'])<=90 and float(p['lat'])!=0: points.append(p)
         except: break
     return points
@@ -176,7 +218,9 @@ def write_csv_full(points, path):
 
 NORM_COLUMNS = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
                 'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
-                'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+                'temp_c','hr_bpm','cadence_rpm','power_w',
+                'pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop',
+                'source_brand']
 
 def write_csv_normalized(points, path, brand):
     with open(path,'w',newline='') as f:
@@ -190,10 +234,14 @@ def write_csv_normalized(points, path, brand):
             row['lat']=p.get('lat',''); row['lon']=p.get('lon','')
             row['alt_m']=p.get('alt','')
             row['speed_mps']=sp; row['speed_kmh']=skmh
+            row['heading_deg']=p.get('heading','')
             row['temp_c']=p.get('temp','')
             row['hr_bpm']=p.get('hr','')
             row['cadence_rpm']=p.get('cad','')
             row['power_w']=p.get('power','')
+            row['fix_quality']=p.get('fix_quality','')
+            row['num_sats']=p.get('num_sats','')
+            row['hdop']=p.get('hdop','')
             row['source_brand']=brand
             w.writerow([row[c] for c in NORM_COLUMNS])
 
@@ -244,7 +292,7 @@ for fp in files:
         elif ext=='.fit': pts=parse_fit(fp)
         elif ext=='.kml': pts=parse_kml(fp)
         else: print(f"  [SKIP] Format necunoscut: {ext}"); continue
-    except Exception as e: print(f"  [EROARE] {e}"); continue
+    except Exception as e: print(f"  [SKIP] Fisier invalid sau corupt ({e}) - fisier sarit"); continue
     if not pts: print("  [SKIP] Nu am gasit puncte GPS"); continue
     print(f"  Puncte GPS: {len(pts)}")
     brand = 'external_gpx' if ext=='.gpx' else ('external_fit' if ext=='.fit' else 'external_kml')

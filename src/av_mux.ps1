@@ -9,6 +9,9 @@
 
 $ErrorActionPreference = "Stop"
 
+# Binare locale (src/) au prioritate in PATH — ffmpeg/ffprobe langa script
+$env:PATH = "$PSScriptRoot;$env:PATH"
+
 $ScriptDir = $PSScriptRoot
 $InputDir  = Join-Path $ScriptDir "InputVideos"
 $OutputDir = Join-Path $ScriptDir "OutputVideos"

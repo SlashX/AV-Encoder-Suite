@@ -3,6 +3,11 @@
 # Rulare: powershell -ExecutionPolicy Bypass -File av_encode.ps1
 # ══════════════════════════════════════════════════════════════════════
 
+# ── Binare locale: folderul scriptului (src/) are prioritate in PATH ──
+#    Permite ffmpeg/ffprobe/exiftool .exe puse langa script, fara PATH global.
+#    Nu sterge nimic — doar prepend; PATH-ul existent ramane valabil.
+$env:PATH = "$PSScriptRoot;$env:PATH"
+
 # ── Verificare ffmpeg/ffprobe ────────────────────────────────────────
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Host "[EROARE] ffmpeg nu a fost gasit." -ForegroundColor Red

@@ -4,6 +4,9 @@
 # Rulare: powershell -ExecutionPolicy Bypass -File av_check.ps1
 # ══════════════════════════════════════════════════════════════════════
 
+# ── Binare locale: folderul scriptului (src/) are prioritate in PATH ──
+$env:PATH = "$PSScriptRoot;$env:PATH"
+
 if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Write-Host "[EROARE] ffprobe nu a fost gasit." -ForegroundColor Red
     Write-Host "Instaleaza ffmpeg (include ffprobe) si adauga in PATH."

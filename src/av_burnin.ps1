@@ -4,6 +4,9 @@
 
 $ErrorActionPreference = "Stop"
 
+# Binare locale (src/) au prioritate in PATH — ffmpeg/ffprobe langa script
+$env:PATH = "$PSScriptRoot;$env:PATH"
+
 $ScriptDir   = $PSScriptRoot
 $InputDir    = Join-Path $ScriptDir "InputVideos"
 $OutputDir   = Join-Path $ScriptDir "OutputVideos"
@@ -122,10 +125,18 @@ function Get-PairedFiles {
 function Get-BrandFromCsv {
     param([string]$CsvPath)
     try {
-        $row2 = (Get-Content -LiteralPath $CsvPath -TotalCount 2 -ErrorAction SilentlyContinue)[1]
-        if ($row2) {
-            $cols = $row2.Split(",")
-            if ($cols.Length -ge 18) { return $cols[17].Trim('"').Trim() }
+        $rows = Get-Content -LiteralPath $CsvPath -TotalCount 2 -ErrorAction SilentlyContinue
+        $header = $rows[0]; $row2 = $rows[1]
+        if ($header -and $row2) {
+            $hcols = $header.Split(",")
+            $cols  = $row2.Split(",")
+            # header-driven: localizeaza coloana source_brand (index variabil schema 18/24)
+            $idx = -1
+            for ($i = 0; $i -lt $hcols.Length; $i++) {
+                if ($hcols[$i].Trim('"').Trim() -eq "source_brand") { $idx = $i; break }
+            }
+            if ($idx -lt 0) { $idx = $cols.Length - 1 }
+            if ($idx -ge 0 -and $idx -lt $cols.Length) { return $cols[$idx].Trim('"').Trim() }
         }
     } catch {}
     return "unknown"

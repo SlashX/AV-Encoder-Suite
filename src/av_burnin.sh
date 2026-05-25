@@ -112,10 +112,13 @@ scan_for_pairs() {
     done < <(find "$search_dir" -maxdepth 2 -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.m4v" \) -print0 2>/dev/null)
 }
 
-# extract brand din coloana source_brand a norm CSV (rand 2, col 18)
+# extract brand din coloana source_brand a norm CSV (header-driven — col index variabil intre schema 18/24)
 extract_brand_from_csv() {
     local csv="$1"
-    awk -F',' 'NR==2 {print $18}' "$csv" 2>/dev/null | tr -d '"' | tr -d '\r' | head -c 32
+    awk -F',' '
+        NR==1 { for (i=1; i<=NF; i++) { h=$i; gsub(/[" \r]/,"",h); if (h=="source_brand") c=i } }
+        NR==2 { if (c) print $c; else print $NF }
+    ' "$csv" 2>/dev/null | tr -d '"' | tr -d '\r' | head -c 32
 }
 
 # Reset arrays + scan

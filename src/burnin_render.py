@@ -118,6 +118,12 @@ def load_csv_points(csv_path):
                 "hr_bpm": fnum("hr_bpm"),
                 "cadence_rpm": fnum("cadence_rpm"),
                 "power_w": fnum("power_w"),
+                "pitch_deg": fnum("pitch_deg"),
+                "roll_deg": fnum("roll_deg"),
+                "yaw_deg": fnum("yaw_deg"),
+                "num_sats": fnum("num_sats"),
+                "hdop": fnum("hdop"),
+                "fix_quality": (row.get("fix_quality") or "").strip(),
                 "brand": (row.get("source_brand") or "").strip(),
             })
     points.sort(key=lambda p: p["t"])
@@ -154,10 +160,12 @@ def sample_at(points, t):
     p0, p1 = points[lo], points[hi]
     span = p1["t"] - p0["t"]
     alpha = 0 if span <= 0 else (t - p0["t"]) / span
-    out = {"t": t, "brand": p0.get("brand", "")}
+    out = {"t": t, "brand": p0.get("brand", ""),
+           "fix_quality": (p1 if alpha >= 0.5 else p0).get("fix_quality", "")}
     for k in ("lat","lon","alt_m","speed_mps","speed_kmh","heading_deg",
               "gforce_x","gforce_y","gforce_z","gyro_x","gyro_y","gyro_z",
-              "temp_c","hr_bpm","cadence_rpm","power_w"):
+              "temp_c","hr_bpm","cadence_rpm","power_w",
+              "pitch_deg","roll_deg","yaw_deg","num_sats","hdop"):
         out[k] = interp(p0, p1, alpha, k)
     return out
 
@@ -283,6 +291,24 @@ def render_frame(cfg, sample, route_xy, w, h, out_path):
                     label, value = "HDG", fmt_value(sample.get("heading_deg"), "{:.0f}", "°")
                 elif fld == "temperature":
                     label, value = "TEMP", fmt_value(sample.get("temp_c"), "{:.1f}", "°C")
+                elif fld == "gforce":
+                    gx = sample.get("gforce_x"); gy = sample.get("gforce_y"); gz = sample.get("gforce_z")
+                    if gx is None and gy is None and gz is None:
+                        label, value = "G", "—"
+                    else:
+                        gmag = math.sqrt((gx or 0)**2 + (gy or 0)**2 + (gz or 0)**2)
+                        label, value = "G", f"{gmag:.2f}"
+                elif fld == "satellites":
+                    label, value = "SATS", fmt_value(sample.get("num_sats"), "{:.0f}", "")
+                elif fld == "hdop":
+                    label, value = "HDOP", fmt_value(sample.get("hdop"), "{:.1f}", "")
+                elif fld == "attitude":
+                    label = "P/R"
+                    pit = sample.get("pitch_deg"); rol = sample.get("roll_deg")
+                    if pit is None and rol is None:
+                        value = "—"
+                    else:
+                        value = f"{(pit or 0):.0f}°/{(rol or 0):.0f}°"
                 else:
                     continue
                 draw_text(cx, label_y, label, font_label, color=label_color, ha="center", va="top")

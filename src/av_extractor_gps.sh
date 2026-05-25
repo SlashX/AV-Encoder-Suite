@@ -86,8 +86,8 @@ try:
     tree = ET.parse(file_path)
     root = tree.getroot()
 except Exception as e:
-    print(f"  [EROARE] Nu pot parsa GPX: {e}")
-    sys.exit(1)
+    print(f"  [SKIP] GPX invalid sau corupt ({e}) - fisier sarit")
+    sys.exit(0)
 
 # Detect namespace
 ns = ''
@@ -107,6 +107,11 @@ for trkpt in root.iter(f'{ns}trkpt'):
     time_el = trkpt.find(f'{ns}time')
     p['time'] = time_el.text.strip() if time_el is not None and time_el.text else ''
 
+    # Native GPX 1.1 trkpt children: sat / hdop / fix / course
+    for tag, key in (('hdop','hdop'),('sat','num_sats'),('fix','fix_quality'),('course','heading')):
+        el = trkpt.find(f'{ns}{tag}')
+        if el is not None and el.text: p[key] = el.text.strip()
+
     # Speed (from extensions or calculated)
     p['speed'] = ''
     # Try common extension patterns
@@ -125,6 +130,8 @@ for trkpt in root.iter(f'{ns}trkpt'):
                     p['power'] = child.text.strip() if child.text else ''
                 if 'temp' in tag_name or 'atemp' in tag_name:
                     p['temp'] = child.text.strip() if child.text else ''
+                if ('course' in tag_name or 'heading' in tag_name or 'bearing' in tag_name) and child.text and not p.get('heading'):
+                    p['heading'] = child.text.strip()
 
     points.append(p)
 
@@ -230,7 +237,9 @@ if choice in ('3', '4'):
 if choice in ('1', '2', '4'):
     NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
             'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
-            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+            'temp_c','hr_bpm','cadence_rpm','power_w',
+            'pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop',
+            'source_brand']
     csv_path = os.path.join(output_dir, f"{name}_norm.csv")
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f); w.writerow(NORM)
@@ -245,10 +254,14 @@ if choice in ('1', '2', '4'):
             row['alt_m']        = p.get('alt','')
             row['speed_mps']    = sp
             row['speed_kmh']    = skmh
+            row['heading_deg']  = p.get('heading','')
             row['temp_c']       = p.get('temp','')
             row['hr_bpm']       = p.get('hr','')
             row['cadence_rpm']  = p.get('cad','')
             row['power_w']      = p.get('power','')
+            row['fix_quality']  = p.get('fix_quality','')
+            row['num_sats']     = p.get('num_sats','')
+            row['hdop']         = p.get('hdop','')
             row['source_brand'] = 'external_gpx'
             w.writerow([row[c] for c in NORM])
     print(f"  [OK] CSV Norm: {name}_norm.csv ({len(points)} puncte)")
@@ -289,8 +302,8 @@ try:
     with open(file_path, 'rb') as f:
         data = f.read()
 except Exception as e:
-    print(f"  [EROARE] Nu pot citi FIT: {e}")
-    sys.exit(1)
+    print(f"  [SKIP] FIT invalid sau corupt ({e}) - fisier sarit")
+    sys.exit(0)
 
 # Validate FIT header
 if len(data) < 14:
@@ -409,18 +422,20 @@ while pos < len(data) - 2:  # -2 for CRC
                     p['lat'] = f"{lat_sc * (180.0 / 2**31):.8f}"
                     p['lon'] = f"{lon_sc * (180.0 / 2**31):.8f}"
 
-                    if 2 in field_values:
-                        # Altitude: stored as (value / 5) - 500
-                        alt_raw = field_values[2]
-                        if alt_raw != 0xFFFF:
-                            p['alt'] = f"{(alt_raw / 5.0) - 500:.1f}"
-                        else:
-                            p['alt'] = ''
+                    # Altitude: prefer enhanced_altitude (78, uint32) over standard (2, uint16)
+                    # Formula: (value / 5) - 500 (meters)
+                    if 78 in field_values:
+                        p['alt'] = f"{(field_values[78] / 5.0) - 500:.1f}"
+                    elif 2 in field_values and field_values[2] != 0xFFFF:
+                        p['alt'] = f"{(field_values[2] / 5.0) - 500:.1f}"
                     else:
                         p['alt'] = ''
 
-                    if 6 in field_values:
-                        # Speed: stored as value / 1000 (m/s)
+                    # Speed: prefer enhanced_speed (73, uint32) over standard (6, uint16)
+                    # Both stored as value / 1000 (m/s)
+                    if 73 in field_values:
+                        p['speed'] = f"{field_values[73] / 1000.0:.2f}"
+                    elif 6 in field_values:
                         p['speed'] = f"{field_values[6] / 1000.0:.2f}"
                     else:
                         p['speed'] = ''
@@ -431,15 +446,18 @@ while pos < len(data) - 2:  # -2 for CRC
                     else:
                         p['time'] = ''
 
-                    # Extra fields
+                    # Extra fields (FIT SDK 21.x record message)
                     if 3 in field_values:
                         p['hr'] = str(field_values[3])
                     if 4 in field_values:
                         p['cad'] = str(field_values[4])
                     if 7 in field_values:
                         p['power'] = str(field_values[7])
-                    if 23 in field_values:
-                        p['temp'] = str(field_values[23])
+                    # Field 13 = temperature (sint8, °C). NOT field 23 (= accumulated_power)
+                    if 13 in field_values:
+                        t = field_values[13]
+                        if t > 127: t -= 256  # sign-extend sint8
+                        p['temp'] = str(t)
 
                     # Only add if we have valid coordinates
                     lat_f = float(p['lat'])
@@ -508,7 +526,9 @@ if choice in ('3', '4'):
 if choice in ('1', '2', '4'):
     NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
             'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
-            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+            'temp_c','hr_bpm','cadence_rpm','power_w',
+            'pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop',
+            'source_brand']
     csv_path = os.path.join(output_dir, f"{name}_norm.csv")
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f); w.writerow(NORM)
@@ -537,9 +557,9 @@ if choice in ('5',):
     with open(kml_path, 'w') as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         f.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
-        f.write(f'<Document><n>{name}</n>\n')
+        f.write(f'<Document><name>{name}</name>\n')
         f.write('<Style id="track"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style>\n')
-        f.write('<Placemark><n>Track</n><styleUrl>#track</styleUrl>\n')
+        f.write('<Placemark><name>Track</name><styleUrl>#track</styleUrl>\n')
         f.write('<LineString><altitudeMode>absolute</altitudeMode><coordinates>\n')
         for p in points:
             alt = p.get('alt', '0') or '0'
@@ -553,7 +573,7 @@ if choice in ('5',):
     with open(gpx_path, 'w') as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         f.write('<gpx version="1.1" creator="AV Encoder Suite">\n')
-        f.write(f'<trk><n>{name}</n><trkseg>\n')
+        f.write(f'<trk><name>{name}</name><trkseg>\n')
         for p in points:
             alt = p.get('alt', '0') or '0'
             t = p.get('time', '')
@@ -581,34 +601,73 @@ try:
     tree = ET.parse(file_path)
     root = tree.getroot()
 except Exception as e:
-    print(f"  [EROARE] Nu pot parsa KML: {e}")
-    sys.exit(1)
+    print(f"  [SKIP] KML invalid sau corupt ({e}) - fisier sarit")
+    sys.exit(0)
 
 ns = ''
 if root.tag.startswith('{'):
     ns = root.tag.split('}')[0] + '}'
 
+import re
 points = []
-# Parse coordinates from LineString and Point elements
-coords_elements = list(root.iter(f'{ns}coordinates'))
-if ns:
-    coords_elements += list(root.iter('coordinates'))
-for coords_el in coords_elements:
-    if coords_el.text:
-        # Handle both newline-separated and space-separated coordinates
-        import re
-        tokens = re.split(r'[\s]+', coords_el.text.strip())
-        for token in tokens:
-            token = token.strip()
-            if not token:
-                continue
-            parts = token.split(',')
+
+# Strategy 1: <gx:Track> (Google Earth gx extension) — used by Strava, Garmin Connect modern exports
+# Format: alternating <when> + <gx:coord>"lon lat alt"</gx:coord> children
+for elem in root.iter():
+    tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+    if tag == 'Track':  # gx:Track
+        times = []
+        coords = []
+        for child in elem:
+            ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+            if ctag == 'when':
+                times.append((child.text or '').strip())
+            elif ctag == 'coord':
+                coords.append((child.text or '').strip())
+        n = min(len(times), len(coords))
+        for i in range(n):
+            parts = coords[i].split()  # space-separated in gx:Track
             if len(parts) >= 2:
-                p = {'lon': parts[0].strip(), 'lat': parts[1].strip()}
-                p['alt'] = parts[2].strip() if len(parts) >= 3 else ''
+                p = {'lon': parts[0], 'lat': parts[1]}
+                p['alt'] = parts[2] if len(parts) >= 3 else ''
+                p['time'] = times[i]
                 p['speed'] = ''
-                p['time'] = ''
                 points.append(p)
+
+# Strategy 2: classic <coordinates> (LineString/Point) — fallback if no gx:Track found
+if not points:
+    coords_elements = list(root.iter(f'{ns}coordinates'))
+    if ns:
+        coords_elements += list(root.iter('coordinates'))
+    for coords_el in coords_elements:
+        if coords_el.text:
+            tokens = re.split(r'[\s]+', coords_el.text.strip())
+            # Try to find paired <TimeStamp><when> in same Placemark ancestor
+            ts_text = ''
+            parent = coords_el
+            for _ in range(6):  # walk up max 6 levels
+                parent_map = {c: p for p in root.iter() for c in p}
+                parent = parent_map.get(parent)
+                if parent is None: break
+                ptag = parent.tag.split('}')[-1] if '}' in parent.tag else parent.tag
+                if ptag == 'Placemark':
+                    for ts in parent.iter():
+                        tstag = ts.tag.split('}')[-1] if '}' in ts.tag else ts.tag
+                        if tstag == 'when':
+                            ts_text = (ts.text or '').strip()
+                            break
+                    break
+            for token in tokens:
+                token = token.strip()
+                if not token:
+                    continue
+                parts = token.split(',')
+                if len(parts) >= 2:
+                    p = {'lon': parts[0].strip(), 'lat': parts[1].strip()}
+                    p['alt'] = parts[2].strip() if len(parts) >= 3 else ''
+                    p['speed'] = ''
+                    p['time'] = ts_text  # single-point Placemark gets its TimeStamp
+                    points.append(p)
 
 if not points:
     print("  [SKIP] Nu am gasit coordonate in KML")
@@ -656,7 +715,9 @@ if choice in ('3', '4'):
 if choice in ('1', '2', '4'):
     NORM = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
             'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
-            'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+            'temp_c','hr_bpm','cadence_rpm','power_w',
+            'pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop',
+            'source_brand']
     csv_path = os.path.join(output_dir, f"{name}_norm.csv")
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f); w.writerow(NORM)
@@ -681,7 +742,7 @@ if choice in ('5',):
     with open(gpx_path, 'w') as f:
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         f.write('<gpx version="1.1" creator="AV Encoder Suite">\n')
-        f.write(f'<trk><n>{name}</n><trkseg>\n')
+        f.write(f'<trk><name>{name}</name><trkseg>\n')
         for p in points:
             alt = p.get('alt', '0') or '0'
             f.write(f'<trkpt lat="{p["lat"]}" lon="{p["lon"]}"><ele>{alt}</ele></trkpt>\n')

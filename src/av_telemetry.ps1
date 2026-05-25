@@ -4,6 +4,10 @@
 # Rulare: powershell -ExecutionPolicy Bypass -File av_telemetry.ps1
 # ══════════════════════════════════════════════════════════════════════
 
+# ── Binare locale: folderul scriptului (src/) are prioritate in PATH ──
+#    Permite ffmpeg/ffprobe/exiftool .exe puse langa script, fara PATH global.
+$env:PATH = "$PSScriptRoot;$env:PATH"
+
 # ── Verificare ffmpeg/ffprobe ────────────────────────────────────────
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Host "[EROARE] ffmpeg nu a fost gasit." -ForegroundColor Red
@@ -163,7 +167,7 @@ if ($choice -eq "6") {
 
 # ── Verificare dependente conditional ────────────────────────────────
 $exifCmd = $null; $py3 = $null
-$gpxFmt = $null; $srtFmt = $null
+$gpxFmt = $null; $srtFmt = $null; $djiBasicFmt = $null; $djiNormFmt = $null
 
 $needExif = (($djiCount -gt 0) -or ($qtCount -gt 0)) -and ($choice -in @("1","2","3","4"))
 $needPy   = (($goproCount -gt 0) -or ($sonyCount -gt 0) -or ($garminCount -gt 0)) -and ($choice -in @("1","2","3","4"))
@@ -197,6 +201,19 @@ if ($needExif) {
 #[BODY]Coord: ${gpslatitude#}, ${gpslongitude#}
 #[BODY]
 '@ | Out-File $srtFmt -Encoding ASCII
+
+    # Basic CSV per-sample (track complet, nu doar 1 punct ca -csv) — mirror campuri GPX
+    $djiBasicFmt = Join-Path $OutputDir "djibasic.fmt"
+    @'
+#[HEAD]GPSDateTime,GPSLatitude,GPSLongitude,GPSAltitude
+#[BODY]$gpsdatetime,$gpslatitude#,$gpslongitude#,$gpsaltitude#
+'@ | Out-File $djiBasicFmt -Encoding ASCII
+
+    # Norm source per-sample (pipe-delim, -f forteaza '-' pe lipsa); Python normalizeaza la 24 col
+    $djiNormFmt = Join-Path $OutputDir "djinorm.fmt"
+    @'
+#[BODY]$sampletime#|$gpsdatetime|$gpslatitude#|$gpslongitude#|$gpsaltitude#|$accelerometerx#|$accelerometery#|$accelerometerz#|$pitch#|$roll#|$yaw#|$gimbalpitchdegree#|$gimbalrolldegree#|$gimbalyawdegree#
+'@ | Out-File $djiNormFmt -Encoding ASCII
 }
 
 if ($needPy) {
@@ -271,6 +288,95 @@ def unpack_scal(tc, ss, sc, payload):
     except: pass
     return []
 
+def _sensor_3axis_mean(strm_klvs, fourcc):
+    # ACCL/GYRO: 3 valori per sample (ordine GoPro: z,x,y), scalate de SCAL.
+    # Rata sample (~200Hz) >> rata GPS → returnam media pe STRM-ul DEVC.
+    scale = None; samples = []
+    for fc, tc, ss, sc, payload in strm_klvs:
+        if fc == 'SCAL':
+            scale = unpack_scal(tc, ss, sc, payload)
+        elif fc == fourcc:
+            vals = unpack_scal(tc, ss, sc, payload)
+            if vals:
+                for i in range(0, len(vals) - 2, 3):
+                    samples.append((vals[i], vals[i+1], vals[i+2]))
+    if not samples: return None
+    div = (scale[0] if scale else 1) or 1
+    n = len(samples)
+    return (sum(s[0] for s in samples)/n/div,
+            sum(s[1] for s in samples)/n/div,
+            sum(s[2] for s in samples)/n/div)
+
+def _gps5_points(strm_klvs, strm_state):
+    out = []
+    for fc, tc, ss, sc, payload in strm_klvs:
+        if fc != 'GPS5': continue
+        scale = strm_state.get('scale') or [1,1,1,1,1]
+        if len(scale) < 5: scale = list(scale) + [1]*(5-len(scale))
+        for i in range(sc):
+            if i*20+20 > len(payload): break
+            vals = struct.unpack('>5i', payload[i*20:i*20+20])
+            p = {
+                'lat': f"{vals[0]/scale[0]:.7f}" if scale[0] else f"{vals[0]}",
+                'lon': f"{vals[1]/scale[1]:.7f}" if scale[1] else f"{vals[1]}",
+                'alt': f"{vals[2]/scale[2]:.2f}" if scale[2] else f"{vals[2]}",
+                'speed': f"{vals[3]/scale[3]:.2f}" if scale[3] else f"{vals[3]}",
+                'speed3d': f"{vals[4]/scale[4]:.2f}" if scale[4] else f"{vals[4]}",
+                'time': strm_state.get('time',''),
+                'fix': str(strm_state.get('fix','')) if strm_state.get('fix') != '' else '',
+                'dop': f"{strm_state.get('dop',0)/100:.2f}" if strm_state.get('dop') else '',
+            }
+            if strm_state.get('temp') is not None: p['temp'] = f"{strm_state['temp']:.1f}"
+            if strm_state.get('devnm'): p['device'] = strm_state['devnm']
+            fix_val = strm_state.get('fix', 0)
+            if fix_val and fix_val < 2: continue
+            try:
+                if abs(float(p['lat'])) < 0.001 and abs(float(p['lon'])) < 0.001: continue
+            except: continue
+            out.append(p)
+    return out
+
+def _gps9_points(strm_klvs, strm_state):
+    # GPS9 (Hero11+): per-sample struct 7xint32 + 2xuint16 = 32 bytes.
+    # Ordine: lat,lon,alt,2Dspeed,3Dspeed,days_since_2000,secs_since_midnight,DOP,fix. SCAL = 9 divizori.
+    from datetime import datetime as _dt, timedelta as _td
+    out = []
+    for fc, tc, ss, sc, payload in strm_klvs:
+        if fc != 'GPS9': continue
+        scale = strm_state.get('scale') or [1]*9
+        if len(scale) < 9: scale = list(scale) + [1]*(9-len(scale))
+        rec = ss if ss >= 32 else 32
+        for i in range(sc):
+            off = i*rec
+            if off+32 > len(payload): break
+            try:
+                lat,lon,alt,sp2,sp3,days,secs = struct.unpack('>7i', payload[off:off+28])
+                dop,fix = struct.unpack('>2H', payload[off+28:off+32])
+            except: break
+            def sd(v, idx):
+                d = scale[idx] or 1; return v/d
+            fix_v = int(sd(fix,8)) if scale[8] else int(fix)
+            if fix_v and fix_v < 2: continue
+            latf = sd(lat,0); lonf = sd(lon,1)
+            try:
+                if abs(latf) < 0.001 and abs(lonf) < 0.001: continue
+            except: continue
+            tstr = strm_state.get('time','')
+            try:
+                base = _dt(2000,1,1) + _td(days=sd(days,5), seconds=sd(secs,6))
+                tstr = base.strftime('%Y-%m-%dT%H:%M:%S.') + f"{base.microsecond//1000:03d}Z"
+            except: pass
+            p = {
+                'lat': f"{latf:.7f}", 'lon': f"{lonf:.7f}",
+                'alt': f"{sd(alt,2):.2f}", 'speed': f"{sd(sp2,3):.2f}",
+                'speed3d': f"{sd(sp3,4):.2f}", 'time': tstr,
+                'fix': str(fix_v), 'dop': f"{sd(dop,7):.2f}",
+            }
+            if strm_state.get('temp') is not None: p['temp'] = f"{strm_state['temp']:.1f}"
+            if strm_state.get('devnm'): p['device'] = strm_state['devnm']
+            out.append(p)
+    return out
+
 def parse_gpmf(file_path):
     with open(file_path,'rb') as fh: data = fh.read()
     points = []
@@ -278,12 +384,24 @@ def parse_gpmf(file_path):
     for fc, tc, ss, sc, payload in parse_klv_stream(data):
         if fc == 'DEVC' and tc == '\x00':
             dev_state = dict(state)
+            devc_points = []; accl_mean = None; gyro_mean = None
             for fc2, tc2, ss2, sc2, payload2 in parse_klv_stream(payload):
                 if fc2 == 'DVNM':
                     dev_state['devnm'] = payload2.decode('ascii', errors='replace').rstrip('\x00').strip()
                 elif fc2 == 'STRM' and tc2 == '\x00':
-                    strm_state = dict(dev_state)
                     strm_klvs = list(parse_klv_stream(payload2))
+                    fourccs = set(k[0] for k in strm_klvs)
+                    if 'ACCL' in fourccs:
+                        m = _sensor_3axis_mean(strm_klvs, 'ACCL')
+                        if m: accl_mean = m
+                        continue
+                    if 'GYRO' in fourccs:
+                        m = _sensor_3axis_mean(strm_klvs, 'GYRO')
+                        if m: gyro_mean = m
+                        continue
+                    if not ('GPS5' in fourccs or 'GPS9' in fourccs):
+                        continue
+                    strm_state = dict(dev_state)
                     for fc3, tc3, ss3, sc3, payload3 in strm_klvs:
                         if fc3 == 'SCAL':
                             strm_state['scale'] = unpack_scal(tc3, ss3, sc3, payload3)
@@ -295,33 +413,21 @@ def parse_gpmf(file_path):
                             if len(payload3)>=2: strm_state['dop'] = struct.unpack('>H', payload3[:2])[0]
                         elif fc3 == 'TMPC':
                             if len(payload3)>=4: strm_state['temp'] = struct.unpack('>f', payload3[:4])[0]
-                    for fc3, tc3, ss3, sc3, payload3 in strm_klvs:
-                        if fc3 == 'GPS5':
-                            scale = strm_state.get('scale') or [1,1,1,1,1]
-                            if len(scale) < 5: scale = list(scale) + [1]*(5-len(scale))
-                            for i in range(sc3):
-                                if i*20+20 > len(payload3): break
-                                vals = struct.unpack('>5i', payload3[i*20:i*20+20])
-                                p = {
-                                    'lat': f"{vals[0]/scale[0]:.7f}" if scale[0] else f"{vals[0]}",
-                                    'lon': f"{vals[1]/scale[1]:.7f}" if scale[1] else f"{vals[1]}",
-                                    'alt': f"{vals[2]/scale[2]:.2f}" if scale[2] else f"{vals[2]}",
-                                    'speed': f"{vals[3]/scale[3]:.2f}" if scale[3] else f"{vals[3]}",
-                                    'speed3d': f"{vals[4]/scale[4]:.2f}" if scale[4] else f"{vals[4]}",
-                                    'time': strm_state.get('time',''),
-                                    'fix': str(strm_state.get('fix','')) if strm_state.get('fix') != '' else '',
-                                    'dop': f"{strm_state.get('dop',0)/100:.2f}" if strm_state.get('dop') else '',
-                                }
-                                if strm_state.get('temp') is not None:
-                                    p['temp'] = f"{strm_state['temp']:.1f}"
-                                if strm_state.get('devnm'):
-                                    p['device'] = strm_state['devnm']
-                                fix_val = strm_state.get('fix', 0)
-                                if fix_val and fix_val < 2: continue
-                                try:
-                                    if abs(float(p['lat'])) < 0.001 and abs(float(p['lon'])) < 0.001: continue
-                                except: continue
-                                points.append(p)
+                    if 'GPS9' in fourccs:
+                        devc_points.extend(_gps9_points(strm_klvs, strm_state))
+                    else:
+                        devc_points.extend(_gps5_points(strm_klvs, strm_state))
+            if accl_mean or gyro_mean:
+                for p in devc_points:
+                    if accl_mean:
+                        p['gforce_z'] = f"{accl_mean[0]/9.80665:.3f}"
+                        p['gforce_x'] = f"{accl_mean[1]/9.80665:.3f}"
+                        p['gforce_y'] = f"{accl_mean[2]/9.80665:.3f}"
+                    if gyro_mean:
+                        p['gyro_z'] = f"{gyro_mean[0]:.4f}"
+                        p['gyro_x'] = f"{gyro_mean[1]:.4f}"
+                        p['gyro_y'] = f"{gyro_mean[2]:.4f}"
+            points.extend(devc_points)
     return points
 
 def write_csv_basic(points, path):
@@ -338,7 +444,9 @@ def write_csv_full(points, path):
 # CSV normalizat (schema unificata cross-brand)
 NORM_COLUMNS = ['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg',
                 'gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z',
-                'temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
+                'temp_c','hr_bpm','cadence_rpm','power_w',
+                'pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop',
+                'source_brand']
 
 def _kmh_from_mps(s):
     try: return f"{float(s)*3.6:.2f}" if s != '' else ''
@@ -356,10 +464,22 @@ def write_csv_normalized(points, path, brand):
             row['speed_mps']    = p.get('speed','')
             row['speed_kmh']    = _kmh_from_mps(p.get('speed',''))
             row['heading_deg']  = p.get('heading','')
+            row['gforce_x']     = p.get('gforce_x','')
+            row['gforce_y']     = p.get('gforce_y','')
+            row['gforce_z']     = p.get('gforce_z','')
+            row['gyro_x']       = p.get('gyro_x','')
+            row['gyro_y']       = p.get('gyro_y','')
+            row['gyro_z']       = p.get('gyro_z','')
             row['temp_c']       = p.get('temp','')
             row['hr_bpm']       = p.get('hr','')
             row['cadence_rpm']  = p.get('cad','')
             row['power_w']      = p.get('power','')
+            row['pitch_deg']    = p.get('pitch','')
+            row['roll_deg']     = p.get('roll','')
+            row['yaw_deg']      = p.get('yaw','')
+            row['fix_quality']  = p.get('fix_quality', p.get('fix',''))
+            row['num_sats']     = p.get('num_sats','')
+            row['hdop']         = p.get('hdop', p.get('dop',''))
             row['source_brand'] = brand
             w.writerow([row[c] for c in NORM_COLUMNS])
 
@@ -429,13 +549,20 @@ def parse_fit(file_path):
                     if lat_sc>0x7FFFFFFF: lat_sc-=0x100000000
                     if lon_sc>0x7FFFFFFF: lon_sc-=0x100000000
                     p={'lat':f"{lat_sc*(180.0/2**31):.7f}",'lon':f"{lon_sc*(180.0/2**31):.7f}"}
-                    p['alt']=f"{(fv[2]/5.0)-500:.2f}" if 2 in fv and fv[2]!=0xFFFF else ''
-                    p['speed']=f"{fv[6]/1000.0:.2f}" if 6 in fv else ''
+                    if 78 in fv: p['alt']=f"{(fv[78]/5.0)-500:.2f}"
+                    elif 2 in fv and fv[2]!=0xFFFF: p['alt']=f"{(fv[2]/5.0)-500:.2f}"
+                    else: p['alt']=''
+                    if 73 in fv: p['speed']=f"{fv[73]/1000.0:.2f}"
+                    elif 6 in fv: p['speed']=f"{fv[6]/1000.0:.2f}"
+                    else: p['speed']=''
                     p['time']=(FIT_EPOCH+timedelta(seconds=fv[253])).strftime('%Y-%m-%dT%H:%M:%SZ') if 253 in fv else ''
                     if 3 in fv: p['hr']=str(fv[3])
                     if 4 in fv: p['cad']=str(fv[4])
                     if 7 in fv: p['power']=str(fv[7])
-                    if 23 in fv: p['temp']=str(fv[23])
+                    if 13 in fv:
+                        t=fv[13]
+                        if t>127: t-=256
+                        p['temp']=str(t)
                     try:
                         if -90<=float(p['lat'])<=90 and float(p['lat'])!=0: points.append(p)
                     except: pass
@@ -491,9 +618,35 @@ def parse_nmea(file_path):
                 'time': ts,
             })
         elif sentence in ('`$GPGGA','`$GNGGA') and len(parts) >= 10:
+            # parts[6]=fix_quality, [7]=num_sats, [8]=hdop, [9]=altitude
             try:
-                alt = parts[9]
-                if points and not points[-1].get('alt'): points[-1]['alt'] = alt
+                if points:
+                    last = points[-1]
+                    if not last.get('alt'): last['alt'] = parts[9]
+                    fq = parts[6].strip() if len(parts) > 6 else ''
+                    ns = parts[7].strip() if len(parts) > 7 else ''
+                    hd = parts[8].strip() if len(parts) > 8 else ''
+                    if fq: last['fix_quality'] = fq
+                    if ns: last['num_sats'] = ns
+                    if hd: last['hdop'] = hd
+            except: pass
+        elif sentence in ('`$GPVTG','`$GNVTG') and len(parts) >= 8:
+            try:
+                if points:
+                    track_t = parts[1].strip() if len(parts) > 1 else ''
+                    sp_kn = parts[5].strip() if len(parts) > 5 else ''
+                    sp_kmh = parts[7].strip() if len(parts) > 7 else ''
+                    last = points[-1]
+                    if not last.get('heading') and track_t:
+                        last['heading'] = track_t
+                    sp_existing = last.get('speed', '')
+                    if (not sp_existing or sp_existing == '0.00'):
+                        if sp_kn:
+                            try: last['speed'] = f"{float(sp_kn)*0.514444:.2f}"
+                            except: pass
+                        elif sp_kmh:
+                            try: last['speed'] = f"{float(sp_kmh)/3.6:.2f}"
+                            except: pass
             except: pass
     return points
 
@@ -532,12 +685,13 @@ function Process-DJI {
         }
     }
     if ($choice -in @("1","4")) {
-        & $exifCmd -ee3 -api LargeFileSupport=1 -csv -n `
-            -GPSLatitude -GPSLongitude -GPSAltitude `
-            -GPSSpeed -GPSTrack -GPSDateTime `
-            $f.FullName 2>$null |
+        # Track complet per-sample (DJI protobuf): -p template, NU -csv (care colapseaza la 1 rand)
+        & $exifCmd -p $djiBasicFmt -ee3 -api LargeFileSupport=1 $f.FullName 2>$null |
             Out-File (Join-Path $OutputDir "${name}_basic.csv") -Encoding UTF8
-        Write-Host "  [OK] CSV Basic: ${name}_basic.csv" -ForegroundColor Green
+        $basicOut = Join-Path $OutputDir "${name}_basic.csv"
+        if ((Test-Path $basicOut) -and (Get-Item $basicOut).Length -gt 0) {
+            Write-Host "  [OK] CSV Basic: ${name}_basic.csv" -ForegroundColor Green
+        } else { Remove-Item $basicOut -Force -ErrorAction SilentlyContinue }
     }
     if ($choice -in @("2","4")) {
         & $exifCmd -ee3 -api LargeFileSupport=1 -csv -G -n `
@@ -556,49 +710,88 @@ function Process-DJI {
             Remove-Item $srtOut -Force -ErrorAction SilentlyContinue
         }
     }
-    # CSV normalizat — derivat din basic CSV exiftool
+    # CSV normalizat — extractie per-sample (track complet protobuf): GPS + accelerometru (g) +
+    # orientare (modele care o expun). Viteza/heading calculate din delta GPS cu sampletime sub-secunda.
     if ($choice -in @("1","2","4")) {
-        $basicSrc = Join-Path $OutputDir "${name}_basic.csv"
-        $tmpBasic = $null
-        if (-not (Test-Path $basicSrc) -or (Get-Item $basicSrc).Length -eq 0) {
-            $tmpBasic = Join-Path $OutputDir "${name}_basic.csv.tmp"
-            & $exifCmd -ee3 -api LargeFileSupport=1 -csv -n `
-                -GPSLatitude -GPSLongitude -GPSAltitude `
-                -GPSSpeed -GPSTrack -GPSDateTime `
-                $f.FullName 2>$null | Out-File $tmpBasic -Encoding UTF8
-            if ((Test-Path $tmpBasic) -and (Get-Item $tmpBasic).Length -gt 0) { $basicSrc = $tmpBasic }
-        }
-        if ((Test-Path $basicSrc) -and (Get-Item $basicSrc).Length -gt 0 -and $py3) {
+        $normSrc = Join-Path $OutputDir "${name}_normsrc.csv.tmp"
+        & $exifCmd -p $djiNormFmt -f -ee3 -api LargeFileSupport=1 $f.FullName 2>$null | Out-File $normSrc -Encoding UTF8
+        if ((Test-Path $normSrc) -and (Get-Item $normSrc).Length -gt 0 -and $py3) {
             $normOut = Join-Path $OutputDir "${name}_norm.csv"
             $pyDji = @"
-import csv, sys
-NORM=['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg','gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z','temp_c','hr_bpm','cadence_rpm','power_w','source_brand']
-with open(sys.argv[1], encoding='utf-8-sig') as fi, open(sys.argv[2],'w',newline='',encoding='utf-8') as fo:
-    r=csv.DictReader(fi); w=csv.writer(fo); w.writerow(NORM)
-    for row in r:
-        lat=(row.get('GPSLatitude') or '').strip(); lon=(row.get('GPSLongitude') or '').strip()
-        if not lat or not lon: continue
-        sp=(row.get('GPSSpeed') or '').strip()
-        try: skmh=f'{float(sp)*3.6:.2f}' if sp else ''
-        except: skmh=''
+import sys, csv, math
+from datetime import datetime, timedelta
+NORM=['timestamp','lat','lon','alt_m','speed_mps','speed_kmh','heading_deg','gforce_x','gforce_y','gforce_z','gyro_x','gyro_y','gyro_z','temp_c','hr_bpm','cadence_rpm','power_w','pitch_deg','roll_deg','yaw_deg','fix_quality','num_sats','hdop','source_brand']
+def num(s):
+    s=(s or '').strip()
+    if not s or s=='-': return None
+    try: return float(s)
+    except: return None
+def hav(la1,lo1,la2,lo2):
+    R=6371000.0; p1=math.radians(la1); p2=math.radians(la2)
+    dp=math.radians(la2-la1); dl=math.radians(lo2-lo1)
+    a=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2*R*math.asin(min(1.0,math.sqrt(a)))
+def brg(la1,lo1,la2,lo2):
+    p1=math.radians(la1); p2=math.radians(la2); dl=math.radians(lo2-lo1)
+    y=math.sin(dl)*math.cos(p2); x=math.cos(p1)*math.sin(p2)-math.sin(p1)*math.cos(p2)*math.cos(dl)
+    return (math.degrees(math.atan2(y,x))+360)%360
+base=None; first_st=None; ld=None; lsp=0.0; lhd=''
+with open(sys.argv[1], encoding='utf-8-sig', errors='replace') as fi, open(sys.argv[2],'w',newline='',encoding='utf-8') as fo:
+    w=csv.writer(fo); wrote=False
+    for line in fi:
+        p=line.rstrip('\r\n').split('|')
+        if len(p)<5: continue
+        lat=num(p[2]); lon=num(p[3])
+        if lat is None or lon is None: continue
+        st=num(p[0]); alt=num(p[4])
+        gdt=(p[1] or '').strip()
+        if base is None and gdt and gdt!='-':
+            try: base=datetime.strptime(gdt[:19],'%Y:%m:%d %H:%M:%S')
+            except: base=None
+            first_st=st if st is not None else 0.0
+        if base is not None and st is not None: ts=(base+timedelta(seconds=st-(first_st or 0.0))).isoformat()
+        elif st is not None: ts='%.3f'%st
+        else: ts=gdt
+        if ld is None:
+            sp=lsp; ld=(st,lat,lon)
+        elif lat!=ld[1] or lon!=ld[2]:
+            dt=(st-ld[0]) if (st is not None and ld[0] is not None) else 0
+            if dt and dt>0:
+                v=hav(ld[1],ld[2],lat,lon)/dt
+                if 0<=v<=150.0: lsp=v; lhd='%.1f'%brg(ld[1],ld[2],lat,lon)
+            ld=(st,lat,lon); sp=lsp
+        else:
+            sp=lsp
         out={c:'' for c in NORM}
-        out['timestamp']=(row.get('GPSDateTime') or '').strip()
-        out['lat']=lat; out['lon']=lon
-        out['alt_m']=(row.get('GPSAltitude') or '').strip()
-        out['speed_mps']=sp; out['speed_kmh']=skmh
-        out['heading_deg']=(row.get('GPSTrack') or '').strip()
+        out['timestamp']=ts; out['lat']='%.7f'%lat; out['lon']='%.7f'%lon
+        if alt is not None: out['alt_m']='%.3f'%alt
+        out['speed_mps']='%.2f'%sp; out['speed_kmh']='%.2f'%(sp*3.6); out['heading_deg']=lhd
+        gx=num(p[5]) if len(p)>5 else None; gy=num(p[6]) if len(p)>6 else None; gz=num(p[7]) if len(p)>7 else None
+        if gx is not None: out['gforce_x']='%.4f'%gx
+        if gy is not None: out['gforce_y']='%.4f'%gy
+        if gz is not None: out['gforce_z']='%.4f'%gz
+        pit=num(p[8]) if len(p)>8 else None
+        if pit is None and len(p)>11: pit=num(p[11])
+        rol=num(p[9]) if len(p)>9 else None
+        if rol is None and len(p)>12: rol=num(p[12])
+        yaw=num(p[10]) if len(p)>10 else None
+        if yaw is None and len(p)>13: yaw=num(p[13])
+        if pit is not None: out['pitch_deg']='%.2f'%pit
+        if rol is not None: out['roll_deg']='%.2f'%rol
+        if yaw is not None: out['yaw_deg']='%.2f'%yaw
         out['source_brand']='dji'
+        if not wrote: w.writerow(NORM); wrote=True
         w.writerow([out[c] for c in NORM])
 "@
             $pyTmp = Join-Path $env:TEMP "av_dji_norm_$(Get-Random).py"
             $pyDji | Out-File $pyTmp -Encoding UTF8
-            & $py3 $pyTmp $basicSrc $normOut 2>$null
+            & $py3 $pyTmp $normSrc $normOut 2>$null
             Remove-Item $pyTmp -Force -ErrorAction SilentlyContinue
             if ((Test-Path $normOut) -and (Get-Item $normOut).Length -gt 0) {
                 Write-Host "  [OK] CSV Norm: ${name}_norm.csv" -ForegroundColor Green
             } else { Remove-Item $normOut -Force -ErrorAction SilentlyContinue }
         }
-        if ($tmpBasic) { Remove-Item $tmpBasic -Force -ErrorAction SilentlyContinue }
+        Remove-Item $normSrc -Force -ErrorAction SilentlyContinue
     }
     if ($choice -eq "5") { Process-DJIRaw $f $name }
     if ($choice -eq "6") { Process-DJIStrip $f $name }
@@ -979,8 +1172,8 @@ $(if ($ts) { "<time>$ts</time>" })
             Write-Host "  [OK] CSV Basic: ${name}_basic.csv (1 punct)" -ForegroundColor Green
         }
         if ($choice -in @("1","2","4")) {
-            $normHeader = "timestamp,lat,lon,alt_m,speed_mps,speed_kmh,heading_deg,gforce_x,gforce_y,gforce_z,gyro_x,gyro_y,gyro_z,temp_c,hr_bpm,cadence_rpm,power_w,source_brand"
-            $normRow    = "$ts,$lat,$lon,$alt,,,,,,,,,,,,,,quicktime"
+            $normHeader = "timestamp,lat,lon,alt_m,speed_mps,speed_kmh,heading_deg,gforce_x,gforce_y,gforce_z,gyro_x,gyro_y,gyro_z,temp_c,hr_bpm,cadence_rpm,power_w,pitch_deg,roll_deg,yaw_deg,fix_quality,num_sats,hdop,source_brand"
+            $normRow    = "$ts,$lat,$lon,$alt,,,,,,,,,,,,,,,,,,,,quicktime"
             "$normHeader`n$normRow" | Out-File (Join-Path $OutputDir "${name}_norm.csv") -Encoding UTF8
             Write-Host "  [OK] CSV Norm: ${name}_norm.csv (1 punct)" -ForegroundColor Green
         }
@@ -1031,6 +1224,8 @@ foreach ($f in $inputFiles) {
 # ── Curatenie ────────────────────────────────────────────────────────
 if ($gpxFmt) { Remove-Item $gpxFmt -Force -ErrorAction SilentlyContinue }
 if ($srtFmt) { Remove-Item $srtFmt -Force -ErrorAction SilentlyContinue }
+if ($djiBasicFmt) { Remove-Item $djiBasicFmt -Force -ErrorAction SilentlyContinue }
+if ($djiNormFmt) { Remove-Item $djiNormFmt -Force -ErrorAction SilentlyContinue }
 if ($gpmfPy) { Remove-Item $gpmfPy -Force -ErrorAction SilentlyContinue }
 
 Write-Host "`n==========================================" -ForegroundColor Cyan

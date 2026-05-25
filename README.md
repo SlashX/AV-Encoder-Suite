@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v53** — 58 bugs fixed · 200+ features · ~23 000 LoC · 71 files
+**v54** — 60 bugs fixed · 210+ features · ~23 300 LoC · 74 files
 
 ---
 
@@ -17,17 +17,16 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Dolby Vision preserve end-to-end** — HEVC↔AV1 cross-codec (P5/P7/P8.1↔P10), SW + all 6 HW backends (v46), HDR10+ co-existence when source carries both layers
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
-- **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 18-column normalized CSV + SRT overlay tracks
+- **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
+- **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
 - **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), HDR10+→DV hybrid synthesis (lossless on video)
-- **Mux tools** (v49 + v50) — standalone script with three flows. **Remux**: per-stream selection (video / audio / subtitles / attachments / chapters) with per-target compat matrix and pre-flight warnings. **Demux**: smart per-codec uniform wrapping — video→`.mkv` (preserves HDR/DV), audio→`.mka` (preserves Atmos / E-AC3 / TrueHD metadata), subtitles→native ext (.srt/.ass/.sup/.sub/.vtt), cover art auto-extracted, chapters→Matroska XML, attachments+data in folders. **Mux** (v50): combine separate files — video + N audio + N subs + chapters + attachments into a fresh container. Manual selection (no auto-grouping for safety), VobSub `.idx+.sub` pair handling, per-track metadata (lang/title/default/forced) opt-in, container compat matrix reused from Remux. Input remux/demux: mkv · webm · mp4 · m4v · mov · ts · m2ts · mts · vob · mxf (Blu-ray / DVD / broadcast covered)
-- **Spec-compliant HDR10 output on HW encoders too** (v53) — same VUI signaling bug existed on NVENC/QSV/VAAPI/VideoToolbox/AMF/MediaCodec (confirmed live on hevc_qsv). v53 fixes it via bitstream filter post-encode (`hevc_metadata`/`av1_metadata`/`h264_metadata`) which rewrites VUI directly in SPS/OBU. Combined with v52 SW fix, the entire encoder ecosystem (SW + HW) now produces spec-compliant HDR10/HLG streams
-- **NVENC 2-pass quality boost** (v53) — `ENCODE_MODE=3` (VBR 2-pass) is now available when `HW_BACKEND=nvenc`. Activates NVENC's internal `-multipass fullres` mode plus quality flags (`-bf 4 -rc-lookahead 32 -aq-strength 10 -weighted_pred 1` on HEVC/H.264; AV1 skips weighted_pred). Mode 1 (CRF) and mode 2 (1-pass) keep their conservative defaults for maximum speed
-- **Spec-compliant HDR10 output** (v52) — pre-v52, all HDR10/HLG output had incomplete VUI signaling at the stream level (`color_primaries=unknown`, `color_transfer=unknown`) because ffmpeg's `-color_primaries`/`-color_trc` flags wrote Matroska container "Colour" element that overrode stream VUI when read by `ffprobe` and players. Side-effect: x265 silently disabled `hdr10-opt` on every encode. **v52 fix:** dropped the conflicting ffmpeg color flags; VUI now lives in `-x265-params` (`colorprim/transfer/colormatrix`) and `-svtav1-params` (numeric AV1 spec values: `color-primaries=9`, `transfer-characteristics=16` for PQ / `=18` for HLG, `matrix-coefficients=9`). Output now reports `bt2020nc/bt2020/smpte2084` end-to-end and `hdr10-opt` is active for the first time
-- **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch. `AV_PROFILE=drone_4k bash av_launcher.sh` (or `$env:AV_PROFILE = "drone_4k"; .\av_encode.ps1`). Resolves path → `UserProfiles/` → `profiles/*/`. EXTENDS chain + schema validation preserved; auto-confirms; fails fast on missing LUTs
-- **Rate control: CRF, 1-pass VBR, 2-pass VBR** (v51) — SW encoders (libx265 / libx264 / libsvtav1 / libaom-av1) now support true 2-pass encoding for better quality at the same target bitrate. Automatic VBV/Level/Tier (HEVC Main→High Tier escalation when bitrate exceeds Main caps; H.264/AV1 level bump). HDR10 static metadata (Mastering Display + MaxCLL/MaxFALL) extracted from source or fallback BT.2020/1000-nit defaults, injected into all PQ output (CRF + 1-pass + 2-pass)
+- **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
+- **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
+- **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output
+- **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
-- **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 layout presets with map M2 + animated dot · linear interpolation per frame), SRT (libass with FontSize 18/24/32 styling), ASS (anime/styled subs with embedded styling + scale 1.0x/1.25x/1.5x), Image subs PGS/VobSub (Bluray/DVD, external `.sup`/`.idx+.sub` + embedded tracks via ffprobe). **Preview mode** opt-in per flow — 5s clip at mid-point for quick check before full encode
+- **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); opt-in 5s preview
 
 ## Quick Start
 
@@ -151,13 +150,13 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 
 | Brand | Detection | Parser | Norm CSV | SRT |
 |---|---|---|---|---|
-| **DJI** | `djmd`/`dbgi` | ExifTool | ✅ (Python post) | ✅ |
+| **DJI** | `djmd`/`dbgi` | ExifTool (per-sample) | ✅ full track + computed speed/heading + G-force | ✅ |
 | **GoPro** | `gpmd` | GPMF KLV (Python) | ✅ | ✅ |
 | **Sony Action Cam** | `nmea` | NMEA 0183 (Python) | ✅ | ✅ |
 | **Garmin VIRB** | `fdsc` | FIT (Python) | ✅ + HR/cadence/power | ✅ |
 | **QuickTime** | `com.apple.quicktime.location.ISO6709` | ExifTool | ✅ (single point) | ✅ |
 
-- **Norm CSV** (18 cols) — `timestamp,lat,lon,alt_m,speed_mps,speed_kmh,heading_deg,gforce_xyz,gyro_xyz,temp_c,hr_bpm,cadence_rpm,power_w,source_brand`
+- **Norm CSV** (24 cols, v54) — `timestamp,lat,lon,alt_m,speed_mps,speed_kmh,heading_deg,gforce_xyz,gyro_xyz,temp_c,hr_bpm,cadence_rpm,power_w,pitch_deg,roll_deg,yaw_deg,fix_quality,num_sats,hdop,source_brand`
 - **DJI strip** sub-modes — dbgi-only · djmd+dbgi · total
 - **Excluded by design** — Insta360, Yi/Akaso/SJCAM
 - **External GPS import** — GPX/FIT/KML → CSV/SRT/GPX/KML via `av_extractor_gps`
@@ -373,4 +372,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v53** — 58 bugs fixed · 200+ features · ~23 000 LoC · 71 files
+Current: **v54** — 60 bugs fixed · 210+ features · ~23 300 LoC · 74 files

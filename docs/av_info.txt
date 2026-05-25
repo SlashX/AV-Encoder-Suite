@@ -1626,22 +1626,46 @@ CUPRINS
                         application/vnd.google-earth.kml+xml.
     8) Anulare
 
-  CSV NORMALIZAT — schema 18 coloane cross-brand:
+  CSV NORMALIZAT — schema 24 coloane cross-brand (v54, extins de la 18):
     timestamp, lat, lon, alt_m, speed_mps, speed_kmh, heading_deg,
     gforce_x, gforce_y, gforce_z, gyro_x, gyro_y, gyro_z,
-    temp_c, hr_bpm, cadence_rpm, power_w, source_brand
+    temp_c, hr_bpm, cadence_rpm, power_w,
+    pitch_deg, roll_deg, yaw_deg, fix_quality, num_sats, hdop,
+    source_brand
+
+    Coloane noi v54:
+      gforce_*  — acceleratie in g (GoPro ACCL; DJI accelerometru per-cadru)
+      gyro_*    — viteza unghiulara rad/s (GoPro GYRO)
+      pitch/roll/yaw_deg — orientare gimbal (DJI, pe modelele care o expun)
+      fix_quality — calitate fix GPS (GoPro GPSF, NMEA GGA, GPX <fix>)
+      num_sats    — numar sateliti (NMEA GGA, GPX <sat>)
+      hdop        — precizie orizontala (GoPro GPSP, NMEA GGA, GPX <hdop>)
+    source_brand ramane ultima coloana (compatibilitate unelte).
+    Campurile fara date raman goale per-brand.
 
   source_brand valori:
     dji | gopro | sony | garmin | quicktime |
     external_gpx | external_fit | external_kml
 
   PARSERS (rezumat):
-    GoPro GPMF — KLV binary; containere DEVC → STRM nested; GPS5 records
-                 cu scale factors; skip fix=0 si zero coords.
-    Sony NMEA  — $GPRMC + $GPGGA (+ multi-constellation $GN); altitudine
-                 din $GPGGA atasata la ultimul $GPRMC.
+    GoPro GPMF — KLV binary; containere DEVC → STRM nested.
+                 GPS9 (Hero11/12/13) preferat, fallback GPS5; ACCL/GYRO
+                 (G-force + giroscop); scale factors; skip fix<2 si zero coords.
+    Sony NMEA  — $GPRMC + $GPGGA (fix/sateliti/HDOP) + $GPVTG (fallback
+                 viteza/directie); multi-constellation $GN; altitudine
+                 din $GPGGA atasata la ultimul punct.
     Garmin FIT — parser binar Python pur; record messages cu lat/lon
-                 (semicircles → degrees); extra HR/cadence/power/temp.
+                 (semicircles → degrees); enhanced_speed/altitude (precizie
+                 extinsa) cand exista; temperatura (camp 13, signed);
+                 extra HR/cadence/power.
+    DJI        — exiftool, extractie per-cadru (traseu GPS complet, nu doar
+                 1 punct). GPS + accelerometru (G-force, deja in g) +
+                 orientare gimbal optionala (Pitch/Roll/Yaw, fallback
+                 GimbalPitchDegree/RollDegree/YawDegree). Viteza (m/s, km/h)
+                 si directia (heading) calculate din deplasarea GPS, cu timp
+                 sub-secunda per punct (Action 6 nu inregistreaza viteza
+                 nativ). Modele tip Osmo Action 6 necesita sursa GPS externa
+                 (telecomanda / telefon) pentru a avea traseu.
     QuickTime  — atom com.apple.quicktime.location.ISO6709 via exiftool;
                  1 punct (start).
 
@@ -1678,7 +1702,13 @@ CUPRINS
     5) GPX & KML — conversie intre formate (GPX↔KML, FIT→GPX+KML)
     6) Anulare
 
-  Output: paralel cu CSV-urile, scriptul scrie si CSV_norm (schema 18
+  Import KML (v54): suport <gx:Track> (Strava, Garmin Connect, Google
+  Timeline) cu timestamp per punct; fallback la <coordinates> clasic cu
+  citirea <TimeStamp> a placemark-ului. GPX: citim si campurile native
+  <sat>/<hdop>/<fix>/<course> in plus de extensii (HR/cadence/power/temp).
+  FIT: enhanced_speed/altitude + temperatura corecta (camp 13).
+
+  Output: paralel cu CSV-urile, scriptul scrie si CSV_norm (schema 24
   coloane identica cu telemetria video, source_brand = external_gpx /
   external_fit / external_kml).
 
@@ -1741,7 +1771,8 @@ CUPRINS
   Presets format KEY=VALUE (src/burnin_presets/*.conf):
     HUD_TIMESTAMP/SPEED/DATA_STRIP/MAP/GFORCE/HR (toggle 0/1)
     POS_TIMESTAMP/SPEED/GFORCE/HR (anchor:dx,dy — tl/tr/bl/br)
-    STRIP_FIELDS (timestamp,speed,altitude,heading,temperature)
+    STRIP_FIELDS (timestamp,speed,altitude,heading,temperature,
+                  gforce,satellites,hdop,attitude — ultimele 4 v54)
     MAP_SIZE / MAP_POSITION / MAP_ROUTE_COLOR / MAP_DOT_COLOR
     FONT_SIZE_LARGE/MEDIUM/LABEL, SHADOW_OFFSET, SPEED_UNIT (kmh/mph/mps)
 
@@ -2289,7 +2320,9 @@ CUPRINS
   SOLUTIE:  Fisierul video nu contine date GPS. Pe DJI Action 6 (fara
             senzor GPS intern), datele se salveaza DOAR daca ai filmat
             cu telecomanda DJI Bluetooth conectata sau cu aplicatia DJI
-            Mimo pornita pe telefon.
+            Mimo pornita pe telefon. Cand exista GPS, se exporta traseul
+            complet (GPX/SRT/CSV basic + normalizat cu viteza/directie/
+            G-force), nu doar un singur punct.
 
   PROBLEMA: AV1 HDR10+ inline missing
   SOLUTIE:  Requires SVT-AV1 v1.5+. libaom-av1 falls back to HDR10 static

@@ -3,9 +3,89 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v53 | 58 bug-uri fixate | 200+ features
-  71 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 32 tests) | ~23000 linii cod | ~4800 linii documentatie
+  TOTAL: v54 | 61 bug-uri fixate | 210+ features
+  74 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 35 tests) | ~23300 linii cod | ~4900 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v54 — Telemetrie extinsa: G-force/giroscop, GPS9, orientare DJI,
+        KML modern, calitate fix GPS
+═══════════════════════════════════════════════════════════════
+
+  FIX BUG (Garmin FIT) — temperatura era citita din campul gresit.
+        Parser-ul FIT folosea campul 23 (putere acumulata) ca temperatura
+        in loc de campul 13 (temperatura reala). Rezultat: valori de
+        temperatura aberante in CSV-uri din fisiere Garmin VIRB. Corectat,
+        inclusiv suport corect pentru temperaturi negative (sub 0 grade).
+
+  FIX BUG (conversie KML) — la export GPX/FIT -> KML, eticheta numelui
+        era scrisa corupt ca <n> in loc de <name>, producand fisiere KML
+        invalide in unele playere/Google Earth. Corectat in toate locurile.
+
+  FIX BUG (DJI Action 6 — traseu GPS complet) — la camerele DJI care
+        stocheaza telemetria per-cadru (ex. Osmo Action 6, cu telecomanda
+        sau telefon GPS conectat), fisierele CSV (basic + normalizat)
+        contineau un SINGUR punct GPS in loc de tot traseul. Cauza: modul
+        de export CSV "comprima" intregul flux la o singura linie. Acum
+        ambele CSV-uri contin traseul complet (mii de puncte), la fel ca
+        fisierele GPX/SRT. In plus, pentru CSV-ul normalizat:
+          - viteza (m/s + km/h) si directia (heading) sunt calculate din
+            deplasarea GPS reala (Action 6 nu inregistreaza viteza nativ);
+          - acceleratia (G-force) este inclusa din senzorul camerei;
+          - fiecare punct primeste timp sub-secunda, deci overlay-ul HUD
+            (burn-in) se animeaza fluid pe filmarile DJI.
+        Clipurile fara GPS raman, corect, fara fisier normalizat.
+
+  ADD GoPro — acceleratie (G-force) + giroscop. Extragem acum fluxurile
+        ACCL si GYRO din metadata GPMF si le includem in CSV-ul normalizat
+        (gforce_x/y/z in g, gyro_x/y/z). Gauge-ul G-force din overlay-ul
+        HUD (burn-in) functioneaza acum si pe filmari GoPro.
+
+  ADD GoPro Hero11/12/13 — suport GPS9. Camerele noi folosesc un format
+        GPS nou (GPS9), cu timestamp propriu per punct si precizie mai
+        buna. Detectat automat; pentru camerele mai vechi se foloseste in
+        continuare GPS5 (fallback transparent).
+
+  ADD Garmin FIT — campuri "enhanced". Cand fisierul contine viteza si
+        altitudine in format extins (enhanced_speed / enhanced_altitude),
+        le folosim preferential — precizie mai mare si interval mai larg
+        (utile la altitudini mari / viteze mari).
+
+  ADD DJI — orientare gimbal in CSV normalizat. Extragem pitch, roll si
+        yaw (cu fallback pe GimbalPitchDegree/RollDegree/YawDegree) pe
+        langa pozitia GPS, pe modelele care expun aceste date (raman goale
+        pe modele care nu le ofera, ex. Action 6).
+
+  ADD Import KML modern — suport <gx:Track>. Fisierele KML exportate de
+        Strava, Garmin Connect si Google Timeline folosesc formatul
+        <gx:Track> (timestamp per punct). Acum sunt citite corect, cu
+        timpii pastrati. Pentru KML clasic (<coordinates>) se citeste si
+        eticheta <TimeStamp> a placemark-ului.
+
+  ADD Sony / NMEA + GPX — calitatea semnalului GPS. Extragem acum
+        calitatea fix-ului, numarul de sateliti si HDOP (precizia
+        orizontala) acolo unde sursa le contine.
+
+  ADD Sony / NMEA — fraza $GPVTG ca sursa de rezerva pentru viteza si
+        directie, folosita cand $GPRMC nu le furnizeaza.
+
+  UPDATE Schema CSV normalizat extinsa 18 -> 24 coloane. Adaugate:
+        pitch_deg, roll_deg, yaw_deg, fix_quality, num_sats, hdop.
+        Coloana source_brand ramane ultima (compatibil cu unelte care
+        citesc brandul). Overlay-ul HUD (burn-in) a fost actualizat:
+        detectarea brandului din CSV se face acum dupa numele coloanei
+        (nu dupa pozitie fixa), iar in data-strip pot fi afisate campuri
+        noi: gforce, satellites, hdop, attitude (pitch/roll).
+
+  SYNC Paritate completa bash <-> PowerShell pe toate punctele de mai
+        sus (av_telemetry, av_extractor_gps, av_burnin, burnin_render).
+
+  ADD Teste — 3 fisiere noi (unit bash + PowerShell + integration).
+        Acopera: schema 24 coloane in toate locurile, parser GoPro
+        GPS5+ACCL+GYRO si GPS9 pe binare sintetice, FIT temperatura
+        camp 13 + enhanced speed/altitude, NMEA VTG/GGA, KML gx:Track,
+        orientare DJI, campuri native GPX (sat/hdop/fix/course).
 
 
 ═══════════════════════════════════════════════════════════════
