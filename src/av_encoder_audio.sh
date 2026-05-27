@@ -343,7 +343,7 @@ for file in "${FILES[@]}"; do
 
     # shellcheck disable=SC2086
     ffmpeg -i "$file" \
-        -map 0:v -map 0:a -map 0:s? -map 0:t? \
+        -map 0:v -map 0:a? -map 0:s? -map 0:t? \
         -map_metadata 0 -map_chapters 0 \
         -c:v copy \
         $AUDIO_PARAMS \

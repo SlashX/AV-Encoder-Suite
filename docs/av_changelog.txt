@@ -3,9 +3,169 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v54 | 61 bug-uri fixate | 210+ features
-  74 fisiere (20 src + 12 tools + 6 profile + 3 burnin presets + 1 Python engine + 35 tests) | ~23300 linii cod | ~4900 linii documentatie
+  TOTAL: v56 | 69 bug-uri fixate | 216+ features
+  99 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 54 teste [47 test_* + 7 infra]) | ~35000 linii cod+teste | ~5200 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v56 — HDR/DV tools: Remove DV / Remove HDR10+ / Verify / Export / Plot
+═══════════════════════════════════════════════════════════════
+
+  Meniul "HDR/DV tools" (optiunea 8 din meniul principal) creste de la 4 la
+  7 optiuni, toate metadata-only (fara re-encode video). Capabilitatile noi
+  expun functii deja prezente in unelte (dovi_tool / hdr10plus_tool si
+  fork-urile AV1), validate end-to-end pe clipuri reale (HEVC HDR10+, AV1 DV,
+  AV1 HDR10+, AV1 hibrid DV+HDR10+).
+
+  ADD Remove DV -> HDR10 curat (optiunea 4) — scoate stratul Dolby Vision
+        (enhancement layer + RPU) dintr-un fisier, pastrand intacte HDR10
+        static si, daca exista, HDR10+ dinamic. Util cand vrei un fisier
+        HDR10 simplu, fara semnalizare DV (compatibilitate mai larga cu
+        TV-uri / playere). Fara re-encode: extract bitstream -> remove ->
+        re-mux audio original. Pe MP4/MOV output-ul primeste tag video curat
+        (hvc1 / av01) ca sa nu mai fie raportat ca DV. HEVC + AV1. Output:
+        OutputVideos/<nume>_nodv.<ext>
+
+  ADD Remove HDR10+ metadata (optiunea 5) — scoate metadata dinamica HDR10+
+        (SEI la HEVC / OBU_METADATA la AV1), pastrand HDR10 static si, daca
+        exista, stratul DV. Fara re-encode. HEVC + AV1. Output:
+        OutputVideos/<nume>_nohdr10plus.<ext>
+
+  ADD Plot DV metadata -> PNG (optiunea 6) — genereaza un grafic PNG al
+        metadata Dolby Vision din RPU: L1 (luminozitate dinamica, implicit),
+        L2 sau L8 (trims). Diagnostic vizual al masterului DV de-a lungul
+        clipului. Graficul e generat nativ de unealta (fara dependente extra).
+        HEVC + AV1. Output: OutputVideos/<nume>_dvplot_<tip>.png
+
+  UPDATE Inspect metadata (optiunea 2) — imbunatatit cu:
+          - verificare autoritara HDR10+ ("--verify"): afiseaza explicit
+            daca fisierul contine metadata dinamica HDR10+ (PREZENTA/ABSENTA),
+            inainte de numararea descriptorilor de scena;
+          - export RPU Dolby Vision complet la JSON (OutputVideos/<nume>_rpu.json)
+            pentru analiza offline, pe langa rezumatul agregat existent.
+
+  FIX BUG (encode/re-mux pe surse fara pista audio) — pe surse video-only
+        (fara pista audio), incercarea de a mapa audio obligatoriu facea
+        ffmpeg sa esueze cu "stream map matches no streams", iar operatia pica.
+        Maparea audio este acum optionala peste TOATE caile care produc un
+        fisier final, nu doar HDR/DV:
+          - bucla principala de encode (toate codec-urile, inclusiv ramura DJI)
+          - encoderele ProRes si DNxHR
+          - re-mux-ul triple-layer Dolby Vision post-encode
+          - fluxurile HDR/DV tools (Transform RPU, HDR10+ -> DV hybrid,
+            Remove DV, Remove HDR10+)
+          - "Encode doar audio (video stream copy)" — acum tolereaza surse
+            video-only (video copiat, fara audio) in loc sa esueze
+        Sursele cu audio raman complet neschimbate; cele fara audio se
+        proceseaza corect (doar video). Paritate bash <-> PowerShell.
+
+  SYNC paritate "Encode doar audio" — varianta PowerShell folosea "-map 0"
+        (mapa toate stream-urile, inclusiv track-uri de date), iar bash mapa
+        explicit video/audio/subs/attachments. Aliniate ambele la maparea
+        explicita ("-map 0:v -map 0:a? -map 0:s? -map 0:t?"): comportament
+        identic, audio optional, fara track-uri de date (evita
+        incompatibilitati cu MP4/MOV).
+
+  SYNC paritate bash <-> PowerShell completa pe toate cele 5 capabilitati
+        (acelasi numerotare meniu 1-7, acelasi comportament). Helperi comuni
+        noi in av_common.sh + mirror PowerShell in av_encode.ps1. Teste noi
+        de regresie (bash 18 / PowerShell 19 verificari) care valideaza
+        export / plot / verify / remove + reparatia T.35 AV1 DV (post-remux)
+        pe RPU sintetic + clipuri reale.
+
+  FIX BUG MAJOR (Dolby Vision pe AV1 acum FUNCTIONAL) — pana acum, orice
+        operatie care injecta un strat Dolby Vision intr-un flux AV1
+        producea un fisier care PIERDEA DV-ul la redare/re-mux. Cauza
+        (identificata prin analiza bit-cu-bit): unealta de injectare AV1
+        omite un octet de aliniere obligatoriu (0x80) la finalul metadatei
+        Dolby Vision; decodorul (dav1d) il cere si, fara el, considera
+        metadata "malformata" si o ignora — DV disparea.
+        Solutie: un modul nou re-adauga octetul lipsa imediat dupa injectare,
+        chirurgical (doar pe metadata DV; HDR10+ din fluxurile hibride NU este
+        atins). Rezultat verificat pe clipuri reale: decodare curata fara
+        erori, Dolby Vision detectat corect pe fiecare cadru, identic cu un
+        master AV1 DV valid. Functioneaza fara unelte/containere suplimentare.
+        Acopera TOATE caile AV1 DV dintr-un singur punct (functia de injectare):
+          - HDR/DV tools: Transform RPU (AV1) + HDR10+ -> DV hybrid (AV1)
+          - encodare: triple-layer Dolby Vision (DV-preserve + pastrare DV
+            prin accelerare hardware)
+        In fluxurile hibride, DV + HDR10 + HDR10+ supravietuiesc toate trei.
+        Fluxurile HEVC nu erau afectate. Modul partajat bash <-> PowerShell
+        (necesita Python 3; daca lipseste, se trece la avertismentul de mai jos).
+
+  FIX (plasa de siguranta — raportare onesta AV1 DV) — pe langa reparatie,
+        dupa generare se verifica explicit daca stratul DV a supravietuit; in
+        cazul rar in care reparatia nu poate rula (ex. Python 3 indisponibil),
+        se afiseaza un avertisment clar in loc de un fals "complet". Inainte,
+        aceste cazuri raportau eronat succes desi fisierul ramanea fara DV.
+        Paritate bash <-> PowerShell.
+
+
+═══════════════════════════════════════════════════════════════
+  v55 — HDR/DV tools: reparare Transform RPU + metadata DV mai fidela
+═══════════════════════════════════════════════════════════════
+
+  FIX BUG (Transform RPU profile — flux complet nefunctional) — optiunea
+        "Transform RPU profile" din meniul HDR/DV tools esua de fiecare data
+        (pe orice sursa DV, HEVC sau AV1). Cauza: comanda de conversie folosea
+        o sintaxa care nu mai este valida in versiunea actuala a uneltei DV
+        (dovi_tool 2.x) — subcomanda respectiva opereaza acum pe fisiere video,
+        nu pe metadata RPU, si respingea argumentele cu eroare. Acum conversia
+        de profil se face prin calea corecta (editor de RPU cu mod global),
+        validata pe metadata reala atat pentru HEVC cat si pentru AV1.
+
+  FIX BUG (Transform RPU — eticheta mod gresita) — a treia optiune din meniu
+        era etichetata "DV 7 -> 8.1" dar selecta de fapt un mod care produce
+        profilul 8.4 (alt scop). Inlocuita cu o conversie reala si utila:
+        "8.1 pastrand maparea luma/chroma" (mai fidela decat forta 8.1 simpla).
+        Conversia Dolby Vision Profile 7 (dual-layer) ramane pentru o versiune
+        viitoare (necesita demux base+enhancement layer).
+
+  FIX BUG (HDR10+ -> DV, Windows) — la sinteza DV RPU din HDR10+, in unele
+        situatii valoarea returnata putea fi "contaminata" cu textul uneltei,
+        ducand la esecuri intermitente in pasii urmatori. Iesirea este acum
+        izolata corect.
+
+  UPDATE HDR10+ -> DV hybrid — nivelul L6 (mastering display + MaxCLL/MaxFALL)
+        al stratului DV sintetizat este preluat acum din metadata HDR10 reala
+        a sursei, cand exista, in loc de valori generice fixe (1000 niti). Cand
+        sursa nu semnaleaza aceste date, se folosesc in continuare valorile
+        standard BT.2020 1000 niti. Mai fidel fata de masterul original.
+
+  UPDATE Inspect metadata — rezumatul Dolby Vision afiseaza acum un sumar
+        agregat al intregului RPU (numar de cadre, profil, versiune DM, numar
+        de scene, mastering display, niveluri de luminozitate L1/L5/L6) in loc
+        de informatia pentru un singur cadru. Mult mai util pentru diagnoza.
+
+  SYNC paritate bash <-> PowerShell completa pe toate punctele de mai sus.
+        Test nou de regresie (bash + PowerShell) care prinde sintaxa veche a
+        uneltei DV si valideaza conversia + sinteza pe metadata reala.
+
+  FIX BUG (audit — extractie metadata poluata) — functiile care extrag
+        metadata HDR10+ / sintetizeaza RPU DV returnau calea fisierului
+        amestecata cu mesajele de progres ale uneltelor (care scriu pe iesirea
+        standard), rezultand cai invalide pe mai multe linii in pasii urmatori.
+        Iesirea uneltelor este acum izolata corect; calea returnata e curata.
+
+  FIX BUG (audit — suprascriere fisier temporar) — la pasii care extrag fluxul
+        video brut intr-un fisier temporar, conversia esua tacit pentru ca
+        ffmpeg refuza sa suprascrie fisierul (deja creat de generatorul de
+        temporare) si producea un fisier gol. Adaugat steagul de suprascriere.
+
+  FIX BUG (audit — extractie HDR10+ prin pipe) — extractia HDR10+ folosea un
+        pipe intre ffmpeg si unealta, fragil intre platforme (PowerShell trece
+        pipe-ul ca text si corupe fluxul binar; varianta AV1 a uneltei pica pe
+        intrare standard). Acum se foloseste un fisier intermediar (ca la DV),
+        robust pe toate platformele; HDR10+ AV1 functioneaza corect pe Windows.
+
+  NOTA (known issue, AV1 DV) — re-injectarea RPU Dolby Vision in flux AV1
+        produce metadata T.35 pe care versiunea curenta de ffmpeg o considera
+        malformata, iar re-mux-ul ulterior pierde stratul DV. Cauza este in
+        lantul de unelte (fork av1dovi_tool vs ffmpeg 8.1.x), nu in cod.
+        Fluxurile HEVC (DV + HDR10+) sunt complet functionale. Solutia pentru
+        AV1 (mux dedicat / unealta actualizata) ramane pentru o versiune
+        viitoare.
 
 
 ═══════════════════════════════════════════════════════════════

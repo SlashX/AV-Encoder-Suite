@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v54** — 60 bugs fixed · 210+ features · ~23 300 LoC · 74 files
+**v56** — 69 bugs fixed · 216+ features · ~35 000 LoC · 99 files
 
 ---
 
@@ -19,7 +19,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
 - **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
-- **Metadata-only HDR/DV tools** — RPU profile transforms (5/7→8.1, 8.1↔10), HDR10+→DV hybrid synthesis (lossless on video)
+- **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
 - **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
 - **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
 - **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output
@@ -180,13 +180,16 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
    | Demux streams | Smart per-codec wrap: video→`.mkv`, audio→`.mka`, sub→native ext, cover→jpg/png, chapters→XML, attachments+data→folders |
    | Mux streams (v50) | Combine video + N audio + N subs + chapters + attachments → fresh container. Manual selection, VobSub pair handling, per-track metadata opt-in (lang/title/default/forced). Compat matrix reused from Remux. Input only from `InputVideos/`. |
 
-8. **HDR/DV Tools** (v44/v45, metadata-only, no re-encode):
+8. **HDR/DV Tools** (v44/v45/v56, metadata-only, no re-encode):
 
    | Option | Action |
    |---|---|
-   | Transform RPU | DV profile convert (5/7→8.1, force 8.1, 8.1↔10) |
-   | Inspect | ffprobe + `dovi_tool info` + HDR10+ scene count |
+   | Transform RPU | DV profile convert (5→8.1, force 8.1, 8.1 preserving mapping, →P10 AV1) |
+   | Inspect | ffprobe + `dovi_tool info -s` + RPU JSON export + HDR10+ `--verify` |
    | HDR10+ → DV hybrid (v45) | Synthesize DV RPU from HDR10+ → inject → re-mux |
+   | Remove DV → HDR10 (v56) | Strip DV layer, keep HDR10/HDR10+ (HEVC + AV1) |
+   | Remove HDR10+ (v56) | Strip HDR10+ metadata, keep HDR10/DV (HEVC + AV1) |
+   | Plot DV metadata (v56) | L1/L2/L8 brightness/trims → PNG (native) |
 
 9. **Burn-in overlay** (v48, re-encode with baked-in pixels):
 
@@ -218,7 +221,7 @@ AV-Encoder-Suite/
 │   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36/v37)
 │   ├── av_mux.sh               # v49+v50 — Mux tools standalone (remux + demux + mux)
 │   ├── av_mux.ps1              # v49+v50 — PS1 mirror standalone
-│   ├── av_hdr_dv_tools.sh      # HDR/DV tools submenu (v44 + v45; remux moved to av_mux in v49)
+│   ├── av_hdr_dv_tools.sh      # HDR/DV tools submenu (v44/v45/v56; remux moved to av_mux in v49)
 │   ├── av_check.sh             # Media analysis + CSV export (Termux/Linux/macOS)
 │   ├── av_check.ps1            # Media analysis + CSV export (Windows)
 │   ├── av_encode.ps1           # All-in-one PowerShell script (Windows)
@@ -229,6 +232,7 @@ AV-Encoder-Suite/
 │   ├── av_burnin.sh            # v48 — Burn-in overlay (HUD/SRT/ASS/Image)
 │   ├── av_burnin.ps1           # v48 — PS1 mirror standalone
 │   ├── burnin_render.py        # v48 — Python+matplotlib HUD render engine
+│   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat)
 │   ├── burnin_presets/         # v48 — HUD layout presets (.conf)
 │   │   ├── minimal.conf        # timestamp + speed corner overlay
 │   │   ├── data-strip.conf     # bottom bar gauges (speed/alt/heading/temp)
@@ -294,7 +298,7 @@ Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip when the binary is 
 5. Import external GPS — GPX/FIT/KML
 6. Trim & Concat — trim / concat / pipeline / batch
 7. **Mux tools** (v49 + v50) — Remux + Demux + Mux, no re-encode · 10 input formats (Blu-ray/DVD/broadcast) · remux to mkv/mp4/mov/webm · demux to mkv/mka/native sub ext + cover/chapters/attach · **mux** (v50): combine separate video + audio[N] + subs[N] + chapters + attachments into fresh container (manual selection, VobSub pair handling, per-track metadata opt-in)
-8. **HDR/DV tools** — transform RPU / inspect / HDR10+ → DV (v45)
+8. **HDR/DV tools** — transform / inspect / HDR10+→DV / remove DV / remove HDR10+ / plot (v56)
 9. **Burn-in overlay** (v48) — HUD telemetry / SRT / ASS / Image subs (PGS/VobSub)
 10. Exit
 
@@ -372,4 +376,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v54** — 60 bugs fixed · 210+ features · ~23 300 LoC · 74 files
+Current: **v56** — 69 bugs fixed · 216+ features · ~35 000 LoC · 99 files

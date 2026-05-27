@@ -261,10 +261,10 @@ assert_file_exists "$HDV" "av_hdr_dv_tools.sh exista"
 # Nu mai contine hdv_flow_remux
 grep -q "hdv_flow_remux" "$HDV" && _fail "hdv_flow_remux nu trebuie sa mai existe" || _pass
 
-# Submeniu cu 4 optiuni (renumerotare)
+# Submeniu HDR/DV (v56: extins la 7 optiuni — remux ramane in av_mux)
 grep -q "Inspect metadata" "$HDV" && _pass || _fail "Inspect inca disponibil"
 grep -q "HDR10+ → DV hybrid" "$HDV" && _pass || _fail "HDR10+→DV inca disponibil"
-grep -q "Alege 1-4" "$HDV" && _pass || _fail "submeniu HDR/DV cu 4 optiuni (1-4)"
+grep -q "Alege 1-7" "$HDV" && _pass || _fail "submeniu HDR/DV cu 7 optiuni (1-7, v56)"
 
 # Mesaj de redirect catre Mux tools (av_mux)
 grep -qE "Mux tools|optiunea 7|av_mux" "$HDV" && _pass || _fail "redirect note pentru Mux tools"

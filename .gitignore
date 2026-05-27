@@ -15,6 +15,17 @@ ffmpeg2pass-*.log.mbtree
 *.dnxhd
 *.dnxhr
 
+# Output-uri ne-video (generate la runtime, NU se commit):
+#  - telemetrie / GPS: CSV (_norm/_basic/_full), GPX, KML, SRT
+#  - HDR/DV tools (v56): Plot PNG + Inspect RPU JSON export
+# (niciun fisier de aceste tipuri nu e tracked; pattern-uri ca *.mp4)
+*.csv
+*.gpx
+*.kml
+*.srt
+*_dvplot_*.png
+*_rpu.json
+
 # Profile salvate local (user profiles in UserProfiles/)
 UserProfiles/
 # Exclude src/profiles/ (built-in profiles, shipped with project)

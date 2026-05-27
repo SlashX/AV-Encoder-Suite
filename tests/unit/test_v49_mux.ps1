@@ -290,8 +290,8 @@ $encContent = Get-Content -Raw $avEncode
 # Invoke-RemuxContainer trebuie sa fie sters (UI flow vechi)
 if ($encContent -match 'function Invoke-RemuxContainer') { _fail "Invoke-RemuxContainer (UI vechi) trebuie sters" } else { _pass }
 
-# Invoke-HdrDvTools cu 4 optiuni (1-4)
-if ($encContent -match 'Alege 1-4') { _pass } else { _fail "Invoke-HdrDvTools cu prompt 1-4" }
+# Invoke-HdrDvTools cu 7 optiuni (v56: extins de la 4 la 7; "Alege 1-7" e unic in fisier)
+if ($encContent -match 'Alege 1-7') { _pass } else { _fail "Invoke-HdrDvTools cu prompt 1-7 (v56)" }
 # Nota redirect catre Mux tools (av_mux)
 if ($encContent -match 'optiunea 7|Mux tools') { _pass } else { _fail "redirect note pentru Mux tools" }
 

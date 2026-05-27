@@ -574,7 +574,7 @@ handle_dji_full() {
         log "  Fisier DJI detectat"
         if [[ "${ENCODER_TYPE:-}" == "dnxhr" ]]; then
             log "  Track-uri DJI omise (.mov/.mxf incompatibile)"
-            MAP_FLAGS="-map 0:v:0 -map 0:a -map 0:s? -map_metadata 0 -map_chapters 0"
+            MAP_FLAGS="-map 0:v:0 -map 0:a? -map 0:s? -map_metadata 0 -map_chapters 0"
         else
             local dji_result switch_mkv
             dji_result=$(_dji_dialog "$file" "$dji_info" "$CONTAINER")
@@ -594,7 +594,7 @@ handle_dji_full() {
             MAP_FLAGS=$(build_map_flags "$file" "$KEEP_DJMD" "$KEEP_DBGI" "$KEEP_TMCD" "$dji_info")
         fi
     else
-        MAP_FLAGS="-map 0:v -map 0:a -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"
+        MAP_FLAGS="-map 0:v -map 0:a? -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"
     fi
     log "  Map flags: $MAP_FLAGS"
 }
@@ -683,9 +683,9 @@ build_map_flags() {
     local is_dji=0
     [ "$has_djmd" -eq 1 ] || [ "$has_dbgi" -eq 1 ] && is_dji=1
     if [ "$is_dji" -eq 0 ]; then
-        echo "-map 0:v -map 0:a -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"; return
+        echo "-map 0:v -map 0:a? -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"; return
     fi
-    local maps="-map 0:v:0 -map 0:a -map 0:s? -map 0:t?"
+    local maps="-map 0:v:0 -map 0:a? -map 0:s? -map 0:t?"
     if [[ "$CONTAINER" == "mkv" ]]; then
         local idx=0
         while IFS= read -r tag; do
@@ -1163,16 +1163,22 @@ extract_hdr10plus_metadata() {
     hp_tool=$(tool_for_extract "$src_codec" hdr10plus)
     # Log pe stderr (nu stdout) — stdout e rezervat pentru calea JSON
     echo "  HDR10+: Extrag metadata dinamica (codec=$src_codec, tool=$hp_tool)..." | tee -a "${LOG_FILE:-/dev/null}" >&2
+    # v55 audit: fisier intermediar (NU pipe ffmpeg|tool). Pipe-ul binar e fragil
+    # cross-platform — PowerShell il intermediaza ca text (corupe), git-bash MINGW
+    # il corupe, sven-pke av1hdr10plus_tool da panic pe stdin. Consistent cu extract_dv_rpu.
+    local _raw_tmp _raw_rc=0
     if [[ "$src_codec" == "av1" ]]; then
-        # AV1: extragere directa (sven-pke fork suporta OBU_METADATA T.35)
-        ffmpeg -v error -i "$file" -c:v copy -f ivf - 2>/dev/null | \
-            "$hp_tool" extract -i - -o "$json_file" 2>/dev/null
+        _raw_tmp=$(av_mktemp_ext ivf)
+        ffmpeg -y -v error -i "$file" -c:v copy -f ivf "$_raw_tmp" 2>/dev/null || _raw_rc=$?
     else
-        # HEVC: bitstream filter pentru annex-B
-        ffmpeg -v error -i "$file" -c:v copy -bsf:v hevc_mp4toannexb -f hevc - 2>/dev/null | \
-            "$hp_tool" extract -i - -o "$json_file" 2>/dev/null
+        _raw_tmp=$(av_mktemp_ext hevc)
+        ffmpeg -y -v error -i "$file" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$_raw_tmp" 2>/dev/null || _raw_rc=$?
     fi
-    if [ $? -eq 0 ] && [ -s "$json_file" ]; then
+    if [ "$_raw_rc" -eq 0 ] && [ -s "$_raw_tmp" ]; then
+        "$hp_tool" extract -i "$_raw_tmp" -o "$json_file" >/dev/null 2>&1
+    fi
+    rm -f "$_raw_tmp"
+    if [ -s "$json_file" ]; then
         local count
         count=$(grep -c '"BezierCurveData"\|"TargetedSystemDisplayMaximumLuminance"' "$json_file" 2>/dev/null)
         echo "  HDR10+: Metadata extrasa ($count scene descriptors)" | tee -a "${LOG_FILE:-/dev/null}" >&2
@@ -1265,7 +1271,7 @@ handle_hdr10plus_dialog() {
                 if _check_dovi_tool_for "$target_codec"; then
                     HDR10PLUS_JSON=$(extract_hdr10plus_metadata "$file")
                     if [[ -n "$HDR10PLUS_JSON" ]]; then
-                        DOVI_RPU_FILE=$(generate_dv_rpu_from_hdr10plus "$HDR10PLUS_JSON" "$target_codec")
+                        DOVI_RPU_FILE=$(generate_dv_rpu_from_hdr10plus "$HDR10PLUS_JSON" "$target_codec" "$file")
                         if [[ -n "$DOVI_RPU_FILE" ]]; then
                             log "  Triple-layer ($target_codec): HDR10+ JSON + DV RPU pregatite"
                             TRIPLE_LAYER_MODE=1
@@ -1342,15 +1348,39 @@ _check_dovi_tool() {
 generate_dv_rpu_from_hdr10plus() {
     local hdr10plus_json="$1"
     local target_codec="${2:-hevc}"
+    local source_file="${3:-}"
     local dovi_bin
     dovi_bin=$(tool_for_extract "$target_codec" dovi)
     local rpu_file
     rpu_file=$(av_mktemp_ext bin)
 
-    # Config JSON minimal pentru Profile 8.1 CMv4.0
+    # v55: L6 (mastering display + light level) din metadata HDR10 reala a sursei
+    # cand source_file e dat; altfel BT.2020 1000-nit defaults. Evita DV sintetizat
+    # generic cand sursa semnaleaza alt master display / MaxCLL.
+    # Note: max_display in cd/m2 (integer); min_display in unitati 0.0001 cd/m2;
+    #       max_content/max_average = MaxCLL/MaxFALL.
+    local l6_maxdisp=1000 l6_mindisp=1 l6_maxcll=1000 l6_maxfall=400
+    local l6_src="default-1000nit"
+    if [[ -n "$source_file" ]] && [[ -f "$source_file" ]]; then
+        hdr10_static_resolve "$source_file"
+        local md="${HDR10_MASTER_DISPLAY_SVTAV1:-}"
+        if [[ "$md" == *"L("* ]]; then
+            local lpart="${md##*L(}"; lpart="${lpart%)}"
+            local max_nits="${lpart%%,*}" min_nits="${lpart##*,}"
+            [[ -n "$max_nits" ]] && l6_maxdisp=$(LC_ALL=C awk "BEGIN{printf \"%d\", $max_nits + 0.5}")
+            [[ -n "$min_nits" ]] && l6_mindisp=$(LC_ALL=C awk "BEGIN{printf \"%d\", $min_nits * 10000 + 0.5}")
+        fi
+        if [[ "${HDR10_MAX_CLL:-}" == *","* ]]; then
+            l6_maxcll="${HDR10_MAX_CLL%%,*}"
+            l6_maxfall="${HDR10_MAX_CLL##*,}"
+        fi
+        l6_src="${HDR10_STATIC_SOURCE:-probe}"
+    fi
+
+    # Config JSON pentru Profile 8.1 CMv4.0 (L6 derivat din sursa cand exista)
     local config_file
     config_file=$(av_mktemp_ext json)
-    cat > "$config_file" << 'DVCONF'
+    cat > "$config_file" << DVCONF
 {
     "cm_version": "V40",
     "length": 1,
@@ -1361,18 +1391,18 @@ generate_dv_rpu_from_hdr10plus() {
         "active_area_bottom_offset": 0
     },
     "level6": {
-        "max_display_mastering_luminance": 1000,
-        "min_display_mastering_luminance": 1,
-        "max_content_light_level": 1000,
-        "max_frame_average_light_level": 400
+        "max_display_mastering_luminance": $l6_maxdisp,
+        "min_display_mastering_luminance": $l6_mindisp,
+        "max_content_light_level": $l6_maxcll,
+        "max_frame_average_light_level": $l6_maxfall
     }
 }
 DVCONF
 
-    echo "  DV: Generez RPU din HDR10+ metadata (codec=$target_codec, tool=$dovi_bin)..." | tee -a "${LOG_FILE:-/dev/null}" >&2
+    echo "  DV: Generez RPU din HDR10+ metadata (codec=$target_codec, tool=$dovi_bin, L6=$l6_src ${l6_maxdisp}/${l6_mindisp}/${l6_maxcll}/${l6_maxfall})..." | tee -a "${LOG_FILE:-/dev/null}" >&2
     "$dovi_bin" generate -j "$config_file" \
         --hdr10plus-json "$hdr10plus_json" \
-        -o "$rpu_file" 2>/dev/null
+        -o "$rpu_file" >/dev/null 2>&1
     local gen_rc=$?
 
     rm -f "$config_file"
@@ -1396,6 +1426,45 @@ DVCONF
 # Injecteaza DV RPU intr-un fisier HEVC sau AV1 encodat.
 # $1 = stream file (HEVC sau AV1), $2 = RPU bin, $3 = output file
 # $4 = target_codec ("hevc" default, "av1" pt sven-pke fork)
+# Detecteaza un interpretor Python 3 (python3 preferat, fallback python 3.x).
+# Echo numele binarului; return 1 daca niciunul.
+_av_python() {
+    if command -v python3 >/dev/null 2>&1; then echo "python3"; return 0; fi
+    if command -v python >/dev/null 2>&1 && python --version 2>&1 | grep -q "Python 3"; then
+        echo "python"; return 0
+    fi
+    return 1
+}
+
+# v56: repara trailing byte-ul T.35 (0x80) pe care av1dovi_tool inject-rpu il
+# arunca din OBU-urile DV (crate dolby_vision 3.3.x). dav1d il cere; fara el,
+# DV-ul e pierdut silentios. Engine partajat src/av1_dv_t35_repair.py.
+# In-place pe fisierul IVF dat. Soft-fail: daca python/engine lipsesc, doar
+# avertizeaza (verify_dv_survived prinde pierderea ulterior).
+_repair_av1_dv_t35() {
+    local f="$1"
+    local engine="$SCRIPT_DIR/av1_dv_t35_repair.py"
+    local py
+    py=$(_av_python) || {
+        echo "  DV: ⚠ repair T.35 AV1 sarit (Python 3 indisponibil) — DV poate fi pierdut la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        return 1
+    }
+    if [[ ! -f "$engine" ]]; then
+        echo "  DV: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        return 1
+    fi
+    local fixed
+    fixed=$(av_mktemp_ext ivf)
+    if "$py" "$engine" "$f" "$fixed" >>"${LOG_FILE:-/dev/null}" 2>&1 && [ -s "$fixed" ]; then
+        mv -f "$fixed" "$f"
+        echo "  DV: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        return 0
+    fi
+    rm -f "$fixed"
+    echo "  DV: ⚠ repair T.35 AV1 esuat — DV poate fi pierdut la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
+    return 1
+}
+
 inject_dv_rpu() {
     local stream_file="$1" rpu_file="$2" output_file="$3"
     local target_codec="${4:-hevc}"
@@ -1404,8 +1473,10 @@ inject_dv_rpu() {
     echo "  DV: Injectez RPU in bitstream $target_codec (tool=$dovi_bin)..." | tee -a "${LOG_FILE:-/dev/null}" >&2
     "$dovi_bin" inject-rpu -i "$stream_file" \
         --rpu-in "$rpu_file" \
-        -o "$output_file" 2>/dev/null
+        -o "$output_file" >/dev/null 2>&1
     if [ $? -eq 0 ] && [ -s "$output_file" ]; then
+        # v56: AV1 — repara T.35 (trailing byte aruncat de av1dovi_tool)
+        [[ "$target_codec" == "av1" ]] && _repair_av1_dv_t35 "$output_file"
         echo "  DV: Injectare RPU reusita" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 0
     else
@@ -1440,42 +1511,52 @@ extract_dv_rpu() {
             esac
             raw_tmp=$(av_mktemp_ext "$raw_ext")
             if [[ "$src_codec" == "av1" ]]; then
-                ffmpeg -v error -i "$input" -c:v copy -f ivf "$raw_tmp" 2>/dev/null
+                ffmpeg -y -v error -i "$input" -c:v copy -f ivf "$raw_tmp" 2>/dev/null
             else
-                ffmpeg -v error -i "$input" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$raw_tmp" 2>/dev/null
+                ffmpeg -y -v error -i "$input" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$raw_tmp" 2>/dev/null
             fi
             [ $? -ne 0 ] && { rm -f "$raw_tmp"; return 1; }
             use_input="$raw_tmp"
             ;;
     esac
 
-    "$dovi_bin" extract-rpu -i "$use_input" -o "$rpu_out" 2>/dev/null
+    "$dovi_bin" extract-rpu -i "$use_input" -o "$rpu_out" >/dev/null 2>&1
     local rc=$?
     [[ -n "$raw_tmp" ]] && rm -f "$raw_tmp"
     [ $rc -eq 0 ] && [ -s "$rpu_out" ] && return 0 || return 1
 }
 
-# Converteste un RPU intre profile DV (ex: 7→8.1, 5→8.1, force 8.1, 8.1→10 pentru AV1).
+# Converteste profile-ul unui RPU DV (ex: 5→8.1, force 8.1, 8.1 preserving mapping).
 # $1 = rpu_in path
 # $2 = rpu_out path
-# $3 = mode — int forwarded ca `-m N` la dovi_tool convert (default 2 = force 8.1)
+# $3 = mode — int forwarded ca flag GLOBAL `-m N` (default 2 = force 8.1)
 # $4 = target_codec (hevc default | av1) — alege binarul (dovi_tool / av1dovi_tool)
-# Modes (ref dovi_tool 2.x): 1=8.1 single-layer, 2=force 8.1, 3=5→8.1, 4=7→8.1.
-# Pentru AV1 (sven-pke fork) modurile pot diferi; expune `mode` ca int crud.
+# Modes (dovi_tool 2.x, flag global inainte de subcomanda):
+#   0=untouched, 1=MEL, 2=force 8.1 (removes mapping), 3=5→8.1, 4=8.4,
+#   5=8.1 preserving luma/chroma mapping.
+# v55 FIX: subcomanda `convert` din dovi_tool 2.x opereaza pe fisiere HEVC (-i/-o),
+#   NU pe RPU .bin, si nu accepta `-m`/`--rpu-out` (esua cu exit 2 la fiecare apel).
+#   Conversia RPU→RPU se face cu `-m N editor` (mode global + edit config minimal `{}`).
 convert_rpu_profile() {
     local rpu_in="$1" rpu_out="$2" mode="${3:-2}" target_codec="${4:-hevc}"
     [[ ! -f "$rpu_in" ]] && return 1
     local dovi_bin
     dovi_bin=$(tool_for_inject "$target_codec" dovi)
     [[ -z "$dovi_bin" ]] && return 1
+    # editor cere un JSON de edit; `{}` gol => doar conversia de profil (mode global)
+    local edit_cfg
+    edit_cfg=$(av_mktemp_ext json)
+    printf '{}' > "$edit_cfg"
     echo "  RPU convert: $rpu_in -> $rpu_out (mode=$mode, codec=$target_codec, tool=$dovi_bin)" \
         | tee -a "${LOG_FILE:-/dev/null}" >&2
+    local conv_rc=0
     if [[ -n "${LOG_FILE:-}" ]]; then
-        "$dovi_bin" convert -m "$mode" --rpu-out "$rpu_out" "$rpu_in" >/dev/null 2>>"$LOG_FILE"
+        "$dovi_bin" -m "$mode" editor -i "$rpu_in" -j "$edit_cfg" -o "$rpu_out" >/dev/null 2>>"$LOG_FILE" || conv_rc=$?
     else
-        "$dovi_bin" convert -m "$mode" --rpu-out "$rpu_out" "$rpu_in" >/dev/null 2>&1
+        "$dovi_bin" -m "$mode" editor -i "$rpu_in" -j "$edit_cfg" -o "$rpu_out" >/dev/null 2>&1 || conv_rc=$?
     fi
-    [ $? -eq 0 ] && [ -s "$rpu_out" ] && return 0 || return 1
+    rm -f "$edit_cfg"
+    [ "$conv_rc" -eq 0 ] && [ -s "$rpu_out" ] && return 0 || return 1
 }
 
 # Extrage video raw dintr-un container, codec-aware.
@@ -1488,19 +1569,126 @@ extract_raw_video() {
     [[ -z "$codec" ]] && codec=$(detect_source_codec "$input")
     case "$codec" in
         av1)
-            ffmpeg -v error -i "$input" -c:v copy -f ivf "$output" 2>/dev/null
+            ffmpeg -y -v error -i "$input" -c:v copy -f ivf "$output" 2>/dev/null
             ;;
         hevc)
-            ffmpeg -v error -i "$input" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$output" 2>/dev/null
+            ffmpeg -y -v error -i "$input" -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$output" 2>/dev/null
             ;;
         h264)
-            ffmpeg -v error -i "$input" -c:v copy -bsf:v h264_mp4toannexb -f h264 "$output" 2>/dev/null
+            ffmpeg -y -v error -i "$input" -c:v copy -bsf:v h264_mp4toannexb -f h264 "$output" 2>/dev/null
             ;;
         *)
-            ffmpeg -v error -i "$input" -c:v copy "$output" 2>/dev/null
+            ffmpeg -y -v error -i "$input" -c:v copy "$output" 2>/dev/null
             ;;
     esac
     [ $? -eq 0 ] && [ -s "$output" ] && return 0 || return 1
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v56 — HDR/DV TOOLS extinse: remove DV / remove HDR10+ / verify / export / plot
+# Toate opereaza pe binare (dovi_tool/av1dovi_tool/hdr10plus_tool/av1hdr10plus_tool)
+# selectate codec-aware prin tool_for_extract/tool_for_inject.
+# ══════════════════════════════════════════════════════════════════════
+
+# Remove DV enhancement layer + RPU dintr-un bitstream raw → HDR10 curat.
+# (HEVC: scoate EL+RPU NAL; AV1: scoate RPU OBU_METADATA; HDR10/HDR10+ raman.)
+# $1=input raw bitstream, $2=output raw bitstream, $3=codec (hevc|av1)
+# Return: 0=OK, 1=fail.
+remove_dv_layer() {
+    local input="$1" output="$2" codec="${3:-hevc}"
+    local dovi_bin
+    dovi_bin=$(tool_for_extract "$codec" dovi)
+    [[ -z "$dovi_bin" ]] && return 1
+    "$dovi_bin" remove -i "$input" -o "$output" >/dev/null 2>&1
+    [ $? -eq 0 ] && [ -s "$output" ] && return 0 || return 1
+}
+
+# Remove HDR10+ metadata (HEVC: SEI; AV1: OBU_METADATA) dintr-un bitstream raw.
+# $1=input raw bitstream, $2=output raw bitstream, $3=codec (hevc|av1)
+# Return: 0=OK, 1=fail.
+remove_hdr10plus_metadata() {
+    local input="$1" output="$2" codec="${3:-hevc}"
+    local hp_bin
+    hp_bin=$(tool_for_extract "$codec" hdr10plus)
+    [[ -z "$hp_bin" ]] && return 1
+    "$hp_bin" remove -i "$input" -o "$output" >/dev/null 2>&1
+    [ $? -eq 0 ] && [ -s "$output" ] && return 0 || return 1
+}
+
+# Verifica daca un fisier contine metadata HDR10+ dinamica (--verify extract).
+# Accepta container sau bitstream raw (extrage raw intern daca e container).
+# $1=input (container sau raw), $2=codec (hevc|av1)
+# Return: 0=prezent, 1=absent/eroare. (hdr10plus_tool exit 0=prezent, 1=absent.)
+verify_hdr10plus() {
+    local input="$1" codec="${2:-hevc}"
+    local hp_bin
+    hp_bin=$(tool_for_extract "$codec" hdr10plus)
+    [[ -z "$hp_bin" ]] && return 1
+
+    local ext="${input##*.}"; ext="${ext,,}"
+    local raw_tmp="" use_input="$input"
+    case "$ext" in
+        hevc|h265|265|ivf|obu) : ;;  # raw deja
+        *)
+            local raw_ext="hevc"; [[ "$codec" == "av1" ]] && raw_ext="ivf"
+            raw_tmp=$(av_mktemp_ext "$raw_ext")
+            if ! extract_raw_video "$input" "$raw_tmp" "$codec"; then
+                rm -f "$raw_tmp"; return 1
+            fi
+            use_input="$raw_tmp"
+            ;;
+    esac
+
+    "$hp_bin" --verify extract -i "$use_input" >/dev/null 2>&1
+    local rc=$?
+    [[ -n "$raw_tmp" ]] && rm -f "$raw_tmp"
+    return $rc
+}
+
+# Exporta un RPU DV (.bin) la JSON pentru analiza offline.
+# $1=rpu_in (.bin), $2=out_json, $3=kind (all|scenes|level5, default all), $4=codec
+# Return: 0=OK, 1=fail.
+export_dv_rpu_json() {
+    local rpu_in="$1" out_json="$2" kind="${3:-all}" codec="${4:-hevc}"
+    [[ ! -s "$rpu_in" ]] && return 1
+    local dovi_bin
+    dovi_bin=$(tool_for_extract "$codec" dovi)
+    [[ -z "$dovi_bin" ]] && return 1
+    "$dovi_bin" export -i "$rpu_in" -d "${kind}=${out_json}" >/dev/null 2>&1
+    [ $? -eq 0 ] && [ -s "$out_json" ] && return 0 || return 1
+}
+
+# Genereaza un grafic PNG al metadata DV dintr-un RPU (.bin) — nativ in dovi_tool.
+# $1=rpu_in (.bin), $2=out_png, $3=plot_type (l1|l2|l8|l8-saturation|l8-hue, default l1)
+# $4=title (optional), $5=codec (hevc|av1)
+# Return: 0=OK, 1=fail.
+plot_dv_metadata() {
+    local rpu_in="$1" out_png="$2" plot_type="${3:-l1}" title="${4:-}" codec="${5:-hevc}"
+    [[ ! -s "$rpu_in" ]] && return 1
+    local dovi_bin
+    dovi_bin=$(tool_for_extract "$codec" dovi)
+    [[ -z "$dovi_bin" ]] && return 1
+    if [[ -n "$title" ]]; then
+        "$dovi_bin" plot -i "$rpu_in" -o "$out_png" -p "$plot_type" -t "$title" >/dev/null 2>&1
+    else
+        "$dovi_bin" plot -i "$rpu_in" -o "$out_png" -p "$plot_type" >/dev/null 2>&1
+    fi
+    [ $? -eq 0 ] && [ -s "$out_png" ] && return 0 || return 1
+}
+
+# Verifica daca stratul DV a SUPRAVIETUIT intr-un fisier final (post inject + re-mux).
+# Necesar pentru known issue AV1: av1dovi_tool inject-rpu produce metadata T.35 pe
+# care ffmpeg o respinge la pachetizare → re-mux reuseste (rc=0, output ne-gol) DAR
+# DV-ul e eliminat silentios. Acest helper detecteaza pierderea ca sa raportam onest.
+# $1=fisier final (container), $2=codec (hevc|av1). Return: 0=DV prezent, 1=DV absent.
+verify_dv_survived() {
+    local file="$1" codec="${2:-hevc}"
+    local rpu_chk
+    rpu_chk=$(av_mktemp_ext bin)
+    if extract_dv_rpu "$file" "$rpu_chk" "$codec" >/dev/null 2>&1 && [ -s "$rpu_chk" ]; then
+        rm -f "$rpu_chk"; return 0
+    fi
+    rm -f "$rpu_chk"; return 1
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -4951,11 +5139,17 @@ run_encode_loop() {
                     local cont_flags
                     cont_flags=$(get_container_flags)
                     ffmpeg -v error -i "$injected_temp" -i "$output" \
-                        -map 0:v:0 -map 1:a -map 1:s? -map 1:t? \
+                        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
                         -c copy $cont_flags "$final_temp" 2>>"$LOG_FILE"
                     if [ $? -eq 0 ] && [ -s "$final_temp" ]; then
                         mv -f "$final_temp" "$output"
-                        log "  Triple-layer: $_tl_label — OK"
+                        # v56: guard onest AV1 — inject-rpu produce metadata T.35 pe care ffmpeg
+                        # o arunca silentios la pachetizare (rc=0, output ne-gol) si DV se pierde.
+                        if [[ "$_tl_codec" == "av1" ]] && ! verify_dv_survived "$output" "$_tl_codec"; then
+                            log "  Triple-layer: ⚠ DV pierdut la re-mux (known issue AV1 inject-rpu T.35 — Tier 4); output pastreaza HDR10/HDR10+"
+                        else
+                            log "  Triple-layer: $_tl_label — OK"
+                        fi
                     else
                         log "  Triple-layer: Re-mux esuat — output fara DV (HDR10+ pastrat)"
                         rm -f "$final_temp"

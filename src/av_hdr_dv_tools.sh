@@ -66,9 +66,9 @@ hdv_flow_transform_rpu() {
     echo "  Mode dovi_tool convert (filtrate dupa codec sursa: $src_codec):"
     local _default_choice=1
     if [[ "$src_codec" == "hevc" ]]; then
-        echo "    1) Force 8.1 (HEVC, single-layer + HDR10 base)  [-m 2]"
+        echo "    1) Force 8.1 (removes mapping, + HDR10 base)    [-m 2]"
         echo "    2) DV 5 -> 8.1                                  [-m 3]"
-        echo "    3) DV 7 -> 8.1 (drop EL, MEL only)              [-m 4]"
+        echo "    3) 8.1 preserving luma/chroma mapping           [-m 5]"
     elif [[ "$src_codec" == "av1" ]]; then
         echo "    4) AV1: profile 10 (sven-pke fork)              [-m 2 + tool av1]"
         _default_choice=4
@@ -85,7 +85,7 @@ hdv_flow_transform_rpu() {
         2) [[ "$src_codec" != "hevc" ]] && { echo "Mod 2 doar pentru HEVC."; return 1; }
            mode=3; target_codec="hevc" ;;
         3) [[ "$src_codec" != "hevc" ]] && { echo "Mod 3 doar pentru HEVC."; return 1; }
-           mode=4; target_codec="hevc" ;;
+           mode=5; target_codec="hevc" ;;
         4) [[ "$src_codec" != "av1" ]] && { echo "Mod 4 doar pentru AV1."; return 1; }
            mode=2; target_codec="av1" ;;
         *) echo "Optiune invalida."; return 1 ;;
@@ -145,11 +145,21 @@ hdv_flow_transform_rpu() {
     cont_flags=$(get_container_flags)
     # shellcheck disable=SC2086
     ffmpeg -v error -i "$injected_video" -i "$file" \
-        -map 0:v:0 -map 1:a -map 1:s? -map 1:t? \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
         -c copy $cont_flags "$final_out" 2>/dev/null
     local rc=$?
     rm -f "$rpu_src" "$rpu_out" "$raw_video" "$injected_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        # v56: guard onest pentru known issue AV1 — inject-rpu produce T.35 malformat,
+        # ffmpeg il respinge la pachetizare si DV-ul e pierdut silentios (rc=0, output ne-gol).
+        if [[ "$target_codec" == "av1" ]] && ! verify_dv_survived "$final_out" "$target_codec"; then
+            echo ""
+            echo "  ⚠ AVERTISMENT: stratul Dolby Vision a fost pierdut la re-mux."
+            echo "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg"
+            echo "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)."
+            echo "    Fisier generat, dar FARA DV: $final_out"
+            return 1
+        fi
         echo ""
         echo "  ✓ Transform RPU complet: $final_out"
         return 0
@@ -191,8 +201,16 @@ hdv_flow_inspect() {
         rpu_tmp=$(av_mktemp_ext bin)
         if extract_dv_rpu "$file" "$rpu_tmp" "$src_codec"; then
             echo ""
-            echo "── DV RPU info ($dovi_bin) ──"
-            "$dovi_bin" info -i "$rpu_tmp" 2>/dev/null | head -30 || echo "  (info command esuata)"
+            echo "── DV RPU summary ($dovi_bin) ──"
+            # v55: info -s = rezumat agregat (frames, profile, DM ver, scene count,
+            # mastering display, L1/L5/L6) — mai util decat info -i (un singur frame).
+            "$dovi_bin" info -i "$rpu_tmp" -s 2>/dev/null || echo "  (info command esuata)"
+            # v56 (C1): export RPU complet la JSON pentru analiza offline
+            mkdir -p "$OUTPUT_DIR"
+            local exp_json="${OUTPUT_DIR}/$(basename "${file%.*}")_rpu.json"
+            if export_dv_rpu_json "$rpu_tmp" "$exp_json" "all" "$src_codec"; then
+                echo "  RPU JSON exportat: $exp_json"
+            fi
         else
             echo ""
             echo "── DV: nu am putut extrage RPU (probabil sursa nu este DV) ──"
@@ -203,22 +221,24 @@ hdv_flow_inspect() {
         echo "── DV: tool negasit pentru codec=$src_codec ──"
     fi
 
-    # HDR10+ inspect
+    # HDR10+ inspect (v56 B3: --verify autoritar + scene descriptors)
     if _check_hdr10plus_tool_for "$src_codec"; then
         local hp_bin
         hp_bin=$(tool_for_extract "$src_codec" hdr10plus)
-        local hp_json
-        hp_json=$(extract_hdr10plus_metadata "$file" 2>/dev/null)
-        if [[ -n "$hp_json" ]] && [ -s "$hp_json" ]; then
-            local scenes
-            scenes=$(grep -c '"BezierCurveData"\|"TargetedSystemDisplay"' "$hp_json" 2>/dev/null)
-            echo ""
-            echo "── HDR10+ ($hp_bin) ──"
-            echo "  Scene descriptors: $scenes"
-            rm -f "$hp_json"
+        echo ""
+        echo "── HDR10+ ($hp_bin) ──"
+        if verify_hdr10plus "$file" "$src_codec"; then
+            echo "  ✓ Metadata HDR10+ dinamica: PREZENTA (--verify)"
+            local hp_json
+            hp_json=$(extract_hdr10plus_metadata "$file" 2>/dev/null)
+            if [[ -n "$hp_json" ]] && [ -s "$hp_json" ]; then
+                local scenes
+                scenes=$(grep -c '"BezierCurveData"\|"TargetedSystemDisplay"' "$hp_json" 2>/dev/null)
+                echo "  Scene descriptors: $scenes"
+                rm -f "$hp_json"
+            fi
         else
-            echo ""
-            echo "── HDR10+: nu am detectat metadata dinamica ──"
+            echo "  ✗ Metadata HDR10+ dinamica: ABSENTA (--verify)"
         fi
     fi
 
@@ -276,7 +296,7 @@ hdv_flow_hdr10plus_to_dv() {
     echo ""
     echo "  [2/4] Sintetizez DV RPU din HDR10+..."
     local rpu_out
-    rpu_out=$(generate_dv_rpu_from_hdr10plus "$hp_json" "$src_codec")
+    rpu_out=$(generate_dv_rpu_from_hdr10plus "$hp_json" "$src_codec" "$file")
     if [[ -z "$rpu_out" ]] || [ ! -s "$rpu_out" ]; then
         echo "  EROARE: Sinteza DV RPU esuata."
         rm -f "$hp_json"
@@ -315,11 +335,20 @@ hdv_flow_hdr10plus_to_dv() {
     echo "  [4/4] Re-mux final..."
     # shellcheck disable=SC2086
     ffmpeg -v error -i "$injected_video" -i "$file" \
-        -map 0:v:0 -map 1:a -map 1:s? -map 1:t? \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
         -c copy $cont_flags "$final_out" 2>/dev/null
     local rc=$?
     rm -f "$hp_json" "$rpu_out" "$raw_video" "$injected_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        # v56: guard onest pentru known issue AV1 (vezi hdv_flow_transform_rpu)
+        if [[ "$src_codec" == "av1" ]] && ! verify_dv_survived "$final_out" "$src_codec"; then
+            echo ""
+            echo "  ⚠ AVERTISMENT: stratul Dolby Vision NU a fost adaugat (pierdut la re-mux)."
+            echo "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg"
+            echo "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)."
+            echo "    Output-ul pastreaza HDR10/HDR10+ original, dar FARA strat DV: $final_out"
+            return 1
+        fi
         local _label="DV 8.1 + HDR10 + HDR10+ (HEVC)"
         [[ "$src_codec" == "av1" ]] && _label="DV P10 + HDR10 + HDR10+ (AV1)"
         echo ""
@@ -334,6 +363,211 @@ hdv_flow_hdr10plus_to_dv() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# Flow 4: Remove DV → HDR10 curat (v56) — scoate stratul DV (EL+RPU),
+# pastreaza HDR10 static (+ HDR10+ daca exista). No re-encode.
+# ─────────────────────────────────────────────────────────────────────
+hdv_flow_remove_dv() {
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  REMOVE DV → HDR10 CURAT                     ║"
+    echo "║  Scoate stratul DV (EL+RPU). HDR10/HDR10+    ║"
+    echo "║  raman intacte. Fara re-encode video.        ║"
+    echo "╚══════════════════════════════════════════════╝"
+    _hdv_pick_file "Alege fisier sursa (cu DV)" "$INPUT_DIR" || { echo "Anulat."; return 1; }
+    local file="$HDV_PICKED_FILE"
+    local src_codec
+    src_codec=$(detect_source_codec "$file")
+    echo "  Codec sursa: $src_codec"
+
+    if [[ "$src_codec" != "hevc" && "$src_codec" != "av1" ]]; then
+        echo "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $src_codec)."
+        return 1
+    fi
+    if ! _check_dovi_tool_for "$src_codec"; then
+        local _t="dovi_tool"; [[ "$src_codec" == "av1" ]] && _t="av1dovi_tool"
+        echo "  EROARE: $_t nu este instalat. Vezi src/tools/."
+        return 1
+    fi
+
+    local raw_ext="hevc"
+    [[ "$src_codec" == "av1" ]] && raw_ext="ivf"
+    local raw_video clean_video
+    raw_video=$(av_mktemp_ext "$raw_ext")
+    clean_video=$(av_mktemp_ext "$raw_ext")
+    local out_ext="${file##*.}"
+    local final_out="${OUTPUT_DIR}/$(basename "${file%.*}")_nodv.${out_ext}"
+    mkdir -p "$OUTPUT_DIR"
+
+    echo ""
+    echo "  [1/3] Extract raw video ($src_codec)..."
+    if ! extract_raw_video "$file" "$raw_video" "$src_codec"; then
+        echo "  EROARE: Extract raw video esuat."
+        rm -f "$raw_video"; return 1
+    fi
+    echo "  [2/3] Remove DV layer..."
+    if ! remove_dv_layer "$raw_video" "$clean_video" "$src_codec"; then
+        echo "  EROARE: Remove DV esuat."
+        rm -f "$raw_video" "$clean_video"; return 1
+    fi
+
+    echo "  [3/3] Re-mux + tag HDR10 curat..."
+    local CONTAINER="$out_ext"
+    local cont_flags
+    cont_flags=$(get_container_flags)
+    # tag video curat (fara semnalizare DV) pe MP4/MOV
+    local vtag=()
+    case "${out_ext,,}" in
+        mp4|mov|m4v)
+            if [[ "$src_codec" == "av1" ]]; then vtag=(-tag:v av01); else vtag=(-tag:v hvc1); fi
+            ;;
+    esac
+    # shellcheck disable=SC2086
+    ffmpeg -v error -i "$clean_video" -i "$file" \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+        -c copy "${vtag[@]}" $cont_flags "$final_out" 2>/dev/null
+    local rc=$?
+    rm -f "$raw_video" "$clean_video"
+    if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        echo ""
+        echo "  ✓ DV eliminat (HDR10 curat): $final_out"
+        return 0
+    else
+        echo "  EROARE: Re-mux final esuat."
+        rm -f "$final_out"; return 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Flow 5: Remove HDR10+ metadata (v56) — scoate SEI/OBU HDR10+,
+# pastreaza HDR10 static (+ DV daca exista). No re-encode.
+# ─────────────────────────────────────────────────────────────────────
+hdv_flow_remove_hdr10plus() {
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  REMOVE HDR10+ METADATA                      ║"
+    echo "║  Scoate metadata dinamica HDR10+. HDR10/DV   ║"
+    echo "║  raman intacte. Fara re-encode video.        ║"
+    echo "╚══════════════════════════════════════════════╝"
+    _hdv_pick_file "Alege fisier sursa (cu HDR10+)" "$INPUT_DIR" || { echo "Anulat."; return 1; }
+    local file="$HDV_PICKED_FILE"
+    local src_codec
+    src_codec=$(detect_source_codec "$file")
+    echo "  Codec sursa: $src_codec"
+
+    if [[ "$src_codec" != "hevc" && "$src_codec" != "av1" ]]; then
+        echo "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $src_codec)."
+        return 1
+    fi
+    if ! _check_hdr10plus_tool_for "$src_codec"; then
+        local _hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _hp="av1hdr10plus_tool"
+        echo "  EROARE: $_hp nu este instalat. Vezi src/tools/."
+        return 1
+    fi
+
+    local raw_ext="hevc"
+    [[ "$src_codec" == "av1" ]] && raw_ext="ivf"
+    local raw_video clean_video
+    raw_video=$(av_mktemp_ext "$raw_ext")
+    clean_video=$(av_mktemp_ext "$raw_ext")
+    local out_ext="${file##*.}"
+    local final_out="${OUTPUT_DIR}/$(basename "${file%.*}")_nohdr10plus.${out_ext}"
+    mkdir -p "$OUTPUT_DIR"
+
+    echo ""
+    echo "  [1/3] Extract raw video ($src_codec)..."
+    if ! extract_raw_video "$file" "$raw_video" "$src_codec"; then
+        echo "  EROARE: Extract raw video esuat."
+        rm -f "$raw_video"; return 1
+    fi
+    echo "  [2/3] Remove HDR10+ metadata..."
+    if ! remove_hdr10plus_metadata "$raw_video" "$clean_video" "$src_codec"; then
+        echo "  EROARE: Remove HDR10+ esuat."
+        rm -f "$raw_video" "$clean_video"; return 1
+    fi
+
+    echo "  [3/3] Re-mux final..."
+    local CONTAINER="$out_ext"
+    local cont_flags
+    cont_flags=$(get_container_flags)
+    # shellcheck disable=SC2086
+    ffmpeg -v error -i "$clean_video" -i "$file" \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+        -c copy $cont_flags "$final_out" 2>/dev/null
+    local rc=$?
+    rm -f "$raw_video" "$clean_video"
+    if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        echo ""
+        echo "  ✓ HDR10+ eliminat: $final_out"
+        return 0
+    else
+        echo "  EROARE: Re-mux final esuat."
+        rm -f "$final_out"; return 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Flow 6: Plot DV metadata → PNG (v56) — grafic L1/L2/L8 nativ dovi_tool.
+# ─────────────────────────────────────────────────────────────────────
+hdv_flow_plot() {
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  PLOT DV METADATA → PNG                      ║"
+    echo "║  Grafic L1 (brightness) / L2 / L8 trims.     ║"
+    echo "╚══════════════════════════════════════════════╝"
+    _hdv_pick_file "Alege fisier sursa (cu DV)" "$INPUT_DIR" || { echo "Anulat."; return 1; }
+    local file="$HDV_PICKED_FILE"
+    local src_codec
+    src_codec=$(detect_source_codec "$file")
+    echo "  Codec sursa: $src_codec"
+
+    if [[ "$src_codec" != "hevc" && "$src_codec" != "av1" ]]; then
+        echo "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $src_codec)."
+        return 1
+    fi
+    if ! _check_dovi_tool_for "$src_codec"; then
+        local _t="dovi_tool"; [[ "$src_codec" == "av1" ]] && _t="av1dovi_tool"
+        echo "  EROARE: $_t nu este instalat. Vezi src/tools/."
+        return 1
+    fi
+
+    echo ""
+    echo "  Tip plot:"
+    echo "    1) L1 — Dynamic Brightness          (implicit)"
+    echo "    2) L2 — Trims"
+    echo "    3) L8 — Trims (CM v4.0 RPU)"
+    read -p "  Alege [implicit: 1]: " ptype_choice
+    local plot_type="l1"
+    case "${ptype_choice:-1}" in
+        1) plot_type="l1" ;;
+        2) plot_type="l2" ;;
+        3) plot_type="l8" ;;
+        *) echo "Optiune invalida."; return 1 ;;
+    esac
+
+    local rpu_tmp
+    rpu_tmp=$(av_mktemp_ext bin)
+    echo ""
+    echo "  [1/2] Extract RPU..."
+    if ! extract_dv_rpu "$file" "$rpu_tmp" "$src_codec"; then
+        echo "  EROARE: Extract RPU esuat (sursa nu este DV?)."
+        rm -f "$rpu_tmp"; return 1
+    fi
+
+    mkdir -p "$OUTPUT_DIR"
+    local final_png="${OUTPUT_DIR}/$(basename "${file%.*}")_dvplot_${plot_type}.png"
+    local title; title="$(basename "${file%.*}") — DV ${plot_type^^}"
+    echo "  [2/2] Plot $plot_type..."
+    if plot_dv_metadata "$rpu_tmp" "$final_png" "$plot_type" "$title" "$src_codec"; then
+        echo ""
+        echo "  ✓ Plot generat: $final_png"
+        rm -f "$rpu_tmp"; return 0
+    else
+        echo "  EROARE: Plot esuat (RPU nu contine $plot_type?)."
+        rm -f "$rpu_tmp"; return 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # Submeniu principal
 # ─────────────────────────────────────────────────────────────────────
 echo ""
@@ -344,15 +578,21 @@ echo "║  1) Transform RPU profile            ║"
 echo "║     (cross-codec convert, no encode) ║"
 echo "║  2) Inspect metadata (read-only)     ║"
 echo "║  3) HDR10+ → DV hybrid (no re-encode)║"
-echo "║  4) Inapoi                           ║"
+echo "║  4) Remove DV → HDR10 curat          ║"
+echo "║  5) Remove HDR10+ metadata           ║"
+echo "║  6) Plot DV metadata (L1/L2/L8 PNG)  ║"
+echo "║  7) Inapoi                           ║"
 echo "╚══════════════════════════════════════╝"
 echo "  Nota: Remux container e acum in 'Mux tools' (opt 7 meniu principal)."
-read -p "Alege 1-4: " hdv_choice
+read -p "Alege 1-7: " hdv_choice
 
 case "$hdv_choice" in
     1) hdv_flow_transform_rpu ;;
     2) hdv_flow_inspect ;;
     3) hdv_flow_hdr10plus_to_dv ;;
-    4) echo "Inapoi."; exit 0 ;;
+    4) hdv_flow_remove_dv ;;
+    5) hdv_flow_remove_hdr10plus ;;
+    6) hdv_flow_plot ;;
+    7) echo "Inapoi."; exit 0 ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

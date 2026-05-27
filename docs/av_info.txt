@@ -243,7 +243,7 @@ CUPRINS
     5) Import GPS extern — GPX / FIT / KML
     6) Trim & Concat — trim / concat / pipeline / batch trim
     7) Mux tools — remux container + demux streams (v49)
-    8) HDR/DV tools — transform RPU / inspect / HDR10+ → DV
+    8) HDR/DV tools — transform / inspect / HDR10+→DV / remove / plot (v56)
     9) Burn-in HUD overlay — telemetrie HUD / subtitrari SRT / ASS / Image
    10) Anulare / iesire
 
@@ -1482,34 +1482,48 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-11. HDR/DV TOOLS (v44/v45 — meniu principal opt 8)
+11. HDR/DV TOOLS (v44/v45/v56 — meniu principal opt 8)
 ═══════════════════════════════════════════════════════════════
 
   Submeniu pentru operatii metadata-only — toate FARA re-encode video.
   Remux container a fost mutat in scriptul standalone av_mux (v49 —
-  meniu principal opt 7, sub-opt 1). Aici raman doar fluxurile
-  RPU/inspect/HDR10+→DV.
+  meniu principal opt 7, sub-opt 1). Aici raman fluxurile
+  RPU/inspect/HDR10+→DV + remove/plot (v56).
 
-  Submeniu (4 optiuni dupa v49):
+  Submeniu (7 optiuni dupa v56):
     1) Transform RPU profile      (v44)
-    2) Inspect metadata           (v44)
+    2) Inspect metadata           (v44 + v55/v56)
     3) HDR10+ → DV hybrid         (v45)
-    4) Inapoi
+    4) Remove DV → HDR10 curat    (v56)
+    5) Remove HDR10+ metadata     (v56)
+    6) Plot DV metadata (L1/L2/L8)(v56)
+    7) Inapoi
 
 
   ─── 11.1. Transform RPU profile ───
 
   Cazuri tipice:
-    - Ai DV Profile 7 (BL+EL+RPU) si vrei sa-l simplifici la 8.1
-      single-layer pentru compatibilitate larga.
     - Ai DV Profile 5 si vrei sa-l converti la 8.1 cu HDR10 base.
+    - Ai DV 8.1 si vrei o conversie fidela care pastreaza maparea de
+      tonalitate (luma/chroma mapping).
     - Ai HEVC DV 8.1 si vrei AV1 DV Profile 10 echivalent.
 
-  Modes oferite (ref dovi_tool 2.x):
-    1) Force 8.1 (single-layer + HDR10 base)        [-m 2]
+  Modes oferite (dovi_tool 2.x; -m este flag global inainte de subcomanda):
+    1) Force 8.1 (removes mapping, + HDR10 base)    [-m 2]
     2) DV 5 → 8.1                                   [-m 3]
-    3) DV 7 → 8.1 (drop EL, MEL only)               [-m 4]
-    4) Pentru AV1: profile 10 (sven-pke fork)
+    3) 8.1 pastrand maparea luma/chroma             [-m 5]
+    4) Pentru AV1: profile 10 (sven-pke fork)       [-m 2 + tool av1]
+
+  Nota: conversia se face prin "editor" de RPU (mod global), nu prin
+  subcomanda "convert" (care in 2.x opereaza pe fisiere HEVC, nu pe RPU).
+  Profile 7 (dual-layer BL+EL) ramane pentru o versiune viitoare.
+
+  AV1 Dolby Vision (v56 — reparat): injectarea stratului DV in AV1 omitea un
+  octet de aliniere obligatoriu, iar decodorul (dav1d) ignora apoi DV-ul (se
+  pierdea la redare/re-mux). Acum un modul intern re-adauga octetul imediat
+  dupa injectare, chirurgical (HDR10+ din hibrizi NU este atins), deci DV
+  supravietuieste corect. Necesita Python 3; daca lipseste, fluxul verifica
+  si avertizeaza onest (in loc de "complet" fals). HEVC nu a fost afectat.
 
   Pipeline (3 pasi):
     1) Extract RPU sursa (codec-aware: HEVC → dovi_tool, AV1 → av1dovi_tool)
@@ -1524,8 +1538,13 @@ CUPRINS
 
   Dump rapid pentru diagnoza:
     - ffprobe summary (codec, dimensiuni, color_transfer/primaries)
-    - dovi_tool info -i (Profile, Level, RPU stats)
-    - HDR10+ scene descriptors count
+    - DV RPU summary (info -s): numar cadre, profil, versiune DM, numar
+      scene, mastering display, niveluri luminozitate L1/L5/L6 — sumar
+      agregat pe tot RPU-ul, nu pe un singur cadru
+    - DV RPU export complet la JSON (OutputVideos/<nume>_rpu.json) pentru
+      analiza offline (v56)
+    - HDR10+ verificare autoritara ("--verify"): PREZENTA / ABSENTA (v56),
+      apoi numarul de descriptori de scena
 
 
   ─── 11.3. HDR10+ → DV hybrid (v45, no re-encode) ───
@@ -1535,7 +1554,9 @@ CUPRINS
 
   Pipeline:
     1) Extract HDR10+ JSON (codec-aware tool)
-    2) Generate DV RPU din scene descriptors HDR10+
+    2) Generate DV RPU din scene descriptors HDR10+ (nivelul L6 — mastering
+       display + MaxCLL/MaxFALL — preluat din metadata HDR10 reala a sursei
+       cand exista; altfel BT.2020 1000 niti)
     3) Extract raw video (HEVC annex-B / AV1 IVF)
     4) Inject DV RPU
     5) Re-mux cu audio/sub/track-uri originale
@@ -1547,8 +1568,54 @@ CUPRINS
   100% lossless pe video. Util pentru playere care prefera DV ca prim
   level cand sursa are doar HDR10+.
 
+  AV1 Dolby Vision (v56 — reparat): vezi nota de la 11.1 — DV-ul pe AV1 este
+  acum pastrat corect (reparatie automata a metadatei dupa injectare). In
+  hibrid, DV + HDR10 + HDR10+ supravietuiesc toate trei. HEVC nu a fost afectat.
 
-  ─── 11.4. Sven-pke forks pentru AV1 ───
+
+  ─── 11.4. Remove DV → HDR10 curat (v56) ───
+
+  Scoate stratul Dolby Vision (enhancement layer + RPU) dintr-un fisier,
+  pastrand intacte HDR10 static si — daca exista — HDR10+ dinamic.
+  Util cand vrei un fisier HDR10 simplu, fara semnalizare DV (unele
+  TV-uri / playere prefera HDR10 curat).
+
+  Pipeline (3 pasi, fara re-encode):
+    1) Extract raw video (HEVC annex-B / AV1 IVF)
+    2) Remove DV (dovi_tool remove / av1dovi_tool remove)
+    3) Re-mux cu audio/sub/track-uri originale; pe MP4/MOV se aplica tag
+       video curat (hvc1 / av01) ca fluxul sa nu mai fie raportat ca DV
+
+  HEVC + AV1. Output: OutputVideos/<nume>_nodv.<ext>
+
+
+  ─── 11.5. Remove HDR10+ metadata (v56) ───
+
+  Scoate metadata dinamica HDR10+ (SEI la HEVC / OBU_METADATA la AV1),
+  pastrand HDR10 static si — daca exista — stratul DV.
+
+  Pipeline (3 pasi, fara re-encode):
+    1) Extract raw video
+    2) Remove HDR10+ (hdr10plus_tool remove / av1hdr10plus_tool remove)
+    3) Re-mux cu audio/sub/track-uri originale
+
+  HEVC + AV1. Output: OutputVideos/<nume>_nohdr10plus.<ext>
+
+
+  ─── 11.6. Plot DV metadata → PNG (v56) ───
+
+  Genereaza un grafic PNG al metadata Dolby Vision din RPU:
+    1) L1 — luminozitate dinamica (implicit)
+    2) L2 — trims
+    3) L8 — trims (necesita RPU CM v4.0)
+
+  Diagnostic vizual al masterului DV de-a lungul clipului. Graficul este
+  generat nativ de unealta (dovi_tool plot / av1dovi_tool plot), fara
+  dependente suplimentare. HEVC + AV1.
+  Output: OutputVideos/<nume>_dvplot_<tip>.png
+
+
+  ─── 11.7. Sven-pke forks pentru AV1 ───
 
   Optiunile DV / HDR10+ pe surse sau target-uri AV1 necesita binare
   dedicate (instalate cu rename ca sa nu intre in coliziune cu cele HEVC):
