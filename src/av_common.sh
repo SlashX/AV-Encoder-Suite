@@ -785,6 +785,26 @@ get_container_flags() {
     case "$CONTAINER" in mkv|mxf|webm) echo "" ;; *) echo "-movflags +faststart" ;; esac
 }
 
+# v57: codec FourCC tag pentru MP4/MOV/M4V — ffmpeg default este `hev1`/etc.,
+# dar playere DV-aware (Apple TV, Sony) si Apple QuickTime prefera `hvc1`/`av01`
+# pentru engagement DV si compatibilitate iOS. Pe MKV/MXF/WebM: nu se aplica
+# (containerul foloseste codec ID strings).
+#   $1 = codec key (hevc / av1 / h264)
+#   $2 = container extension (mp4 / mov / m4v / mkv / ...)
+# Output: "-tag:v X" sau gol.
+codec_tag_for_container() {
+    local codec="$1" container="$2"
+    case "${container,,}" in
+        mp4|mov|m4v)
+            case "$codec" in
+                hevc) echo "-tag:v hvc1" ;;
+                av1)  echo "-tag:v av01" ;;
+                h264) echo "-tag:v avc1" ;;
+            esac
+            ;;
+    esac
+}
+
 hint_source_format() {
     local ext="$1"
     case "$ext" in
@@ -797,8 +817,9 @@ hint_source_format() {
     # ProRes detectat pe baza codec-ului, nu a extensiei (vine in .mov)
     if [[ -n "$file" ]]; then
         local src_codec_hint
+        # v57: default= in loc de csv=p=0 — trailing comma "prores," esua gate ==
         src_codec_hint=$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
+            -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
         [[ "$src_codec_hint" == "prores" ]] && log "  SURSA ProRes: codec Apple profesional (intra-frame, editare)."
     fi
 }
@@ -1035,11 +1056,16 @@ _warn_audio_metadata() {
 
 # Returneaza codec-ul stream-ului video (hevc / av1 / h264 / ...).
 # Folosit pentru a alege binarul corect cand procesam metadata DV/HDR10+.
+# v57 FIX: csv=p=0 emite trailing virgula chiar la single-field queries
+# in ffprobe 8.x (`av1,\n` in loc de `av1\n`) → callerii primeau codec
+# "av1," si gate-urile `[[ "$codec" == "av1" ]]` esuau silentios cu mesaje
+# de tipul "Codec sursa 'av1,' nu suporta DV transform". Switch la
+# default=noprint_wrappers=1:nokey=1 (valoarea curata, fara separator).
 detect_source_codec() {
     local file="$1"
     [[ -z "$file" || ! -f "$file" ]] && { echo ""; return 1; }
     ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-        -of csv=p=0 "$file" 2>/dev/null
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null
 }
 
 # tool_for_extract <codec> <kind>
@@ -1710,14 +1736,16 @@ _remux_preflight() {
     target="${target,,}"
 
     local video_codec audio_codecs sub_codecs codec_tags
+    # v57: default= in loc de csv=p=0 — csv emite trailing comma chiar la single-field
+    # → "av1," "eac3," etc. → gate-urile regex anchored (`^truehd$`) esueaza silentios.
     video_codec=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-        -of csv=p=0 "$file" 2>/dev/null)
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
     audio_codecs=$(ffprobe -v error -select_streams a -show_entries stream=codec_name \
-        -of csv=p=0 "$file" 2>/dev/null)
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
     sub_codecs=$(ffprobe -v error -select_streams s -show_entries stream=codec_name \
-        -of csv=p=0 "$file" 2>/dev/null)
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
     codec_tags=$(ffprobe -v error -show_entries stream=codec_tag_string \
-        -of csv=p=0 "$file" 2>/dev/null)
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
 
     local dji_present=0 attach_count=0
     echo "$codec_tags" | grep -qiE "^(djmd|dbgi)" && dji_present=1
@@ -1748,6 +1776,13 @@ _remux_preflight() {
             }
             ;;
         mov)
+            # v57: AV1 NU e suportat de containerul MOV (ffmpeg: "av1 only
+            # supported in MP4 and AVIF"). Detectat empiric pe sample AV1 DV
+            # care a esuat → eroare ffmpeg obscura. Level 2 = abort.
+            [[ "$video_codec" == "av1" ]] && {
+                REMUX_PREFLIGHT_NOTES+=("Video AV1 incompatibil cu .mov (ffmpeg limit) — alege .mp4 sau .mkv")
+                REMUX_PREFLIGHT_LEVEL=2
+            }
             [[ "$audio_codecs" =~ eac3 ]] && {
                 REMUX_PREFLIGHT_NOTES+=("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4")
                 REMUX_PREFLIGHT_LEVEL=2
@@ -2923,7 +2958,7 @@ run_2pass_encode() {
     # (run_encode_loop) ca sa pastram un singur loc unde se gestioneaza fluxul.
     # shellcheck disable=SC2086
     eval $FFMPEG_CMD_PASS2 $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
-        $CONTAINER_FLAGS -progress '"$prog_file2"' -nostats '"$output"' '2>"$stderr_file2"' '&'
+        $CODEC_TAG $CONTAINER_FLAGS -progress '"$prog_file2"' -nostats '"$output"' '2>"$stderr_file2"' '&'
     local pid2=$!
     _show_progress "$pid2" "$prog_file2" "$file" "$label P2"
     wait "$pid2"
@@ -4885,6 +4920,16 @@ run_encode_loop() {
     CONTAINER_FLAGS=$(get_container_flags)
     local enc_suffix enc_label
     enc_suffix=$(encoder_get_suffix); enc_label=$(encoder_get_label)
+    # v57: codec FourCC tag pentru MP4/MOV/M4V — un singur loc de injectie
+    # acopera SW (libx265/libx264/libsvtav1/libaom) + HW (NVENC/QSV/AMF/VAAPI/VT/MC).
+    # ProRes/DNxHR/APV: containere native (.mov/.mxf), ffmpeg default deja corect.
+    local _codec_key=""
+    case "$enc_suffix" in
+        _x265) _codec_key="hevc" ;;
+        _x264) _codec_key="h264" ;;
+        _av1)  _codec_key="av1"  ;;
+    esac
+    CODEC_TAG=$(codec_tag_for_container "$_codec_key" "$CONTAINER")
 
     echo "=======================================" | tee "$LOG_FILE"
     log "Encode inceput : $(date '+%Y-%m-%d %H:%M:%S')"
@@ -5079,7 +5124,7 @@ run_encode_loop() {
         else
             # shellcheck disable=SC2086
             eval $FFMPEG_CMD $LOUDNORM_FILTER $SUB_CODEC -c:t copy \
-                $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>"$_enc_err"' '&'
+                $CODEC_TAG $CONTAINER_FLAGS -progress '"$PROGRESS_FILE"' -nostats '"$output"' '2>"$_enc_err"' '&'
             FFMPEG_PID=$!; _show_progress "$FFMPEG_PID" "$PROGRESS_FILE" "$file" "$_enc_label"
             wait "$FFMPEG_PID"; FFMPEG_EXIT=$?
         fi

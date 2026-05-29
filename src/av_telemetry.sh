@@ -1053,7 +1053,14 @@ embed_telemetry_lossless() {
     [[ $has_srt -eq 1 ]] && ff_args+=(-c:s "$subs_codec")
     ff_args+=("${ff_meta[@]}")
     case "$target_ext" in
-        mp4|mov|m4v) ff_args+=(-movflags +faststart) ;;
+        mp4|mov|m4v)
+            # v57: tag codec_tag pe MP4/MOV — stream copy pastreaza tag-ul sursei
+            # (adesea hev1) → playere DV-aware nu engaja DV. Aplicam tag-ul corect.
+            local _src_codec; _src_codec=$(detect_source_codec "$file")
+            local _telem_tag; _telem_tag=$(codec_tag_for_container "$_src_codec" "$target_ext")
+            [[ -n "$_telem_tag" ]] && ff_args+=($_telem_tag)
+            ff_args+=(-movflags +faststart)
+            ;;
     esac
     ff_args+=("$out" -y)
 

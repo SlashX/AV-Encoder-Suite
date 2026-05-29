@@ -3,9 +3,187 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v56 | 69 bug-uri fixate | 216+ features
-  99 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 54 teste [47 test_* + 7 infra]) | ~35000 linii cod+teste | ~5200 linii documentatie
+  TOTAL: v57 | 78 bug-uri fixate | 220+ features
+  101 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 56 teste [49 test_* + 7 infra]) | ~35400 linii cod+teste | ~5300 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v57 — av_check imbunatatit + codec_tag corect + Dolby Vision pe MP4
+═══════════════════════════════════════════════════════════════
+
+  Analiza si imbunatatire pe doua fluxuri: raportul de analiza media
+  (av_check) si tag-ul codec din output-uri MP4/MOV. Plus o serie de
+  bug-uri tacute reparate (mai multe fluxuri care esuau silentios pe
+  surse AV1). Toate modificarile validate end-to-end pe clipuri reale
+  HEVC HDR10+, AV1 DV, AV1 HDR10+, AV1 hibrid DV+HDR10+, DJI si
+  Samsung Log.
+
+  ADD raport av_check extins (8 coloane noi in CSV) — sectiunea de analiza
+        media afiseaza acum mai multa informatie pentru fisiere HDR:
+          - Container (extensia fisierului: mp4 / mkv / mov / ...)
+          - ColorPrimaries, ColorSpace, ColorRange (din stream-ul video)
+          - MaxCLL, MaxFALL (max content light / max frame avg, cd/m²)
+          - MasterDisplay (primaries aproximate + max/min nits, ex:
+            "DCI-P3 max 1000n min 0.0001n")
+          - HDR10Plus_Scenes (numarul de markeri HDR10+ pe primele
+            keyframe-uri, heuristic pentru bogatia metadata dinamica)
+        Schema CSV creste de la 30 la 38 coloane, identica intre bash si
+        PS1 (acelasi nume si ordine). Util pentru audit pe foldere mari
+        cu surse HDR variate.
+
+  ADD detectie Dolby Vision pe AV1 — pana acum AV1 Dolby Vision aparea ca
+        "AV1 HDR10" in raport. La AV1 metadata Dolby Vision nu sta in
+        codec_tag (ca la HEVC) ci in pachete de metadata per-cadru, asa
+        ca verificarea de pana acum nu putea sa o "vada". Acum av_check
+        verifica si pachetele de metadata per-cadru — clipurile AV1 DV
+        si AV1 hibrid DV+HDR10+ sunt etichetate corect in raport.
+
+  ADD detectie Samsung Log (S24 Ultra) — Samsung S24 Ultra inregistreaza
+        in mod Log video cu tag-ul "com.samsung.android.logvideo" in
+        metadata fisierului. Detectorul vechi cauta "make=Samsung" /
+        "manufacturer=Samsung" — care nu sunt prezente pe S24 Ultra.
+        Acum av_check recunoaste tag-ul nou ca marker definitiv si
+        clasifica corect ca "Samsung Log (S24 Ultra)".
+
+  UPDATE detectie 12-bit — pana acum, clipurile 12-bit (ProRes 4444 XQ,
+        x265 12-bit, AV1 12-bit) erau etichetate gresit ca 8-bit din
+        cauza unei verificari incomplete pe pixel format. Acum
+        recunoastem corect 8 / 10 / 12 / 16 bit. Coloana BitDepth in CSV
+        si display reflecta valoarea reala.
+
+  UPDATE clipuri Log raportate ca SDR (LOG) — clipurile Apple Log si
+        Samsung Log puteau fi raportate ca "HLG" cand stream-ul are
+        signal-ul de transfer apropiat de HLG (BT.2100). De fapt sunt
+        SDR cu o curba log specifica producatorului. Acum tipul HDR
+        in raport e "SDR (LOG)" cu profilul (Apple Log / Samsung Log /
+        D-Log M) afisat separat — fara confuzii. Dolby Vision ramane
+        prioritar peste LOG.
+
+  UPDATE bitrate raportat corect pe fisiere MKV — pana acum, MKV-urile
+        afisau "N/A" la bitrate video pentru ca acel camp nu e stocat la
+        nivel de stream in containerul Matroska. Acum, daca lipseste,
+        cautam in metadata fisierului si, in ultima instanta, estimam
+        din dimensiune si durata (cu eticheta "(est)" pentru a marca
+        aproximarea).
+
+  UPDATE sectiunea "Comparatie input vs output" recunoaste mai multe
+        sufixe — pana acum imperechea inputs cu outputs dupa sufixele
+        clasice de encoder (_x265 / _x264 / _av1 / etc.). Output-urile
+        din Mux, HDR/DV tools, Burn-in si Telemetry (_remux, _mux, _telem,
+        _hud, _subs, _preview, _nodv, _nohdr10plus, _dvhybrid, _apv)
+        sunt acum recunoscute, plus combinatii (ex. _telem_hud). Sectiunea
+        nu mai apare goala in fluxurile post-v44.
+
+  UPDATE PS1 — detaliu per-pista audio in raport, paritate cu bash. Pe
+        fisierele cu mai mult de un track audio, PS1 afiseaza acum
+        codec / bitrate / sample rate / layout / limba pe fiecare pista
+        (la fel ca bash). Plus alte mici alinieri PS1 ↔ bash: atasamentele
+        afiseaza si mimetype-urile, profilul DV are fallback pe codec_tag,
+        valorile DJI in CSV sunt 0/1 (era True/False), audio gol cand
+        lipseste arata "N/A" (era empty string).
+
+  ADD codec_tag corect pe outputuri MP4/MOV/M4V — pe encodari HEVC, AV1
+        si H.264 catre containere de tip Apple (MP4 / MOV / M4V), ffmpeg
+        seta din oficiu tag-uri ca "hev1" pentru HEVC. Playere Dolby
+        Vision-aware (Apple TV, Sony BRAVIA, LG) si iOS QuickTime
+        prefera tag-urile standard "hvc1" / "av01" / "avc1" si fara
+        ele pot sa nu engajeze modul Dolby Vision sau sa refuze
+        redarea pe iOS. Aliniere completa:
+          - fluxul principal de encode (toate codec-urile SW + toate
+            backend-urile HW: NVENC, QSV, AMF, VAAPI, VideoToolbox,
+            MediaCodec)
+          - re-mux audio + video pastrat la "Encode doar audio"
+          - Telemetrie embed lossless (re-mux cu stream copy)
+          - Burn-in (HUD / SRT / ASS / image subs)
+          - HDR/DV tools (Transform RPU, Hybrid, Remove DV, Remove HDR10+)
+        Containerele MKV / MXF / WebM raman fara tag (nu folosesc
+        FourCC). ProRes / DNxHR / APV au tag-uri specifice corecte din
+        default ffmpeg, nu sunt schimbate. Validat pe encodare reala:
+        HEVC -> MP4 producea "hev1", acum produce "hvc1".
+
+  FIX BUG MAJOR (fluxurile HDR/DV tools esuau pe surse AV1 cu mesaj
+        confuz) — toate fluxurile av_hdr_dv_tools (Transform RPU,
+        Hybrid, Remove DV, Remove HDR10+, Plot) verificau codec-ul
+        sursei si comparau cu "av1" / "hevc". Comparatia returna
+        FALSE pe surse valide din cauza unei virgule reziduale din
+        output-ul ffprobe ("av1," in loc de "av1"), iar fluxurile
+        afisau mesaje gen "Codec sursa 'av1,' nu suporta DV transform"
+        si abandonau. Toate fluxurile functioneaza acum corect pe AV1.
+        Bug pre-existent introdus odata cu suportul AV1 in HDR/DV tools.
+
+  FIX BUG (detectia HDR10+ si DV per-cadru — nu functiona) — codul
+        intern care verifica metadata HDR10+ / Dolby Vision pe cadre
+        cerea un camp ffprobe cu nume gresit, iar ffprobe ignora silentios
+        cererea si returna toate proprietatile. Cautarile in continutul
+        eronat dadeau intotdeauna fals-negativ. Asta a fost reparat
+        in toate cele 5 locuri afectate (in av_check si in alte
+        verificari). Fixturile sintetice de teste nu treceau pe acest
+        path, asa ca bug-ul a fost mascat pana la testarea pe clipuri
+        reale.
+
+  FIX BUG (preflight Remux esua mut pe combinatii imposibile) — la
+        operatia Remux container, alegerea AV1 + .mov primea o eroare
+        ffmpeg generica si confuza, pentru ca ffmpeg nu suporta AV1
+        in MOV (doar MP4 / AVIF). Preflight verifica acum aceasta
+        combinatie si afiseaza un mesaj clar: "Video AV1 incompatibil
+        cu .mov (ffmpeg limit) — alege .mp4 sau .mkv" inainte sa
+        ruleze ffmpeg.
+
+  FIX BUG (encoder audio sarea AV1 in WebM) — pe fluxul "Encode doar
+        audio" cu target WebM, verificarea codec-ului video sursa
+        respingea AV1 din cauza aceleiasi virgule reziduale ffprobe
+        ("av1," nu matchuia "^av1$"). Sursele AV1 valide erau SKIP-uite
+        din WebM cu mesajul "WebM accepta DOAR vp8/vp9/av1 ca video
+        (sursa: necunoscut)". Acum AV1 e acceptat corect in WebM.
+
+  FIX BUG (PS1 — codec sursa si dimensiunile in raport erau urate) —
+        PS1 afisa rezolutia ca "1920,x1080,", FPS ca "24000/1001," si
+        Format sursa ca "av1, 10bit" / "hevc, 10bit" in loc de
+        labelurile frumoase "AV1 HDR10+" / "H.265 HEVC HDR10". Cauza
+        a fost aceeasi virgula reziduala ffprobe, care contamina
+        toate valorile single-camp. Reparat in helper-ul central de
+        citire ffprobe — toate display-urile, CSV-ul si labelurile sunt
+        curate acum.
+
+  FIX BUG (Burn-in cu rezolutii cu virgula) — width/height citite din
+        ffprobe in fluxurile Burn-in primeau "3840," / "2160," si
+        script-ul Python de randare HUD primea valori invalide. Burn-in
+        functioneaza acum corect pe orice sursa.
+
+  FIX BUG (mini-imbunatatiri av_hdr_dv_tools) — pe MP4 / MOV / M4V
+        fluxurile Hybrid (HDR10+ -> DV) si Transform RPU pastrau tag-ul
+        video original (de obicei "hev1"). Acum aplica "-tag:v hvc1" /
+        "-tag:v av01" identic cu Remove DV — pentru engagement corect pe
+        playere DV-aware (vezi mai sus "codec_tag corect"). Plus: cele
+        patru fluxuri ale modulului au fost simplificate intern, cu
+        scaderea de la ~707 linii la ~600 (refactor; comportament
+        identic).
+
+  ADD detectie DJI prin tag-ul "encoder" — pe langa "make=DJI" /
+        "manufacturer=DJI" clasic, detectorul de LOG profile recunoaste
+        acum si tag-ul "encoder=DJI <model>" (ex. DJI OsmoAction6).
+        Util pentru clipuri DJI re-muxate sau cu track-urile djmd/dbgi
+        sterse, unde tag-urile "make" / "manufacturer" lipsesc dar
+        "encoder" ramane.
+
+  KNOWN LIMITATION (DJI Action 6 / Avata 2 / Pocket 3 D-Log M nu poate
+        fi detectat) — pe aceste camere, D-Log M pastreaza acelasi
+        signal in metadata fisierului ca un clip normal SDR (color
+        primaries BT.709, 10-bit, acelasi tag de encoder). Curba LOG
+        sta in pixeli, iar discriminatorul SDR vs D-Log M sta intr-un
+        camp interior din track-ul djmd al DJI, care nu e expus de
+        instrumentele standard (exiftool, ffprobe). av_check raporteaza
+        onest "SDR" / "H.265 HEVC 10bit SDR" pe aceste clipuri (in loc
+        sa ghiceasca eronat). Camerele DJI mai vechi (Mavic 3, Air 3)
+        cu D-Log Wide raporteaza color primaries BT.2020 si sunt
+        detectate corect.
+
+  SYNC paritate bash <-> PowerShell completa pe toate fixurile. Helperi
+        comuni partajati intre scripturi (codec_tag pentru container,
+        helper de combinare HDR/DV tools); mirror PowerShell in
+        av_encode.ps1 cu copii locale in scripturile standalone
+        (av_burnin.ps1, av_telemetry.ps1).
 
 
 ═══════════════════════════════════════════════════════════════

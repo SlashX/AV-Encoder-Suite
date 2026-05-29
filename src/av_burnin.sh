@@ -72,11 +72,11 @@ ask_encoder() {
     echo "╚══════════════════════════════════════════════╝"
     read -p "Alege 1-4 [implicit: 1]: " enc_choice
     case "${enc_choice:-1}" in
-        1) ENC_NAME="libx265"; ENC_CRF=23; ENC_PRESET="medium" ;;
-        2) ENC_NAME="libx264"; ENC_CRF=20; ENC_PRESET="medium" ;;
-        3) ENC_NAME="libsvtav1"; ENC_CRF=30; ENC_PRESET="6" ;;
+        1) ENC_NAME="libx265"; ENC_CODEC_KEY="hevc"; ENC_CRF=23; ENC_PRESET="medium" ;;
+        2) ENC_NAME="libx264"; ENC_CODEC_KEY="h264"; ENC_CRF=20; ENC_PRESET="medium" ;;
+        3) ENC_NAME="libsvtav1"; ENC_CODEC_KEY="av1"; ENC_CRF=30; ENC_PRESET="6" ;;
         4) echo "Anulat."; exit 0 ;;
-        *) ENC_NAME="libx265"; ENC_CRF=23; ENC_PRESET="medium" ;;
+        *) ENC_NAME="libx265"; ENC_CODEC_KEY="hevc"; ENC_CRF=23; ENC_PRESET="medium" ;;
     esac
 }
 
@@ -255,9 +255,11 @@ hud_flow() {
                 ;;
         esac
 
-        local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid" 2>/dev/null | head -1)
-        local vid_w; vid_w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width  -of csv=p=0 "$vid" 2>/dev/null | head -1)
-        local vid_h; vid_h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$vid" 2>/dev/null | head -1)
+        # v57: default= in loc de csv=p=0 — single-field width/height emit trailing
+        # comma "3840," → Python script primea int invalid si crash-uia.
+        local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
+        local vid_w; vid_w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width  -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
+        local vid_h; vid_h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
         [ -z "$vid_dur" ] && vid_dur=0
         [ -z "$vid_w" ]   && vid_w=1920
         [ -z "$vid_h" ]   && vid_h=1080
@@ -291,7 +293,9 @@ hud_flow() {
         fi
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
+        local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         echo "  Overlay + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
+        # shellcheck disable=SC2086
         if ffmpeg -v error -stats \
             "${seek_args[@]}" -i "$vid" \
             -framerate "$HUD_FPS" \
@@ -299,7 +303,7 @@ hud_flow() {
             -filter_complex "[0:v][1:v]overlay=0:0:shortest=0[v]" \
             -map "[v]" -map "0:a?" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
-            -c:a copy -movflags +faststart "$out" -y </dev/null; then
+            -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg overlay esuat"; rm -f "$out"; fail=$((fail+1))
@@ -395,12 +399,14 @@ srt_flow() {
         fi
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
+        local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         echo "  Burn-in SRT + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
+        # shellcheck disable=SC2086
         if ffmpeg -v error -stats \
             "${seek_args[@]}" -i "$vid" \
             -vf "$vf" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
-            -c:a copy -movflags +faststart "$out" -y </dev/null; then
+            -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg SRT burn-in esuat"; rm -f "$out"; fail=$((fail+1))
@@ -493,12 +499,14 @@ ass_flow() {
         fi
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
+        local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         echo "  Burn-in ASS + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
+        # shellcheck disable=SC2086
         if ffmpeg -v error -stats \
             "${seek_args[@]}" -i "$vid" \
             -vf "$vf" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
-            -c:a copy -movflags +faststart "$out" -y </dev/null; then
+            -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg ASS burn-in esuat"; rm -f "$out"; fail=$((fail+1))
@@ -639,29 +647,32 @@ img_flow() {
         fi
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
+        local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         # ok_now=0 fallback la fail; ramurile if/else previn abort set -e pe ffmpeg failure
         local ok_now=0
         case "$kind" in
             ext_pgs|ext_vob)
                 echo "  Burn-in $kind (sursa: $aux) + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
+                # shellcheck disable=SC2086
                 if ffmpeg -v error -stats \
                     "${seek_args[@]}" -i "$vid" \
                     -i "$aux" \
                     -filter_complex "[0:v][1:s]overlay[v]" \
                     -map "[v]" -map "0:a?" \
                     -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
-                    -c:a copy -movflags +faststart "$out" -y </dev/null; then
+                    -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
                     ok_now=1
                 fi
                 ;;
             emb_pgs|emb_vob)
                 echo "  Burn-in $kind (track s:$track embedded) + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
+                # shellcheck disable=SC2086
                 if ffmpeg -v error -stats \
                     "${seek_args[@]}" -i "$vid" \
                     -filter_complex "[0:v][0:s:${track}]overlay[v]" \
                     -map "[v]" -map "0:a?" \
                     -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
-                    -c:a copy -movflags +faststart "$out" -y </dev/null; then
+                    -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
                     ok_now=1
                 fi
                 ;;

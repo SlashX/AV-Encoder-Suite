@@ -72,6 +72,21 @@ function Get-PreviewWindow {
     }
 }
 
+# v57: codec FourCC tag pentru MP4/MOV/M4V — copie locala (av_burnin standalone,
+# nu sourceaza av_encode.ps1). Paritate cu bash codec_tag_for_container.
+function Get-CodecTagForContainer {
+    param([string]$Codec, [string]$Container)
+    $ext = $Container.ToLowerInvariant()
+    if ($ext -in @("mp4","mov","m4v")) {
+        switch ($Codec) {
+            "hevc" { return @("-tag:v","hvc1") }
+            "av1"  { return @("-tag:v","av01") }
+            "h264" { return @("-tag:v","avc1") }
+        }
+    }
+    return @()
+}
+
 function Get-Encoder {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -85,11 +100,11 @@ function Get-Encoder {
     $encChoice = Read-Host "Alege 1-4 [implicit: 1]"
     if (-not $encChoice) { $encChoice = "1" }
     switch ($encChoice) {
-        "1" { return @{ Name = "libx265";    Crf = 23; Preset = "medium" } }
-        "2" { return @{ Name = "libx264";    Crf = 20; Preset = "medium" } }
-        "3" { return @{ Name = "libsvtav1";  Crf = 30; Preset = "6" } }
+        "1" { return @{ Name = "libx265";    CodecKey = "hevc"; Crf = 23; Preset = "medium" } }
+        "2" { return @{ Name = "libx264";    CodecKey = "h264"; Crf = 20; Preset = "medium" } }
+        "3" { return @{ Name = "libsvtav1";  CodecKey = "av1";  Crf = 30; Preset = "6" } }
         "4" { Write-Host "Anulat."; exit 0 }
-        default { return @{ Name = "libx265"; Crf = 23; Preset = "medium" } }
+        default { return @{ Name = "libx265"; CodecKey = "hevc"; Crf = 23; Preset = "medium" } }
     }
 }
 
@@ -257,9 +272,11 @@ function Invoke-HudFlow {
             if ($off) { $tmp = 0.0; if ([double]::TryParse($off, [ref]$tmp)) { $offset = $tmp } }
         }
 
-        $vidW = (& ffprobe -v error -select_streams v:0 -show_entries stream=width  -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
-        $vidH = (& ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
-        $vidDur = (& ffprobe -v error -show_entries format=duration -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
+        # v57: default= in loc de csv=p=0 — single-field width/height/dur emit
+        # trailing comma → Python script primea int invalid.
+        $vidW = (& ffprobe -v error -select_streams v:0 -show_entries stream=width  -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
+        $vidH = (& ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
+        $vidDur = (& ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
         if (-not $vidW) { $vidW = 1920 }
         if (-not $vidH) { $vidH = 1080 }
         if (-not $vidDur) { $vidDur = 0 }
@@ -298,6 +315,7 @@ function Invoke-HudFlow {
         }
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
+        $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         Write-Host "  Overlay + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
@@ -307,7 +325,7 @@ function Invoke-HudFlow {
             -filter_complex "[0:v][1:v]overlay=0:0:shortest=0[v]" `
             -map "[v]" -map "0:a?" `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            -c:a copy -movflags +faststart $out -y
+            -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -402,13 +420,14 @@ function Invoke-SrtFlow {
         }
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
+        $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         Write-Host "  Burn-in SRT + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            -c:a copy -movflags +faststart $out -y
+            -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -499,13 +518,14 @@ function Invoke-AssFlow {
         }
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
+        $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         Write-Host "  Burn-in ASS + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            -c:a copy -movflags +faststart $out -y
+            -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -650,6 +670,7 @@ function Invoke-ImgFlow {
         }
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
+        $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         switch ($p.Kind) {
             { $_ -in @("ext_pgs","ext_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (sursa: $($p.Aux)) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
@@ -660,7 +681,7 @@ function Invoke-ImgFlow {
                     -filter_complex "[0:v][1:s]overlay[v]" `
                     -map "[v]" -map "0:a?" `
                     -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-                    -c:a copy -movflags +faststart $out -y
+                    -c:a copy @codecTag -movflags +faststart $out -y
             }
             { $_ -in @("emb_pgs","emb_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (track s:$($p.Track) embedded) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
@@ -670,7 +691,7 @@ function Invoke-ImgFlow {
                     -filter_complex "[0:v][0:s:$($p.Track)]overlay[v]" `
                     -map "[v]" -map "0:a?" `
                     -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-                    -c:a copy -movflags +faststart $out -y
+                    -c:a copy @codecTag -movflags +faststart $out -y
             }
             default {
                 Write-Host "  [EROARE] kind necunoscut: $($p.Kind)" -ForegroundColor Red

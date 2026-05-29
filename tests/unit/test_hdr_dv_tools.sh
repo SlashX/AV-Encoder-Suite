@@ -19,12 +19,13 @@ echo "fake" > "$TMPFILE"
 _mock_audio="aac"
 _mock_sub=""
 _mock_tags=""
+_mock_video="hevc"   # v57: mockable pentru AV1+MOV preflight test
 
 ffprobe() {
     local args="$*"
     # v49: _remux_preflight foloseste select_streams a/s/t (toate stream-urile),
     # nu :0 (primul). Mock raspunde la noua forma.
-    if [[ "$args" == *"select_streams v:0"* && "$args" == *"codec_name"* ]]; then echo "hevc"; return 0; fi
+    if [[ "$args" == *"select_streams v:0"* && "$args" == *"codec_name"* ]]; then echo "$_mock_video"; return 0; fi
     if [[ "$args" == *"select_streams t"* ]]; then echo ""; return 0; fi  # no attachments
     if [[ "$args" == *"select_streams a"* ]]; then echo "$_mock_audio"; return 0; fi
     if [[ "$args" == *"select_streams s"* ]]; then echo "$_mock_sub"; return 0; fi
@@ -45,7 +46,7 @@ assert_eq 0 "$REMUX_PREFLIGHT_LEVEL" "aac+mp4 -> level 0"
 assert_eq 0 "${#REMUX_PREFLIGHT_NOTES[@]}" "aac+mp4: 0 notes"
 
 # 1b) eac3 + mov → level 2 (fail)
-_mock_audio="eac3"; _mock_sub=""; _mock_tags=""
+_mock_audio="eac3"; _mock_sub=""; _mock_tags=""; _mock_video="hevc"
 _remux_preflight "$TMPFILE" "mov"
 assert_eq 2 "$REMUX_PREFLIGHT_LEVEL" "eac3+mov -> level 2"
 [ "${#REMUX_PREFLIGHT_NOTES[@]}" -gt 0 ] && _pass || _fail "eac3+mov: should have notes"
@@ -81,6 +82,26 @@ _mock_audio="eac3"; _mock_sub="subrip"; _mock_tags=""
 _remux_preflight "$TMPFILE" "mov"
 assert_eq 2 "$REMUX_PREFLIGHT_LEVEL" "eac3+srt+mov -> level 2 (max wins)"
 [ "${#REMUX_PREFLIGHT_NOTES[@]}" -ge 2 ] && _pass || _fail "expected ≥2 notes"
+
+# v57 — AV1 + MOV preflight (ffmpeg refuza, level 2)
+_mock_audio="aac"; _mock_sub=""; _mock_tags=""; _mock_video="av1"
+_remux_preflight "$TMPFILE" "mov"
+assert_eq 2 "$REMUX_PREFLIGHT_LEVEL" "av1+mov -> level 2 (ffmpeg refuza)"
+joined="${REMUX_PREFLIGHT_NOTES[*]}"
+assert_contains "$joined" "AV1" "note mentions AV1"
+
+# v57 — AV1 + MP4 OK (level 0, fara note legate de AV1)
+_mock_audio="aac"; _mock_sub=""; _mock_tags=""; _mock_video="av1"
+_remux_preflight "$TMPFILE" "mp4"
+assert_eq 0 "$REMUX_PREFLIGHT_LEVEL" "av1+mp4 -> level 0 (compatible)"
+
+# v57 — AV1 + MKV OK (MKV permisiv)
+_mock_audio="aac"; _mock_sub=""; _mock_tags=""; _mock_video="av1"
+_remux_preflight "$TMPFILE" "mkv"
+assert_eq 0 "$REMUX_PREFLIGHT_LEVEL" "av1+mkv -> level 0"
+
+# Reset mock pentru testele de mai jos
+_mock_video="hevc"
 
 # 1h) MKV permisiv — toate codecuri ok
 _mock_audio="eac3"; _mock_sub="ass"; _mock_tags="djmd"
@@ -167,3 +188,36 @@ case "$_captured_args" in
 esac
 
 rm -f "$OUT_DUMMY" "$TMPFILE"
+
+# ─────────────────────────────────────────────────────────────────
+# v57: refactor av_hdr_dv_tools — helper _hdv_combine_with_original
+# elimina duplicarea celor 4 ffmpeg combine site-uri.
+# ─────────────────────────────────────────────────────────────────
+HDV_SCRIPT="$SCRIPT_DIR/av_hdr_dv_tools.sh"
+assert_file_exists "$HDV_SCRIPT" "av_hdr_dv_tools.sh prezent"
+
+# Helper definit o singura data
+HELPER_DEFS=$(grep -c "^_hdv_combine_with_original()" "$HDV_SCRIPT")
+assert_eq "1" "$HELPER_DEFS" "_hdv_combine_with_original definit exact o data"
+
+# 4 call-site-uri (cele 4 flow-uri: transform / hybrid / remove DV / remove HDR10+)
+HELPER_CALLS=$(grep -c "_hdv_combine_with_original \"" "$HDV_SCRIPT")
+assert_eq "4" "$HELPER_CALLS" "4 call-site-uri _hdv_combine_with_original (paritate cu 4 flow-uri)"
+
+# Zero invocari ffmpeg directe pentru combine (acceptabil pt extract/bsf/etc, dar nu pt -c copy mux final)
+DIRECT_COMBINE=$(grep -c "^[[:space:]]*ffmpeg .* -map 0:v:0 -map 1:a?" "$HDV_SCRIPT")
+assert_eq "0" "$DIRECT_COMBINE" "zero ffmpeg combine direct in flow-uri (toate trec prin helper)"
+
+# v57: detect_source_codec NU mai foloseste csv=p=0 (trailing comma bug)
+# → toate gate-urile bash `[[ "$codec" == "av1" ]]` lucreaza corect.
+COMMON_SH="$SCRIPT_DIR/av_common.sh"
+DETECT_BLOCK=$(awk '/^detect_source_codec\(\)/,/^}/' "$COMMON_SH")
+echo "$DETECT_BLOCK" | grep -q "default=noprint_wrappers" && _pass || _fail "detect_source_codec foloseste default= (nu csv=p=0)"
+echo "$DETECT_BLOCK" | grep -q "csv=p=0" && _fail "detect_source_codec inca foloseste csv=p=0" || _pass
+
+# v57: hybrid + transform_rpu seteaza codec_tag (hvc1/av01) pe MP4/MOV/M4V
+# pentru DV-aware player discovery — paritate cu Remove DV flow.
+HYBRID_BLOCK=$(awk '/^hdv_flow_hdr10plus_to_dv\(\)/,/^hdv_flow_remove_dv\(\)/' "$HDV_SCRIPT")
+echo "$HYBRID_BLOCK" | grep -q 'tag:v hvc1\|tag:v av01' && _pass || _fail "hybrid seteaza -tag:v hvc1/av01"
+TRANSFORM_BLOCK=$(awk '/^hdv_flow_transform_rpu\(\)/,/^hdv_flow_inspect\(\)/' "$HDV_SCRIPT")
+echo "$TRANSFORM_BLOCK" | grep -q 'tag:v hvc1\|tag:v av01' && _pass || _fail "transform_rpu seteaza -tag:v hvc1/av01"

@@ -314,8 +314,9 @@ for file in "${FILES[@]}"; do
 
     # v53: WebM — verifica codec video sursa (DOAR vp8/vp9/av1 pot fi stream-copied in webm)
     if [[ "$CONTAINER" == "webm" ]]; then
+        # v57: default= in loc de csv=p=0 — trailing comma "av1," esua regex anchored
         SRC_VCODEC=$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
+            -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
         if [[ ! "$SRC_VCODEC" =~ ^(vp8|vp9|av1)$ ]]; then
             echo "  SKIP: WebM accepta DOAR vp8/vp9/av1 ca video (sursa: ${SRC_VCODEC:-necunoscut})" | tee -a "$LOG_FILE"
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
@@ -341,6 +342,11 @@ for file in "${FILES[@]}"; do
     ORIG_SIZE=$(av_stat_size "$file" 2>/dev/null || echo 0)
     START_TIME=$(date +%s)
 
+    # v57: tag codec_tag pe MP4/MOV — video e stream copy → tag-ul sursei
+    # se propaga (adesea hev1). Aplicam codec_tag corect pe baza codec-ului real.
+    _src_codec=$(detect_source_codec "$file")
+    _audio_codec_tag=$(codec_tag_for_container "$_src_codec" "$CONTAINER")
+
     # shellcheck disable=SC2086
     ffmpeg -i "$file" \
         -map 0:v -map 0:a? -map 0:s? -map 0:t? \
@@ -348,7 +354,7 @@ for file in "${FILES[@]}"; do
         -c:v copy \
         $AUDIO_PARAMS \
         $SUB_CODEC -c:t copy \
-        $CONTAINER_FLAGS \
+        $_audio_codec_tag $CONTAINER_FLAGS \
         -nostats "$output" 2>>"$LOG_FILE"
 
     FFMPEG_EXIT=$?

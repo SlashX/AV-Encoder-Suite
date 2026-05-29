@@ -21,6 +21,7 @@ Import-AvEncodeFunctions -Names @(
 $script:_mock_audio = "aac"
 $script:_mock_sub   = ""
 $script:_mock_tags  = ""
+$script:_mock_video = "hevc"   # v57: mockable pentru AV1+MOV preflight test
 
 function Global:ffprobe {
     [CmdletBinding()]
@@ -28,7 +29,7 @@ function Global:ffprobe {
     $argStr = ($RemainingArgs -join ' ')
     # v49: Get-RemuxPreflight foloseste select_streams a/s/t (toate stream-urile),
     # nu :0 (primul). Mock raspunde la ambele forme pentru back-compat.
-    if ($argStr -match 'select_streams v:0') { 'hevc'; return }
+    if ($argStr -match 'select_streams v:0') { $script:_mock_video; return }
     if ($argStr -match 'select_streams a')   { $script:_mock_audio; return }
     if ($argStr -match 'select_streams s')   { $script:_mock_sub;   return }
     if ($argStr -match 'select_streams t')   { ''; return }
@@ -85,6 +86,22 @@ try {
     $r = Get-RemuxPreflight -File $tmpFile -TargetContainer "mov"
     Assert-Eq 2 $r.level "eac3+srt+mov -> level 2"
     if ($r.notes.Count -ge 2) { _pass } else { _fail "expected >=2 notes" }
+
+    # v57 — AV1 + MOV preflight (ffmpeg refuza)
+    $script:_mock_audio = "aac"; $script:_mock_sub = ""; $script:_mock_tags = ""; $script:_mock_video = "av1"
+    $r = Get-RemuxPreflight -File $tmpFile -TargetContainer "mov"
+    Assert-Eq 2 $r.level "av1+mov -> level 2 (ffmpeg refuza)"
+    Assert-Match ($r.notes -join ' ') "AV1" "note mentions AV1"
+
+    # v57 — AV1 + MP4 OK
+    $r = Get-RemuxPreflight -File $tmpFile -TargetContainer "mp4"
+    Assert-Eq 0 $r.level "av1+mp4 -> level 0 (compatible)"
+
+    # v57 — AV1 + MKV OK
+    $r = Get-RemuxPreflight -File $tmpFile -TargetContainer "mkv"
+    Assert-Eq 0 $r.level "av1+mkv -> level 0"
+
+    $script:_mock_video = "hevc"   # reset
 
     # 1h) MKV permisiv
     $script:_mock_audio = "eac3"; $script:_mock_sub = "ass"; $script:_mock_tags = "djmd"
@@ -157,5 +174,41 @@ finally {
     Remove-Item -LiteralPath $tmpFile -Force -ErrorAction SilentlyContinue
     Remove-Item Function:ffprobe -ErrorAction SilentlyContinue
 }
+
+# ─────────────────────────────────────────────────────────────────
+# v57: refactor av_hdr_dv flows — helper Invoke-HdvCombineWithOriginal
+# elimina duplicarea celor 4 ffmpeg combine site-uri din PS1.
+# ─────────────────────────────────────────────────────────────────
+$PROJECT_ROOT = if ($env:PROJECT_ROOT) { $env:PROJECT_ROOT } else { (Resolve-Path "$PSScriptRoot\..\..").Path }
+$PS1_SCRIPT = Join-Path $PROJECT_ROOT "src\av_encode.ps1"
+$PS1_TEXT   = Get-Content $PS1_SCRIPT -Raw
+
+# Helper definit o singura data
+$helperDefs = ([regex]::Matches($PS1_TEXT, 'function Invoke-HdvCombineWithOriginal\b')).Count
+Assert-Eq 1 $helperDefs "Invoke-HdvCombineWithOriginal definit exact o data"
+
+# 4 call-site-uri (cele 4 flow-uri)
+$helperCalls = ([regex]::Matches($PS1_TEXT, '\$ok\s*=\s*Invoke-HdvCombineWithOriginal\b')).Count
+Assert-Eq 4 $helperCalls "4 call-site-uri Invoke-HdvCombineWithOriginal"
+
+# Zero `-map 0:v:0 -map 1:a?` direct in flows hdr_dv (toate trec prin helper)
+# Verifica pe blocul Invoke-(TransformRpu|Hdr10PlusToDv|RemoveDv|RemoveHdr10Plus)
+$flowBlock = [regex]::Match($PS1_TEXT, '(?ms)function Invoke-TransformRpu\b.*?function Invoke-PlotDvMetadata\b').Value
+$directCombine = ([regex]::Matches($flowBlock, '"-map","0:v:0","-map","1:a\?"')).Count
+Assert-Eq 0 $directCombine "zero ffmpeg combine direct in flows (toate trec prin helper)"
+
+# v57: Get-SourceCodec NU mai foloseste csv=p=0 (trailing comma bug — `av1,`)
+$gscMatch = [regex]::Match($PS1_TEXT, '(?ms)function Get-SourceCodec\b.*?\n\}')
+Assert-Eq $true $gscMatch.Success "Get-SourceCodec gasita"
+$gscBody = $gscMatch.Value
+Assert-Contains $gscBody "default=noprint_wrappers=1:nokey=1" "Get-SourceCodec foloseste default= format"
+$gscFfprobeLine = ($gscBody -split "`n" | Where-Object { $_ -match 'ffprobe' -and $_ -notmatch '^\s*#' }) -join "`n"
+Assert-Eq $false ([bool]($gscFfprobeLine -match 'csv=p=0')) "Get-SourceCodec ffprobe call fara csv=p=0"
+
+# v57: hybrid + transform_rpu PS1 seteaza codec_tag (hvc1/av01) pe MP4/MOV/M4V
+$hybridBlock = [regex]::Match($PS1_TEXT, '(?ms)function Invoke-Hdr10PlusToDv\b.*?\n\}').Value
+Assert-Eq $true ([bool]($hybridBlock -match '"-tag:v","(hvc1|av01)"')) "Invoke-Hdr10PlusToDv seteaza -tag:v hvc1/av01"
+$transformBlock = [regex]::Match($PS1_TEXT, '(?ms)function Invoke-TransformRpu\b.*?\n\}').Value
+Assert-Eq $true ([bool]($transformBlock -match '"-tag:v","(hvc1|av01)"')) "Invoke-TransformRpu seteaza -tag:v hvc1/av01"
 
 Invoke-TestSummary

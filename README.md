@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v56** — 69 bugs fixed · 216+ features · ~35 000 LoC · 99 files
+**v57** — 78 bugs fixed · 220+ features · ~35 400 LoC · 101 files
 
 ---
 
@@ -376,4 +376,6 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v56** — 69 bugs fixed · 216+ features · ~35 000 LoC · 99 files
+Current: **v57** — 78 bugs fixed · 220+ features · ~35 400 LoC · 101 files
+
+**v57 highlights** — `av_check` regression sweep (the one flow not yet audited post-v44): fixed AV1 Dolby Vision detection (codec_tag is `[0][0][0][0]` for AV1 — DV now detected via per-frame side_data instead), correct 12-bit depth labeling (old pix_fmt `*10*` glob missed `yuv420p12le`), HDR rich diagnostic CSV (+7 cols: ColorPrimaries/Space/Range + MaxCLL/FALL + MasterDisplay primaries+nits + HDR10+ scene markers), MKV bitrate cascade fallback, expanded output-suffix list for the Comparison section (covers Mux/HDR-DV/Burn-in/Telemetry outputs), LOG sources no longer mis-typed as HLG. Also: latent bash audio-CSV bug (`-of csv=p=0` reorders fields → all audio metrics were wrong) fixed. PS1 ↔ bash CSV header now fully aligned. 148 new asserts (96 bash + 52 PS1), full suite green.

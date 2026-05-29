@@ -1622,6 +1622,21 @@ function Get-ContainerFlags {
     if ($c -in @("mkv","mxf","webm")) { @() } else { @("-movflags","+faststart") }
 }
 
+# v57: codec FourCC tag pentru MP4/MOV/M4V — paritate cu bash codec_tag_for_container.
+# Returneaza array `@("-tag:v","hvc1")` sau gol pentru containere care nu folosesc tag.
+function Get-CodecTagForContainer {
+    param([string]$Codec, [string]$Container)
+    $ext = $Container.ToLowerInvariant()
+    if ($ext -in @("mp4","mov","m4v")) {
+        switch ($Codec) {
+            "hevc" { return @("-tag:v","hvc1") }
+            "av1"  { return @("-tag:v","av01") }
+            "h264" { return @("-tag:v","avc1") }
+        }
+    }
+    return @()
+}
+
 # FIX: PGS/DVDSUB incompatibile cu mp4/mov — returneaza -sn (omite) nu -c:s mov_text
 function Get-SubtitleCodec {
     param([string]$file, [string]$container)
@@ -2056,7 +2071,11 @@ function Test-EncoderAvailable {
 function Get-SourceCodec {
     param([string]$File)
     if (-not $File -or -not (Test-Path -LiteralPath $File)) { return "" }
-    return (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 -- "$File" 2>$null).Trim()
+    # v57 FIX: csv=p=0 emite trailing comma chiar la single-field queries in
+    # ffprobe 8.x (`av1,\n` in loc de `av1\n`); .Trim() strips whitespace, NU
+    # comma → callerii primeau "av1," si gate-urile `-eq "av1"` esuau.
+    # default=noprint_wrappers=1:nokey=1 returneaza valoarea curata (paritate bash).
+    return (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null).Trim()
 }
 
 # Get-ToolForExtract -Codec <hevc|av1|...> -Kind <dovi|hdr10plus>
@@ -2529,11 +2548,13 @@ function Get-RemuxPreflight {
     $level = 0
     $target = $TargetContainer.ToLowerInvariant()
 
-    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String).Trim()
-    $audioCodecsRaw = (& ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
-    $subCodecsRaw   = (& ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
-    $codecTags      = (& ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 -- $File 2>$null) | Out-String
-    $attachIdxRaw   = (& ffprobe -v error -select_streams t -show_entries stream=index -of csv=p=0 -- $File 2>$null) | Out-String
+    # v57: default= in loc de csv=p=0 — csv emite trailing comma "av1,"
+    # → gate-urile regex anchored esueaza. default= returneaza valori curate.
+    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String).Trim()
+    $audioCodecsRaw = (& ffprobe -v error -select_streams a -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
+    $subCodecsRaw   = (& ffprobe -v error -select_streams s -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
+    $codecTags      = (& ffprobe -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
+    $attachIdxRaw   = (& ffprobe -v error -select_streams t -show_entries stream=index -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
 
     $audioCodecs = $audioCodecsRaw -split "`r?`n" | Where-Object { $_ }
     $subCodecs   = $subCodecsRaw   -split "`r?`n" | Where-Object { $_ }
@@ -2569,6 +2590,12 @@ function Get-RemuxPreflight {
             }
         }
         "mov" {
+            # v57: AV1 NU e suportat de MOV (ffmpeg: "av1 only supported in MP4 and AVIF").
+            # Level 2 = abort.
+            if ($videoCodec -eq "av1") {
+                $notes.Add("Video AV1 incompatibil cu .mov (ffmpeg limit) — alege .mp4 sau .mkv") | Out-Null
+                $level = 2
+            }
             if (_Matches $audioCodecs '^eac3$') {
                 $notes.Add("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4") | Out-Null
                 $level = 2
@@ -2815,6 +2842,27 @@ function _Hdv-PickFile {
     return $files[$n-1].FullName
 }
 
+# Helper privat — re-mux video bitstream procesat (RPU injectat / DV eliminat /
+# HDR10+ scos) impreuna cu metadata din original (audio + subs + attach +
+# chapters). Mirror cu bash _hdv_combine_with_original. Folosit de toate 4
+# flow-uri HDR/DV ca pas final. NU e "remux user-facing" (acela traieste in
+# av_mux.ps1); e operatie post-processing fixa (map deterministic, fara prompts).
+function Invoke-HdvCombineWithOriginal {
+    param(
+        [Parameter(Mandatory)][string]$Modified,
+        [Parameter(Mandatory)][string]$Original,
+        [Parameter(Mandatory)][string]$Output,
+        [string[]]$VTag = @()
+    )
+    $ext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    $contFlags = Get-ContainerFlags $ext
+    $args = @("-v","error","-i",$Modified,"-i",$Original,
+              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+              "-c","copy") + $VTag + $contFlags + @($Output)
+    & ffmpeg @args 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Invoke-TransformRpu {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -2908,12 +2956,13 @@ function Invoke-TransformRpu {
         Remove-Item $rpuSrc,$rpuOut,$rawVideo,$injected -Force -ErrorAction SilentlyContinue
         return
     }
-    $contFlags = Get-ContainerFlags $outExt
-    $args = @("-v","error","-i",$injected,"-i",$file,
-              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-              "-c","copy") + $contFlags + @($finalOut)
-    & ffmpeg @args 2>$null
-    $rc = $LASTEXITCODE
+    # v57: tag DV-aware pe MP4/MOV/M4V (paritate cu Invoke-RemoveDv + hybrid)
+    $vtag = @()
+    if ($outExt.ToLowerInvariant() -in @("mp4","mov","m4v")) {
+        $vtag = if ($targetCodec -eq "av1") { @("-tag:v","av01") } else { @("-tag:v","hvc1") }
+    }
+    $ok = Invoke-HdvCombineWithOriginal -Modified $injected -Original $file -Output $finalOut -VTag $vtag
+    $rc = if ($ok) { 0 } else { 1 }
     Remove-Item $rpuSrc,$rpuOut,$rawVideo,$injected -Force -ErrorAction SilentlyContinue
     if ($rc -eq 0 -and (Test-Path $finalOut) -and (Get-Item $finalOut).Length -gt 0) {
         # v56: guard onest pentru known issue AV1 — inject-rpu produce T.35 malformat,
@@ -3061,15 +3110,17 @@ function Invoke-Hdr10PlusToDv {
     $outExt = [System.IO.Path]::GetExtension($file).TrimStart('.')
     $finalOut = Join-Path $OutputDir ("{0}_dvhybrid.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $outExt)
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
-    $contFlags = Get-ContainerFlags $outExt
+
+    # v57: tag DV-aware pe MP4/MOV/M4V (paritate cu Invoke-RemoveDv)
+    $vtag = @()
+    if ($outExt.ToLowerInvariant() -in @("mp4","mov","m4v")) {
+        $vtag = if ($srcCodec -eq "av1") { @("-tag:v","av01") } else { @("-tag:v","hvc1") }
+    }
 
     Write-Host ""
     Write-Host "  [4/4] Re-mux final..." -ForegroundColor Cyan
-    $args = @("-v","error","-i",$injected,"-i",$file,
-              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-              "-c","copy") + $contFlags + @($finalOut)
-    & ffmpeg @args 2>$null
-    $rc = $LASTEXITCODE
+    $ok = Invoke-HdvCombineWithOriginal -Modified $injected -Original $file -Output $finalOut -VTag $vtag
+    $rc = if ($ok) { 0 } else { 1 }
     Remove-Item $hpJson,$rpuOut,$rawVideo,$injected -Force -ErrorAction SilentlyContinue
     if ($rc -eq 0 -and (Test-Path $finalOut) -and (Get-Item $finalOut).Length -gt 0) {
         # v56: guard onest pentru known issue AV1 (vezi Invoke-TransformRpu)
@@ -3136,16 +3187,12 @@ function Invoke-RemoveDv {
     }
 
     Write-Host "  [3/3] Re-mux + tag HDR10 curat..." -ForegroundColor Cyan
-    $contFlags = Get-ContainerFlags $outExt
     $vtag = @()
     if ($outExt.ToLowerInvariant() -in @("mp4","mov","m4v")) {
         $vtag = if ($srcCodec -eq "av1") { @("-tag:v","av01") } else { @("-tag:v","hvc1") }
     }
-    $args = @("-v","error","-i",$cleanVideo,"-i",$file,
-              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-              "-c","copy") + $vtag + $contFlags + @($finalOut)
-    & ffmpeg @args 2>$null
-    $rc = $LASTEXITCODE
+    $ok = Invoke-HdvCombineWithOriginal -Modified $cleanVideo -Original $file -Output $finalOut -VTag $vtag
+    $rc = if ($ok) { 0 } else { 1 }
     Remove-Item $rawVideo,$cleanVideo -Force -ErrorAction SilentlyContinue
     if ($rc -eq 0 -and (Test-Path $finalOut) -and (Get-Item $finalOut).Length -gt 0) {
         Write-Host ""
@@ -3201,12 +3248,8 @@ function Invoke-RemoveHdr10Plus {
     }
 
     Write-Host "  [3/3] Re-mux final..." -ForegroundColor Cyan
-    $contFlags = Get-ContainerFlags $outExt
-    $args = @("-v","error","-i",$cleanVideo,"-i",$file,
-              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-              "-c","copy") + $contFlags + @($finalOut)
-    & ffmpeg @args 2>$null
-    $rc = $LASTEXITCODE
+    $ok = Invoke-HdvCombineWithOriginal -Modified $cleanVideo -Original $file -Output $finalOut
+    $rc = if ($ok) { 0 } else { 1 }
     Remove-Item $rawVideo,$cleanVideo -Force -ErrorAction SilentlyContinue
     if ($rc -eq 0 -and (Test-Path $finalOut) -and (Get-Item $finalOut).Length -gt 0) {
         Write-Host ""
@@ -4095,12 +4138,15 @@ if ($mainChoice -eq "2") {
 
         # v53: WebM accepta DOAR WebVTT — strip alte subs/attachments
         $eaSubArgs = if ($eaContainer -eq "webm") { @("-sn") } else { @("-c:s","copy","-c:t","copy") }
+        # v57: tag codec_tag pe MP4/MOV — video e stream copy → tag-ul sursei
+        # (adesea hev1) se propaga in output. Aplicam codec_tag corect.
+        $eaCodecTag = Get-CodecTagForContainer (Get-SourceCodec -File $f.FullName) $eaContainer
         # v56: mapare explicita (paritate cu bash av_encoder_audio.sh) — video copy +
         # audio optional (0:a? → surse video-only nu dau eroare) + subs/attach.
         # NU mapeaza track-uri de date (0:d) — evita incompatibilitati mp4/mov.
         $eaArgs = @("-i",$f.FullName,"-map","0:v","-map","0:a?","-map","0:s?","-map","0:t?",
                      "-map_metadata","0","-map_chapters","0",
-                     "-c:v","copy") + $eaAP + $eaSubArgs +
+                     "-c:v","copy") + $eaAP + $eaSubArgs + $eaCodecTag +
                   $eaFlags + @("-nostats",$outFile)
         & ffmpeg @eaArgs 2>>$eaLog
 
@@ -6347,6 +6393,7 @@ foreach ($f in $inputFiles) {
         if ($is2Pass) {
             # v51: 2-pass x264 — -pass N + -passlogfile
             Initialize-2PassState -File $f.FullName
+            $script:codecTagKey = "h264"  # v57: pt trailing codec_tag
             $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag +
                 @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
@@ -6360,13 +6407,14 @@ foreach ($f in $inputFiles) {
                 $videoFilter + $fpsFlag + $rateParams +
                 @("-pass","2","-passlogfile",$script:statsFile) + $audioParams
         } else {
+            $codecTag = Get-CodecTagForContainer "h264" $container
             $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                       @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
                       @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
                       $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
                       $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                       (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+                      $codecTag + $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
         }
 
     } elseif ($useAV1) {
@@ -6630,6 +6678,7 @@ foreach ($f in $inputFiles) {
                 # v52: NU adaugam $av1Color la libsvtav1 (VUI deja in svtav1-params;
                 # ffmpeg -color_primaries scrie Matroska "Colour" element care override
                 # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
+                $script:codecTagKey = "av1"  # v57: pt trailing codec_tag
                 $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                     @("-c:v","libsvtav1") + $av1LevelFlag +
                     @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParamsP1) +
@@ -6641,18 +6690,20 @@ foreach ($f in $inputFiles) {
                     $videoFilter + $fpsFlag + $rateParams + $passFlagP2 + $audioParams
             } else {
                 # v52: NU adaugam $av1Color (vezi nota la 2-pass branch)
+                $codecTag = Get-CodecTagForContainer "av1" $container
                 $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                           @("-c:v","libsvtav1") + $av1LevelFlag + $crfFlag +
                           @("-pix_fmt",$av1PixFmt,"-svtav1-params",$svtParams) +
                           $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                           (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                          $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+                          $codecTag + $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
             }
         } else {
             $libaomBv = if (-not $isVbr) { @("-b:v","0") } else { @() }
             $libaomFg = if ($fgLevel -gt 0) { @("-denoise-noise-level",$fgLevel) } else { @() }
             if ($is2Pass) {
                 Initialize-2PassState -File $f.FullName
+                $script:codecTagKey = "av1"  # v57: pt trailing codec_tag
                 $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                     @("-c:v","libaom-av1") + $libaomBv +
                     @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
@@ -6664,12 +6715,13 @@ foreach ($f in $inputFiles) {
                     $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams +
                     @("-pass","2","-passlogfile",$script:statsFile) + $audioParams
             } else {
+                $codecTag = Get-CodecTagForContainer "av1" $container
                 $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                           @("-c:v","libaom-av1") + $crfFlag + $libaomBv +
                           @("-pix_fmt",$av1PixFmt,"-cpu-used",$av1Preset,"-row-mt","1") +
                           $libaomFg + $libaomExtra + $videoFilter + $fpsFlag + $av1Color + $rateParams + $audioParams + $loudnormFlag +
                           (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                          $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+                          $codecTag + $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
             }
         }
 
@@ -6868,12 +6920,16 @@ foreach ($f in $inputFiles) {
 
         # v53: $hwColorFlags conține acum BSF (Get-HwVuiBsf), nu mai e -color_primaries
         # care nu propaga la encoder. $nvencQualityFlag e empty cand nu mode 3 nvenc.
+        # v57: HW backend → codec_key derivat din $hwEncCodec ($hwEncCodec e ex.
+        # "hevc_nvenc", "av1_qsv"). Match prefix pana la primul "_".
+        $codecTagKey = ($hwEncCodec -split '_')[0]
+        $codecTag = Get-CodecTagForContainer $codecTagKey $container
         $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                   @("-c:v",$hwEncCodec) + $hwQpFlag + $hwPresetFlag + $nvencTuneFlag + $nvencQualityFlag +
                   @("-pix_fmt",$hwPixFmt) +
                   $videoFilter + $fpsFlag + $hwColorFlags + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                  $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+                  $codecTag + $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
 
     } elseif ($useProRes) {
         # ── ProRes per-file ──────────────────────────────────────────
@@ -7171,6 +7227,7 @@ foreach ($f in $inputFiles) {
             # -color_primaries scrie Matroska "Colour" element care override
             # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
             Initialize-2PassState -File $f.FullName
+            $script:codecTagKey = "hevc"  # v57: pt trailing codec_tag
             $x265ParamsP1 = "${x265Params}:pass=1:stats=$($script:statsFile):slow-firstpass=0"
             $x265ParamsP2 = "${x265Params}:pass=2:stats=$($script:statsFile)"
             $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
@@ -7183,12 +7240,13 @@ foreach ($f in $inputFiles) {
                 $videoFilter + $fpsFlag + $rateParams + $audioParams
         } else {
             # v52: NU adaugam $colorParams (vezi nota la 2-pass branch)
+            $codecTag = Get-CodecTagForContainer "hevc" $container
             $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                       @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
                       @("-pix_fmt",$x265PixFmt,"-x265-params",$x265Params) +
                       $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                       (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-                      $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+                      $codecTag + $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
         }
     }
 
@@ -7213,9 +7271,11 @@ foreach ($f in $inputFiles) {
         # NOTA: $audioParams e DEJA inclus in ffmpegCmdPass2 de encoder branches
         # (paritate cu bash AUDIO_PARAMS in FFMPEG_CMD_PASS2). Aici adaugam doar
         # loudnorm + sub + container + output (paritate cu trailing eval bash).
+        # v57: codec_tag injectat (key setat de fiecare encoder branch in $script:codecTagKey).
+        $codecTag2 = Get-CodecTagForContainer $script:codecTagKey $container
         $trailing2 = $loudnormFlag +
             (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
-            $containerFlags + @($outFile)
+            $codecTag2 + $containerFlags + @($outFile)
         $exitCode = Invoke-2PassEncode -File $f.FullName -Label $encLabel -DurationSec $durSec `
             -TrailingArgs2 $trailing2 -ProgressFile $progFile -LogFile $LogFile
         Clear-2PassState

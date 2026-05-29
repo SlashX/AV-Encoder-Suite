@@ -17,6 +17,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
 
 # ─────────────────────────────────────────────────────────────────────
+# Helper privat — re-mux video bitstream procesat (RPU injectat / DV
+# eliminat / HDR10+ scos) impreuna cu metadata din original (audio +
+# subs + attach + chapters). Folosit de toate 4 flow-uri ca pas final.
+# Aceasta NU este "remux user-facing" (acela traieste in av_mux.sh);
+# e operatie post-processing fixa (map deterministic, fara prompts).
+#   $1 = video bitstream modificat (raw HEVC/IVF, deja procesat)
+#   $2 = fisier original (sursa de audio/subs/attach/metadata)
+#   $3 = output path
+#   $4+ = vtag flags optionale (ex: "-tag:v" "av01" pentru Remove DV pe mp4)
+# Cere: $CONTAINER setat in caller (folosit de get_container_flags).
+_hdv_combine_with_original() {
+    local modified="$1" original="$2" output="$3"
+    shift 3
+    local vtag_args=("$@")
+    local cont_flags; cont_flags=$(get_container_flags)
+    # shellcheck disable=SC2086
+    ffmpeg -v error -i "$modified" -i "$original" \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+        -c copy "${vtag_args[@]}" $cont_flags "$output" 2>/dev/null
+    return $?
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # UI helper — pick file from INPUT_DIR + numbered list
 # ─────────────────────────────────────────────────────────────────────
 _hdv_pick_file() {
@@ -139,14 +162,15 @@ hdv_flow_transform_rpu() {
         rm -f "$rpu_src" "$rpu_out" "$raw_video" "$injected_video"; return 1
     fi
     # Re-mux: video cu RPU convertit + audio/sub/track-uri din original
-    # get_container_flags citeste $CONTAINER global → setam local cu out_ext
     local CONTAINER="$out_ext"
-    local cont_flags
-    cont_flags=$(get_container_flags)
-    # shellcheck disable=SC2086
-    ffmpeg -v error -i "$injected_video" -i "$file" \
-        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-        -c copy $cont_flags "$final_out" 2>/dev/null
+    # v57: tag DV-aware (MP4/MOV/M4V) — paritate cu hybrid + remove_dv flows
+    local vtag=()
+    case "${out_ext,,}" in
+        mp4|mov|m4v)
+            if [[ "$target_codec" == "av1" ]]; then vtag=(-tag:v av01); else vtag=(-tag:v hvc1); fi
+            ;;
+    esac
+    _hdv_combine_with_original "$injected_video" "$file" "$final_out" "${vtag[@]}"
     local rc=$?
     rm -f "$rpu_src" "$rpu_out" "$raw_video" "$injected_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
@@ -328,15 +352,19 @@ hdv_flow_hdr10plus_to_dv() {
     local final_out="${OUTPUT_DIR}/$(basename "${file%.*}")_dvhybrid.${out_ext}"
     mkdir -p "$OUTPUT_DIR"
     local CONTAINER="$out_ext"
-    local cont_flags
-    cont_flags=$(get_container_flags)
+
+    # v57: tag video pt DV-aware playere (MP4/MOV/M4V) — hvc1/av01 standard.
+    # Pe MKV nu se aplica (containerul foloseste codec ID strings, nu FourCC tags).
+    local vtag=()
+    case "${out_ext,,}" in
+        mp4|mov|m4v)
+            if [[ "$src_codec" == "av1" ]]; then vtag=(-tag:v av01); else vtag=(-tag:v hvc1); fi
+            ;;
+    esac
 
     echo ""
     echo "  [4/4] Re-mux final..."
-    # shellcheck disable=SC2086
-    ffmpeg -v error -i "$injected_video" -i "$file" \
-        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-        -c copy $cont_flags "$final_out" 2>/dev/null
+    _hdv_combine_with_original "$injected_video" "$file" "$final_out" "${vtag[@]}"
     local rc=$?
     rm -f "$hp_json" "$rpu_out" "$raw_video" "$injected_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
@@ -412,8 +440,6 @@ hdv_flow_remove_dv() {
 
     echo "  [3/3] Re-mux + tag HDR10 curat..."
     local CONTAINER="$out_ext"
-    local cont_flags
-    cont_flags=$(get_container_flags)
     # tag video curat (fara semnalizare DV) pe MP4/MOV
     local vtag=()
     case "${out_ext,,}" in
@@ -421,10 +447,7 @@ hdv_flow_remove_dv() {
             if [[ "$src_codec" == "av1" ]]; then vtag=(-tag:v av01); else vtag=(-tag:v hvc1); fi
             ;;
     esac
-    # shellcheck disable=SC2086
-    ffmpeg -v error -i "$clean_video" -i "$file" \
-        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-        -c copy "${vtag[@]}" $cont_flags "$final_out" 2>/dev/null
+    _hdv_combine_with_original "$clean_video" "$file" "$final_out" "${vtag[@]}"
     local rc=$?
     rm -f "$raw_video" "$clean_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
@@ -487,12 +510,7 @@ hdv_flow_remove_hdr10plus() {
 
     echo "  [3/3] Re-mux final..."
     local CONTAINER="$out_ext"
-    local cont_flags
-    cont_flags=$(get_container_flags)
-    # shellcheck disable=SC2086
-    ffmpeg -v error -i "$clean_video" -i "$file" \
-        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-        -c copy $cont_flags "$final_out" 2>/dev/null
+    _hdv_combine_with_original "$clean_video" "$file" "$final_out"
     local rc=$?
     rm -f "$raw_video" "$clean_video"
     if [ $rc -eq 0 ] && [ -s "$final_out" ]; then

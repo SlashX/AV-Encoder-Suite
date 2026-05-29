@@ -965,7 +965,8 @@ mux_codec_of() {
         *) spec="v:0" ;;
     esac
     local c
-    c=$(ffprobe -v error -select_streams "$spec" -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null || true)
+    # v57: default= in loc de csv=p=0 — single-field emite trailing comma
+    c=$(ffprobe -v error -select_streams "$spec" -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null || true)
     c="${c%$'\r'}"
     c="${c%$'\n'}"
     echo "${c,,}"

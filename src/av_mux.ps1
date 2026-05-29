@@ -35,7 +35,8 @@ $SupportedOutputExt = @("mkv","mp4","mov","webm")
 
 function Get-SourceCodec {
     param([string]$File)
-    $c = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String
+    # v57: default= in loc de csv=p=0 — single-field emite trailing comma "av1,"
+    $c = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
     return $c.Trim().ToLowerInvariant()
 }
 
@@ -139,11 +140,13 @@ function Get-RemuxPreflight {
     $notes = New-Object System.Collections.Generic.List[string]
     $level = 0
     $target = $TargetContainer.ToLowerInvariant()
-    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String).Trim()
-    $audioCodecs = ((& ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
-    $subCodecs   = ((& ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
-    $codecTags   = (& ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 -- $File 2>$null) | Out-String
-    $attachCount = (((& ffprobe -v error -select_streams t -show_entries stream=index -of csv=p=0 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }).Count
+    # v57: default= in loc de csv=p=0 — single-field emite trailing comma "av1,"
+    # care esua gate-urile regex anchored (`^av1$`).
+    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String).Trim()
+    $audioCodecs = ((& ffprobe -v error -select_streams a -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
+    $subCodecs   = ((& ffprobe -v error -select_streams s -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
+    $codecTags   = (& ffprobe -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
+    $attachCount = (((& ffprobe -v error -select_streams t -show_entries stream=index -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }).Count
     $djiPresent = $codecTags -match "(?i)\b(djmd|dbgi)\b"
     function _Matches([string[]]$list, [string]$pat) { foreach ($c in $list) { if ($c -match $pat) { return $true } }; return $false }
     switch ($target) {
@@ -155,6 +158,8 @@ function Get-RemuxPreflight {
             if ($attachCount -gt 0) { $notes.Add("$attachCount atasament(e) — doar MKV suporta, strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
         }
         "mov" {
+            # v57: AV1 NU e suportat de MOV (ffmpeg: "av1 only supported in MP4 and AVIF")
+            if ($videoCodec -eq "av1") { $notes.Add("Video AV1 incompatibil cu .mov (ffmpeg limit) — alege .mp4 sau .mkv") | Out-Null; $level = 2 }
             if (_Matches $audioCodecs '^eac3$') { $notes.Add("E-AC3 audio incompatibil cu .mov — abort"); $level = 2 }
             if (_Matches $audioCodecs '^(truehd|dts|opus)$') { $notes.Add("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
             if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') { $notes.Add("Subtitrari text vor fi convertite la mov_text pentru MOV") | Out-Null; if ($level -lt 1) { $level = 1 } }

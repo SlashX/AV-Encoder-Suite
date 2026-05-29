@@ -31,6 +31,21 @@ function Format-Bytes {
     else { "$bytes B" }
 }
 
+# v57: codec FourCC tag pentru MP4/MOV/M4V — copie locala (telemetry standalone).
+# Paritate cu bash codec_tag_for_container.
+function Get-CodecTagForContainer {
+    param([string]$Codec, [string]$Container)
+    $ext = $Container.ToLowerInvariant()
+    if ($ext -in @("mp4","mov","m4v")) {
+        switch ($Codec) {
+            "hevc" { return @("-tag:v","hvc1") }
+            "av1"  { return @("-tag:v","av01") }
+            "h264" { return @("-tag:v","avc1") }
+        }
+    }
+    return @()
+}
+
 # ── Detect brand per fisier (codec_tag scan) ─────────────────────────
 function Get-TelemetryBrand {
     param([string]$file, [string]$exifCmd = $null)
@@ -1100,6 +1115,13 @@ function Invoke-EmbedTelemetryLossless {
     if ($hasSrt) { $ffArgs.AddRange([string[]]@("-c:s",$subsCodec)) }
     $ffArgs.AddRange($ffMeta)
     if ($targetExt -in @("mp4","mov","m4v")) {
+        # v57: tag codec_tag pe MP4/MOV — stream copy pastreaza tag-ul sursei
+        # (adesea hev1) → DV-aware players nu engaja. Detectam codec sursa.
+        $srcCodec = (& ffprobe -v error -select_streams v:0 `
+            -show_entries stream=codec_name `
+            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null).Trim()
+        $telemTag = Get-CodecTagForContainer $srcCodec $targetExt
+        if ($telemTag.Count -gt 0) { $ffArgs.AddRange([string[]]$telemTag) }
         $ffArgs.AddRange([string[]]@("-movflags","+faststart"))
     }
     $ffArgs.AddRange([string[]]@($out,"-y"))

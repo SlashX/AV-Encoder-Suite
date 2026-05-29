@@ -30,38 +30,52 @@ if [ "$TOTAL" -eq 0 ]; then
     echo "Nu am gasit fisiere in $INPUT_DIR"; exit 1
 fi
 
-echo "Fisier,Format_sursa,Dimensiune(MB),Durata(sec),Rezolutie,PixelFormat,FPS,Bitrate_video(Mbps),Tip_HDR,Profil_DV,Log_Profile,Codec_audio,Bitrate_audio(kbps),SampleRate(kHz),BitDepth,Layout_canale,Limba_audio,Canale_audio,AudioTrackuri,Subtitrari,Capitole,Attachments,DJI_djmd,DJI_dbgi,DJI_Timecode,Recomandat_encoder,Est_x265,Est_x264,Est_AV1,Est_ProRes" \
+# v57: CSV expanded 30 → 38 coloane:
+#   - 7 HDR rich (ColorPrimaries, ColorSpace, ColorRange, MaxCLL, MaxFALL,
+#     MasterDisplay, HDR10Plus_Scenes — inserate dupa Profil_DV)
+#   - 1 Container (extensie fisier — mp4/mkv/mov/... — inserat dupa Format_sursa)
+echo "Fisier,Format_sursa,Container,Dimensiune(MB),Durata(sec),Rezolutie,PixelFormat,FPS,Bitrate_video(Mbps),Tip_HDR,Profil_DV,ColorPrimaries,ColorSpace,ColorRange,MaxCLL,MaxFALL,MasterDisplay,HDR10Plus_Scenes,Log_Profile,Codec_audio,Bitrate_audio(kbps),SampleRate(kHz),BitDepth,Layout_canale,Limba_audio,Canale_audio,AudioTrackuri,Subtitrari,Capitole,Attachments,DJI_djmd,DJI_dbgi,DJI_Timecode,Recomandat_encoder,Est_x265,Est_x264,Est_AV1,Est_ProRes" \
     > "$CSV_FILE"
 
 # ── Format sursa — primeste date deja extrase, fara ffprobe suplimentar ─
+# v57 FIX: detectie bit depth corecta — vechiul `*10*` glob NU matcha yuv420p12le
+# (substring "12", nu "10") → 12-bit etichetat ca 8-bit. Folosim bits_per_raw_sample
+# (autoritar) cu fallback la pattern pix_fmt p10/p12/p16.
 get_source_format() {
-    local codec="$1" pix_fmt="$2" transfer="$3" hdr_plus_found="$4"
-    local is_10bit=0 is_hdr=0 is_hdrplus=0 is_hlg=0
-    [[ "$pix_fmt"        == *10*        ]] && is_10bit=1
+    local codec="$1" pix_fmt="$2" transfer="$3" hdr_plus_found="$4" bits_raw="${5:-}"
+    local depth=8 is_hdr=0 is_hdrplus=0 is_hlg=0
+    if [[ "$bits_raw" =~ ^[0-9]+$ ]] && [ "$bits_raw" -ge 10 ] && [ "$bits_raw" -le 16 ]; then
+        depth="$bits_raw"
+    elif [[ "$pix_fmt" == *p10* || "$pix_fmt" == *p010* ]]; then
+        depth=10
+    elif [[ "$pix_fmt" == *p12* || "$pix_fmt" == *p012* ]]; then
+        depth=12
+    elif [[ "$pix_fmt" == *p16* || "$pix_fmt" == *p016* ]]; then
+        depth=16
+    fi
+    local depth_label="${depth}bit"
     [[ "$transfer"       == "smpte2084" ]] && is_hdr=1
     [[ "$transfer"       == "arib-std-b67" ]] && is_hlg=1
     [[ "$hdr_plus_found" == "1"         ]] && is_hdrplus=1 && is_hdr=1
     local fmt
     case "$codec" in
-        h264) [ $is_10bit -eq 1 ] && fmt="H.264 10bit" || fmt="H.264 8bit" ;;
+        h264) fmt="H.264 $depth_label" ;;
         hevc)
             if   [ $is_hdrplus -eq 1 ]; then fmt="H.265 HEVC HDR10+"
             elif [ $is_hdr -eq 1 ];     then fmt="H.265 HEVC HDR10"
             elif [ $is_hlg -eq 1 ];     then fmt="H.265 HEVC HLG"
-            elif [ $is_10bit -eq 1 ];   then fmt="H.265 HEVC 10bit SDR"
-            else                             fmt="H.265 HEVC 8bit SDR"; fi ;;
+            else                             fmt="H.265 HEVC $depth_label SDR"; fi ;;
         av1)
             if   [ $is_hdrplus -eq 1 ]; then fmt="AV1 HDR10+"
             elif [ $is_hdr -eq 1 ];     then fmt="AV1 HDR10"
             elif [ $is_hlg -eq 1 ];     then fmt="AV1 HLG"
-            elif [ $is_10bit -eq 1 ];   then fmt="AV1 10bit SDR"
-            else                             fmt="AV1 8bit SDR"; fi ;;
-        vp9)        [ $is_10bit -eq 1 ] && fmt="VP9 10bit"      || fmt="VP9 8bit" ;;
+            else                             fmt="AV1 $depth_label SDR"; fi ;;
+        vp9)        fmt="VP9 $depth_label" ;;
         mpeg4)      fmt="MPEG-4" ;;
         mpeg2video) fmt="MPEG-2" ;;
         prores)     fmt="Apple ProRes" ;;
-        apv)        fmt="Samsung APV" ;;
-        *)          [ $is_10bit -eq 1 ] && fmt="$codec 10bit"   || fmt="$codec 8bit" ;;
+        apv)        fmt="Samsung APV $depth_label" ;;
+        *)          fmt="$codec $depth_label" ;;
     esac
     echo "$fmt"
 }
@@ -169,9 +183,15 @@ get_log_profile() {
 
     all_tags=$(ffprobe -v error -show_entries format_tags \
         -of default=noprint_wrappers=1 "$file" 2>/dev/null)
+    # Samsung S24 Ultra: tag autoritar `com.samsung.android.logvideo` —
+    # cand e prezent, fisierul ESTE Samsung Log (short-circuit).
+    if echo "$all_tags" | grep -qi "com\.samsung\.android\.logvideo"; then
+        echo "Samsung Log (S24 Ultra)"
+        return
+    fi
     if echo "$all_tags" | grep -qi "make=.*apple"; then camera_make="apple"
-    elif echo "$all_tags" | grep -qi "make=.*dji"; then camera_make="dji"
-    elif echo "$all_tags" | grep -qi "manufacturer=.*samsung\|make=.*samsung"; then camera_make="samsung"
+    elif echo "$all_tags" | grep -qi "make=.*dji\|encoder=.*dji"; then camera_make="dji"
+    elif echo "$all_tags" | grep -qi "manufacturer=.*samsung\|make=.*samsung\|com\.samsung\.android"; then camera_make="samsung"
     fi
     [[ -z "$camera_make" ]] && [[ "$is_dji" -eq 1 ]] && camera_make="dji"
 
@@ -181,7 +201,19 @@ get_log_profile() {
     src_bps=$(ffprobe -v error -select_streams v:0 \
         -show_entries stream=bits_per_raw_sample \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
-    [[ ! "$src_bps" =~ ^[0-9]+$ ]] && src_bps=8
+    if [[ ! "$src_bps" =~ ^[0-9]+$ ]]; then
+        # Fallback: deriva depth-ul din pix_fmt (paritate cu get_source_format)
+        local pf
+        pf=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=pix_fmt \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+        case "$pf" in
+            *p16*|*p016*) src_bps=16 ;;
+            *p12*|*p012*) src_bps=12 ;;
+            *p10*|*p010*) src_bps=10 ;;
+            *)            src_bps=8  ;;
+        esac
+    fi
     src_primaries=$(ffprobe -v error -select_streams v:0 \
         -show_entries stream=color_primaries \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
@@ -190,7 +222,7 @@ get_log_profile() {
     transfer=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
     hdr_plus_local=$(ffprobe -v error -read_intervals 0%+#5 -show_frames -select_streams v:0 \
-        -show_entries frame_side_data=type "$file" 2>/dev/null | grep -m1 "HDR10+")
+        -show_entries frame_side_data=side_data_type "$file" 2>/dev/null | grep -m1 "HDR10+")
     dovi_local=$(ffprobe -v error -show_entries stream=codec_tag_string \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | grep -i "dovi\|dvhe\|dvh1" | head -1)
 
@@ -238,7 +270,6 @@ get_encoder_recommendation() {
     elif [[ "$src_fmt"  == *"ProRes"* ]];                            then echo "libx265 sau AV1 (ProRes→compresie ~70-80% mai mic)"
     elif [[ "$src_fmt"  == *"APV"* ]];                               then echo "libx265 sau AV1 (APV→compresie ~70-80% mai mic)"
     elif [[ "$src_fmt"  == *"DNxH"* ]];                              then echo "libx265 sau AV1 (DNxHR→compresie ~70-80% mai mic)"
-    elif [[ "$src_fmt"  == *"DNxH"* ]];                              then echo "libx265 sau AV1 (DNxHR→compresie ~80% mai mic)"
     else                                                                  echo "libx265 (optiune sigura universala)"; fi
 }
 
@@ -291,9 +322,13 @@ for file in "${FILES[@]}"; do
     filename=$(basename "$file")
 
     # ── ffprobe #1: parametri video de baza — un singur apel ─────────
+    # v57: extins cu color_primaries/color_space/color_range/bits_per_raw_sample
+    # (necesare pentru detectia depth 12-bit + HDR rich fields)
+    # Folosim default= (key=value) in loc de csv=p=0 — ffprobe csv reordoneaza
+    # campurile dupa structura interna; default= ne lasa parse robust prin awk.
     VIDEO_INFO=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=codec_name,width,height,pix_fmt,color_transfer,avg_frame_rate,bit_rate \
-        -of csv=p=0 "$file" 2>/dev/null)
+        -show_entries stream=codec_name,width,height,pix_fmt,color_transfer,avg_frame_rate,bit_rate,color_primaries,color_space,color_range,bits_per_raw_sample \
+        -of default=noprint_wrappers=1 "$file" 2>/dev/null)
     # FIX: validare VIDEO_INFO gol inainte de COUNT++ — fisierele fara stream video
     # nu incrementeaza contorul si nu strica afisarea progresului
     if [ -z "$VIDEO_INFO" ]; then
@@ -309,15 +344,39 @@ for file in "${FILES[@]}"; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     FILE_SIZE=$(av_stat_size "$file")
+    # v57: container extras din extensie (lowercase, fara dot)
+    CONTAINER="${filename##*.}"
+    CONTAINER=$(echo "$CONTAINER" | tr '[:upper:]' '[:lower:]')
 
-    IFS=',' read -r SRC_CODEC WIDTH HEIGHT PIX_FMT TRANSFER FPS_RAW BITRATE \
-        <<< "$VIDEO_INFO"
+    # Parse robust din key=value (independent de ordinea interna ffprobe)
+    _vi_field() { echo "$VIDEO_INFO" | awk -F= -v k="$1" '$1==k{print $2; exit}'; }
+    SRC_CODEC=$(_vi_field codec_name)
+    WIDTH=$(_vi_field width)
+    HEIGHT=$(_vi_field height)
+    PIX_FMT=$(_vi_field pix_fmt)
+    TRANSFER=$(_vi_field color_transfer)
+    FPS_RAW=$(_vi_field avg_frame_rate)
+    BITRATE=$(_vi_field bit_rate)
+    COLOR_PRIM_RAW=$(_vi_field color_primaries)
+    COLOR_SPACE_RAW=$(_vi_field color_space)
+    COLOR_RANGE_RAW=$(_vi_field color_range)
+    BITS_RAW=$(_vi_field bits_per_raw_sample)
 
     # ── ffprobe #2: audio detaliat — un singur apel ──────────────────
+    # v57 FIX: ffprobe csv=p=0 reordoneaza dupa structura interna, NU dupa
+    # ordinea din -show_entries. Bug pre-existent: AUDIO_BITRATE primea valoarea
+    # sample_rate, etc. → toate metricile audio gresite. Fix via default= (key=value).
     AUDIO_INFO=$(ffprobe -v error -select_streams a:0 \
         -show_entries stream=codec_name,bit_rate,channels,sample_rate,bits_per_raw_sample,channel_layout:stream_tags=language \
-        -of csv=p=0 "$file" 2>/dev/null)
-    IFS=',' read -r AUDIO_CODEC AUDIO_BITRATE AUDIO_CHANNELS AUDIO_SAMPLERATE AUDIO_BITDEPTH AUDIO_LAYOUT AUDIO_LANG <<< "$AUDIO_INFO"
+        -of default=noprint_wrappers=1 "$file" 2>/dev/null)
+    _ai_field() { echo "$AUDIO_INFO" | awk -F= -v k="$1" '$1==k{print $2; exit}'; }
+    AUDIO_CODEC=$(_ai_field codec_name)
+    AUDIO_BITRATE=$(_ai_field bit_rate)
+    AUDIO_CHANNELS=$(_ai_field channels)
+    AUDIO_SAMPLERATE=$(_ai_field sample_rate)
+    AUDIO_BITDEPTH=$(_ai_field bits_per_raw_sample)
+    AUDIO_LAYOUT=$(_ai_field channel_layout)
+    AUDIO_LANG=$(echo "$AUDIO_INFO" | awk -F= '$1=="TAG:language"{print $2; exit}')
 
     # Sample rate (Hz → kHz)
     AUDIO_SAMPLERATE_KHZ="N/A"
@@ -351,10 +410,20 @@ for file in "${FILES[@]}"; do
         grep -c '^[0-9]')
 
     # ── Detalii per track audio (toate track-urile) ───────────────────
+    # v57 FIX: folosim -of compact (key=value pairs, | separated) — robust la
+    # reordonarea interna ffprobe. Parse per-key via tr|awk.
+    _kv() { echo "$1" | tr '|' '\n' | awk -F= -v k="$2" '$1==k{print $2; exit}'; }
     AUDIO_TRACKS_DETAIL=""
     if [ "$AUDIO_COUNT" -gt 0 ] 2>/dev/null; then
         local_aidx=0
-        while IFS=',' read -r at_codec at_br at_ch at_sr at_layout at_lang; do
+        while IFS= read -r stream_line; do
+            [ -z "$stream_line" ] && continue
+            at_codec=$(_kv "$stream_line" codec_name)
+            at_br=$(_kv "$stream_line" bit_rate)
+            at_ch=$(_kv "$stream_line" channels)
+            at_sr=$(_kv "$stream_line" sample_rate)
+            at_layout=$(_kv "$stream_line" channel_layout)
+            at_lang=$(_kv "$stream_line" tag:language)
             at_br_k="N/A"
             [[ "$at_br" =~ ^[0-9]+$ ]] && at_br_k=$(awk "BEGIN{printf \"%.0f\", $at_br/1000}")
             at_sr_k="N/A"
@@ -365,7 +434,7 @@ for file in "${FILES[@]}"; do
             local_aidx=$((local_aidx + 1))
         done < <(ffprobe -v error -select_streams a \
             -show_entries stream=codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language \
-            -of csv=p=0 "$file" 2>/dev/null)
+            -of compact=nk=0:p=0 "$file" 2>/dev/null)
     fi
 
     # ── ffprobe #3: durata ────────────────────────────────────────────
@@ -378,52 +447,48 @@ for file in "${FILES[@]}"; do
     FPS=$(echo "$FPS_RAW" | awk -F/ '{if($2>0) printf "%.2f",$1/$2; else print "N/A"}')
 
     # ── Bitrate video ─────────────────────────────────────────────────
+    # v57: fallback in cascada — stream=bit_rate (lipseste de obicei pe MKV),
+    # apoi format=bit_rate (acopera majoritatea MKV/WebM), apoi estimat din
+    # size/duration (eticheta " (est)" pt a marca estimarea).
     BITRATE_MB="N/A"
-    [[ "$BITRATE" =~ ^[0-9]+$ ]] && \
+    if [[ "$BITRATE" =~ ^[0-9]+$ ]]; then
         BITRATE_MB=$(awk "BEGIN{printf \"%.2f\", $BITRATE/1000000}")
+    else
+        FMT_BITRATE=$(ffprobe -v error -show_entries format=bit_rate \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+        if [[ "$FMT_BITRATE" =~ ^[0-9]+$ ]]; then
+            BITRATE_MB=$(awk "BEGIN{printf \"%.2f\", $FMT_BITRATE/1000000}")
+        elif [ "$DURATION_INT" -gt 0 ] && [ "$FILE_SIZE" -gt 0 ]; then
+            BITRATE_MB=$(awk "BEGIN{printf \"%.2f (est)\", ($FILE_SIZE * 8) / 1000000 / $DURATION_INT}")
+        fi
+    fi
 
     # ── Bitrate audio ─────────────────────────────────────────────────
     AUDIO_BITRATE_KB="N/A"
     [[ "$AUDIO_BITRATE" =~ ^[0-9]+$ ]] && \
         AUDIO_BITRATE_KB=$(awk "BEGIN{printf \"%.0f\", $AUDIO_BITRATE/1000}")
 
-    # ── ffprobe #4: HDR10+ — output limitat cu -show_entries ──────────
-    # FIX: -show_entries frame_side_data=type limiteaza output-ul enorm
-    # al show_frames (altfel sute de linii per frame pentru fisiere HDR).
-    # HDR10+ este detectat prin campul "type" din side_data.
-    # NOTA: DOVI (Dolby Vision) NU este detectabil din -show_frames frames output
-    # in mod fiabil — necesita un ffprobe separat pe codec_tag_string (stream-level).
-    # Acesta este motivul pentru care DOVI_TAG are propriul apel ffprobe.
+    # ── ffprobe #4: side_data per-frame (HDR10+ + DV detection) ─────
+    # v57 FIX: field-ul corect e `side_data_type` (nu `type`); cu `type` ffprobe
+    # ignora selectorul si returneaza tot frame-ul → grep-urile esueaza silentios.
+    # v57: aceeasi query catch si DV per-frame ("Dolby Vision Metadata") —
+    # singura cale pentru AV1 DV unde codec_tag = [0][0][0][0].
     FRAMES_INFO=$(ffprobe -v error -read_intervals 0%+#5 -show_frames \
         -select_streams v:0 \
-        -show_entries frame_side_data=type \
+        -show_entries frame_side_data=side_data_type \
         "$file" 2>/dev/null)
     HDR10PLUS=""
     echo "$FRAMES_INFO" | grep -q "HDR10+" && HDR10PLUS="1"
+    # v57: AV1 DV nu apare in codec_tag_string ([0][0][0][0]); detectie via side_data
+    DV_FROM_FRAMES=""
+    echo "$FRAMES_INFO" | grep -q "Dolby Vision Metadata" && DV_FROM_FRAMES="1"
 
-    # ── ffprobe #5: Dolby Vision — necesita codec_tag_string (stream-level) ─
+    # ── ffprobe #5: Dolby Vision codec tag (HEVC dvhe/dvh1) ──────────
     DOVI_TAG=$(ffprobe -v error -show_entries stream=codec_tag_string \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | \
         grep -i "dovi\|dvhe\|dvh1" | head -1)
 
-    TYPE="SDR"; DV_PROFILE_STR="N/A"
-    [[ "$TRANSFER"  == "arib-std-b67" ]] && TYPE="HLG"
-    [[ "$TRANSFER"  == "smpte2084" ]] && TYPE="HDR10"
-    [[ -n "$HDR10PLUS" ]]             && TYPE="HDR10+"
-    if [[ -n "$DOVI_TAG" ]]; then
-        TYPE="Dolby Vision"
-        echo "  Se detecteaza profilul Dolby Vision..."
-        DV_PROFILE_STR=$(get_dv_profile "$file")
-    fi
-
-    # get_source_format reutilizeaza datele deja extrase — fara ffprobe suplimentar
-    SRC_FMT=$(get_source_format "$SRC_CODEC" "$PIX_FMT" "$TRANSFER" "${HDR10PLUS:-0}")
-
-    # ── Subtitrari, capitole, attachments, DJI ────────────────────────
-    SUBS_INFO=$(get_subtitles_info "$file")
-    CHAPTERS_INFO=$(get_chapters_info "$file")
-    ATTACH_INFO=$(get_attachments_info "$file")
-
+    # ── DJI tracks (v57: mutat sus — necesar pt LOG profile) ─────────
     DJI_INFO=$(get_dji_tracks_info "$file")
     DJI_DJMD=$(echo "$DJI_INFO" | cut -d'|' -f1)
     DJI_DBGI=$(echo "$DJI_INFO"  | cut -d'|' -f2)
@@ -431,20 +496,99 @@ for file in "${FILES[@]}"; do
     IS_DJI=0
     if [ "$DJI_DJMD" -eq 1 ] || [ "$DJI_DBGI" -eq 1 ]; then IS_DJI=1; fi
 
-    # ── LOG Profile detect ────────────────────────────────────────────
+    # ── LOG Profile detect (v57: mutat sus — necesar pt TYPE mutual excl) ─
     LOG_PROFILE_STR=$(get_log_profile "$file" "$IS_DJI")
+
+    # ── TYPE detection cu LOG/DV awareness ──────────────────────────
+    # v57: ordinea prioritati: DV (codec_tag OR side_data) > LOG > HDR10+ > HDR10 > HLG > SDR
+    # LOG sursa NU e HLG/HDR10 nativ (transfer-ul e tag camera, nu signal real)
+    TYPE="SDR"; DV_PROFILE_STR="N/A"
+    if [[ -n "$DOVI_TAG" || -n "$DV_FROM_FRAMES" ]]; then
+        TYPE="Dolby Vision"
+        echo "  Se detecteaza profilul Dolby Vision..."
+        DV_PROFILE_STR=$(get_dv_profile "$file")
+    elif [[ "$LOG_PROFILE_STR" != "N/A" ]]; then
+        TYPE="SDR (LOG)"
+    elif [[ -n "$HDR10PLUS" ]]; then
+        TYPE="HDR10+"
+    elif [[ "$TRANSFER" == "smpte2084" ]]; then
+        TYPE="HDR10"
+    elif [[ "$TRANSFER" == "arib-std-b67" ]]; then
+        TYPE="HLG"
+    fi
+
+    # ── HDR rich fields (v57) — color metadata + mastering + scene count ─
+    COLOR_PRIMARIES="${COLOR_PRIM_RAW:-}"
+    COLOR_SPACE_VAL="${COLOR_SPACE_RAW:-}"
+    COLOR_RANGE_VAL="${COLOR_RANGE_RAW:-}"
+    [[ -z "$COLOR_PRIMARIES" || "$COLOR_PRIMARIES" == "unknown" ]] && COLOR_PRIMARIES="N/A"
+    [[ -z "$COLOR_SPACE_VAL" || "$COLOR_SPACE_VAL" == "unknown" ]] && COLOR_SPACE_VAL="N/A"
+    [[ -z "$COLOR_RANGE_VAL" || "$COLOR_RANGE_VAL" == "unknown" ]] && COLOR_RANGE_VAL="N/A"
+
+    MAX_CLL="N/A"; MAX_FALL="N/A"; MASTER_DISPLAY="N/A"; HDR10PLUS_SCENES="N/A"
+
+    if [[ "$TYPE" == "HDR10" || "$TYPE" == "HDR10+" || "$TYPE" == "Dolby Vision" ]]; then
+        HDR_DETAILS=$(ffprobe -v error -read_intervals 0%+#5 -show_frames -select_streams v:0 \
+            -show_entries frame_side_data "$file" 2>/dev/null)
+
+        _mc=$(echo "$HDR_DETAILS" | awk -F= '/^max_content=/{print $2; exit}' | tr -d '[:space:]')
+        _mf=$(echo "$HDR_DETAILS" | awk -F= '/^max_average=/{print $2; exit}' | tr -d '[:space:]')
+        [[ "$_mc" =~ ^[0-9]+$ ]] && MAX_CLL="$_mc"
+        [[ "$_mf" =~ ^[0-9]+$ ]] && MAX_FALL="$_mf"
+
+        # Master display — fractii rational num/denom
+        _l_max=$(echo "$HDR_DETAILS" | awk -F'[=/]' '/^max_luminance=/{printf "%.0f",$2/$3; exit}')
+        _l_min=$(echo "$HDR_DETAILS" | awk -F'[=/]' '/^min_luminance=/{printf "%.4f",$2/$3; exit}')
+        _g_x=$(echo "$HDR_DETAILS"   | awk -F'[=/]' '/^green_x=/{printf "%.3f",$2/$3; exit}')
+        if [[ "$_l_max" =~ ^[0-9]+$ ]] && [[ "$_l_max" -gt 0 ]]; then
+            _primaries=$(echo "$_g_x" | awk '{v=$1+0; if(v<0.20) print "BT.2020"; else if(v<0.28) print "DCI-P3"; else if(v<0.32) print "BT.709"; else print "custom"}')
+            MASTER_DISPLAY="${_primaries} max ${_l_max}n min ${_l_min}n"
+        fi
+    fi
+
+    # HDR10+ scene count — bounded keyframe scan (cost: ~5-15s pe HDR10+ 4K)
+    if [[ -n "$HDR10PLUS" ]]; then
+        _scenes=$(ffprobe -v error -select_streams v:0 -skip_frame nokey -show_frames \
+            -read_intervals "%+#9999" \
+            -show_entries frame_side_data=side_data_type \
+            "$file" 2>/dev/null | grep -c "HDR Dynamic Metadata SMPTE2094-40")
+        [[ "$_scenes" =~ ^[0-9]+$ ]] && HDR10PLUS_SCENES="$_scenes"
+    fi
+
+    # get_source_format — reutilizeaza datele extrase + BITS_RAW pt depth detection
+    SRC_FMT=$(get_source_format "$SRC_CODEC" "$PIX_FMT" "$TRANSFER" "${HDR10PLUS:-0}" "${BITS_RAW:-}")
+
+    # ── Subtitrari, capitole, attachments ────────────────────────────
+    SUBS_INFO=$(get_subtitles_info "$file")
+    CHAPTERS_INFO=$(get_chapters_info "$file")
+    ATTACH_INFO=$(get_attachments_info "$file")
 
     # ── Output terminal ───────────────────────────────────────────────
     echo "  Format sursa : $SRC_FMT"
+    echo "  Container    : $CONTAINER"
     echo "  Dimensiune   : $((FILE_SIZE/1024/1024)) MB"
     echo "  Durata       : ${DURATION_INT} sec"
     echo "  Rezolutie    : ${WIDTH}x${HEIGHT}"
     echo "  Pixel format : $PIX_FMT"
     echo "  FPS          : $FPS"
     echo "  Bitrate video: $BITRATE_MB Mb/s"
-    echo "  Tip HDR      : $TYPE"
-    [ -n "$DOVI_TAG" ] && echo "  Profil DV    : $DV_PROFILE_STR"
+    if [[ -n "$HDR10PLUS" ]] && [[ "$HDR10PLUS_SCENES" =~ ^[0-9]+$ ]] && [ "$HDR10PLUS_SCENES" -gt 0 ]; then
+        echo "  Tip HDR      : $TYPE (~$HDR10PLUS_SCENES scene markers)"
+    else
+        echo "  Tip HDR      : $TYPE"
+    fi
+    if [[ -n "$DOVI_TAG" || -n "$DV_FROM_FRAMES" ]]; then echo "  Profil DV    : $DV_PROFILE_STR"; fi
     [[ "$LOG_PROFILE_STR" != "N/A" ]] && echo "  LOG Profile  : $LOG_PROFILE_STR"
+    # v57: HDR rich fields display
+    if [[ "$COLOR_PRIMARIES" != "N/A" || "$COLOR_SPACE_VAL" != "N/A" || "$COLOR_RANGE_VAL" != "N/A" ]]; then
+        echo "  Color        : primaries=${COLOR_PRIMARIES} matrix=${COLOR_SPACE_VAL} range=${COLOR_RANGE_VAL}"
+    fi
+    if [[ "$MAX_CLL" != "N/A" || "$MAX_FALL" != "N/A" ]]; then
+        echo "  MaxCLL/FALL  : ${MAX_CLL} / ${MAX_FALL} nits"
+    fi
+    if [[ "$MASTER_DISPLAY" != "N/A" ]]; then
+        echo "  Mastering    : $MASTER_DISPLAY"
+    fi
     echo "  ─────────────────────────────────────"
     if [ "$AUDIO_COUNT" -gt 1 ]; then
         echo "  Audio (main) : ${AUDIO_CODEC:-N/A} | ${AUDIO_BITRATE_KB} kbps | ${AUDIO_SAMPLERATE_KHZ} kHz | ${AUDIO_BITDEPTH}bit | ${AUDIO_LAYOUT} | ${AUDIO_LANG} | $AUDIO_COUNT track-uri"
@@ -479,14 +623,18 @@ for file in "${FILES[@]}"; do
     echo "  Progres      : $((IDX * 100 / TOTAL))%"
 
     # ── CSV ───────────────────────────────────────────────────────────
-    # 30 campuri (extins cu Log_Profile, Est_ProRes)
+    # v57: 38 campuri (30 + 7 HDR rich + 1 Container — Container inserat
+    # dupa Format_sursa, HDR rich dupa Profil_DV)
     FILENAME_CSV="${filename//\"/\"\"}"
-    printf '"%s","%s",%d,%d,"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s",%d,%d,"%s","%s","%s",%d,%d,%d,"%s","%s","%s","%s","%s"\n' \
-        "$FILENAME_CSV" "$SRC_FMT" \
+    printf '"%s","%s","%s",%d,%d,"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s",%d,%d,"%s","%s","%s",%d,%d,%d,"%s","%s","%s","%s","%s"\n' \
+        "$FILENAME_CSV" "$SRC_FMT" "$CONTAINER" \
         "$((FILE_SIZE/1024/1024))" "$DURATION_INT" \
         "${WIDTH}x${HEIGHT}" "$PIX_FMT" \
         "${FPS:-N/A}" "${BITRATE_MB:-N/A}" \
-        "$TYPE" "$DV_PROFILE_STR" "$LOG_PROFILE_STR" \
+        "$TYPE" "$DV_PROFILE_STR" \
+        "$COLOR_PRIMARIES" "$COLOR_SPACE_VAL" "$COLOR_RANGE_VAL" \
+        "$MAX_CLL" "$MAX_FALL" "$MASTER_DISPLAY" "$HDR10PLUS_SCENES" \
+        "$LOG_PROFILE_STR" \
         "${AUDIO_CODEC:-N/A}" "${AUDIO_BITRATE_KB:-N/A}" \
         "${AUDIO_SAMPLERATE_KHZ:-N/A}" "${AUDIO_BITDEPTH:-N/A}" \
         "${AUDIO_LAYOUT:-N/A}" "${AUDIO_LANG:-und}" \
@@ -518,9 +666,13 @@ if [ -d "$OUTPUT_DIR" ]; then
         COMP_TOTAL_NEW=0
         for out_file in "${OUT_FILES[@]}"; do
             out_name=$(basename "$out_file")
-            # Extrage numele original: elimina sufixul _x265/_x264/_av1/_dnxhr/_audio si extensia
+            # v57: lista sufixe extinsa cu toate output naming patterns post-v44
+            # (encoder outputs + Mux v49/v50 + Telemetry v47 + Burn-in v48 + HDR/DV v56)
+            # Chain-stripping (mai multe iteratii) acopera scenarii compuse: _telem_hud.
             base_name="$out_name"
-            for suffix in _x265 _x264 _av1 _dnxhr _audio; do
+            for suffix in _x265 _x264 _av1 _dnxhr _prores _apv _audio _hwenc \
+                          _remux _mux _telem _hud _subs _preview \
+                          _nodv _nohdr10plus _dvhybrid; do
                 base_name="${base_name/$suffix/}"
             done
             base_name="${base_name%.*}"  # elimina extensia output

@@ -13,8 +13,12 @@ if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Read-Host; exit
 }
 
-$InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutputDir = Join-Path $InputDir "output"
+# v57: respect env overrides AV_INPUT_DIR / AV_OUTPUT_DIR (utile pentru CI/testing,
+# paritate cu bash care accepta INPUT_DIR/OUTPUT_DIR env)
+if ($env:AV_INPUT_DIR)  { $InputDir  = $env:AV_INPUT_DIR }
+else                    { $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR }
+else                    { $OutputDir = Join-Path $InputDir "output" }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
@@ -27,8 +31,11 @@ function Format-Bytes {
 
 function Get-FFprobeValue {
     param([string]$file, [string]$stream, [string]$entry)
+    # v57 FIX: csv=p=0 emite trailing comma chiar la single-field queries (ffprobe 8.x)
+    # → polua display + CSV (`1920,x1080,`, `bt2020,`). default=noprint_wrappers=1:nokey=1
+    # returneaza valoarea curata (paritate cu bash).
     ($( & ffprobe -v error -select_streams $stream `
-        -show_entries "stream=$entry" -of csv=p=0 "$file" 2>$null) -join "").Trim()
+        -show_entries "stream=$entry" -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null) -join "").Trim()
 }
 
 function Get-SizeEst {
@@ -43,36 +50,56 @@ function Get-SourceInfo {
     $codec    = Get-FFprobeValue $file "v:0" "codec_name"
     $pixFmt   = Get-FFprobeValue $file "v:0" "pix_fmt"
     $transfer = Get-FFprobeValue $file "v:0" "color_transfer"
+    $bitsRaw  = Get-FFprobeValue $file "v:0" "bits_per_raw_sample"
+    # v57 FIX: field-ul corect e `side_data_type` (nu `type`); cu `type` ffprobe
+    # ignora selectorul si returneaza tot frame-ul → Select-String esueaza silentios.
     $hdrPlus  = & ffprobe -v error -show_frames -select_streams v:0 `
-        -read_intervals "%+#5" -show_entries frame_side_data=type `
+        -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
         "$file" 2>$null | Select-String "HDR10+"
-    $is10bit   = $pixFmt -match "10"
+    # v57: AV1 DV nu apare in codec_tag ([0][0][0][0]) — detectie via side_data per-frame
+    $dvFrames = & ffprobe -v error -show_frames -select_streams v:0 `
+        -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
+        "$file" 2>$null | Select-String "Dolby Vision Metadata"
+    # v57 FIX: detectie bit depth corecta — vechiul `-match "10"` NU prinde yuv420p12le
+    # (substring "12", nu "10") → 12-bit etichetat ca 8-bit. Folosim bits_per_raw_sample
+    # (autoritar) cu fallback la pattern pix_fmt p10/p12/p16.
+    $depth = 8
+    if ($bitsRaw -match '^\d+$' -and [int]$bitsRaw -ge 10 -and [int]$bitsRaw -le 16) {
+        $depth = [int]$bitsRaw
+    } elseif ($pixFmt -match 'p10|p010') {
+        $depth = 10
+    } elseif ($pixFmt -match 'p12|p012') {
+        $depth = 12
+    } elseif ($pixFmt -match 'p16|p016') {
+        $depth = 16
+    }
+    $depthLabel = "${depth}bit"
     $isHDRPlus = [bool]$hdrPlus
+    $isDVFrames = [bool]$dvFrames
     $isHDR     = $transfer -eq "smpte2084" -or $isHDRPlus
     $isHLG     = ($transfer -eq "arib-std-b67") -and (-not $isHDRPlus)
     $fmt = switch ($codec) {
-        "h264" { if ($is10bit) { "H.264 10bit" } else { "H.264 8bit" } }
+        "h264" { "H.264 $depthLabel" }
         "hevc" {
             if     ($isHDRPlus) { "H.265 HEVC HDR10+" }
             elseif ($isHDR)     { "H.265 HEVC HDR10"  }
             elseif ($isHLG)     { "H.265 HEVC HLG"    }
-            elseif ($is10bit)   { "H.265 HEVC 10bit SDR" }
-            else                { "H.265 HEVC 8bit SDR"  }
+            else                { "H.265 HEVC $depthLabel SDR" }
         }
         "av1" {
             if     ($isHDRPlus) { "AV1 HDR10+"    }
             elseif ($isHDR)     { "AV1 HDR10"     }
             elseif ($isHLG)     { "AV1 HLG"       }
-            elseif ($is10bit)   { "AV1 10bit SDR" }
-            else                { "AV1 8bit SDR"  }
+            else                { "AV1 $depthLabel SDR" }
         }
         "prores"     { "Apple ProRes" }
-        "apv"        { "Samsung APV" }
+        "apv"        { "Samsung APV $depthLabel" }
         "mpeg2video" { "MPEG-2" }
-        default { if ($is10bit) { "$codec 10bit" } else { "$codec 8bit" } }
+        default      { "$codec $depthLabel" }
     }
-    return @{ fmt=$fmt; codec=$codec; pixFmt=$pixFmt; is10bit=$is10bit;
-              isHDR=$isHDR; isHDRPlus=$isHDRPlus; isHLG=$isHLG; transfer=$transfer }
+    return @{ fmt=$fmt; codec=$codec; pixFmt=$pixFmt; depth=$depth;
+              isHDR=$isHDR; isHDRPlus=$isHDRPlus; isHLG=$isHLG;
+              isDVFrames=$isDVFrames; transfer=$transfer }
 }
 
 function Get-DVProfile {
@@ -91,7 +118,84 @@ function Get-DVProfile {
             "8" { switch ($c) { "1"{"Profil 8.1 (DV+HDR10, Blu-ray)"} "2"{"Profil 8.2 (DV+SDR)"} "4"{"Profil 8.4 (DV+HLG)"} default{"Profil 8 (DV+HDR10)"} } }
             "9" { "Profil 9 (DV+SDR)" } default { "Profil $n" }
         }
-    } else { "Dolby Vision (profil nedetectat)" }
+    } else {
+        # v57: fallback codec_tag (paritate cu bash get_dv_profile) — apare cand
+        # frame_side_data nu carry dv_profile (ex: AV1 DV via side_data only).
+        $codecTag = & ffprobe -v error -show_entries stream=codec_tag_string `
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null | Select-Object -First 5
+        $tagJoined = ($codecTag -join "`n").ToLower()
+        if     ($tagJoined -match 'dvhe') { "Profil 8 (dvhe)" }
+        elseif ($tagJoined -match 'dvh1') { "Profil 8 (dvh1)" }
+        else                              { "Dolby Vision (profil nedetectat)" }
+    }
+}
+
+# v57: HDR rich fields helper — color metadata + mastering + HDR10+ scene count
+function Get-HdrRichInfo {
+    param([string]$file, [string]$type, [bool]$hasHdr10Plus)
+    $info = @{
+        colorPrimaries  = "N/A"
+        colorSpace      = "N/A"
+        colorRange      = "N/A"
+        maxCll          = "N/A"
+        maxFall         = "N/A"
+        masterDisplay   = "N/A"
+        hdr10PlusScenes = "N/A"
+    }
+    # Color metadata din stream (cheap, mereu disponibil pe HDR)
+    $cp = Get-FFprobeValue $file "v:0" "color_primaries"
+    $cs = Get-FFprobeValue $file "v:0" "color_space"
+    $cr = Get-FFprobeValue $file "v:0" "color_range"
+    if ($cp -and $cp -ne "unknown") { $info.colorPrimaries = $cp }
+    if ($cs -and $cs -ne "unknown") { $info.colorSpace     = $cs }
+    if ($cr -and $cr -ne "unknown") { $info.colorRange     = $cr }
+
+    # Mastering display + CLL/FALL — doar pe HDR static
+    if ($type -in @("HDR10","HDR10+","Dolby Vision")) {
+        $sd = & ffprobe -v error -read_intervals "%+#5" -show_frames -select_streams v:0 `
+            -show_entries frame_side_data "$file" 2>$null
+        $mc = ($sd | Where-Object { $_ -match "^max_content=(\d+)" } | Select-Object -First 1) -replace "max_content=",""
+        $mf = ($sd | Where-Object { $_ -match "^max_average=(\d+)" } | Select-Object -First 1) -replace "max_average=",""
+        if ($mc -match '^\d+$') { $info.maxCll  = $mc }
+        if ($mf -match '^\d+$') { $info.maxFall = $mf }
+
+        # Parse rational fractions (num/denom)
+        $parseFrac = {
+            param($line, $denom)
+            if ($line -match "=(\d+)/(\d+)") {
+                $num = [double]$matches[1]; $den = [double]$matches[2]
+                if ($den -gt 0) { return ($num / $den) }
+            }
+            return $null
+        }
+        $lMaxLine = ($sd | Where-Object { $_ -match "^max_luminance=" } | Select-Object -First 1)
+        $lMinLine = ($sd | Where-Object { $_ -match "^min_luminance=" } | Select-Object -First 1)
+        $gXLine   = ($sd | Where-Object { $_ -match "^green_x=" } | Select-Object -First 1)
+        $lMax = & $parseFrac $lMaxLine 10000
+        $lMin = & $parseFrac $lMinLine 10000
+        $gX   = & $parseFrac $gXLine   50000
+        if ($lMax -ne $null -and $lMax -gt 0) {
+            $primaries = "custom"
+            if     ($gX -ne $null -and $gX -lt 0.20) { $primaries = "BT.2020" }
+            elseif ($gX -ne $null -and $gX -lt 0.28) { $primaries = "DCI-P3"  }
+            elseif ($gX -ne $null -and $gX -lt 0.32) { $primaries = "BT.709"  }
+            # Format InvariantCulture (locale EU → dot decimals)
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $lMaxStr = ([Math]::Round($lMax, 0)).ToString("0", $inv)
+            $lMinStr = ([Math]::Round($lMin, 4)).ToString("0.0###", $inv)
+            $info.masterDisplay = "$primaries max ${lMaxStr}n min ${lMinStr}n"
+        }
+    }
+
+    # HDR10+ scene count (bounded keyframe scan)
+    if ($hasHdr10Plus) {
+        $scenes = & ffprobe -v error -select_streams v:0 -skip_frame nokey -show_frames `
+            -read_intervals "%+#9999" `
+            -show_entries frame_side_data=side_data_type `
+            "$file" 2>$null | Select-String "HDR Dynamic Metadata SMPTE2094-40"
+        if ($scenes) { $info.hdr10PlusScenes = "$($scenes.Count)" }
+    }
+    return $info
 }
 
 function Get-DJITracks {
@@ -109,20 +213,32 @@ function Get-LogProfile {
     param([string]$file, [bool]$isDji)
     $allTags = & ffprobe -v error -show_entries format_tags `
         -of default=noprint_wrappers=1 "$file" 2>$null | Out-String
+    # Samsung S24 Ultra: tag autoritar `com.samsung.android.logvideo` —
+    # cand e prezent, fisierul ESTE Samsung Log (short-circuit).
+    if ($allTags -imatch "com\.samsung\.android\.logvideo") {
+        return "Samsung Log (S24 Ultra)"
+    }
     $cameraMake = ""
-    if     ($allTags -imatch "make=.*apple")                          { $cameraMake = "apple" }
-    elseif ($allTags -imatch "make=.*dji")                            { $cameraMake = "dji" }
-    elseif ($allTags -imatch "manufacturer=.*samsung|make=.*samsung") { $cameraMake = "samsung" }
+    if     ($allTags -imatch "make=.*apple")                                                { $cameraMake = "apple" }
+    elseif ($allTags -imatch "make=.*dji|encoder=.*dji")                                    { $cameraMake = "dji" }
+    elseif ($allTags -imatch "manufacturer=.*samsung|make=.*samsung|com\.samsung\.android") { $cameraMake = "samsung" }
     if (-not $cameraMake -and $isDji) { $cameraMake = "dji" }
 
     $srcTrc = Get-FFprobeValue $file "v:0" "color_transfer"
     $srcBps = Get-FFprobeValue $file "v:0" "bits_per_raw_sample"
-    if (-not $srcBps -or $srcBps -notmatch '^\d+$') { $srcBps = "8" }
+    if (-not $srcBps -or $srcBps -notmatch '^\d+$') {
+        # Fallback: deriva depth-ul din pix_fmt (paritate cu Get-SourceInfo)
+        $pf = Get-FFprobeValue $file "v:0" "pix_fmt"
+        if     ($pf -match 'p16|p016') { $srcBps = "16" }
+        elseif ($pf -match 'p12|p012') { $srcBps = "12" }
+        elseif ($pf -match 'p10|p010') { $srcBps = "10" }
+        else                           { $srcBps = "8"  }
+    }
     $srcBps = [int]$srcBps
     $srcPrimaries = Get-FFprobeValue $file "v:0" "color_primaries"
     $transfer = Get-FFprobeValue $file "v:0" "color_transfer"
     $hdrPlus = & ffprobe -v error -show_frames -select_streams v:0 `
-        -read_intervals "%+#5" -show_entries frame_side_data=type `
+        -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
         "$file" 2>$null | Select-String "HDR10+"
     $isHdrPlus = [bool]$hdrPlus
     $dovi = & ffprobe -v error -show_entries stream=codec_tag_string `
@@ -156,7 +272,9 @@ Write-Host "INPUT: $InputDir | Fisiere: $fileCount | $(Format-Bytes $totalSz)" -
 if ($fileCount -eq 0) { Write-Host "Nu am gasit fisiere." -ForegroundColor Red; Read-Host; exit }
 
 $csvPath = Join-Path $OutputDir "av_check_report.csv"
-"Fisier,FormatSursa,Dimensiune(MB),Durata(sec),Rezolutie,PixelFmt,FPS,Bitrate_video(Mbps),TipHDR,Profil_DV,LogProfile,AudioCodec,AudioBitrate(kbps),SampleRate(kHz),BitDepth,Layout,Limba,Canale_audio,AudioTrackuri,Subtitrari,Capitole,Attachments,DJI_djmd,DJI_dbgi,DJI_TC,Recomandat_encoder,Est_x265,Est_x264,Est_AV1,Est_ProRes" |
+# v57: header CSV aliniat cu bash — 38 coloane (7 HDR rich dupa Profil_DV +
+# 1 Container dupa Format_sursa)
+"Fisier,Format_sursa,Container,Dimensiune(MB),Durata(sec),Rezolutie,PixelFormat,FPS,Bitrate_video(Mbps),Tip_HDR,Profil_DV,ColorPrimaries,ColorSpace,ColorRange,MaxCLL,MaxFALL,MasterDisplay,HDR10Plus_Scenes,Log_Profile,Codec_audio,Bitrate_audio(kbps),SampleRate(kHz),BitDepth,Layout_canale,Limba_audio,Canale_audio,AudioTrackuri,Subtitrari,Capitole,Attachments,DJI_djmd,DJI_dbgi,DJI_Timecode,Recomandat_encoder,Est_x265,Est_x264,Est_AV1,Est_ProRes" |
     Out-File $csvPath -Encoding UTF8
 
 $count = 0
@@ -170,6 +288,8 @@ foreach ($f in $inputFiles) {
     if (-not $si.fmt -or $si.fmt -eq " 8bit") {
         Write-Host "  ATENTIE: Nu s-a gasit stream video valid — sarit." -ForegroundColor Red; continue
     }
+    # v57: container extras din extensie (lowercase, fara dot)
+    $container = $f.Extension.TrimStart('.').ToLowerInvariant()
 
     $w = Get-FFprobeValue $f.FullName "v:0" "width"
     $h = Get-FFprobeValue $f.FullName "v:0" "height"
@@ -192,13 +312,53 @@ foreach ($f in $inputFiles) {
     $fsMB = [math]::Round($f.Length / 1MB, 1)
     $fpsRaw = Get-FFprobeValue $f.FullName "v:0" "avg_frame_rate"
     $bitrateRaw = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
-    $bitrateMbps = if ($bitrateRaw -match '^\d+$') { [math]::Round([long]$bitrateRaw / 1000000, 2) } else { "N/A" }
     $durRaw = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
     $durSec = if ($durRaw -match '^\d+') { [int]([double]$durRaw) } else { 0 }
+    # v57: fallback in cascada — stream=bit_rate (lipseste de obicei pe MKV),
+    # apoi format=bit_rate, apoi estimat din size/duration.
+    if ($bitrateRaw -match '^\d+$') {
+        $bitrateMbps = [math]::Round([long]$bitrateRaw / 1000000, 2)
+    } else {
+        $fmtBr = & ffprobe -v error -show_entries format=bit_rate `
+            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
+        if ($fmtBr -match '^\d+$') {
+            $bitrateMbps = [math]::Round([long]$fmtBr / 1000000, 2)
+        } elseif ($durSec -gt 0 -and $f.Length -gt 0) {
+            $estBr = [math]::Round(($f.Length * 8.0) / 1000000.0 / $durSec, 2)
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $bitrateMbps = "$($estBr.ToString('0.##', $inv)) (est)"
+        } else {
+            $bitrateMbps = "N/A"
+        }
+    }
     $audioTracks = (& ffprobe -v error -select_streams a `
         -show_entries stream=index -of csv=p=0 $f.FullName 2>$null |
         Where-Object { $_ -match '^\d' }).Count
+
+    # v57: per-track audio detail (paritate cu bash AUDIO_TRACKS_DETAIL)
+    # Folosim compact=nk=0 (key=value pairs, | separated) — robust la reordonarea ffprobe
+    $audioTracksDetail = @()
+    if ($audioTracks -gt 0) {
+        $aLines = & ffprobe -v error -select_streams a `
+            -show_entries stream=codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language `
+            -of compact=nk=0:p=0 $f.FullName 2>$null
+        $tIdx = 0
+        foreach ($line in $aLines) {
+            if (-not $line) { continue }
+            $kv = @{}
+            foreach ($pair in ($line -split '\|')) {
+                if ($pair -match '^([^=]+)=(.*)$') { $kv[$matches[1]] = $matches[2] }
+            }
+            $tc = if ($kv['codec_name']) { $kv['codec_name'] } else { "N/A" }
+            $tbr = if ($kv['bit_rate'] -match '^\d+$') { [math]::Round([long]$kv['bit_rate'] / 1000) } else { "N/A" }
+            $tsr = if ($kv['sample_rate'] -match '^\d+$') { [math]::Round([long]$kv['sample_rate'] / 1000, 1) } else { "N/A" }
+            $tlayout = if ($kv['channel_layout']) { $kv['channel_layout'] } else { "$($kv['channels'])ch" }
+            $tlang = if ($kv['tag:language']) { $kv['tag:language'] } else { "und" }
+            $audioTracksDetail += "    Track ${tIdx}: ${tc} | ${tbr}kbps | ${tsr}kHz | ${tlayout} | ${tlang}"
+            $tIdx++
+        }
+    }
     $subStreams = & ffprobe -v error -select_streams s `
         -show_entries stream=index:stream_tags=language `
         -of default=noprint_wrappers=1 $f.FullName 2>$null
@@ -213,19 +373,39 @@ foreach ($f in $inputFiles) {
         -show_entries stream=index:stream_tags=mimetype `
         -of default=noprint_wrappers=1 $f.FullName 2>$null
     $attCount = ($attStreams | Where-Object { $_ -match "^index=" }).Count
-    $attStr = if ($attCount -gt 0) { "$attCount" } else { "Nu" }
+    # v57: afiseaza si mimetypes (paritate cu bash get_attachments_info)
+    $attMimes = ($attStreams | Where-Object { $_ -match "^TAG:mimetype=" } |
+        ForEach-Object { $_ -replace "TAG:mimetype=","" }) -join " "
+    $attStr = if ($attCount -gt 0) {
+        if ($attMimes) { "$attCount ($attMimes)" } else { "$attCount" }
+    } else { "Nu" }
 
     $dji = Get-DJITracks $f.FullName
     $doVi = & ffprobe -v error -show_entries stream=codec_tag_string `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
         Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
-    $tipHdr = "SDR"; $dvProf = "N/A"
-    if     ($si.isHDRPlus) { $tipHdr = "HDR10+" }
-    elseif ($si.isHDR)     { $tipHdr = "HDR10"  }
-    elseif ($si.isHLG)     { $tipHdr = "HLG"    }
-    if ($doVi) { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
 
+    # v57: LOG profile computat ÎNAINTE de TYPE (mutual exclusion)
     $logProf = Get-LogProfile $f.FullName $dji.isDji
+
+    # v57: TYPE detection cu LOG/DV awareness
+    # Prioritati: DV (codec_tag OR side_data per-frame) > LOG > HDR10+ > HDR10 > HLG > SDR
+    $tipHdr = "SDR"; $dvProf = "N/A"
+    if ($doVi -or $si.isDVFrames) {
+        $tipHdr = "Dolby Vision"
+        $dvProf = Get-DVProfile $f.FullName
+    } elseif ($logProf -ne "N/A") {
+        $tipHdr = "SDR (LOG)"
+    } elseif ($si.isHDRPlus) {
+        $tipHdr = "HDR10+"
+    } elseif ($si.isHDR) {
+        $tipHdr = "HDR10"
+    } elseif ($si.isHLG) {
+        $tipHdr = "HLG"
+    }
+
+    # v57: HDR rich fields (color metadata + mastering + scene count)
+    $hdr = Get-HdrRichInfo $f.FullName $tipHdr ([bool]$si.isHDRPlus)
 
     # Encoder recommendation
     $srcCodec = $si.codec
@@ -253,19 +433,41 @@ foreach ($f in $inputFiles) {
 
     # Terminal output
     Write-Host "  Format sursa : $($si.fmt)"       -ForegroundColor White
+    Write-Host "  Container    : $container"        -ForegroundColor White
     Write-Host "  Dimensiune   : $fsMB MB"          -ForegroundColor White
     Write-Host "  Durata       : $durSec sec"       -ForegroundColor White
     Write-Host "  Rezolutie    : ${w}x${h}"         -ForegroundColor White
     Write-Host "  FPS          : $fpsRaw"           -ForegroundColor White
     Write-Host "  Bitrate video: $bitrateMbps Mb/s" -ForegroundColor White
-    Write-Host "  Tip HDR      : $tipHdr" -ForegroundColor $(if ($tipHdr -ne "SDR") { "Magenta" } else { "White" })
-    if ($doVi) { Write-Host "  Profil DV    : $dvProf" -ForegroundColor Magenta }
+    # v57: Tip HDR adnotat cu numar markeri HDR10+ daca disponibil
+    $tipHdrDisplay = $tipHdr
+    if ($si.isHDRPlus -and $hdr.hdr10PlusScenes -match '^\d+$' -and [int]$hdr.hdr10PlusScenes -gt 0) {
+        $tipHdrDisplay = "$tipHdr (~$($hdr.hdr10PlusScenes) scene markers)"
+    }
+    Write-Host "  Tip HDR      : $tipHdrDisplay" -ForegroundColor $(if ($tipHdr -ne "SDR") { "Magenta" } else { "White" })
+    if ($doVi -or $si.isDVFrames) { Write-Host "  Profil DV    : $dvProf" -ForegroundColor Magenta }
     if ($logProf -ne "N/A") { Write-Host "  LOG Profile  : $logProf" -ForegroundColor Yellow }
+    # v57: HDR rich fields display
+    if ($hdr.colorPrimaries -ne "N/A" -or $hdr.colorSpace -ne "N/A" -or $hdr.colorRange -ne "N/A") {
+        Write-Host "  Color        : primaries=$($hdr.colorPrimaries) matrix=$($hdr.colorSpace) range=$($hdr.colorRange)" -ForegroundColor White
+    }
+    if ($hdr.maxCll -ne "N/A" -or $hdr.maxFall -ne "N/A") {
+        Write-Host "  MaxCLL/FALL  : $($hdr.maxCll) / $($hdr.maxFall) nits" -ForegroundColor White
+    }
+    if ($hdr.masterDisplay -ne "N/A") {
+        Write-Host "  Mastering    : $($hdr.masterDisplay)" -ForegroundColor White
+    }
     Write-Host "  ─────────────────────────────────────" -ForegroundColor DarkGray
-    Write-Host "  Audio        : $ac | $abk kbps | ${audioSRk} kHz | ${audioBD}bit | $audioLayout | $audioLang" -ForegroundColor White
-    if ($audioTracks -gt 1) { Write-Host "  Audio tracks : $audioTracks" -ForegroundColor White }
+    # v57: audio main + per-track detail (paritate cu bash)
+    if ($audioTracks -gt 1) {
+        Write-Host "  Audio (main) : $ac | $abk kbps | ${audioSRk} kHz | ${audioBD}bit | $audioLayout | $audioLang | $audioTracks track-uri" -ForegroundColor White
+        foreach ($t in $audioTracksDetail) { Write-Host $t -ForegroundColor White }
+    } else {
+        Write-Host "  Audio        : $ac | $abk kbps | ${audioSRk} kHz | ${audioBD}bit | $audioLayout | $audioLang" -ForegroundColor White
+    }
     Write-Host "  Subtitrari   : $subStr"  -ForegroundColor $(if ($subCount -gt 0) { "Green" } else { "Gray" })
     Write-Host "  Capitole     : $chapStr" -ForegroundColor $(if ($chapCount -gt 0) { "Green" } else { "Gray" })
+    Write-Host "  Attachments  : $attStr" -ForegroundColor $(if ($attCount -gt 0) { "Green" } else { "Gray" })
     if ($dji.isDji) {
         Write-Host "  ─────────────────────────────────────" -ForegroundColor DarkGray
         if ($dji.hasDjmd) { Write-Host "    ✅ djmd  — GPS, telemetrie" -ForegroundColor Green }
@@ -279,8 +481,25 @@ foreach ($f in $inputFiles) {
     Write-Host "    AV1    : $estAV1"     -ForegroundColor Green
     Write-Host "    ProRes : $estProRes (HQ)" -ForegroundColor White
 
-    # CSV
-    "$($f.Name),$($si.fmt),$fsMB,$durSec,${w}x${h},$($si.pixFmt),$fpsRaw,$bitrateMbps,$tipHdr,$dvProf,$logProf,$ac,$abk,$audioSRk,$audioBD,$audioLayout,$audioLang,$audioChannels,$audioTracks,$subStr,$chapStr,$attStr,$($dji.hasDjmd),$($dji.hasDbgi),$($dji.hasTC),`"$encRec`",$estX265,$estX264,$estAV1,$estProRes" |
+    # CSV — v57: 37 campuri (30 + 7 HDR rich field-uri dupa Profil_DV)
+    # Defaulting la N/A pe campurile audio cand stream-ul lipseste (paritate bash)
+    # DJI tracks: emit 0/1 nu True/False (paritate bash)
+    # Canale_audio default 0 cand stream lipseste (paritate bash ${AUDIO_CHANNELS:-0})
+    # v57 follow-up: quote-ing complet pe text fields (paritate cu bash printf "%s")
+    $csv_ac      = if ($ac)         { $ac }         else { "N/A" }
+    $csv_abk     = if ($abk)        { $abk }        else { "N/A" }
+    $csv_aSRk    = if ($audioSRk)   { $audioSRk }   else { "N/A" }
+    $csv_aBD     = if ($audioBD)    { $audioBD }    else { "N/A" }
+    $csv_aLay    = if ($audioLayout){ $audioLayout }else { "N/A" }
+    $csv_aLang   = if ($audioLang)  { $audioLang }  else { "und" }
+    $csv_aCh     = if ($audioChannels -match '^\d+$') { $audioChannels } else { 0 }
+    $csv_djmd    = if ($dji.hasDjmd) { 1 } else { 0 }
+    $csv_dbgi    = if ($dji.hasDbgi) { 1 } else { 0 }
+    $csv_djtc    = if ($dji.hasTC)   { 1 } else { 0 }
+    # bash: %s pe toate text fields, %d pe numerice
+    # Numerice (fara quote): fsMB, durSec, csv_aCh, audioTracks, csv_djmd, csv_dbgi, csv_djtc
+    # Text fields (cu quote): toate celelalte 30
+    "`"$($f.Name)`",`"$($si.fmt)`",`"$container`",$fsMB,$durSec,`"${w}x${h}`",`"$($si.pixFmt)`",`"$fpsRaw`",`"$bitrateMbps`",`"$tipHdr`",`"$dvProf`",`"$($hdr.colorPrimaries)`",`"$($hdr.colorSpace)`",`"$($hdr.colorRange)`",`"$($hdr.maxCll)`",`"$($hdr.maxFall)`",`"$($hdr.masterDisplay)`",`"$($hdr.hdr10PlusScenes)`",`"$logProf`",`"$csv_ac`",`"$csv_abk`",`"$csv_aSRk`",`"$csv_aBD`",`"$csv_aLay`",`"$csv_aLang`",$csv_aCh,$audioTracks,`"$subStr`",`"$chapStr`",`"$attStr`",$csv_djmd,$csv_dbgi,$csv_djtc,`"$encRec`",`"$estX265`",`"$estX264`",`"$estAV1`",`"$estProRes`"" |
         Out-File $csvPath -Append -Encoding UTF8
 }
 
@@ -298,7 +517,11 @@ if ($outFiles -and $outFiles.Count -gt 0) {
     $compCount = 0; $compTotalOrig = 0L; $compTotalNew = 0L
     foreach ($of in $outFiles) {
         $baseName = $of.BaseName
-        foreach ($sfx in @("_x265","_x264","_av1","_dnxhr","_prores","_audio","_hwenc")) {
+        # v57: lista sufixe extinsa cu toate output naming patterns post-v44
+        # (encoder outputs + Mux v49/v50 + Telemetry v47 + Burn-in v48 + HDR/DV v56)
+        foreach ($sfx in @("_x265","_x264","_av1","_dnxhr","_prores","_apv","_audio","_hwenc",
+                            "_remux","_mux","_telem","_hud","_subs","_preview",
+                            "_nodv","_nohdr10plus","_dvhybrid")) {
             $baseName = $baseName -replace [regex]::Escape($sfx),""
         }
         $origFound = $null
