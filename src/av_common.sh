@@ -1948,13 +1948,18 @@ remux_enumerate_streams() {
 
     local raw idx codec w h lang title ch
 
+    # v59 audit: csv=p=0 emite trailing comma pe surse cu [SIDE_DATA] sections (HDR10/
+    # HDR10+/HEVC HDR) → ultimul field primeste "value," in loc de "value". Display
+    # arata "Title text," urat. Pe attachment-uri cu nume care nu se foloseste exact
+    # in compare (doar afisare) impactul e cosmetic, dar tot defensiv strip.
+
     # Video: index,codec_name,width,height,language,title
     raw=$(ffprobe -v error -select_streams v -show_entries \
         stream=index,codec_name,width,height:stream_tags=language,title \
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec w h lang title; do
         [ -z "$idx" ] && continue
-        title="${title%$'\r'}"
+        title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="video|${codec}|${lang}|${title}|${w}x${h}"
         REMUX_VIDEO_INDICES+=("$idx")
     done <<< "$raw"
@@ -1965,7 +1970,7 @@ remux_enumerate_streams() {
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec ch lang title; do
         [ -z "$idx" ] && continue
-        title="${title%$'\r'}"
+        title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="audio|${codec}|${lang}|${title}|${ch}ch"
         REMUX_AUDIO_INDICES+=("$idx")
     done <<< "$raw"
@@ -1976,7 +1981,7 @@ remux_enumerate_streams() {
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec lang title; do
         [ -z "$idx" ] && continue
-        title="${title%$'\r'}"
+        title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="subtitle|${codec}|${lang}|${title}|"
         REMUX_SUB_INDICES+=("$idx")
     done <<< "$raw"
@@ -1987,7 +1992,7 @@ remux_enumerate_streams() {
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec title; do
         [ -z "$idx" ] && continue
-        title="${title%$'\r'}"
+        title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="attachment|${codec}||${title}|"
         REMUX_ATTACH_INDICES+=("$idx")
     done <<< "$raw"

@@ -88,6 +88,9 @@ function Get-RemuxStreams {
         Attachment = New-Object System.Collections.Generic.List[object]
         ChapterCount = 0
     }
+    # v59 audit: csv=p=0 emite trailing comma pe surse cu [SIDE_DATA] sections
+    # (HDR10/HDR10+/HEVC HDR) → ultimul field include "value,". Defensiv TrimEnd(',')
+    # pe titles + other last-fields ca sa nu poluam display + metadata.
     $raw = (& ffprobe -v error -select_streams v -show_entries stream=index,codec_name,width,height:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
     foreach ($line in ($raw -split "`r?`n")) {
         if (-not $line) { continue }
@@ -97,7 +100,7 @@ function Get-RemuxStreams {
         $w = if ($parts.Count -gt 2) { $parts[2] } else { "" }
         $h = if ($parts.Count -gt 3) { $parts[3] } else { "" }
         $lang = if ($parts.Count -gt 4) { $parts[4] } else { "" }
-        $title = if ($parts.Count -gt 5) { $parts[5] } else { "" }
+        $title = if ($parts.Count -gt 5) { $parts[5].TrimEnd(',') } else { "" }
         $result.Video.Add([PSCustomObject]@{ AbsIndex=$idx; Codec=$codec; Lang=$lang; Title=$title; Extra="${w}x${h}" }) | Out-Null
     }
     $raw = (& ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
@@ -108,7 +111,7 @@ function Get-RemuxStreams {
         $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
         $ch = if ($parts.Count -gt 2) { $parts[2] } else { "" }
         $lang = if ($parts.Count -gt 3) { $parts[3] } else { "" }
-        $title = if ($parts.Count -gt 4) { $parts[4] } else { "" }
+        $title = if ($parts.Count -gt 4) { $parts[4].TrimEnd(',') } else { "" }
         $result.Audio.Add([PSCustomObject]@{ AbsIndex=$idx; Codec=$codec; Lang=$lang; Title=$title; Extra="${ch}ch" }) | Out-Null
     }
     $raw = (& ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
@@ -118,7 +121,7 @@ function Get-RemuxStreams {
         $idx = $parts[0]
         $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
         $lang = if ($parts.Count -gt 2) { $parts[2] } else { "" }
-        $title = if ($parts.Count -gt 3) { $parts[3] } else { "" }
+        $title = if ($parts.Count -gt 3) { $parts[3].TrimEnd(',') } else { "" }
         $result.Subtitle.Add([PSCustomObject]@{ AbsIndex=$idx; Codec=$codec; Lang=$lang; Title=$title; Extra="" }) | Out-Null
     }
     $raw = (& ffprobe -v error -select_streams t -show_entries stream=index,codec_name:stream_tags=filename -of csv=p=0 -- $File 2>$null) | Out-String
@@ -127,7 +130,7 @@ function Get-RemuxStreams {
         $parts = $line -split ',', 3
         $idx = $parts[0]
         $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-        $title = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+        $title = if ($parts.Count -gt 2) { $parts[2].TrimEnd(',') } else { "" }
         $result.Attachment.Add([PSCustomObject]@{ AbsIndex=$idx; Codec=$codec; Lang=""; Title=$title; Extra="" }) | Out-Null
     }
     $rawCh = (& ffprobe -v error -show_chapters -of csv=p=0 -- $File 2>$null) | Out-String
@@ -522,12 +525,15 @@ function Get-DemuxSpecialStreams {
         Cover = New-Object System.Collections.Generic.List[object]
         Data  = New-Object System.Collections.Generic.List[object]
     }
+    # v59 audit: TrimEnd(',') pe disposition + tag — csv=p=0 emite trailing comma
+    # pe HDR sources, .Trim() doar strip whitespace, NU virgula → compare "1" esua
+    # silentios pe cover art pe HDR/HEVC HDR sources.
     $raw = (& ffprobe -v error -select_streams v -show_entries stream=index,codec_name:stream_disposition=attached_pic -of csv=p=0 -- $File 2>$null) | Out-String
     foreach ($line in ($raw -split "`r?`n")) {
         if (-not $line) { continue }
         $parts = $line -split ',', 3
         if ($parts.Count -lt 3) { continue }
-        $disp = $parts[2].Trim()
+        $disp = $parts[2].Trim().TrimEnd(',')
         if ($disp -eq "1") {
             $result.Cover.Add([PSCustomObject]@{ AbsIndex=$parts[0]; Codec=$parts[1] }) | Out-Null
         }
@@ -537,7 +543,7 @@ function Get-DemuxSpecialStreams {
         if (-not $line) { continue }
         $parts = $line -split ',', 2
         if ($parts.Count -lt 1) { continue }
-        $tag = if ($parts.Count -gt 1 -and $parts[1]) { $parts[1].Trim() } else { "data" }
+        $tag = if ($parts.Count -gt 1 -and $parts[1]) { $parts[1].Trim().TrimEnd(',') } else { "data" }
         $result.Data.Add([PSCustomObject]@{ AbsIndex=$parts[0]; Tag=$tag }) | Out-Null
     }
     return $result
@@ -800,22 +806,36 @@ function Invoke-DemuxFile {
     }
 
     # ── Attachments dump ──
+    # v59 audit: dedup pe filename + path explicit (nu cwd-based) — MKV-uri cu nume
+    # duplicate de atasament (ex: 2× Arial.ttf) faceau ca al doilea sa suprascrie
+    # tacit pe primul. Acum: numele tinta luat din metadata, sanitize, dedup cu _N.
     if ($Sel.ExtractAttach -and $Sel.Streams.Attachment.Count -gt 0) {
         $attachDir = Join-Path $OutputDir ("{0}_attach" -f $name)
         New-Item -ItemType Directory -Force -Path $attachDir | Out-Null
-        # ffmpeg -dump_attachment:t:N "" -i input — necesita cwd = attachDir
-        $origLoc = Get-Location
-        try {
-            Set-Location -LiteralPath $attachDir
-            for ($t = 0; $t -lt $Sel.Streams.Attachment.Count; $t++) {
-                & ffmpeg -y -v error -dump_attachment:t:$t "" -i $File -loglevel quiet 2>&1 | Out-Null
+        $nOk = 0
+        for ($t = 0; $t -lt $Sel.Streams.Attachment.Count; $t++) {
+            $att = $Sel.Streams.Attachment[$t]
+            $rawName = if ($att.Title) { $att.Title } else { "attachment_{0}.bin" -f $t }
+            $sanName = Get-SanitizedFilename -Text $rawName
+            $finalName = $sanName
+            $target = Join-Path $attachDir $finalName
+            if (Test-Path -LiteralPath $target) {
+                $b = [System.IO.Path]::GetFileNameWithoutExtension($sanName)
+                $e = [System.IO.Path]::GetExtension($sanName)
+                $i = 2
+                do {
+                    $finalName = if ($e) { "{0}_{1}{2}" -f $b, $i, $e } else { "{0}_{1}" -f $b, $i }
+                    $target = Join-Path $attachDir $finalName
+                    $i++
+                } while (Test-Path -LiteralPath $target)
             }
-        } finally {
-            Set-Location -LiteralPath $origLoc
+            & ffmpeg -y -v error -dump_attachment:t:$t $target -i $File -loglevel quiet 2>&1 | Out-Null
+            if ((Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target).Length -gt 0) {
+                $nOk++
+            }
         }
-        $nExtracted = @(Get-ChildItem -LiteralPath $attachDir -File -ErrorAction SilentlyContinue).Count
-        if ($nExtracted -gt 0) {
-            Write-Host ("  OK attachments -> {0}/ ({1} fisiere)" -f [System.IO.Path]::GetFileName($attachDir), $nExtracted) -ForegroundColor Green
+        if ($nOk -gt 0) {
+            Write-Host ("  OK attachments -> {0}/ ({1} fisiere)" -f [System.IO.Path]::GetFileName($attachDir), $nOk) -ForegroundColor Green
             $count++
         } else {
             Write-Host "  FAIL attachments — niciun fisier extras" -ForegroundColor Red
@@ -906,10 +926,15 @@ function Get-MuxInputFiles {
 }
 
 # Codec detect pe input (raw stream sau container).
+# v59 audit: switch la default= — bash mux_codec_of (av_mux.sh) folosea deja default=
+# din v57, dar PS1 a ramas pe csv=p=0 → pe video stream produce "hevc," cu trailing
+# comma → Trim() nu strip → array compare @("hevc","h264","av1") esua silentios →
+# codec_tag (hvc1/av01/avc1) lipsea din output → playere DV-aware nu engajau modul DV.
+# Aceeasi familie de bug ca v57 av_check + v58 detect_source_info.
 function Get-MuxCodec {
     param([string]$File, [string]$Type)
     $spec = switch ($Type) { "video" {"v:0"} "audio" {"a:0"} "subtitle" {"s:0"} default {"v:0"} }
-    $c = ((& ffprobe -v error -select_streams $spec -show_entries stream=codec_name -of csv=p=0 -- $File 2>$null) | Out-String).Trim()
+    $c = ((& ffprobe -v error -select_streams $spec -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String).Trim()
     return $c.ToLowerInvariant()
 }
 
@@ -931,21 +956,44 @@ function Get-MuxLangFromFilename {
 # ffmpeg nu citeste XML chapter direct, doar FFMETADATA. Returneaza $true daca OK.
 function Convert-XmlChaptersToFFMetadata {
     param([string]$XmlIn, [string]$OutFile)
-    if (-not (Test-Path -LiteralPath $XmlIn)) { return $false }
+    # v59 audit: fail loud cu motiv specific in $script:LastChapterParseError pentru
+    # ca caller-ul sa poata afisa exact ce nu a mers (gol / fara root / fara ChapterAtom
+    # / parse fail). Pana acum returna doar $false fara explicatie.
+    $script:LastChapterParseError = ""
+    if (-not (Test-Path -LiteralPath $XmlIn)) {
+        $script:LastChapterParseError = "fisier inexistent"
+        return $false
+    }
+    $fileSize = (Get-Item -LiteralPath $XmlIn).Length
+    if ($fileSize -eq 0) {
+        $script:LastChapterParseError = "XML gol"
+        return $false
+    }
     try {
         [xml]$doc = Get-Content -LiteralPath $XmlIn -Raw -ErrorAction Stop
     } catch {
+        $script:LastChapterParseError = "XML malformat ($($_.Exception.Message))"
         return $false
     }
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine(";FFMETADATA1")
-    $atoms = $doc.SelectNodes("//ChapterAtom")
-    if ($null -eq $atoms -or $atoms.Count -eq 0) { return $false }
+    # v59 audit: namespace-agnostic XPath. XML cu <Chapters xmlns="..."> default
+    # namespace facea XPath "//ChapterAtom" sa returneze 0 noduri (XPath default
+    # cere prefix explicit pentru namespaces). Folosim local-name() ca sa match-uim
+    # indiferent de namespace. Bash version (awk regex) nu avea problema.
+    $atoms = $doc.SelectNodes("//*[local-name()='ChapterAtom']")
+    if ($null -eq $atoms -or $atoms.Count -eq 0) {
+        $script:LastChapterParseError = "niciun <ChapterAtom> in XML"
+        return $false
+    }
     $emitted = 0
     foreach ($a in $atoms) {
-        $tsStart = $a.ChapterTimeStart
-        $tsEnd = $a.ChapterTimeEnd
+        # v59: namespace-agnostic child accessors (dot notation rateaza pe namespaced nodes)
+        $tsStartNode = $a.SelectSingleNode("*[local-name()='ChapterTimeStart']")
+        $tsEndNode   = $a.SelectSingleNode("*[local-name()='ChapterTimeEnd']")
+        $tsStart = if ($tsStartNode) { $tsStartNode.InnerText } else { "" }
+        $tsEnd   = if ($tsEndNode)   { $tsEndNode.InnerText }   else { "" }
         if (-not $tsStart -or -not $tsEnd) { continue }
         # HH:MM:SS.fff... -> millisec
         $partsS = $tsStart -split ':'
@@ -962,7 +1010,8 @@ function Convert-XmlChaptersToFFMetadata {
         $startMs = [int][Math]::Round(($hS * 3600 + $mS * 60 + $sS) * 1000)
         $endMs   = [int][Math]::Round(($hE * 3600 + $mE * 60 + $sE) * 1000)
         $title = ""
-        $disp = $a.SelectSingleNode("ChapterDisplay/ChapterString")
+        # v59: namespace-agnostic — XPath fara prefix nu match-uia <ChapterDisplay> namespaced
+        $disp = $a.SelectSingleNode("*[local-name()='ChapterDisplay']/*[local-name()='ChapterString']")
         if ($disp) { $title = [string]$disp.InnerText }
         [void]$sb.AppendLine("")
         [void]$sb.AppendLine("[CHAPTER]")
@@ -976,7 +1025,10 @@ function Convert-XmlChaptersToFFMetadata {
         }
         $emitted++
     }
-    if ($emitted -eq 0) { return $false }
+    if ($emitted -eq 0) {
+        $script:LastChapterParseError = "ChapterAtom prezent dar fara ChapterTimeStart/End valide"
+        return $false
+    }
     [System.IO.File]::WriteAllText($OutFile, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
     return (Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 0)
 }
@@ -1260,6 +1312,9 @@ function Invoke-MuxFlow {
                 Write-Host "  Chapters XML convertit la FFMETADATA1 (temp)." -ForegroundColor DarkGray
             } else {
                 Write-Host "  WARN: nu pot converti $([System.IO.Path]::GetFileName($chFile)) la FFMETADATA1 — chapters ignorate." -ForegroundColor Yellow
+                if ($script:LastChapterParseError) {
+                    Write-Host "    Motiv: $($script:LastChapterParseError)" -ForegroundColor Yellow
+                }
                 Remove-Item -LiteralPath $chaptersTmpFFMeta -Force -ErrorAction SilentlyContinue
                 $chaptersTmpFFMeta = $null
             }

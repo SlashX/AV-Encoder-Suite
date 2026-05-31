@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v58** — 85 bugs fixed · 224+ features · ~36 000 LoC · 101 files
+**v59** — 90 bugs fixed · 224+ features · ~36 100 LoC · 102 files
 
 ---
 
@@ -26,7 +26,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
-- **Burn-in overlay suite** (v48) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); opt-in 5s preview
+- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview
 
 ## Quick Start
 
@@ -376,6 +376,10 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v58** — 85 bugs fixed · 224+ features · ~36 000 LoC · 101 files
+Current: **v59** — 90 bugs fixed · 224+ features · ~36 100 LoC · 102 files
+
+**v59 highlights** — Regression audit on the Mux toolchain (Remux / Demux / Mux). Because all three flows use `-c copy` (no re-encode), HDR/DV/HDR10+ metadata are already preserved natively — re-verified empirically on HEVC HDR10+ → MKV (master display + MaxCLL + SMPTE2094-40 dynamic metadata all intact). Bugs fixed: cover art and DJI tracks were silently missed on HDR-rich sources (ffprobe quirk on streams with side-data blocks); Remux titles displayed with a stray trailing character; Demux attachments with duplicate filenames overwrote each other silently (now dedup with `_2`/`_3` suffix); chapters XML conversion failures now report a specific reason (empty / malformed / missing root / no `<ChapterAtom>` / no valid timestamps); PowerShell Mux lost the container `codec_tag` (hvc1/av01/avc1) on HDR sources — DV-aware players didn't engage DV mode on output, now aligned with bash; PS1 chapters XML with namespace declarations (`<Chapters xmlns="...">`) no longer rejected.
+
+**v58 highlights** — Burn-in flows are now HDR-aware. Until v58 all four burn-in flows (HUD telemetry, SRT, ASS, image subs PGS/VobSub) re-encoded into 8-bit SDR with no color signaling, silently breaking HDR sources. v58 adds a per-file dialog that detects source type and proposes the right path: preserve HDR10 (real 10-bit + master display + MaxCLL inject), preserve HDR10+ inline (svtav1+AV1 only — lossless), preserve HLG, apply a brand LUT for LOG (Apple/D-Log M/Samsung from `Luts/<brand>_*.cube`), tonemap to SDR, or refuse outright on Dolby Vision (overlay would break RPU references). Bypass via `BURNIN_HDR_POLICY=preserve|tonemap|skip|lut`. Audit also surfaced 4 critical latent bugs in the main encode pipeline that affected ffmpeg 8.x: HDR10+ on HEVC/AV1 was never being detected, AV1 Dolby Vision was never being detected (different metadata location than HEVC), Samsung S24 Ultra Log not recognized at encode, and 7 older tests were silently masking failures. Test runner now also picks up portable Windows binaries from `src/` automatically.
 
 **v57 highlights** — `av_check` regression sweep (the one flow not yet audited post-v44): fixed AV1 Dolby Vision detection (codec_tag is `[0][0][0][0]` for AV1 — DV now detected via per-frame side_data instead), correct 12-bit depth labeling (old pix_fmt `*10*` glob missed `yuv420p12le`), HDR rich diagnostic CSV (+7 cols: ColorPrimaries/Space/Range + MaxCLL/FALL + MasterDisplay primaries+nits + HDR10+ scene markers), MKV bitrate cascade fallback, expanded output-suffix list for the Comparison section (covers Mux/HDR-DV/Burn-in/Telemetry outputs), LOG sources no longer mis-typed as HLG. Also: latent bash audio-CSV bug (`-of csv=p=0` reorders fields → all audio metrics were wrong) fixed. PS1 ↔ bash CSV header now fully aligned. 148 new asserts (96 bash + 52 PS1), full suite green.

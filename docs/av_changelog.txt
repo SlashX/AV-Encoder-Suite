@@ -3,9 +3,85 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v58 | 85 bug-uri fixate | 224+ features
-  101 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 58 teste [51 test_* + 7 infra]) | ~36000 linii cod+teste | ~5400 linii documentatie
+  TOTAL: v59 | 90 bug-uri fixate | 224+ features
+  102 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 60 teste [53 test_* + 7 infra]) | ~36100 linii cod+teste | ~5400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v59 — Mux: regresie pe Remux, Demux, Mux (anti-pattern + edge cases)
+═══════════════════════════════════════════════════════════════
+
+  Analiza de regresie pe fluxurile av_mux (Remux container, Demux
+  streams, Mux files-to-container). Mux/Remux/Demux folosesc -c copy
+  fara re-encode, deci HDR/DV/HDR10+ metadata sunt pastrate automat
+  (re-validat empiric pe HEVC HDR10+ → MKV: master display +
+  max-cll + dynamic metadata SMPTE2094-40 preservate intact). Focus
+  audit: bug-uri silentioase de parsing pe surse cu metadata HDR si
+  edge case-uri operationale.
+
+  FIX cover art si pistele DJI recunoscute pe surse HDR — pana acum,
+        pe fisiere cu metadata HDR (HDR10 / HDR10+ / HEVC HDR), Demux
+        nu detecta imaginea de copertă (album art) si nici pistele de
+        date DJI (telemetrie / debug). Cauza: o particularitate a
+        ffprobe-ului pe ffmpeg 8.x care livra un caracter parazitar
+        la sfarsitul informatiei despre ultima pista. Acum verificarea
+        e tolerantă la acest caracter — cover art si pistele DJI sunt
+        recunoscute corect. Reparat in ambele variante, Bash si
+        PowerShell.
+
+  FIX titlurile pistelor afisate curat in Remux — pe aceleasi surse
+        HDR, titlurile pistelor video / audio / subs / atasament din
+        dialogul Remux primeau acelasi caracter parazitar la sfarsit
+        (ex: "Director comm,"). Acum afisarea e curata si valoarea
+        propagata in metadata e cea reala, fara reziduuri.
+
+  ADD nume unice la atasamentele extrase prin Demux — MKV-uri care
+        contin doua atasamente cu acelasi nume (de ex. doua fonturi
+        "Arial.ttf" exportate la codificari diferite) faceau ca al
+        doilea sa-l suprascrie tacit pe primul. Utilizatorul pierdea
+        un atasament fara avertisment. Acum cand un nume exista deja
+        in folderul de output, al doilea primeste un sufix "_2"
+        (apoi "_3" etc.) inainte de extensie. Bash si PowerShell.
+
+  ADD motiv concret la esecul conversiei XML de capitole (Mux) —
+        cand fisierul XML de capitole oferit ca input nu poate fi
+        folosit, dialogul afisa doar "nu pot converti". Acum spune
+        si de ce: fisier gol, XML malformat, lipseste root-ul
+        <Chapters>, nu exista nicio sectiune <ChapterAtom>, sau
+        capitolele nu au timpi valizi de start/end. Mai usor de
+        diagnosticat fara sa deschizi XML-ul cu un editor.
+
+  ADD recunoastere XML de capitole cu namespace declaration in
+        PowerShell — fluxul Mux PowerShell respingea fisierele XML
+        Matroska standard care contineau <Chapters xmlns="..."> chiar
+        daca erau perfect valide. Cauza tinea de modul de parsing
+        intern, neaplicabil in varianta Bash. Acum sunt acceptate la
+        fel ca pe Linux/macOS/Termux.
+
+  FIX codec_tag corect la output Mux PowerShell — flow-ul de Mux
+        PowerShell pierdea silentios eticheta de container pe MP4/MOV
+        (hvc1 / av01 / avc1), ceea ce facea ca playere DV-aware sa nu
+        engajeze modul DV pe output-urile cu Dolby Vision. Bash-ul
+        fusese deja reparat in v57; PowerShell-ul a fost ratat atunci.
+        Acum aliniat — playere DV-aware engajeaza modul DV corect.
+
+  Detalii tehnice:
+    - Mux / Remux / Demux nu necesita awareness pentru HDR / DV / LOG
+      pentru ca toate folosesc -c copy (fara re-encode). Trim si
+      Concat in mod re-encode raman cu acest gap → vor fi tratate in
+      faza urmatoare a auditului (release separat).
+    - Re-mux pe sample-uri reale: HEVC HDR10+ → MKV pastreaza intact
+      pix_fmt 10-bit, BT.2020, smpte2084, master display, MaxCLL si
+      metadata dinamica HDR10+ SMPTE2094-40. AV1 DV/HDR10+/hibrid →
+      MKV pastreaza metadata complet.
+    - Mod test pentru sourcing scripturilor in CI (varianta AV_MUX_
+      TEST_MODE=1) — permite incarcarea functiilor pentru regresii
+      fara declansarea meniului interactiv sau a verificarii
+      dependintelor.
+    - Teste regresie noi: 41 asserts Bash + 54 asserts PowerShell,
+      toate PASS. Acopera detectia post-fix, dedup atasamente, mesaje
+      de validare, plus smoke test integration pe HEVC HDR10+ real.
 
 
 ═══════════════════════════════════════════════════════════════

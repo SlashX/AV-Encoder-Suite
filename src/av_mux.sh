@@ -16,12 +16,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/av_common.sh"
 
-mkdir -p "$OUTPUT_DIR"
+# v59: In test mode skip mkdir + ffmpeg dep check (functions only).
+# Pattern preluat din av_burnin.sh (v58) — permite sourcing pentru teste.
+if [[ "${AV_MUX_TEST_MODE:-0}" != "1" ]]; then
+    mkdir -p "$OUTPUT_DIR"
 
-if ! command -v ffmpeg &>/dev/null || ! command -v ffprobe &>/dev/null; then
-    echo "EROARE: ffmpeg/ffprobe nu sunt instalate."
-    echo "Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
-    exit 1
+    if ! command -v ffmpeg &>/dev/null || ! command -v ffprobe &>/dev/null; then
+        echo "EROARE: ffmpeg/ffprobe nu sunt instalate."
+        echo "Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
+        exit 1
+    fi
 fi
 
 SUPPORTED_INPUT_EXT=(mkv webm mp4 m4v mov ts m2ts mts vob mxf)
@@ -458,6 +462,9 @@ demux_detect_special_streams() {
     DEMUX_DATA_IDX=(); DEMUX_DATA_TAG=()
 
     # attached_pic detection via ffprobe disposition flag
+    # v59: csv=p=0 emite trailing comma pe SURSE cu [SIDE_DATA] sections (HDR10/HDR10+/HEVC)
+    # → ultimul field gets "<value>," in loc de "<value>" → compare `[[ disp == "1" ]]` esueaza
+    # silentios pe cover art pe HDR sources. Defensiv: strip trailing comma dupa CR.
     local raw
     raw=$(ffprobe -v error -select_streams v -show_entries stream=index,codec_name:stream_disposition=attached_pic \
         -of csv=p=0 "$file" 2>/dev/null || true)
@@ -465,6 +472,7 @@ demux_detect_special_streams() {
     while IFS=',' read -r idx codec disp; do
         [ -z "$idx" ] && continue
         disp="${disp%$'\r'}"
+        disp="${disp%,}"   # v59 audit
         if [[ "$disp" == "1" ]]; then
             DEMUX_COVER_IDX+=("$idx")
             DEMUX_COVER_CODEC+=("$codec")
@@ -478,6 +486,7 @@ demux_detect_special_streams() {
     while IFS=',' read -r idx tag; do
         [ -z "$idx" ] && continue
         tag="${tag%$'\r'}"
+        tag="${tag%,}"     # v59 audit: strip trailing comma de la csv multi-field
         DEMUX_DATA_IDX+=("$idx")
         DEMUX_DATA_TAG+=("${tag:-data}")
     done <<< "$raw"
@@ -808,24 +817,42 @@ demux_run_for_file() {
     fi
 
     # ── Attachments dump ──
+    # v59 audit: dedup pe filename — MKV-urile cu mai multe atasamente cu acelasi nume
+    # (ex: 2× Arial.ttf din fonturi pereche) faceau ca al doilea sa suprascrie pe primul
+    # tacit. Acum daca exista deja un fisier cu numele tinta, adaugam suffix _<idx>.
+    # In plus, folosim numele explicit (mux_sanitize-ed) in loc de "" ca ffmpeg sa scrie
+    # exact unde vrem noi (path absolut), nu in CWD.
     if [ "$DEMUX_EXTRACT_ATTACH" -eq 1 ] && [ ${#REMUX_ATTACH_INDICES[@]} -gt 0 ]; then
         local attach_dir="${out_dir}/${name}_attach"
         mkdir -p "$attach_dir"
         local t_rel=0 abs
+        local n_ok=0
         for abs in "${REMUX_ATTACH_INDICES[@]}"; do
             info="${REMUX_STREAMS[$abs]}"
             IFS='|' read -r _ codec _ title _ <<< "$info"
             local attach_name="${title:-attachment_${t_rel}.bin}"
             attach_name=$(mux_sanitize "$attach_name")
-            # ffmpeg -dump_attachment:t:N produce fisierul cu numele original
-            if ( cd "$attach_dir" && ffmpeg -y -v error -dump_attachment:t:$t_rel "" -i "$file" </dev/null 2>/dev/null ); then
-                : # numele original e folosit
+            # Dedup: daca numele exista deja, adauga suffix _N inainte de extensie
+            local final_name="$attach_name"
+            if [ -e "$attach_dir/$final_name" ]; then
+                local _base="${attach_name%.*}"
+                local _ext="${attach_name##*.}"
+                [[ "$_base" == "$attach_name" ]] && _ext=""
+                local _i=2
+                while [ -e "$attach_dir/${_base}_${_i}${_ext:+.$_ext}" ]; do
+                    _i=$((_i+1))
+                done
+                final_name="${_base}_${_i}${_ext:+.$_ext}"
+            fi
+            if ffmpeg -y -v error -dump_attachment:t:$t_rel "$attach_dir/$final_name" -i "$file" </dev/null 2>/dev/null; then
+                if [ -s "$attach_dir/$final_name" ]; then
+                    n_ok=$((n_ok+1))
+                fi
             fi
             t_rel=$((t_rel+1))
         done
-        local n_extracted; n_extracted=$(find "$attach_dir" -maxdepth 1 -type f 2>/dev/null | wc -l)
-        if [ "$n_extracted" -gt 0 ]; then
-            echo "  ✓ attachments → $(basename "$attach_dir")/ ($n_extracted fisiere)"
+        if [ "$n_ok" -gt 0 ]; then
+            echo "  ✓ attachments → $(basename "$attach_dir")/ ($n_ok fisiere)"
             count=$((count+1))
         else
             echo "  ✗ attachments — niciun fisier extras"
@@ -1032,10 +1059,27 @@ mux_pick_from_list() {
 
 # Converteste Matroska chapter XML (output din Demux opt 2) la FFMETADATA1
 # pentru import in ffmpeg. ffmpeg nu citeste XML chapter direct, doar FFMETADATA.
-# $1=in xml, $2=out ffmetadata. Returneaza 0 ok / 1 fail.
+# $1=in xml, $2=out ffmetadata. Returneaza 0 ok / 1 fail. Stderr: motiv fail.
 mux_xml_to_ffmetadata() {
     local xml_in="$1" out="$2"
-    [ ! -f "$xml_in" ] && return 1
+    if [ ! -f "$xml_in" ]; then
+        echo "mux_xml_to_ffmetadata: fisier inexistent: $xml_in" >&2
+        return 1
+    fi
+    # v59 audit: pre-check structura — fail loud cu motiv specific (gol / fara root /
+    # fara ChapterAtom) in loc de output gol fara explicatie.
+    if [ ! -s "$xml_in" ]; then
+        echo "mux_xml_to_ffmetadata: XML gol" >&2
+        return 1
+    fi
+    if ! grep -q '<Chapters' "$xml_in" 2>/dev/null; then
+        echo "mux_xml_to_ffmetadata: lipseste tag-ul <Chapters> (root Matroska)" >&2
+        return 1
+    fi
+    if ! grep -q '<ChapterAtom' "$xml_in" 2>/dev/null; then
+        echo "mux_xml_to_ffmetadata: niciun <ChapterAtom> in XML" >&2
+        return 1
+    fi
     {
         echo ";FFMETADATA1"
         LC_ALL=C awk '
@@ -1075,7 +1119,11 @@ mux_xml_to_ffmetadata() {
             }
         ' "$xml_in"
     } > "$out"
-    [ -s "$out" ] && grep -q '\[CHAPTER\]' "$out" && return 0
+    if [ -s "$out" ] && grep -q '\[CHAPTER\]' "$out"; then
+        return 0
+    fi
+    # v59 audit: failure cu motiv specific (ChapterAtom prezent dar timestamp parse a esuat)
+    echo "mux_xml_to_ffmetadata: parse esuat (ChapterAtom prezent dar fara ChapterTimeStart/End valide)" >&2
     rm -f "$out" 2>/dev/null
     return 1
 }
@@ -1306,16 +1354,22 @@ mux_flow() {
         if [ "$ch_ext" = "xml" ]; then
             # Convert Matroska XML → FFMETADATA1 (ffmpeg nu citeste XML direct)
             chapters_tmp_ffmeta=$(av_mktemp_ext ffmetadata)
-            if mux_xml_to_ffmetadata "$ch_file" "$chapters_tmp_ffmeta"; then
+            # v59: capturam stderr separat ca sa propagam motivul cand parse-ul esueaza
+            local _xml_err_file _xml_err=""
+            _xml_err_file=$(av_mktemp_ext err)
+            if mux_xml_to_ffmetadata "$ch_file" "$chapters_tmp_ffmeta" 2>"$_xml_err_file"; then
                 in_args+=("-i" "$chapters_tmp_ffmeta")
                 chapters_input_idx=$input_idx
                 input_idx=$((input_idx+1))
                 echo "  Chapters XML convertit la FFMETADATA1 (temp)."
             else
+                [ -s "$_xml_err_file" ] && _xml_err=$(cat "$_xml_err_file" 2>/dev/null || true)
                 echo "  WARN: nu pot converti $(basename "$ch_file") la FFMETADATA1 — chapters ignorate."
+                [ -n "$_xml_err" ] && echo "    Motiv: ${_xml_err##*: }"
                 rm -f "$chapters_tmp_ffmeta" 2>/dev/null
                 chapters_tmp_ffmeta=""
             fi
+            rm -f "$_xml_err_file" 2>/dev/null
         else
             in_args+=("-i" "$ch_file")
             chapters_input_idx=$input_idx
@@ -1458,6 +1512,13 @@ mux_flow() {
     av_notify_done "Mux complet" "Output: $(basename "$final_out")" 2>/dev/null || true
     return 0
 }
+
+# ═════════════════════════════════════════════════════════════════════
+# Test mode: skip main menu (functions already loaded via sourcing)
+# ═════════════════════════════════════════════════════════════════════
+if [[ "${AV_MUX_TEST_MODE:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 # ═════════════════════════════════════════════════════════════════════
 # MAIN SUBMENU

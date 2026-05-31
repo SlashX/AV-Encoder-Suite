@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v49
+  Documentatie Setup & Utilizare — v59
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  67 fisiere totale (19 src + 12 tools + 6 profile + 3 burnin presets +
-  1 Python engine + 28 test scripts).
+  102 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
+  2 Python engines + 53 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -242,9 +242,9 @@ CUPRINS
     4) Telemetrie video — DJI / GoPro / Sony / Garmin / QuickTime
     5) Import GPS extern — GPX / FIT / KML
     6) Trim & Concat — trim / concat / pipeline / batch trim
-    7) Mux tools — remux container + demux streams (v49)
+    7) Mux tools — remux container + demux streams + mux files (v49+v50)
     8) HDR/DV tools — transform / inspect / HDR10+→DV / remove / plot (v56)
-    9) Burn-in HUD overlay — telemetrie HUD / subtitrari SRT / ASS / Image
+    9) Burn-in overlay — HUD / SRT / ASS / Image (v48, HDR-aware v58)
    10) Anulare / iesire
 
   FISIERE OUTPUT:
@@ -1111,16 +1111,27 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-10. MUX TOOLS (v49 + v50 — meniu principal opt 7)
+10. MUX TOOLS (v49 + v50 + v59 — meniu principal opt 7)
 ═══════════════════════════════════════════════════════════════
 
   Script: av_mux.sh + av_mux.ps1 (mirror complet bash↔PS1).
   Sub-meniu intern:
     1) Remux container — pack streams in alt container (no re-encode)
     2) Demux streams   — extract streams individuale (no re-encode)
-    3) Anulare
+    3) Mux files       — combina video + audio[N] + subs[N] + chapters
+                         + attachments intr-un container nou (v50)
+    4) Anulare
 
-  Ambele flow-uri sunt lossless (-c copy) — operatii pe bitstream.
+  Toate cele 3 flow-uri sunt lossless (-c copy) — operatii pe bitstream.
+  Codec_tag corect (hvc1/av01/avc1) pe MP4/MOV (DV-aware engagement).
+
+  v59 audit: cover art si pistele DJI recunoscute corect pe surse HDR;
+  titluri afisate curat in Remux; nume unice (cu suffix _2/_3) la
+  atasamentele extrase prin Demux cand exista duplicate; motiv concret
+  cand conversia XML de capitole esueaza (gol/malformat/no root/no
+  ChapterAtom/no TS valide); recunoastere XML de capitole cu namespace
+  declaration in PowerShell. Mux/Remux/Demux folosesc -c copy peste
+  tot — HDR/DV/HDR10+ metadata pastrate intact automat.
 
   ─── 10.1. Formate suportate (input — comune remux + demux) ───
 
@@ -1781,7 +1792,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-14. BURN-IN OVERLAY (v48 — meniu principal opt 9)
+14. BURN-IN OVERLAY (v48 + v58 HDR-aware — meniu principal opt 9)
 ═══════════════════════════════════════════════════════════════
 
   Script separat: src/av_burnin.sh + src/av_burnin.ps1 (mirror complet
@@ -1798,6 +1809,38 @@ CUPRINS
   Diferenta fata de v47 (complementare):
     v47 embed lossless (archive) = stream copy + SRT track + attachments
     v48 burn-in (share/distribute) = re-encode cu pixeli baked-in
+
+  v58: HDR / HDR10+ / HLG / LOG / DV aware
+  ────────────────────────────────────────
+  Toate cele 4 flow-uri detecteaza automat tipul sursei inainte de
+  re-encode si ofera un dialog per fisier cu optiunile potrivite:
+
+    Sursa HDR10        → Preserve HDR10 / Tonemap la SDR / Skip
+    Sursa HDR10+ AV1
+      cu libsvtav1     → Preserve HDR10+ inline / HDR10 base /
+                         Tonemap / Skip
+    Sursa HDR10+ HEVC
+      sau cross-codec  → Preserve HDR10 base / Tonemap / Skip
+    Sursa HLG          → Preserve HLG / Tonemap / Skip
+    Sursa LOG (Apple
+      / D-Log M / Sm.) → Apply LUT (din Luts/<brand>_*.cube) /
+                         Tonemap / Burn-in raw / Skip
+    Sursa Dolby Vision → REFUZAT explicit (overlay rasters peste
+                         base layer → RPU references break in
+                         playere DV); doar Tonemap sau Skip
+    Sursa SDR          → flow original (no dialog)
+
+  Pe x264 + sursa HDR (10-bit nu e suportat in build-uri standard) →
+  tonemap automat cu warning.
+
+  Pe svtav1 + AV1 HDR10+ → metadata dinamica preservata complet
+  (lossless prin extragerea JSON + svtav1-params hdr10plus-json
+  inline). Pe HEVC HDR10+, calea completa de preservare e in
+  HDR/DV tools.
+
+  Bypass non-interactiv: BURNIN_HDR_POLICY=preserve|tonemap|skip|lut
+  (set env inainte de a porni flow-ul — sare dialogurile, aplica
+  politica uniformizat pentru batch / CI).
 
   ─── 13.1. Flow Telemetry HUD ───
 
