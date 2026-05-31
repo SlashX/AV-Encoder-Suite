@@ -7,12 +7,20 @@ SCRIPT_DIR="$PROJECT_ROOT/src"
 
 command -v python3 >/dev/null 2>&1 || skip_test "python3 lipseste"
 
+# v58 audit: git-bash/MSYS pe Windows are probleme la translatarea de path
+# /c/Users/... → C:\Users\... cand python e chemat dintr-un subprocess al bash.
+# Testul ruleaza corect pe Linux/macOS/Termux; pe Windows folosesti
+# av_extractor_gps.ps1 + python.exe nativ direct (vezi flow PowerShell).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) skip_test "git-bash/MSYS pe Windows — folositi PS1 mirror" ;;
+esac
+
 SAMPLES="$PROJECT_ROOT/tests/fixtures/samples"
 GPX="$SAMPLES/sample.gpx"
 KML="$SAMPLES/sample.kml"
 [[ -f "$GPX" && -f "$KML" ]] || skip_test "sample-urile GPX/KML lipsesc"
 
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; _test_summary' EXIT
 mkdir -p "$TMP/in" "$TMP/out"
 cp "$GPX" "$KML" "$TMP/in/"
 

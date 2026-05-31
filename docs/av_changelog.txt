@@ -3,9 +3,172 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v57 | 78 bug-uri fixate | 220+ features
-  101 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 56 teste [49 test_* + 7 infra]) | ~35400 linii cod+teste | ~5300 linii documentatie
+  TOTAL: v58 | 85 bug-uri fixate | 224+ features
+  101 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 58 teste [51 test_* + 7 infra]) | ~36000 linii cod+teste | ~5400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v58 — Burn-in cu intelegere HDR, HDR10+, HLG, Dolby Vision si LOG
+═══════════════════════════════════════════════════════════════
+
+  Imbunatatire majora pe burn-in (overlay HUD telemetrie, subtitrari
+  SRT/ASS si image subs PGS/VobSub). Pana acum, indiferent de tipul
+  sursei, output-ul era re-encodat in defaulturi 8-bit, fara color
+  signaling — clipurile HDR10, HDR10+, HLG si LOG produceau output
+  vizibil compromis (look gri-fad la LOG, HDR pierdut tacit la HDR10).
+  Acum cele 4 fluxuri de burn-in detecteaza automat tipul sursei si
+  ofera un dialog cu optiunile potrivite per fisier.
+
+  ADD detectie HDR + dialog per fisier — toate 4 fluxurile (HUD, SRT,
+        ASS, image subs) verifica acum tipul sursei prin ffprobe inainte
+        de re-encode si ofera optiunile potrivite:
+          - HDR10 → Preserve HDR10 / Tonemap la SDR / Skip
+          - HDR10+ AV1 (cand encoder-ul ales e libsvtav1) → Preserve
+            HDR10+ inline / Preserve HDR10 base / Tonemap / Skip
+          - HDR10+ HEVC (sau cross-codec) → Preserve HDR10 base /
+            Tonemap / Skip
+          - HLG → Preserve HLG / Tonemap / Skip
+          - LOG → Apply LUT (daca exista in Luts/) / Tonemap / Burn-in
+            raw / Skip
+          - Dolby Vision → Refuz explicit cu mesaj de explicare
+            (overlay rasters peste base layer, RPU references break in
+            playere DV); doar optiuni Tonemap sau Skip
+        Sursele SDR raman neschimbate, fara dialog suplimentar.
+
+  ADD preserve HDR10 si HLG real in burn-in — cand utilizatorul alege
+        sa pastreze HDR-ul, burn-in-ul injecteaza acum:
+          - pix_fmt 10-bit (yuv420p10le)
+          - color_primaries / color_trc / colorspace corecte
+            (BT.2020 + smpte2084 pentru HDR10, arib-std-b67 pentru HLG)
+          - x265-params hdr10=1:hdr10-opt=1:master-display=...:max-cll=...
+            cand encoder-ul ales e libx265
+          - svtav1-params mastering-display=...:content-light=... cand
+            encoder-ul ales e libsvtav1
+        Reutilizeaza metadata din sursa cand exista, sau cade pe
+        defaulturi BT.2020 1000-nit. x264 nu suporta HDR 10-bit in
+        builds-uri standard → daca user alege Preserve cu encoder x264,
+        burn-in-ul aplica automat tonemap la SDR cu mesaj clar.
+
+  ADD HDR10+ inline pe AV1 — pentru clipuri HDR10+ encodate AV1 cu
+        encoder-ul libsvtav1, burn-in-ul extrage metadata dinamica
+        HDR10+ din sursa (av1hdr10plus_tool) si o injecteaza inapoi
+        in output prin svtav1-params hdr10plus-json=... — lossless,
+        cu metadata dinamica per-scena pastrata complet. Pentru HEVC
+        sau cross-codec, lasam preserve HDR10 base (metadata statica)
+        si recomandam fluxul dedicat din av_hdr_dv_tools pentru cazurile
+        complexe.
+
+  ADD LUT brand-specifice pentru LOG — pe clipuri LOG (Apple Log,
+        D-Log M de la DJI, Samsung Log), burn-in-ul cauta automat un
+        LUT brand-specific in folderul Luts/ (nume conventional
+        apple_log_*.cube, dji_dlog_m_*.cube, samsung_log_*.cube). Daca
+        gaseste, ofera optiunea de a aplica LUT-ul ca prim filtru in
+        chain — output-ul iese gradat profesional in Rec.709, asa cum
+        intentioneaza producatorul. Daca LUT-ul lipseste, optiunea e
+        ascunsa si fallback-ul e tonemap generic Hable.
+
+  ADD refuz explicit pentru Dolby Vision — burn-in pe surse DV
+        distruge vizual RPU references (overlay-ul rasters peste base
+        layer, dar metadata RPU presupune un BL neatins → playere DV
+        vad imagine corupta). In loc sa permita asta tacit, dialogul
+        explica problema si ofera doar 2 optiuni: Tonemap la SDR
+        (daca user vrea HUD baked-in vizibil) sau Skip. Mesajul
+        sugereaza explicit av_hdr_dv_tools pentru transformari DV
+        (fara overlay).
+
+  ADD bypass non-interactiv prin variabila BURNIN_HDR_POLICY — pentru
+        scripting si CI, dialogul poate fi sarit cu o variabila de
+        environment:
+          BURNIN_HDR_POLICY=preserve  → preserve cand sursa e HDR;
+                                       skip pe DV
+          BURNIN_HDR_POLICY=tonemap   → tonemap la SDR pe tot ce e HDR/LOG
+          BURNIN_HDR_POLICY=skip      → skip pe tot ce nu e SDR
+          BURNIN_HDR_POLICY=lut       → LUT pe LOG (daca exista),
+                                       altfel tonemap
+        Util pentru rularea pe foldere mari cu surse variate, fara
+        sa stea cineva la prompt-uri.
+
+  FIX output silent compromis pe surse HDR — pana acum, burn-in pe
+        un fisier HDR10 cu setarile default producea output 8-bit cu
+        signaling pierdut, fara warning. Fisierul reda dar arata
+        spalacit pe display HDR (TV crede ca e SDR si nu aplica
+        gamma corecta). Pe HDR10+ erau pierdute toate scene
+        descriptors. Pe LOG, output-ul iesea gri-fad. Acum toate
+        aceste cazuri sunt fie detectate cu pastrarea corecta a
+        HDR-ului, fie convertite explicit (tonemap) cu mesaj clar.
+
+  FIX HDR10+ recunoscut corect din nou la encodare — la audit-ul
+        v58 am descoperit ca, pe ffmpeg 8.x, verificarea de HDR10+
+        din pipeline-ul principal de encodare nu mai gasea metadata
+        dinamica si toate clipurile HDR10+ erau tratate ca HDR10
+        simplu — pierderea era tacita, fara warning. Practic, daca
+        ai un clip HDR10+ si alegi encodare normala, output-ul
+        primea doar HDR10 static, iar adaptarea per scena se pierdea.
+        Bug-ul era vechi (de la v25 incolo); reparat la av_check in
+        v57 dar nu si pe restul fluxurilor. Acum HDR10+ e recunoscut
+        corect pe HEVC + AV1, inclusiv pe hibrizi DV+HDR10+. Validat
+        pe clipuri reale.
+
+  FIX Dolby Vision recunoscut corect din nou pe AV1 — la audit am
+        observat ca pe pipeline-ul principal de encodare DV-ul de pe
+        AV1 nu era detectat (la AV1 metadata DV nu sta in codec_tag
+        ca la HEVC, ci in pachete per cadru). Clipurile AV1 DV
+        treceau ca AV1 HDR10 simplu, iar ramura de preservare DV nu
+        se activa. Acelasi simptom ca bug-ul de av_check reparat in
+        v57, dar pe alta cale. Acum AV1 DV e detectat corect si
+        ramura de DV preserve se activeaza si la encodare, nu doar
+        la analiza media.
+
+  FIX Samsung S24 Ultra si DJI re-muxate recunoscute la encodare —
+        la audit am observat ca detectorul de camera din pipeline-ul
+        principal de encodare nu recunostea Samsung S24 Ultra in
+        modul Log si nici clipurile DJI re-muxate (cu pista de
+        telemetrie scoasa). Aceeasi reparatie aplicata in v57 doar
+        la av_check (raportul de analiza media); acum se aplica si
+        la encodare. Util mai ales pentru utilizatorii de S24 Ultra
+        si pentru workflow-urile in care clipurile DJI trec printr-o
+        re-muxare inainte de encodare.
+
+  FIX teste vechi mascau silent rezultatul real — la audit am
+        observat ca 7 teste mai vechi nu raportau corect: scriau
+        log gol indiferent daca treceau sau cadeau, iar runner-ul nu
+        putea distinge un PASS real de un FAIL ascuns. Cauza: un
+        cleanup propriu de fisiere temporare suprascria mecanismul
+        de summary al framework-ului. Aceeasi familie de probleme ca
+        la testele v55/v56, dar atunci nu fusesera revazute toate
+        testele vechi. Dupa reparatie au iesit la suprafata 2
+        probleme reale de mediu pe Windows (Python subprocess pe
+        git-bash / MSYS pica cu eroare de fork) — acele 2 teste sar
+        explicit acum pe Windows, ruleaza normal pe Linux / macOS /
+        Termux. Restul de teste raporteaza corect PASS / FAIL.
+
+  ADD test runner foloseste binarele din src/ — pe Windows binarele
+        portabile din src/ (ffmpeg, ffprobe, exiftool, dovi_tool,
+        hdr10plus_tool si fork-urile AV1) sunt gasite automat de
+        testele de integrare, fara setup global. Cele 3 teste care
+        sareau cu "ffprobe nu este in PATH" pe Windows ruleaza
+        acum complet. Pe Linux / macOS / Termux unde src/ nu are
+        binare nu se schimba nimic.
+
+  Detalii tehnice:
+    - 4 fluxuri burn-in (HUD, SRT, ASS, image subs) + paritate
+      completa bash <-> PowerShell
+    - dialogul HDR/LOG ruleaza per fisier inainte de re-encode;
+      decide automat ce filtru aplica (LUT / tonemap / preserve)
+    - x264 cu sursa HDR cade pe tonemap automat cu warning
+      (encoder-ul nu suporta 10-bit HDR in build-uri standard)
+    - HDR10+ inline pe AV1 disponibil doar cand encoder-ul ales
+      e libsvtav1; pe HEVC, fluxul prefera HDR10 base si redirecteaza
+      utilizatorul catre HDR/DV tools pentru preservare completa
+    - burn-in pe surse Dolby Vision e refuzat explicit cu mesaj —
+      overlay-ul ar distruge referintele RPU si playere DV ar vedea
+      imagine corupta; sugestie automata: tonemap la SDR sau Skip
+    - mod test (variabila AV_BURNIN_TEST_MODE=1) permite incarcarea
+      scriptului pentru teste fara meniu interactiv
+    - Teste regresie noi: 64 asserts bash + 62 asserts PS1, ambele
+      PASS — acopera clasificare sursa, builder per mod, bypass
+      via politica de mediu, integrare in 4 flows si refuzul DV
 
 
 ═══════════════════════════════════════════════════════════════

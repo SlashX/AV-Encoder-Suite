@@ -7,7 +7,7 @@ SCRIPT_DIR="$PROJECT_ROOT/src"
 source "$SCRIPT_DIR/av_common.sh"
 
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+trap 'rm -rf "$TMPDIR"; _test_summary' EXIT
 
 # Override USER_PROFILES_DIR + PROFILES_DIR pentru izolare
 USER_PROFILES_DIR="$TMPDIR/user"

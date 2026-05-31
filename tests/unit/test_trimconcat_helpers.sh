@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/av_common.sh"
 
 # ── tc_scan_leftover_temp — empty / missing AV_TEMP_DIR ──────────────
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+trap 'rm -rf "$TMPDIR"; _test_summary' EXIT
 
 # 1) Director inexistent → return 0 silent
 AV_TEMP_DIR="$TMPDIR/nope"

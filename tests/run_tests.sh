@@ -10,6 +10,13 @@ PROJECT_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 RESULTS_DIR="$TESTS_DIR/results"
 mkdir -p "$RESULTS_DIR"
 
+# v58: prepend src/ to PATH so tests find local binaries (ffmpeg/ffprobe/exiftool/
+# dovi_tool/hdr10plus_tool/av1*) without requiring global install. Backward
+# compatible: on Linux/macOS/Termux where src/ has no binaries, falls back to
+# system PATH unchanged; on Windows where src/ has .exe builds, integration tests
+# run instead of skipping.
+export PATH="$PROJECT_ROOT/src:$PATH"
+
 PATTERN="${1:-test_*.sh}"
 
 # Color

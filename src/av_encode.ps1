@@ -1652,17 +1652,17 @@ function Get-SubtitleCodec {
     return @("-c:s","mov_text")
 }
 
-# FIX: Get-SourceInfo foloseste -show_entries frame_side_data=type
-# pentru a limita output-ul enorm al show_frames la campul relevant
+# v58 audit FIX: side_data_type (NU `type` — pe ffmpeg 8.x filterul invalid e ignorat
+# si returneaza full frame dump fara side_data → HDR10+ niciodata detectat. Pre-existent
+# din v44+. Aceeasi familie de bug ca v57 av_check.
 function Get-SourceInfo {
     param([string]$file)
     $codec    = Get-FFprobeValue $file "v:0" "codec_name"
     $pixFmt   = Get-FFprobeValue $file "v:0" "pix_fmt"
     $transfer = Get-FFprobeValue $file "v:0" "color_transfer"
-    # FIX: -show_entries frame_side_data=type — evita sute KB output per fisier HDR
     $hdrPlus  = & ffprobe -v error -show_frames -select_streams v:0 `
         -read_intervals "%+#5" `
-        -show_entries frame_side_data=type `
+        -show_entries frame_side_data=side_data_type `
         "$file" 2>$null | Select-String "HDR10+"
     $is10bit  = $pixFmt -match "10"
     $isHDRPlus = [bool]$hdrPlus
@@ -1841,11 +1841,17 @@ function Get-SourceInfoExtended {
         $cameraMake = "unknown"
     } else {
         # Detect camera make from format tags
+        # v58 audit FIX: Samsung S24 Ultra short-circuit pe com.samsung.android.logvideo
+        # (autoritar pt Samsung Log) + DJI fallback encoder=DJI (re-muxat). Aliniat cu av_check v57.
         $allTags = & ffprobe -v error -show_entries format_tags `
             -of default=noprint_wrappers=1 "$file" 2>$null | Out-String
-        if     ($allTags -imatch "make=.*apple")                        { $cameraMake = "apple" }
-        elseif ($allTags -imatch "make=.*dji")                          { $cameraMake = "dji" }
-        elseif ($allTags -imatch "manufacturer=.*samsung|make=.*samsung") { $cameraMake = "samsung" }
+        if     ($allTags -imatch "com\.samsung\.android\.logvideo") {
+            $cameraMake = "samsung"
+            $logProfile = "samsung_log"
+        }
+        elseif ($allTags -imatch "make=.*apple")                          { $cameraMake = "apple" }
+        elseif ($allTags -imatch "make=.*dji|encoder=.*dji")              { $cameraMake = "dji" }
+        elseif ($allTags -imatch "manufacturer=.*samsung|make=.*samsung|com\.samsung\.android") { $cameraMake = "samsung" }
         # Fallback: DJI tracks
         if (-not $cameraMake -and $djiInfo -and $djiInfo.isDji) { $cameraMake = "dji" }
 
@@ -1864,15 +1870,24 @@ function Get-SourceInfoExtended {
         $samsungLogTag = if ($allTags -imatch "log_mode|samsung.*log") { $true } else { $false }
 
         # HDR10+ and transfer from Get-SourceInfo (already called, reuse $si)
+        # v58 audit FIX: side_data_type (vezi Get-SourceInfo)
         $transfer = Get-FFprobeValue $file "v:0" "color_transfer"
         $hdrPlus = & ffprobe -v error -show_frames -select_streams v:0 `
-            -read_intervals "%+#5" -show_entries frame_side_data=type `
+            -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
             "$file" 2>$null | Select-String "HDR10+"
         $isHdrPlus = [bool]$hdrPlus
         $isHdr = ($transfer -eq "smpte2084") -or $isHdrPlus
         $dovi = & ffprobe -v error -show_entries stream=codec_tag_string `
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null |
             Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        # v58 audit FIX: AV1 DV detection — codec_tag e [0][0][0][0] pe AV1; RPU sta in
+        # OBU_METADATA (provider 0x003B), detectabil doar via side_data per-frame.
+        if (-not $dovi) {
+            $av1dv = & ffprobe -v error -show_frames -select_streams v:0 `
+                -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
+                "$file" 2>$null | Select-String "Dolby Vision Metadata"
+            if ($av1dv) { $dovi = "dolby_vision" }
+        }
 
         # LOG profile identification
         if ($cameraMake -eq "apple") {

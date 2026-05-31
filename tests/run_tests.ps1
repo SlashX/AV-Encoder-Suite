@@ -12,6 +12,12 @@ $ProjectRoot = (Resolve-Path (Join-Path $TestsDir '..')).Path
 $ResultsDir = Join-Path $TestsDir 'results'
 New-Item -ItemType Directory -Force -Path $ResultsDir | Out-Null
 
+# v58: prepend src/ to PATH so tests find local binaries (ffmpeg.exe / ffprobe.exe
+# / exiftool.exe / dovi_tool.exe / hdr10plus_tool.exe / av1*_tool.exe) without
+# requiring global install. Backward compatible: if src/ has no binaries, falls
+# back to system PATH unchanged.
+$env:PATH = (Join-Path $ProjectRoot 'src') + [System.IO.Path]::PathSeparator + $env:PATH
+
 # Discover
 $tests = @()
 $tests += Get-ChildItem -LiteralPath $TestsDir -Filter $Pattern -File -ErrorAction SilentlyContinue

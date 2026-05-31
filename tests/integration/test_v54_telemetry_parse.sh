@@ -9,7 +9,15 @@ SRC="$PROJECT_ROOT/src"
 command -v python3 >/dev/null 2>&1 || skip_test "python3 lipseste"
 [[ -f "$SRC/av_telemetry.sh" ]] || skip_test "av_telemetry.sh lipseste"
 
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# v58 audit: cunoscut din CLAUDE.md sectiune v54 — git-bash/MSYS pe Windows
+# are cygwin fork instability cu Python subprocess (couldn't create signal pipe).
+# Logica parserului e validata via PowerShell + python.exe nativ; testul ruleaza
+# pe Linux/macOS/Termux CI corect.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) skip_test "git-bash/MSYS pe Windows — cygwin fork instabil" ;;
+esac
+
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; _test_summary' EXIT
 OUT=$(python3 - "$SRC/av_telemetry.sh" "$TMP" <<'PYEOF'
 import re, struct, os, sys, subprocess, csv, datetime
 tele_sh, tmp = sys.argv[1], sys.argv[2]

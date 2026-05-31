@@ -7,7 +7,7 @@ DIFF_TOOL="$PROJECT_ROOT/src/tools/profile_diff.sh"
 assert_file_exists "$DIFF_TOOL" "profile_diff.sh exista"
 
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+trap 'rm -rf "$TMPDIR"; _test_summary' EXIT
 
 cat > "$TMPDIR/a.conf" <<'EOF'
 ENCODER_NAME=libx265

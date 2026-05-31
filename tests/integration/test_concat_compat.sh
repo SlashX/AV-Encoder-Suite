@@ -23,7 +23,7 @@ assert_contains "$sig" "240" "SDR height 240"
 assert_contains "$sig" "yuv420p" "SDR pix_fmt yuv420p"
 
 # 2) check_concat_compat — fisiere identice (acelasi sample copiat)
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"; _test_summary' EXIT
 cp "$SDR" "$TMP/a.mp4"; cp "$SDR" "$TMP/b.mp4"
 check_concat_compat "$TMP/a.mp4" "$TMP/b.mp4"
 assert_zero $? "doua copii identice → compat"

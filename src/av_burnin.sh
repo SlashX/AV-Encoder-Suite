@@ -10,14 +10,18 @@ source "$SCRIPT_DIR/av_common.sh"
 
 PRESETS_DIR="$SCRIPT_DIR/burnin_presets"
 RENDER_PY="$SCRIPT_DIR/burnin_render.py"
-ensure_temp_dir
-mkdir -p "$OUTPUT_DIR"
 
-# ── Dependente comune (ffmpeg) ───────────────────────────────────────
-if ! command -v ffmpeg &>/dev/null; then
-    echo "EROARE: ffmpeg nu este instalat."
-    echo "Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
-    exit 1
+# In test mode skip ensure_temp_dir + ffmpeg dep check (functions only)
+if [[ "${AV_BURNIN_TEST_MODE:-0}" != "1" ]]; then
+    ensure_temp_dir
+    mkdir -p "$OUTPUT_DIR"
+
+    # ── Dependente comune (ffmpeg) ─────────────────────────────────
+    if ! command -v ffmpeg &>/dev/null; then
+        echo "EROARE: ffmpeg nu este instalat."
+        echo "Instaleaza cu: $(av_pkg_install_hint ffmpeg)"
+        exit 1
+    fi
 fi
 
 # ── Escape path pentru ffmpeg filter (subtitles=/ass=) ───────────────
@@ -119,6 +123,300 @@ extract_brand_from_csv() {
         NR==1 { for (i=1; i<=NF; i++) { h=$i; gsub(/[" \r]/,"",h); if (h=="source_brand") c=i } }
         NR==2 { if (c) print $c; else print $NF }
     ' "$csv" 2>/dev/null | tr -d '"' | tr -d '\r' | head -c 32
+}
+
+# ── v58: HDR/LOG awareness ──────────────────────────────────────────
+# State globale per-fisier (reset in show_burnin_hdr_dialog):
+#   BURNIN_SOURCE_TYPE = sdr|dv|hdr10|hdr10plus|hlg|log
+#   BURNIN_MODE        = sdr|preserve_hdr10|preserve_hdr10plus|preserve_hlg|tonemap|lut_rec709|burnin_raw|skip
+#   BURNIN_PRE_FILTER  = filter chain prepended (lut3d=... | zscale...tonemap...)
+#   BURNIN_ENC_EXTRA_ARGS = array de args ffmpeg extra (pix_fmt, color_*, x265-params, svtav1-params)
+#   BURNIN_LUT_FILE        = path LUT cand mode=lut_rec709
+#   BURNIN_HDR10PLUS_JSON  = path JSON HDR10+ cand mode=preserve_hdr10plus
+#   BURNIN_DOWNGRADE_REASON = mesaj cand un mod e auto-fallback (ex: x264 + HDR → tonemap)
+#
+# Bypass non-interactive: BURNIN_HDR_POLICY env
+#   preserve = preserve_* cand sursa e HDR; refuse_dv pe DV
+#   tonemap  = tonemap → SDR pe HDR/LOG
+#   skip     = skip pe HDR/LOG
+#   lut      = LUT pe LOG (daca exista); tonemap pe HDR
+
+# Returneaza eticheta human-readable pentru BURNIN_MODE
+_burnin_mode_label() {
+    case "$1" in
+        sdr)                  echo "SDR (no transform)" ;;
+        preserve_hdr10)       echo "Preserve HDR10" ;;
+        preserve_hdr10plus)   echo "Preserve HDR10+" ;;
+        preserve_hlg)         echo "Preserve HLG" ;;
+        tonemap)              echo "Tonemap → SDR" ;;
+        lut_rec709)           echo "Apply LUT (LOG → Rec.709)" ;;
+        burnin_raw)           echo "Burn-in raw (no color transform)" ;;
+        skip)                 echo "Skip" ;;
+        *)                    echo "$1" ;;
+    esac
+}
+
+# Classify source via globalele setate de detect_source_info
+_burnin_classify_source() {
+    BURNIN_SOURCE_TYPE="sdr"
+    if [[ -n "${DOVI:-}" ]]; then
+        BURNIN_SOURCE_TYPE="dv"
+    elif [[ -n "${HDR_PLUS:-}" ]]; then
+        BURNIN_SOURCE_TYPE="hdr10plus"
+    elif [[ "${HDR_TYPE:-}" == *"smpte2084"* ]]; then
+        BURNIN_SOURCE_TYPE="hdr10"
+    elif [[ "${IS_HLG:-0}" == "1" ]]; then
+        BURNIN_SOURCE_TYPE="hlg"
+    elif [[ -n "${LOG_PROFILE:-}" ]]; then
+        BURNIN_SOURCE_TYPE="log"
+    fi
+}
+
+# Reset state per-fisier inainte de dialog
+_burnin_reset_state() {
+    BURNIN_SOURCE_TYPE="sdr"
+    BURNIN_MODE="sdr"
+    BURNIN_PRE_FILTER=""
+    BURNIN_ENC_EXTRA_ARGS=()
+    BURNIN_LUT_FILE=""
+    BURNIN_HDR10PLUS_JSON=""
+    BURNIN_DOWNGRADE_REASON=""
+}
+
+# Dialog per-fisier — alege transformarea HDR/LOG sau accepta default-ul.
+# Necesita: detect_source_info DEJA apelat (seteaza DOVI, HDR_PLUS, HDR_TYPE,
+#           IS_HLG, LOG_PROFILE, CAMERA_MAKE).
+# Apel:     show_burnin_hdr_dialog "<file>"
+# Seteaza:  BURNIN_MODE + state-ul aferent (vezi build_burnin_video_chain)
+show_burnin_hdr_dialog() {
+    local file="$1"
+    _burnin_reset_state
+    detect_source_info "$file" >/dev/null 2>&1 || true
+    _burnin_classify_source
+
+    # SDR → no dialog
+    [[ "$BURNIN_SOURCE_TYPE" == "sdr" ]] && return 0
+
+    # Policy env bypass
+    if [[ -n "${BURNIN_HDR_POLICY:-}" ]]; then
+        case "$BURNIN_HDR_POLICY" in
+            preserve)
+                case "$BURNIN_SOURCE_TYPE" in
+                    dv)         BURNIN_MODE="skip" ;;
+                    hdr10plus)  BURNIN_MODE="preserve_hdr10plus" ;;
+                    hdr10)      BURNIN_MODE="preserve_hdr10" ;;
+                    hlg)        BURNIN_MODE="preserve_hlg" ;;
+                    log)        BURNIN_MODE="burnin_raw" ;;
+                esac ;;
+            tonemap)             BURNIN_MODE="tonemap" ;;
+            skip)                BURNIN_MODE="skip" ;;
+            lut)
+                if [[ "$BURNIN_SOURCE_TYPE" == "log" ]] && find_lut_for_brand "${CAMERA_MAKE:-unknown}" >/dev/null 2>&1; then
+                    BURNIN_MODE="lut_rec709"
+                    BURNIN_LUT_FILE="${LUT_FILES[0]}"
+                else
+                    BURNIN_MODE="tonemap"
+                fi ;;
+            *)                   BURNIN_MODE="sdr" ;;
+        esac
+        return 0
+    fi
+
+    # Interactive dialog
+    case "$BURNIN_SOURCE_TYPE" in
+        dv)
+            echo ""
+            echo "  ⚠  Sursa Dolby Vision detectata (profil ${DOVI})"
+            echo "     Burn-in pe DV distruge RPU references vizual — overlay-ul"
+            echo "     rasters peste base layer, dar metadata RPU presupune un BL"
+            echo "     neatins → playere DV vad imagine corupta."
+            echo "     Recomandare: tonemap → SDR pentru burn-in, sau foloseste"
+            echo "     av_hdr_dv_tools pentru transformari DV (fara overlay)."
+            echo ""
+            echo "  1) Tonemap → SDR (recomandat)"
+            echo "  2) Skip [implicit]"
+            read -p "  Alege 1-2 [implicit: 2]: " dv_choice
+            case "${dv_choice:-2}" in
+                1) BURNIN_MODE="tonemap" ;;
+                *) BURNIN_MODE="skip" ;;
+            esac ;;
+        hdr10)
+            echo ""
+            echo "  Sursa HDR10 detectata (color_transfer=smpte2084)"
+            echo "  1) Preserve HDR10 (pix_fmt p010le + master-display + max-cll) [implicit]"
+            echo "  2) Tonemap → SDR"
+            echo "  3) Skip"
+            read -p "  Alege 1-3 [implicit: 1]: " h_choice
+            case "${h_choice:-1}" in
+                2) BURNIN_MODE="tonemap" ;;
+                3) BURNIN_MODE="skip" ;;
+                *) BURNIN_MODE="preserve_hdr10" ;;
+            esac ;;
+        hdr10plus)
+            local _src_codec; _src_codec=$(detect_source_codec "$file" 2>/dev/null || true)
+            echo ""
+            echo "  Sursa HDR10+ detectata (src codec=$_src_codec)"
+            if [[ "$_src_codec" == "av1" ]] && [[ "$ENC_NAME" == "libsvtav1" ]]; then
+                echo "  1) Preserve HDR10+ inline (svtav1-params hdr10plus-json) [implicit]"
+                echo "  2) Preserve HDR10 base (HDR10+ → HDR10 static, lossy)"
+                echo "  3) Tonemap → SDR"
+                echo "  4) Skip"
+                read -p "  Alege 1-4 [implicit: 1]: " hp_choice
+                case "${hp_choice:-1}" in
+                    2) BURNIN_MODE="preserve_hdr10" ;;
+                    3) BURNIN_MODE="tonemap" ;;
+                    4) BURNIN_MODE="skip" ;;
+                    *) BURNIN_MODE="preserve_hdr10plus" ;;
+                esac
+            else
+                echo "  Notă: HDR10+ inline disponibil doar pe encoder libsvtav1 + sursa AV1."
+                echo "        Cazul HEVC HDR10+ preserve complet via av_hdr_dv_tools."
+                echo "  1) Preserve HDR10 base (HDR10+ → HDR10 static) [implicit]"
+                echo "  2) Tonemap → SDR"
+                echo "  3) Skip"
+                read -p "  Alege 1-3 [implicit: 1]: " hp_choice
+                case "${hp_choice:-1}" in
+                    2) BURNIN_MODE="tonemap" ;;
+                    3) BURNIN_MODE="skip" ;;
+                    *) BURNIN_MODE="preserve_hdr10" ;;
+                esac
+            fi ;;
+        hlg)
+            echo ""
+            echo "  Sursa HLG (BT.2100 HLG) detectata"
+            echo "  1) Preserve HLG (pix_fmt p010le + transfer arib-std-b67) [implicit]"
+            echo "  2) Tonemap → SDR"
+            echo "  3) Skip"
+            read -p "  Alege 1-3 [implicit: 1]: " hl_choice
+            case "${hl_choice:-1}" in
+                2) BURNIN_MODE="tonemap" ;;
+                3) BURNIN_MODE="skip" ;;
+                *) BURNIN_MODE="preserve_hlg" ;;
+            esac ;;
+        log)
+            local _brand="${CAMERA_MAKE:-unknown}"
+            local _log_label; _log_label=$(_log_profile_label "$LOG_PROFILE")
+            local _has_lut=0
+            find_lut_for_brand "$_brand" >/dev/null 2>&1 && _has_lut=1
+            echo ""
+            echo "  Sursa LOG: $_log_label (brand=$_brand)"
+            if [[ "$_has_lut" == 1 ]]; then
+                local _lut_name="${LUT_FILES[0]##*/}"
+                echo "  1) Apply LUT Rec.709 (${_lut_name}) [implicit]"
+                echo "  2) Tonemap → SDR (Hable, generic)"
+                echo "  3) Burn-in raw (pastreaza LOG look)"
+                echo "  4) Skip"
+                read -p "  Alege 1-4 [implicit: 1]: " lg_choice
+                case "${lg_choice:-1}" in
+                    2) BURNIN_MODE="tonemap" ;;
+                    3) BURNIN_MODE="burnin_raw" ;;
+                    4) BURNIN_MODE="skip" ;;
+                    *) BURNIN_MODE="lut_rec709"; BURNIN_LUT_FILE="${LUT_FILES[0]}" ;;
+                esac
+            else
+                echo "  (LUT-ul brand-specific lipseste din Luts/ — opt LUT indisponibila)"
+                echo "  1) Tonemap → SDR (Hable, generic) [implicit]"
+                echo "  2) Burn-in raw (pastreaza LOG look)"
+                echo "  3) Skip"
+                read -p "  Alege 1-3 [implicit: 1]: " lg_choice
+                case "${lg_choice:-1}" in
+                    2) BURNIN_MODE="burnin_raw" ;;
+                    3) BURNIN_MODE="skip" ;;
+                    *) BURNIN_MODE="tonemap" ;;
+                esac
+            fi ;;
+    esac
+}
+
+# Construieste BURNIN_PRE_FILTER + BURNIN_ENC_EXTRA_ARGS pe baza BURNIN_MODE.
+# Apel: dupa show_burnin_hdr_dialog (citeste BURNIN_MODE + ENC_NAME).
+# Return: 0 ok, 1 skip (caller trebuie sa continue cu next file).
+build_burnin_video_chain() {
+    local file="$1"
+    local encoder="${ENC_NAME:-libx265}"
+    BURNIN_PRE_FILTER=""
+    BURNIN_ENC_EXTRA_ARGS=()
+    case "$BURNIN_MODE" in
+        skip)
+            return 1 ;;
+        sdr|burnin_raw)
+            return 0 ;;
+        lut_rec709)
+            local _lut_esc; _lut_esc=$(escape_ffmpeg_filter_path "$BURNIN_LUT_FILE")
+            BURNIN_PRE_FILTER="lut3d='${_lut_esc}'"
+            return 0 ;;
+        tonemap)
+            BURNIN_PRE_FILTER="zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+            return 0 ;;
+        preserve_hdr10)
+            if [[ "$encoder" == "libx264" ]]; then
+                BURNIN_DOWNGRADE_REASON="libx264 nu suporta 10-bit HDR in builds standard — auto-tonemap aplicat"
+                BURNIN_PRE_FILTER="zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+                return 0
+            fi
+            BURNIN_ENC_EXTRA_ARGS+=(-pix_fmt yuv420p10le)
+            BURNIN_ENC_EXTRA_ARGS+=(-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc)
+            hdr10_static_resolve "$file" >/dev/null 2>&1 || true
+            if [[ "$encoder" == "libx265" ]]; then
+                local _x265p="hdr10=1:hdr10-opt=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+                if [[ "${HDR10_STATIC_AVAILABLE:-0}" == "1" ]] && [[ -n "${HDR10_MASTER_DISPLAY_X265:-}" ]]; then
+                    _x265p="${_x265p}:master-display=${HDR10_MASTER_DISPLAY_X265}"
+                    [[ -n "$HDR10_MAX_CLL" ]] && _x265p="${_x265p}:max-cll=${HDR10_MAX_CLL}"
+                fi
+                BURNIN_ENC_EXTRA_ARGS+=(-x265-params "$_x265p")
+            elif [[ "$encoder" == "libsvtav1" ]]; then
+                local _av1p="enable-hdr=1"
+                if [[ "${HDR10_STATIC_AVAILABLE:-0}" == "1" ]] && [[ -n "${HDR10_MASTER_DISPLAY_SVTAV1:-}" ]]; then
+                    _av1p="${_av1p}:mastering-display=${HDR10_MASTER_DISPLAY_SVTAV1}"
+                    [[ -n "$HDR10_MAX_CLL" ]] && _av1p="${_av1p}:content-light=${HDR10_MAX_CLL}"
+                fi
+                BURNIN_ENC_EXTRA_ARGS+=(-svtav1-params "$_av1p")
+            fi
+            return 0 ;;
+        preserve_hdr10plus)
+            local _src_codec; _src_codec=$(detect_source_codec "$file" 2>/dev/null || true)
+            if [[ "$encoder" != "libsvtav1" ]] || [[ "$_src_codec" != "av1" ]]; then
+                BURNIN_DOWNGRADE_REASON="HDR10+ inline disponibil doar svtav1+av1 — fallback HDR10 base"
+                BURNIN_MODE="preserve_hdr10"
+                build_burnin_video_chain "$file"
+                return $?
+            fi
+            local _json
+            _json=$(extract_hdr10plus_metadata "$file" 2>/dev/null || true)
+            if [[ -z "$_json" ]] || [[ ! -s "$_json" ]]; then
+                BURNIN_DOWNGRADE_REASON="HDR10+ extract esuat — fallback HDR10 base"
+                BURNIN_MODE="preserve_hdr10"
+                build_burnin_video_chain "$file"
+                return $?
+            fi
+            BURNIN_HDR10PLUS_JSON="$_json"
+            BURNIN_ENC_EXTRA_ARGS+=(-pix_fmt yuv420p10le)
+            BURNIN_ENC_EXTRA_ARGS+=(-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc)
+            hdr10_static_resolve "$file" >/dev/null 2>&1 || true
+            local _av1p="enable-hdr=1:hdr10plus-json=${_json}"
+            if [[ "${HDR10_STATIC_AVAILABLE:-0}" == "1" ]] && [[ -n "${HDR10_MASTER_DISPLAY_SVTAV1:-}" ]]; then
+                _av1p="${_av1p}:mastering-display=${HDR10_MASTER_DISPLAY_SVTAV1}"
+                [[ -n "$HDR10_MAX_CLL" ]] && _av1p="${_av1p}:content-light=${HDR10_MAX_CLL}"
+            fi
+            BURNIN_ENC_EXTRA_ARGS+=(-svtav1-params "$_av1p")
+            return 0 ;;
+        preserve_hlg)
+            if [[ "$encoder" == "libx264" ]]; then
+                BURNIN_DOWNGRADE_REASON="libx264 nu suporta 10-bit HLG in builds standard — auto-tonemap aplicat"
+                BURNIN_PRE_FILTER="zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+                return 0
+            fi
+            BURNIN_ENC_EXTRA_ARGS+=(-pix_fmt yuv420p10le)
+            BURNIN_ENC_EXTRA_ARGS+=(-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc)
+            if [[ "$encoder" == "libx265" ]]; then
+                BURNIN_ENC_EXTRA_ARGS+=(-x265-params "transfer=arib-std-b67:colormatrix=bt2020nc:colorprim=bt2020")
+            elif [[ "$encoder" == "libsvtav1" ]]; then
+                BURNIN_ENC_EXTRA_ARGS+=(-svtav1-params "enable-hdr=1:color-primaries=9:transfer-characteristics=18:matrix-coefficients=9")
+            fi
+            return 0 ;;
+        *)
+            return 0 ;;
+    esac
 }
 
 # Reset arrays + scan
@@ -244,6 +542,17 @@ hud_flow() {
         echo "  ── $((idx+1))/$total: $base  [$brand]"
         echo "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        show_burnin_hdr_dialog "$vid"
+        if ! build_burnin_video_chain "$vid"; then
+            echo "  [SKIP] mod=$(_burnin_mode_label "$BURNIN_MODE") — sar la urmatorul fisier"
+            continue
+        fi
+        if [[ "$BURNIN_SOURCE_TYPE" != "sdr" ]]; then
+            echo "  Sursa: $BURNIN_SOURCE_TYPE → mod: $(_burnin_mode_label "$BURNIN_MODE")"
+            [[ -n "$BURNIN_DOWNGRADE_REASON" ]] && echo "  ⚠ $BURNIN_DOWNGRADE_REASON"
+        fi
+
         # Sync offset (auto interne, prompt external_*)
         local sync_offset=0
         case "$brand" in
@@ -294,21 +603,30 @@ hud_flow() {
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
         local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
+        # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        local _fc
+        if [[ -n "$BURNIN_PRE_FILTER" ]]; then
+            _fc="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0[v]"
+        else
+            _fc="[0:v][1:v]overlay=0:0:shortest=0[v]"
+        fi
         echo "  Overlay + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
         # shellcheck disable=SC2086
         if ffmpeg -v error -stats \
             "${seek_args[@]}" -i "$vid" \
             -framerate "$HUD_FPS" \
             -i "$frames_dir/frame_%06d.png" \
-            -filter_complex "[0:v][1:v]overlay=0:0:shortest=0[v]" \
+            -filter_complex "$_fc" \
             -map "[v]" -map "0:a?" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
+            "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg overlay esuat"; rm -f "$out"; fail=$((fail+1))
         fi
         rm -rf "$frames_dir"
+        [[ -n "$BURNIN_HDR10PLUS_JSON" ]] && rm -f "$BURNIN_HDR10PLUS_JSON"
     done
 
     echo ""
@@ -380,14 +698,27 @@ srt_flow() {
         echo "  ── $((idx+1))/$total: $base"
         echo "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        show_burnin_hdr_dialog "$vid"
+        if ! build_burnin_video_chain "$vid"; then
+            echo "  [SKIP] mod=$(_burnin_mode_label "$BURNIN_MODE") — sar la urmatorul fisier"
+            continue
+        fi
+        if [[ "$BURNIN_SOURCE_TYPE" != "sdr" ]]; then
+            echo "  Sursa: $BURNIN_SOURCE_TYPE → mod: $(_burnin_mode_label "$BURNIN_MODE")"
+            [[ -n "$BURNIN_DOWNGRADE_REASON" ]] && echo "  ⚠ $BURNIN_DOWNGRADE_REASON"
+        fi
+
         local srt_esc; srt_esc=$(escape_ffmpeg_filter_path "$srt")
         local vf="subtitles='${srt_esc}'"
         [ -n "$force_style" ] && vf="${vf}:force_style='${force_style}'"
+        # v58: pre-filter (LUT/tonemap) prepended in -vf chain
+        [ -n "$BURNIN_PRE_FILTER" ] && vf="${BURNIN_PRE_FILTER},${vf}"
 
         local out_suffix="subs"
         local seek_args=()
         if [ "$PREVIEW_MODE" -eq 1 ]; then
-            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid" 2>/dev/null | head -1)
+            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
             [ -z "$vid_dur" ] && vid_dur=0
             if preview_compute_window "$vid_dur"; then
                 out_suffix="preview"
@@ -406,11 +737,13 @@ srt_flow() {
             "${seek_args[@]}" -i "$vid" \
             -vf "$vf" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
+            "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg SRT burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi
+        [[ -n "$BURNIN_HDR10PLUS_JSON" ]] && rm -f "$BURNIN_HDR10PLUS_JSON"
     done
 
     echo ""
@@ -481,13 +814,26 @@ ass_flow() {
         echo "  ── $((idx+1))/$total: $base"
         echo "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        show_burnin_hdr_dialog "$vid"
+        if ! build_burnin_video_chain "$vid"; then
+            echo "  [SKIP] mod=$(_burnin_mode_label "$BURNIN_MODE") — sar la urmatorul fisier"
+            continue
+        fi
+        if [[ "$BURNIN_SOURCE_TYPE" != "sdr" ]]; then
+            echo "  Sursa: $BURNIN_SOURCE_TYPE → mod: $(_burnin_mode_label "$BURNIN_MODE")"
+            [[ -n "$BURNIN_DOWNGRADE_REASON" ]] && echo "  ⚠ $BURNIN_DOWNGRADE_REASON"
+        fi
+
         local ass_esc; ass_esc=$(escape_ffmpeg_filter_path "$ass")
         local vf="${ass_filter}='${ass_esc}'${extra_style}"
+        # v58: pre-filter (LUT/tonemap) prepended in -vf chain
+        [ -n "$BURNIN_PRE_FILTER" ] && vf="${BURNIN_PRE_FILTER},${vf}"
 
         local out_suffix="subs"
         local seek_args=()
         if [ "$PREVIEW_MODE" -eq 1 ]; then
-            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid" 2>/dev/null | head -1)
+            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
             [ -z "$vid_dur" ] && vid_dur=0
             if preview_compute_window "$vid_dur"; then
                 out_suffix="preview"
@@ -506,11 +852,13 @@ ass_flow() {
             "${seek_args[@]}" -i "$vid" \
             -vf "$vf" \
             -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
+            "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
         else
             echo "  [EROARE] ffmpeg ASS burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi
+        [[ -n "$BURNIN_HDR10PLUS_JSON" ]] && rm -f "$BURNIN_HDR10PLUS_JSON"
     done
 
     echo ""
@@ -569,6 +917,7 @@ img_scan_dir() {
             while IFS=, read -r global_idx codec lang; do
                 [ -z "$codec" ] && continue
                 lang="${lang//$'\r'/}"
+                lang="${lang%,}"  # v58 audit: strip trailing comma de la csv=p=0 last field
                 case "$codec" in
                     hdmv_pgs_subtitle)
                         PAIRS_VIDEO+=("$vid"); PAIRS_AUX+=("$vid")
@@ -632,10 +981,21 @@ img_flow() {
         echo "  ── $((idx+1))/$total: $base  [$kind${track:+ s:$track}]"
         echo "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        show_burnin_hdr_dialog "$vid"
+        if ! build_burnin_video_chain "$vid"; then
+            echo "  [SKIP] mod=$(_burnin_mode_label "$BURNIN_MODE") — sar la urmatorul fisier"
+            continue
+        fi
+        if [[ "$BURNIN_SOURCE_TYPE" != "sdr" ]]; then
+            echo "  Sursa: $BURNIN_SOURCE_TYPE → mod: $(_burnin_mode_label "$BURNIN_MODE")"
+            [[ -n "$BURNIN_DOWNGRADE_REASON" ]] && echo "  ⚠ $BURNIN_DOWNGRADE_REASON"
+        fi
+
         local out_suffix="subs"
         local seek_args=()
         if [ "$PREVIEW_MODE" -eq 1 ]; then
-            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$vid" 2>/dev/null | head -1)
+            local vid_dur; vid_dur=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$vid" 2>/dev/null | head -1)
             [ -z "$vid_dur" ] && vid_dur=0
             if preview_compute_window "$vid_dur"; then
                 out_suffix="preview"
@@ -648,6 +1008,15 @@ img_flow() {
 
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
         local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
+        # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        local _fc_ext _fc_emb
+        if [[ -n "$BURNIN_PRE_FILTER" ]]; then
+            _fc_ext="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:s]overlay[v]"
+            _fc_emb="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][0:s:${track}]overlay[v]"
+        else
+            _fc_ext="[0:v][1:s]overlay[v]"
+            _fc_emb="[0:v][0:s:${track}]overlay[v]"
+        fi
         # ok_now=0 fallback la fail; ramurile if/else previn abort set -e pe ffmpeg failure
         local ok_now=0
         case "$kind" in
@@ -657,9 +1026,10 @@ img_flow() {
                 if ffmpeg -v error -stats \
                     "${seek_args[@]}" -i "$vid" \
                     -i "$aux" \
-                    -filter_complex "[0:v][1:s]overlay[v]" \
+                    -filter_complex "$_fc_ext" \
                     -map "[v]" -map "0:a?" \
                     -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
+                    "${BURNIN_ENC_EXTRA_ARGS[@]}" \
                     -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
                     ok_now=1
                 fi
@@ -669,9 +1039,10 @@ img_flow() {
                 # shellcheck disable=SC2086
                 if ffmpeg -v error -stats \
                     "${seek_args[@]}" -i "$vid" \
-                    -filter_complex "[0:v][0:s:${track}]overlay[v]" \
+                    -filter_complex "$_fc_emb" \
                     -map "[v]" -map "0:a?" \
                     -c:v "$ENC_NAME" -crf "$ENC_CRF" -preset "$ENC_PRESET" \
+                    "${BURNIN_ENC_EXTRA_ARGS[@]}" \
                     -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
                     ok_now=1
                 fi
@@ -685,6 +1056,7 @@ img_flow() {
         else
             echo "  [EROARE] ffmpeg image subs burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi
+        [[ -n "$BURNIN_HDR10PLUS_JSON" ]] && rm -f "$BURNIN_HDR10PLUS_JSON"
     done
 
     echo ""
@@ -692,6 +1064,13 @@ img_flow() {
     echo "  Sumar Image subs burn-in: $ok OK, $fail esuate (din ${#SELECTED[@]} selectate)"
     echo "═══════════════════════════════════════════════"
 }
+
+# ──────────────────────────────────────────────────────────────────────
+# Test mode: skip interactive menu (allow sourcing for tests)
+# ──────────────────────────────────────────────────────────────────────
+if [[ "${AV_BURNIN_TEST_MODE:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 # ──────────────────────────────────────────────────────────────────────
 # Main menu — alege tip burn-in

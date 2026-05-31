@@ -87,6 +87,528 @@ function Get-CodecTagForContainer {
     return @()
 }
 
+# ── v58: HDR/LOG awareness ──────────────────────────────────────────
+# State script-scope (reset in Show-BurninHdrDialog):
+#   $script:BurninSourceType = sdr|dv|hdr10|hdr10plus|hlg|log
+#   $script:BurninMode       = sdr|preserve_hdr10|preserve_hdr10plus|preserve_hlg|tonemap|lut_rec709|burnin_raw|skip
+#   $script:BurninPreFilter  = filter chain prepended
+#   $script:BurninEncExtraArgs = array de args ffmpeg extra
+#   $script:BurninLutFile          = path LUT cand mode=lut_rec709
+#   $script:BurninHdr10PlusJson    = path JSON HDR10+ cand mode=preserve_hdr10plus
+#   $script:BurninDowngradeReason  = mesaj cand un mod e auto-fallback
+$script:BurninSourceType = "sdr"
+$script:BurninMode = "sdr"
+$script:BurninPreFilter = ""
+$script:BurninEncExtraArgs = @()
+$script:BurninLutFile = ""
+$script:BurninHdr10PlusJson = ""
+$script:BurninDowngradeReason = ""
+
+function Get-BurninModeLabel {
+    param([string]$Mode)
+    switch ($Mode) {
+        "sdr"                { return "SDR (no transform)" }
+        "preserve_hdr10"     { return "Preserve HDR10" }
+        "preserve_hdr10plus" { return "Preserve HDR10+" }
+        "preserve_hlg"       { return "Preserve HLG" }
+        "tonemap"            { return "Tonemap -> SDR" }
+        "lut_rec709"         { return "Apply LUT (LOG -> Rec.709)" }
+        "burnin_raw"         { return "Burn-in raw (no color transform)" }
+        "skip"               { return "Skip" }
+        default              { return $Mode }
+    }
+}
+
+function Get-LogProfileLabel {
+    param([string]$Profile)
+    switch ($Profile) {
+        "apple_log"   { return "Apple Log (iPhone)" }
+        "samsung_log" { return "Samsung Log (S24 Ultra)" }
+        "dlog_m"      { return "D-Log M (DJI)" }
+        "forced_log"  { return "LOG (fortat manual)" }
+        "unknown_log" { return "LOG (brand necunoscut)" }
+        default       { return "LOG" }
+    }
+}
+
+# Detecteaza sursa via ffprobe. Returneaza hashtable cu:
+#   SourceType (sdr|dv|hdr10|hdr10plus|hlg|log)
+#   Codec (av1|hevc|h264|...)
+#   CameraMake (apple|samsung|dji|unknown)
+#   LogProfile (apple_log|samsung_log|dlog_m|"")
+#   DoviProfile ("" sau "5"/"7"/"8.1"/etc.)
+function Get-BurninSourceInfo {
+    param([string]$File)
+    $info = @{
+        SourceType  = "sdr"
+        Codec       = ""
+        CameraMake  = "unknown"
+        LogProfile  = ""
+        DoviProfile = ""
+    }
+
+    # Codec sursa
+    $info.Codec = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+    if ($info.Codec) { $info.Codec = $info.Codec.Trim() }
+
+    # Color transfer + primaries + bit depth
+    $colorTrc = (& ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+    if ($colorTrc) { $colorTrc = $colorTrc.Trim() }
+    $colorPrim = (& ffprobe -v error -select_streams v:0 -show_entries stream=color_primaries `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+    if ($colorPrim) { $colorPrim = $colorPrim.Trim() }
+    $bpsRaw = (& ffprobe -v error -select_streams v:0 -show_entries stream=bits_per_raw_sample `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+    $srcBps = 8
+    if ($bpsRaw -and $bpsRaw -match '^\d+$') { $srcBps = [int]$bpsRaw }
+    $codecTag = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+
+    # Frame side data — v57 fix: side_data_type, NU type
+    $sideData = & ffprobe -v error -read_intervals "0%+#5" -select_streams v:0 `
+        -show_entries frame_side_data=side_data_type -show_frames $File 2>$null
+    $sideDataText = if ($sideData) { ($sideData -join "`n") } else { "" }
+
+    # DV detection: codec_tag (HEVC) sau Dolby Vision Metadata in side_data (AV1)
+    $isDV = $false
+    if ($codecTag -and ($codecTag -match '(?i)dovi|dvhe|dvh1')) { $isDV = $true }
+    if (-not $isDV -and ($sideDataText -match "Dolby Vision Metadata")) { $isDV = $true }
+
+    # HDR10+ detection
+    $isHdr10Plus = ($sideDataText -match "HDR Dynamic Metadata SMPTE2094-40|HDR10\+")
+
+    # HDR10 / HLG
+    $isHdr10 = ($colorTrc -match "smpte2084")
+    $isHlg = ($colorTrc -match "arib-std-b67")
+
+    # Camera make
+    $tags = & ffprobe -v error -show_entries format_tags `
+        -of default=noprint_wrappers=1 $File 2>$null
+    $tagsText = if ($tags) { ($tags -join "`n") } else { "" }
+    if ($tagsText -match "(?i)com\.samsung\.android\.logvideo") {
+        $info.CameraMake = "samsung"
+    } elseif ($tagsText -match "(?i)make=.*apple") {
+        $info.CameraMake = "apple"
+    } elseif ($tagsText -match "(?i)make=.*dji|encoder=.*dji") {
+        $info.CameraMake = "dji"
+    } elseif ($tagsText -match "(?i)manufacturer=.*samsung|make=.*samsung|com\.samsung\.android") {
+        $info.CameraMake = "samsung"
+    }
+
+    # LOG detection (10-bit + BT.2020 + brand context, exclud HDR)
+    if (-not $isDV -and -not $isHdr10Plus -and -not $isHdr10 -and $srcBps -ge 10 -and ($colorPrim -match "bt2020" -or $colorTrc -match "arib|log")) {
+        switch ($info.CameraMake) {
+            "apple"   { $info.LogProfile = "apple_log" }
+            "samsung" { if (-not $isHlg) { $info.LogProfile = "samsung_log" } }
+            "dji"     { $info.LogProfile = "dlog_m" }
+            default   { if ($colorPrim -match "bt2020") { $info.LogProfile = "unknown_log" } }
+        }
+    }
+
+    # Classify (HLG e mutual exclusiv cu LOG; LOG suprascrie HLG cand brand+bps confirma)
+    if ($isDV) {
+        $info.SourceType = "dv"
+        if ($codecTag -match '(?i)dvhe') { $info.DoviProfile = "dvhe" }
+        elseif ($codecTag -match '(?i)dvh1') { $info.DoviProfile = "dvh1" }
+    } elseif ($isHdr10Plus) {
+        $info.SourceType = "hdr10plus"
+    } elseif ($isHdr10) {
+        $info.SourceType = "hdr10"
+    } elseif ($info.LogProfile) {
+        $info.SourceType = "log"
+    } elseif ($isHlg) {
+        $info.SourceType = "hlg"
+    } else {
+        $info.SourceType = "sdr"
+    }
+
+    return $info
+}
+
+# Cauta LUT-uri brand-specifice in Luts/. Returneaza array de paths sau @().
+function Get-BurninLutFiles {
+    param([string]$Brand)
+    $lutsDir = Join-Path $ScriptDir "Luts"
+    if (-not (Test-Path $lutsDir)) { return @() }
+    $prefix = switch ($Brand) {
+        "apple"   { "apple_log_" }
+        "samsung" { "samsung_log_" }
+        "dji"     { "dji_dlog_m_" }
+        default   { "" }
+    }
+    if (-not $prefix) {
+        # Cazul "unknown" sau gol — accepta orice .cube
+        return @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    return @(Get-ChildItem -Path $lutsDir -Filter "${prefix}*.cube" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+}
+
+# Extrage master-display + max-cll/max-fall din side_data; format X265 (integer ×50000/×10000) + SVTAV1 (float).
+# Returneaza @{ Available; MasterDisplayX265; MasterDisplaySvtav1; MaxCll }
+function Get-BurninHdr10Static {
+    param([string]$File)
+    $ret = @{
+        Available           = $false
+        MasterDisplayX265   = ""
+        MasterDisplaySvtav1 = ""
+        MaxCll              = ""
+    }
+    $sd = & ffprobe -v error -read_intervals "0%+#5" -select_streams v:0 `
+        -show_entries frame=side_data_list -show_frames $File 2>$null
+    if (-not $sd) {
+        # Defaults BT.2020 1000-nit
+        $ret.Available = $true
+        $ret.MasterDisplayX265   = "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)"
+        $ret.MasterDisplaySvtav1 = "G(0.1700,0.7970)B(0.1310,0.0460)R(0.7080,0.2920)WP(0.3127,0.3290)L(1000.0000,0.0001)"
+        $ret.MaxCll = "1000,400"
+        return $ret
+    }
+    $text = $sd -join "`n"
+
+    # Parse mastering display primaries (num/denom format)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    function _parseFrac($txt, $key) {
+        if ($txt -match "$key=([\-0-9]+)/([0-9]+)") {
+            $n = [double]::Parse($Matches[1], $inv); $d = [double]::Parse($Matches[2], $inv)
+            if ($d -ne 0) { return $n / $d }
+        }
+        return $null
+    }
+    $gx = _parseFrac $text "green_x"
+    $gy = _parseFrac $text "green_y"
+    $bx = _parseFrac $text "blue_x"
+    $by = _parseFrac $text "blue_y"
+    $rx = _parseFrac $text "red_x"
+    $ry = _parseFrac $text "red_y"
+    $wx = _parseFrac $text "white_point_x"
+    $wy = _parseFrac $text "white_point_y"
+    $maxL = _parseFrac $text "max_luminance"
+    $minL = _parseFrac $text "min_luminance"
+
+    if ($gx -and $gy -and $bx -and $by -and $rx -and $ry -and $wx -and $wy -and $maxL -and $minL) {
+        $fmtI = { param($v, $mul) ([int][math]::Round($v * $mul)).ToString($inv) }
+        $fmtF = { param($v, $dig) ([math]::Round($v, $dig)).ToString("0.$('0'*$dig)", $inv) }
+        $ret.MasterDisplayX265 = ("G({0},{1})B({2},{3})R({4},{5})WP({6},{7})L({8},{9})" -f `
+            (& $fmtI $gx 50000), (& $fmtI $gy 50000),
+            (& $fmtI $bx 50000), (& $fmtI $by 50000),
+            (& $fmtI $rx 50000), (& $fmtI $ry 50000),
+            (& $fmtI $wx 50000), (& $fmtI $wy 50000),
+            (& $fmtI $maxL 10000), (& $fmtI $minL 10000))
+        $ret.MasterDisplaySvtav1 = ("G({0},{1})B({2},{3})R({4},{5})WP({6},{7})L({8},{9})" -f `
+            (& $fmtF $gx 4), (& $fmtF $gy 4),
+            (& $fmtF $bx 4), (& $fmtF $by 4),
+            (& $fmtF $rx 4), (& $fmtF $ry 4),
+            (& $fmtF $wx 4), (& $fmtF $wy 4),
+            (& $fmtF ($maxL/10000.0) 4), (& $fmtF ($minL/10000.0) 4))
+        $ret.Available = $true
+    } else {
+        # Fallback BT.2020 1000-nit
+        $ret.MasterDisplayX265   = "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)"
+        $ret.MasterDisplaySvtav1 = "G(0.1700,0.7970)B(0.1310,0.0460)R(0.7080,0.2920)WP(0.3127,0.3290)L(1000.0000,0.0001)"
+        $ret.Available = $true
+    }
+
+    # MaxCLL / MaxFALL
+    if ($text -match "max_content=(\d+).*?max_average=(\d+)") {
+        $ret.MaxCll = "$($Matches[1]),$($Matches[2])"
+    } else {
+        $ret.MaxCll = "1000,400"
+    }
+    return $ret
+}
+
+# Extrage HDR10+ JSON via hdr10plus_tool / av1hdr10plus_tool.
+# Returneaza path JSON sau "" la esec.
+function Get-BurninHdr10PlusJson {
+    param([string]$File, [string]$SrcCodec)
+    $tool = if ($SrcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { return "" }
+    $rawTmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("burnin_hp_{0}_{1}" -f $PID, [guid]::NewGuid().ToString().Substring(0,8)))
+    $jsonTmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("burnin_hp_{0}_{1}.json" -f $PID, [guid]::NewGuid().ToString().Substring(0,8)))
+    if ($SrcCodec -eq "av1") {
+        $rawTmp = $rawTmp + ".ivf"
+        & ffmpeg -y -v error -i $File -c:v copy -f ivf $rawTmp 2>$null | Out-Null
+    } else {
+        $rawTmp = $rawTmp + ".hevc"
+        & ffmpeg -y -v error -i $File -c:v copy -bsf:v hevc_mp4toannexb -f hevc $rawTmp 2>$null | Out-Null
+    }
+    if (-not (Test-Path $rawTmp) -or (Get-Item $rawTmp).Length -eq 0) {
+        if (Test-Path $rawTmp) { Remove-Item $rawTmp -Force -ErrorAction SilentlyContinue }
+        return ""
+    }
+    & $tool extract -i $rawTmp -o $jsonTmp 2>$null | Out-Null
+    Remove-Item $rawTmp -Force -ErrorAction SilentlyContinue
+    if ((Test-Path $jsonTmp) -and (Get-Item $jsonTmp).Length -gt 0) {
+        return $jsonTmp
+    }
+    if (Test-Path $jsonTmp) { Remove-Item $jsonTmp -Force -ErrorAction SilentlyContinue }
+    return ""
+}
+
+# Reset state inainte de dialog per-fisier
+function Reset-BurninState {
+    $script:BurninSourceType = "sdr"
+    $script:BurninMode = "sdr"
+    $script:BurninPreFilter = ""
+    $script:BurninEncExtraArgs = @()
+    $script:BurninLutFile = ""
+    $script:BurninHdr10PlusJson = ""
+    $script:BurninDowngradeReason = ""
+}
+
+# Dialog per fisier. Foloseste $encInfo.Name pentru encoder picked din Get-Encoder.
+# BURNIN_HDR_POLICY env override (preserve|tonemap|skip|lut)
+function Show-BurninHdrDialog {
+    param([string]$File, [hashtable]$EncInfo)
+    Reset-BurninState
+    $info = Get-BurninSourceInfo -File $File
+    $script:BurninSourceType = $info.SourceType
+
+    if ($info.SourceType -eq "sdr") { return $info }
+
+    # Env policy bypass
+    $policy = $env:BURNIN_HDR_POLICY
+    if ($policy) {
+        switch ($policy) {
+            "preserve" {
+                switch ($info.SourceType) {
+                    "dv"        { $script:BurninMode = "skip" }
+                    "hdr10plus" { $script:BurninMode = "preserve_hdr10plus" }
+                    "hdr10"     { $script:BurninMode = "preserve_hdr10" }
+                    "hlg"       { $script:BurninMode = "preserve_hlg" }
+                    "log"       { $script:BurninMode = "burnin_raw" }
+                }
+            }
+            "tonemap" { $script:BurninMode = "tonemap" }
+            "skip"    { $script:BurninMode = "skip" }
+            "lut" {
+                if ($info.SourceType -eq "log") {
+                    $luts = Get-BurninLutFiles -Brand $info.CameraMake
+                    if ($luts.Count -gt 0) {
+                        $script:BurninMode = "lut_rec709"
+                        $script:BurninLutFile = $luts[0]
+                    } else {
+                        $script:BurninMode = "tonemap"
+                    }
+                } else {
+                    $script:BurninMode = "tonemap"
+                }
+            }
+            default { $script:BurninMode = "sdr" }
+        }
+        return $info
+    }
+
+    # Interactive
+    switch ($info.SourceType) {
+        "dv" {
+            Write-Host ""
+            Write-Host "  ⚠  Sursa Dolby Vision detectata (profil $($info.DoviProfile))" -ForegroundColor Yellow
+            Write-Host "     Burn-in pe DV distruge RPU references vizual — overlay-ul"
+            Write-Host "     rasters peste base layer, dar metadata RPU presupune un BL"
+            Write-Host "     neatins -> playere DV vad imagine corupta."
+            Write-Host "     Recomandare: tonemap -> SDR pentru burn-in, sau av_hdr_dv_tools"
+            Write-Host "     pentru transformari DV (fara overlay)."
+            Write-Host ""
+            Write-Host "  1) Tonemap -> SDR (recomandat)"
+            Write-Host "  2) Skip [implicit]"
+            $c = Read-Host "  Alege 1-2 [implicit: 2]"
+            if (-not $c) { $c = "2" }
+            switch ($c) {
+                "1"     { $script:BurninMode = "tonemap" }
+                default { $script:BurninMode = "skip" }
+            }
+        }
+        "hdr10" {
+            Write-Host ""
+            Write-Host "  Sursa HDR10 detectata (color_transfer=smpte2084)"
+            Write-Host "  1) Preserve HDR10 (pix_fmt p010le + master-display + max-cll) [implicit]"
+            Write-Host "  2) Tonemap -> SDR"
+            Write-Host "  3) Skip"
+            $c = Read-Host "  Alege 1-3 [implicit: 1]"
+            if (-not $c) { $c = "1" }
+            switch ($c) {
+                "2"     { $script:BurninMode = "tonemap" }
+                "3"     { $script:BurninMode = "skip" }
+                default { $script:BurninMode = "preserve_hdr10" }
+            }
+        }
+        "hdr10plus" {
+            Write-Host ""
+            Write-Host "  Sursa HDR10+ detectata (src codec=$($info.Codec))"
+            if ($info.Codec -eq "av1" -and $EncInfo.Name -eq "libsvtav1") {
+                Write-Host "  1) Preserve HDR10+ inline (svtav1-params hdr10plus-json) [implicit]"
+                Write-Host "  2) Preserve HDR10 base (HDR10+ -> HDR10 static, lossy)"
+                Write-Host "  3) Tonemap -> SDR"
+                Write-Host "  4) Skip"
+                $c = Read-Host "  Alege 1-4 [implicit: 1]"
+                if (-not $c) { $c = "1" }
+                switch ($c) {
+                    "2"     { $script:BurninMode = "preserve_hdr10" }
+                    "3"     { $script:BurninMode = "tonemap" }
+                    "4"     { $script:BurninMode = "skip" }
+                    default { $script:BurninMode = "preserve_hdr10plus" }
+                }
+            } else {
+                Write-Host "  Nota: HDR10+ inline disponibil doar pe libsvtav1 + sursa AV1."
+                Write-Host "        Cazul HEVC HDR10+ preserve complet via av_hdr_dv_tools."
+                Write-Host "  1) Preserve HDR10 base (HDR10+ -> HDR10 static) [implicit]"
+                Write-Host "  2) Tonemap -> SDR"
+                Write-Host "  3) Skip"
+                $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                if (-not $c) { $c = "1" }
+                switch ($c) {
+                    "2"     { $script:BurninMode = "tonemap" }
+                    "3"     { $script:BurninMode = "skip" }
+                    default { $script:BurninMode = "preserve_hdr10" }
+                }
+            }
+        }
+        "hlg" {
+            Write-Host ""
+            Write-Host "  Sursa HLG (BT.2100 HLG) detectata"
+            Write-Host "  1) Preserve HLG (pix_fmt p010le + transfer arib-std-b67) [implicit]"
+            Write-Host "  2) Tonemap -> SDR"
+            Write-Host "  3) Skip"
+            $c = Read-Host "  Alege 1-3 [implicit: 1]"
+            if (-not $c) { $c = "1" }
+            switch ($c) {
+                "2"     { $script:BurninMode = "tonemap" }
+                "3"     { $script:BurninMode = "skip" }
+                default { $script:BurninMode = "preserve_hlg" }
+            }
+        }
+        "log" {
+            $logLabel = Get-LogProfileLabel -Profile $info.LogProfile
+            $luts = Get-BurninLutFiles -Brand $info.CameraMake
+            Write-Host ""
+            Write-Host "  Sursa LOG: $logLabel (brand=$($info.CameraMake))"
+            if ($luts.Count -gt 0) {
+                $lutName = Split-Path $luts[0] -Leaf
+                Write-Host "  1) Apply LUT Rec.709 ($lutName) [implicit]"
+                Write-Host "  2) Tonemap -> SDR (Hable, generic)"
+                Write-Host "  3) Burn-in raw (pastreaza LOG look)"
+                Write-Host "  4) Skip"
+                $c = Read-Host "  Alege 1-4 [implicit: 1]"
+                if (-not $c) { $c = "1" }
+                switch ($c) {
+                    "2"     { $script:BurninMode = "tonemap" }
+                    "3"     { $script:BurninMode = "burnin_raw" }
+                    "4"     { $script:BurninMode = "skip" }
+                    default { $script:BurninMode = "lut_rec709"; $script:BurninLutFile = $luts[0] }
+                }
+            } else {
+                Write-Host "  (LUT-ul brand-specific lipseste din Luts/ — opt LUT indisponibila)"
+                Write-Host "  1) Tonemap -> SDR (Hable, generic) [implicit]"
+                Write-Host "  2) Burn-in raw (pastreaza LOG look)"
+                Write-Host "  3) Skip"
+                $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                if (-not $c) { $c = "1" }
+                switch ($c) {
+                    "2"     { $script:BurninMode = "burnin_raw" }
+                    "3"     { $script:BurninMode = "skip" }
+                    default { $script:BurninMode = "tonemap" }
+                }
+            }
+        }
+    }
+    return $info
+}
+
+# Build pre-filter + extra args pe baza $script:BurninMode + encoder.
+# Returneaza $true daca OK, $false daca user a ales skip (sau alt motiv).
+function Build-BurninVideoChain {
+    param([string]$File, [hashtable]$EncInfo, [hashtable]$SourceInfo)
+    $script:BurninPreFilter = ""
+    $script:BurninEncExtraArgs = @()
+    $encoder = $EncInfo.Name
+    $tonemapFilter = "zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+
+    switch ($script:BurninMode) {
+        "skip"        { return $false }
+        "sdr"         { return $true }
+        "burnin_raw"  { return $true }
+        "lut_rec709" {
+            $lutEsc = Get-EscapedFfmpegFilterPath -Path $script:BurninLutFile
+            $script:BurninPreFilter = "lut3d='$lutEsc'"
+            return $true
+        }
+        "tonemap" {
+            $script:BurninPreFilter = $tonemapFilter
+            return $true
+        }
+        "preserve_hdr10" {
+            if ($encoder -eq "libx264") {
+                $script:BurninDowngradeReason = "libx264 nu suporta 10-bit HDR in builds standard — auto-tonemap aplicat"
+                $script:BurninPreFilter = $tonemapFilter
+                return $true
+            }
+            $script:BurninEncExtraArgs += @("-pix_fmt","yuv420p10le")
+            $script:BurninEncExtraArgs += @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+            $hdr = Get-BurninHdr10Static -File $File
+            if ($encoder -eq "libx265") {
+                $x265p = "hdr10=1:hdr10-opt=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+                if ($hdr.Available -and $hdr.MasterDisplayX265) {
+                    $x265p += ":master-display=$($hdr.MasterDisplayX265)"
+                    if ($hdr.MaxCll) { $x265p += ":max-cll=$($hdr.MaxCll)" }
+                }
+                $script:BurninEncExtraArgs += @("-x265-params",$x265p)
+            } elseif ($encoder -eq "libsvtav1") {
+                $av1p = "enable-hdr=1"
+                if ($hdr.Available -and $hdr.MasterDisplaySvtav1) {
+                    $av1p += ":mastering-display=$($hdr.MasterDisplaySvtav1)"
+                    if ($hdr.MaxCll) { $av1p += ":content-light=$($hdr.MaxCll)" }
+                }
+                $script:BurninEncExtraArgs += @("-svtav1-params",$av1p)
+            }
+            return $true
+        }
+        "preserve_hdr10plus" {
+            if ($encoder -ne "libsvtav1" -or $SourceInfo.Codec -ne "av1") {
+                $script:BurninDowngradeReason = "HDR10+ inline disponibil doar svtav1+av1 — fallback HDR10 base"
+                $script:BurninMode = "preserve_hdr10"
+                return (Build-BurninVideoChain -File $File -EncInfo $EncInfo -SourceInfo $SourceInfo)
+            }
+            $json = Get-BurninHdr10PlusJson -File $File -SrcCodec $SourceInfo.Codec
+            if (-not $json) {
+                $script:BurninDowngradeReason = "HDR10+ extract esuat — fallback HDR10 base"
+                $script:BurninMode = "preserve_hdr10"
+                return (Build-BurninVideoChain -File $File -EncInfo $EncInfo -SourceInfo $SourceInfo)
+            }
+            $script:BurninHdr10PlusJson = $json
+            $script:BurninEncExtraArgs += @("-pix_fmt","yuv420p10le")
+            $script:BurninEncExtraArgs += @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+            $hdr = Get-BurninHdr10Static -File $File
+            $jsonEsc = ($json -replace '\\','/')
+            $av1p = "enable-hdr=1:hdr10plus-json=$jsonEsc"
+            if ($hdr.Available -and $hdr.MasterDisplaySvtav1) {
+                $av1p += ":mastering-display=$($hdr.MasterDisplaySvtav1)"
+                if ($hdr.MaxCll) { $av1p += ":content-light=$($hdr.MaxCll)" }
+            }
+            $script:BurninEncExtraArgs += @("-svtav1-params",$av1p)
+            return $true
+        }
+        "preserve_hlg" {
+            if ($encoder -eq "libx264") {
+                $script:BurninDowngradeReason = "libx264 nu suporta 10-bit HLG in builds standard — auto-tonemap aplicat"
+                $script:BurninPreFilter = $tonemapFilter
+                return $true
+            }
+            $script:BurninEncExtraArgs += @("-pix_fmt","yuv420p10le")
+            $script:BurninEncExtraArgs += @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
+            if ($encoder -eq "libx265") {
+                $script:BurninEncExtraArgs += @("-x265-params","transfer=arib-std-b67:colormatrix=bt2020nc:colorprim=bt2020")
+            } elseif ($encoder -eq "libsvtav1") {
+                $script:BurninEncExtraArgs += @("-svtav1-params","enable-hdr=1:color-primaries=9:transfer-characteristics=18:matrix-coefficients=9")
+            }
+            return $true
+        }
+    }
+    return $true
+}
+
 function Get-Encoder {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -265,6 +787,17 @@ function Invoke-HudFlow {
         Write-Host ("  -- {0}/{1}: {2}  [{3}]" -f ($idx+1), $pairs.Count, [System.IO.Path]::GetFileName($p.Video), $p.Meta) -ForegroundColor Yellow
         Write-Host "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        $sourceInfo = Show-BurninHdrDialog -File $p.Video -EncInfo $enc
+        if (-not (Build-BurninVideoChain -File $p.Video -EncInfo $enc -SourceInfo $sourceInfo)) {
+            Write-Host "  [SKIP] mod=$(Get-BurninModeLabel $script:BurninMode) — sar la urmatorul fisier" -ForegroundColor DarkGray
+            continue
+        }
+        if ($script:BurninSourceType -ne "sdr") {
+            Write-Host "  Sursa: $($script:BurninSourceType) -> mod: $(Get-BurninModeLabel $script:BurninMode)" -ForegroundColor Cyan
+            if ($script:BurninDowngradeReason) { Write-Host "  ⚠ $($script:BurninDowngradeReason)" -ForegroundColor Yellow }
+        }
+
         $offset = 0
         if ($p.Meta -like "external_*") {
             Write-Host "  Brand sursa: $($p.Meta) — telemetria poate fi nesincronizata." -ForegroundColor Yellow
@@ -316,15 +849,23 @@ function Invoke-HudFlow {
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
+        # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        $fc = if ($script:BurninPreFilter) {
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0[v]"
+        } else {
+            "[0:v][1:v]overlay=0:0:shortest=0[v]"
+        }
+        $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Overlay + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
             -i $p.Video `
             -framerate $hudFps `
             -i (Join-Path $framesDir "frame_%06d.png") `
-            -filter_complex "[0:v][1:v]overlay=0:0:shortest=0[v]" `
+            -filter_complex $fc `
             -map "[v]" -map "0:a?" `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
+            @extraArgs `
             -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
@@ -333,6 +874,9 @@ function Invoke-HudFlow {
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
         }
         Remove-Item $framesDir -Recurse -Force -ErrorAction SilentlyContinue
+        if ($script:BurninHdr10PlusJson -and (Test-Path $script:BurninHdr10PlusJson)) {
+            Remove-Item $script:BurninHdr10PlusJson -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
@@ -397,14 +941,27 @@ function Invoke-SrtFlow {
         Write-Host ("  -- {0}/{1}: {2}" -f ($idx+1), $pairs.Count, [System.IO.Path]::GetFileName($p.Video)) -ForegroundColor Yellow
         Write-Host "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        $sourceInfo = Show-BurninHdrDialog -File $p.Video -EncInfo $enc
+        if (-not (Build-BurninVideoChain -File $p.Video -EncInfo $enc -SourceInfo $sourceInfo)) {
+            Write-Host "  [SKIP] mod=$(Get-BurninModeLabel $script:BurninMode) — sar la urmatorul fisier" -ForegroundColor DarkGray
+            continue
+        }
+        if ($script:BurninSourceType -ne "sdr") {
+            Write-Host "  Sursa: $($script:BurninSourceType) -> mod: $(Get-BurninModeLabel $script:BurninMode)" -ForegroundColor Cyan
+            if ($script:BurninDowngradeReason) { Write-Host "  ⚠ $($script:BurninDowngradeReason)" -ForegroundColor Yellow }
+        }
+
         $srtEsc = Get-EscapedFfmpegFilterPath $p.Aux
         $vf = "subtitles='$srtEsc'"
         if ($forceStyle) { $vf = "${vf}:force_style='$forceStyle'" }
+        # v58: pre-filter (LUT/tonemap) prepended in -vf chain
+        if ($script:BurninPreFilter) { $vf = "$($script:BurninPreFilter),$vf" }
 
         $outSuffix = "subs"
         $seekArgs = @()
         if ($script:PreviewMode) {
-            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
+            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
             $vidDurNum = 0.0
             if ($vidDurRaw) {
                 [double]::TryParse($vidDurRaw, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$vidDurNum) | Out-Null
@@ -421,18 +978,23 @@ function Invoke-SrtFlow {
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
+        $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in SRT + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
+            @extraArgs `
             -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
             Write-Host "  [EROARE] ffmpeg SRT burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
+        }
+        if ($script:BurninHdr10PlusJson -and (Test-Path $script:BurninHdr10PlusJson)) {
+            Remove-Item $script:BurninHdr10PlusJson -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -496,13 +1058,26 @@ function Invoke-AssFlow {
         Write-Host ("  -- {0}/{1}: {2}" -f ($idx+1), $pairs.Count, [System.IO.Path]::GetFileName($p.Video)) -ForegroundColor Yellow
         Write-Host "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        $sourceInfo = Show-BurninHdrDialog -File $p.Video -EncInfo $enc
+        if (-not (Build-BurninVideoChain -File $p.Video -EncInfo $enc -SourceInfo $sourceInfo)) {
+            Write-Host "  [SKIP] mod=$(Get-BurninModeLabel $script:BurninMode) — sar la urmatorul fisier" -ForegroundColor DarkGray
+            continue
+        }
+        if ($script:BurninSourceType -ne "sdr") {
+            Write-Host "  Sursa: $($script:BurninSourceType) -> mod: $(Get-BurninModeLabel $script:BurninMode)" -ForegroundColor Cyan
+            if ($script:BurninDowngradeReason) { Write-Host "  ⚠ $($script:BurninDowngradeReason)" -ForegroundColor Yellow }
+        }
+
         $assEsc = Get-EscapedFfmpegFilterPath $p.Aux
         $vf = "ass='$assEsc'${extraStyle}"
+        # v58: pre-filter (LUT/tonemap) prepended in -vf chain
+        if ($script:BurninPreFilter) { $vf = "$($script:BurninPreFilter),$vf" }
 
         $outSuffix = "subs"
         $seekArgs = @()
         if ($script:PreviewMode) {
-            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
+            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
             $vidDurNum = 0.0
             if ($vidDurRaw) {
                 [double]::TryParse($vidDurRaw, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$vidDurNum) | Out-Null
@@ -519,18 +1094,23 @@ function Invoke-AssFlow {
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
+        $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in ASS + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
         & ffmpeg -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
             -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
+            @extraArgs `
             -c:a copy @codecTag -movflags +faststart $out -y
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
             Write-Host "  [EROARE] ffmpeg ASS burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
+        }
+        if ($script:BurninHdr10PlusJson -and (Test-Path $script:BurninHdr10PlusJson)) {
+            Remove-Item $script:BurninHdr10PlusJson -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -593,8 +1173,9 @@ function Get-ImgPairs {
                     if (-not $line) { continue }
                     $cols = $line.Split(",")
                     if ($cols.Length -lt 2) { continue }
-                    $codec = $cols[1].Trim()
-                    $lang  = if ($cols.Length -ge 3) { $cols[2].Trim() } else { "" }
+                    $codec = $cols[1].Trim().TrimEnd(',')
+                    # v58 audit: strip trailing comma de la csv=p=0 last field
+                    $lang  = if ($cols.Length -ge 3) { $cols[2].Trim().TrimEnd(',') } else { "" }
                     if (-not $codec) { continue }
                     $kind = $null
                     if ($codec -eq "hdmv_pgs_subtitle") { $kind = "emb_pgs"; $tag = "PGS embedded" }
@@ -651,10 +1232,21 @@ function Invoke-ImgFlow {
         Write-Host ("  -- {0}/{1}: {2}  [{3}{4}]" -f ($idx+1), $pairs.Count, [System.IO.Path]::GetFileName($p.Video), $p.Kind, $(if ($p.Track) { " s:$($p.Track)" } else { "" })) -ForegroundColor Yellow
         Write-Host "─────────────────────────────────────────────"
 
+        # v58: HDR/LOG dialog + chain build
+        $sourceInfo = Show-BurninHdrDialog -File $p.Video -EncInfo $enc
+        if (-not (Build-BurninVideoChain -File $p.Video -EncInfo $enc -SourceInfo $sourceInfo)) {
+            Write-Host "  [SKIP] mod=$(Get-BurninModeLabel $script:BurninMode) — sar la urmatorul fisier" -ForegroundColor DarkGray
+            continue
+        }
+        if ($script:BurninSourceType -ne "sdr") {
+            Write-Host "  Sursa: $($script:BurninSourceType) -> mod: $(Get-BurninModeLabel $script:BurninMode)" -ForegroundColor Cyan
+            if ($script:BurninDowngradeReason) { Write-Host "  ⚠ $($script:BurninDowngradeReason)" -ForegroundColor Yellow }
+        }
+
         $outSuffix = "subs"
         $seekArgs = @()
         if ($script:PreviewMode) {
-            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of csv=p=0 $p.Video 2>$null | Select-Object -First 1)
+            $vidDurRaw = (& ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $p.Video 2>$null | Select-Object -First 1)
             $vidDurNum = 0.0
             if ($vidDurRaw) {
                 [double]::TryParse($vidDurRaw, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$vidDurNum) | Out-Null
@@ -671,6 +1263,14 @@ function Invoke-ImgFlow {
 
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
+        $extraArgs = @($script:BurninEncExtraArgs)
+        # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        $fcExt = if ($script:BurninPreFilter) {
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:s]overlay[v]"
+        } else { "[0:v][1:s]overlay[v]" }
+        $fcEmb = if ($script:BurninPreFilter) {
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][0:s:$($p.Track)]overlay[v]"
+        } else { "[0:v][0:s:$($p.Track)]overlay[v]" }
         switch ($p.Kind) {
             { $_ -in @("ext_pgs","ext_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (sursa: $($p.Aux)) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
@@ -678,9 +1278,10 @@ function Invoke-ImgFlow {
                     @seekArgs `
                     -i $p.Video `
                     -i $p.Aux `
-                    -filter_complex "[0:v][1:s]overlay[v]" `
+                    -filter_complex $fcExt `
                     -map "[v]" -map "0:a?" `
                     -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
+                    @extraArgs `
                     -c:a copy @codecTag -movflags +faststart $out -y
             }
             { $_ -in @("emb_pgs","emb_vob") } {
@@ -688,9 +1289,10 @@ function Invoke-ImgFlow {
                 & ffmpeg -v error -stats `
                     @seekArgs `
                     -i $p.Video `
-                    -filter_complex "[0:v][0:s:$($p.Track)]overlay[v]" `
+                    -filter_complex $fcEmb `
                     -map "[v]" -map "0:a?" `
                     -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
+                    @extraArgs `
                     -c:a copy @codecTag -movflags +faststart $out -y
             }
             default {
@@ -704,6 +1306,9 @@ function Invoke-ImgFlow {
             Write-Host "  [EROARE] ffmpeg image subs burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
         }
+        if ($script:BurninHdr10PlusJson -and (Test-Path $script:BurninHdr10PlusJson)) {
+            Remove-Item $script:BurninHdr10PlusJson -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
@@ -711,6 +1316,11 @@ function Invoke-ImgFlow {
     Write-Host ("  Sumar Image subs burn-in: {0} OK, {1} esuate (din {2} selectate)" -f $okCount, $failCount, $selected.Count) -ForegroundColor Cyan
     Write-Host "═══════════════════════════════════════════════"
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# Test mode: skip interactive menu (allow dot-sourcing for tests)
+# ─────────────────────────────────────────────────────────────────────
+if ($env:AV_BURNIN_TEST_MODE -eq "1") { return }
 
 # ─────────────────────────────────────────────────────────────────────
 # Main menu — alege tip burn-in

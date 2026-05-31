@@ -418,13 +418,26 @@ detect_source_info() {
     [[ ! "$HEIGHT" =~ ^[0-9]+$ ]] && HEIGHT=0
     IS_HLG=0
 
+    # v58 audit FIX: side_data_type (NU `type` — ffprobe ignora filterul invalid si
+    # dumpeaza TOATE field-urile frame-ului. Pe ffmpeg 8.x output-ul NU include side_data
+    # sections → grep "HDR10+" niciodata nu match-uia → HDR_PLUS empty pe TOATE clipurile
+    # HDR10+ HEVC + AV1. Pre-existent din v25+. Aceeasi familie de bug ca v57 av_check.
     HDR_PLUS=$(ffprobe -v error -read_intervals 0%+#5 -show_frames \
-        -select_streams v:0 -show_entries frame_side_data=type \
+        -select_streams v:0 -show_entries frame_side_data=side_data_type \
         "$file" 2>/dev/null | grep -m1 "HDR10+")
 
     DOVI=$(ffprobe -v error -show_entries stream=codec_tag_string \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | \
         grep -i "dovi\|dvhe\|dvh1" | head -1)
+    # v58 audit FIX: AV1 DV detection — codec_tag e [0][0][0][0] pe AV1; RPU sta in
+    # OBU_METADATA (provider 0x003B), detectabil doar via side_data per-frame.
+    if [[ -z "$DOVI" ]]; then
+        local _av1dv
+        _av1dv=$(ffprobe -v error -read_intervals 0%+#5 -show_frames \
+            -select_streams v:0 -show_entries frame_side_data=side_data_type \
+            "$file" 2>/dev/null | grep -m1 "Dolby Vision Metadata")
+        [[ -n "$_av1dv" ]] && DOVI="dolby_vision"
+    fi
 
     DURATION=$(ffprobe -v error -show_entries format=duration \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
@@ -449,14 +462,21 @@ detect_source_info() {
         local all_tags
         all_tags=$(ffprobe -v error -show_entries format_tags \
             -of default=noprint_wrappers=1 "$file" 2>/dev/null)
+        # v58 audit FIX: Samsung S24 Ultra short-circuit pe com.samsung.android.logvideo
+        # (autoritar pt Samsung Log — S24 Ultra Android 16 NU emite make=samsung).
+        # Plus DJI fallback pe encoder=DJI (clipuri re-muxate cu djmd/dbgi strip).
+        # Aliniat cu av_check v57.
+        if echo "$all_tags" | grep -qi "com\.samsung\.android\.logvideo"; then
+            CAMERA_MAKE="samsung"
+            LOG_PROFILE="samsung_log"
         # Apple: com.apple.quicktime.make=Apple
-        if echo "$all_tags" | grep -qi "make=.*apple"; then
+        elif echo "$all_tags" | grep -qi "make=.*apple"; then
             CAMERA_MAKE="apple"
-        # DJI: com.apple.quicktime.make=DJI or make=DJI
-        elif echo "$all_tags" | grep -qi "make=.*dji"; then
+        # DJI: com.apple.quicktime.make=DJI or make=DJI or encoder=DJI (re-muxat)
+        elif echo "$all_tags" | grep -qi "make=.*dji\|encoder=.*dji"; then
             CAMERA_MAKE="dji"
-        # Samsung: com.android.manufacturer=samsung or make=samsung
-        elif echo "$all_tags" | grep -qi "manufacturer=.*samsung\|make=.*samsung"; then
+        # Samsung: com.android.manufacturer=samsung or make=samsung or com.samsung.android (fallback)
+        elif echo "$all_tags" | grep -qi "manufacturer=.*samsung\|make=.*samsung\|com\.samsung\.android"; then
             CAMERA_MAKE="samsung"
         fi
         # Fallback: DJI tracks detection (already have detect_dji_tracks)

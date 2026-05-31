@@ -7,7 +7,7 @@ SCRIPT_DIR="$PROJECT_ROOT/src"
 source "$SCRIPT_DIR/av_common.sh"
 
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+trap 'rm -rf "$TMPDIR"; _test_summary' EXIT
 
 # 1) Profil valid
 cat > "$TMPDIR/valid.conf" <<'EOF'
