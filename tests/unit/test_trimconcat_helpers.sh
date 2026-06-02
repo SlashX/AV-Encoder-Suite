@@ -5,6 +5,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../framework.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SCRIPT_DIR="$PROJECT_ROOT/src"
 source "$SCRIPT_DIR/av_common.sh"
+# v60: helper-ele Trim/Concat mutate din av_common in av_trimconcat.
+AV_TRIMCONCAT_TEST_MODE=1 source "$SCRIPT_DIR/av_trimconcat.sh"
 
 # ── tc_scan_leftover_temp — empty / missing AV_TEMP_DIR ──────────────
 TMPDIR=$(mktemp -d)

@@ -6,6 +6,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../framework.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SCRIPT_DIR="$PROJECT_ROOT/src"
 source "$SCRIPT_DIR/av_common.sh"
+# v60: detect_pipeline_hdr_mode mutat din av_common in av_trimconcat.
+AV_TRIMCONCAT_TEST_MODE=1 source "$SCRIPT_DIR/av_trimconcat.sh"
 
 command -v ffprobe >/dev/null 2>&1 || skip_test "ffprobe nu este in PATH"
 

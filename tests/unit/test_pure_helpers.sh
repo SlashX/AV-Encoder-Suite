@@ -5,6 +5,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../framework.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SCRIPT_DIR="$PROJECT_ROOT/src"
 source "$SCRIPT_DIR/av_common.sh"
+# v60: parse_time_flexible / format_seconds / expand_range_selection mutate
+# din av_common in av_trimconcat. Source in test mode (skip meniu interactiv).
+AV_TRIMCONCAT_TEST_MODE=1 source "$SCRIPT_DIR/av_trimconcat.sh"
 
 # ── get_adaptive_crf ──────────────────────────────────────────────────
 unset CUSTOM_CRF

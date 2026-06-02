@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v59
+  Documentatie Setup & Utilizare — v60
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1006,7 +1006,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-9. TRIM & CONCAT PIPELINE (v36/v37 — meniu principal opt 6)
+9. TRIM & CONCAT PIPELINE (v36/v37 + v60 HDR/LOG — meniu principal opt 6)
 ═══════════════════════════════════════════════════════════════
 
   Submeniu cu 5 optiuni:
@@ -1036,6 +1036,7 @@ CUPRINS
       1) Stream copy (instant, lossless, ±1-2s la keyframe) [default]
       2) Re-encode (exact, frame-accurate, mai lent)
     - Re-encode: codec (x265/x264) + CRF + audio (copy/aac/eac3)
+    - v60: la re-encode pe sursa non-SDR → dialog HDR/LOG (vezi 9.5)
   Output: <nume>_trim<N>_<start>.<ext> cu collision auto-increment.
 
 
@@ -1080,12 +1081,19 @@ CUPRINS
                opt-in skip re-encode total (instant -c copy).
     Pre-Pass 3: chapters.txt + HDR mode detection (sdr / hdr10 / hdr10plus /
                hlg / dv / mixed).
-               hdr10/hlg + libx265 → auto inject pix_fmt + color flags +
-                                     x265-params dedicat.
-               hdr10plus → opt-in extragere via hdr10plus_tool, fallback HDR10.
-               dv → fallback HDR10 + warning (RPU nu se pastreaza la re-encode).
-               mixed → no inject + warning.
-               codec != libx265 → no inject + warning.
+               v60: codec-aware (libx265 SI libsvtav1):
+                 hdr10/hlg → 10-bit + color flags + params dedicati
+                   (x265: hdr10=1/hdr-opt; svtav1: enable-hdr + transfer 16/18).
+                 HDR10 static (v60): master-display + max-cll injectate pe ambele
+                   (x265 master-display=, svtav1 mastering-display=/content-light=).
+                 hdr10plus → x265 dhdr10-info (hdr10plus_tool); svtav1 inline
+                   hdr10plus-json cand build-ul SVT suporta; altfel HDR10 static.
+                 dv → fallback HDR10 + warning (RPU nu se pastreaza la re-encode;
+                      pentru DV pastreaza HDR10+ si transforma in HDR/DV tools opt 8).
+                 mixed → no inject + warning.
+                 codec libx264/libaom → no inject + warning.
+               v60: sursa LOG dar agregat SDR → nota onesta (fara transform).
+               v60: codec_tag (hvc1/av01/avc1) pe output MP4/MOV.
     [Pass 3/3] Concat + Encode intr-un singur ffmpeg cu progress bar real.
   Pas 7: Cleanup temp daca output OK, pastrat daca esuat.
 
@@ -1099,7 +1107,32 @@ CUPRINS
   cu un singur set de cuts.
 
 
-  ─── 9.5. Folder temp ($AV_TEMP_DIR) ───
+  ─── 9.5. HDR/LOG awareness la re-encode (v60) ───
+
+  La re-encode (NU stream copy) pe Trim / Batch trim / Concat, daca sursa
+  e non-SDR → dialog inainte de ffmpeg (per-fisier la Trim/Batch, agregat
+  la Concat). Reutilizeaza detectia din encode-ul principal.
+
+  Clasificare sursa + optiuni:
+    HDR10 / HDR10+   → 1) Preserve HDR10 (10-bit + master-display + max-cll)
+                          [HDR10+ cade pe HDR10 base — x265/x264 nu fac dinamic]
+                       2) Tonemap → SDR (Hable)   3) Skip
+    HLG              → 1) Preserve HLG (10-bit + arib-std-b67)
+                       2) Tonemap → SDR           3) Skip
+    LOG (apple/dji/  → 1) Apply LUT Rec.709 (cand exista in Luts/<brand>_*.cube)
+        samsung)        2) Tonemap → SDR   3) Keep LOG (fara transform)   4) Skip
+    DV               → REFUZ preserve (RPU se pierde la re-encode) →
+                       doar Tonemap / Skip
+    SDR              → fara dialog (flow original)
+
+  x264 + HDR → auto-tonemap cu warning (8-bit standard nu suporta 10-bit HDR).
+  codec_tag (hvc1/av01/avc1) aplicat pe output MP4/MOV/M4V.
+
+  Bypass non-interactiv (CI/batch): TC_HDR_POLICY = preserve | tonemap |
+  skip | lut — sare dialogul cu policy uniformizat.
+
+
+  ─── 9.6. Folder temp ($AV_TEMP_DIR) ───
 
   Termux:        /storage/emulated/0/Media/Temp
   Linux/macOS:   $SCRIPT_DIR/Temp

@@ -201,15 +201,20 @@ function Get-PipelineHdrMode {
     foreach ($f in $Files) {
         $ct = & ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer `
             -of default=nw=1:nk=1 $f 2>$null
-        $sd = & ffprobe -v error -select_streams v:0 -read_intervals "%+#1" `
-            -show_entries frame=side_data_list -of default=nw=1 $f 2>$null
+        # v60 FIX: aliniere cu Get-SourceInfo (audit-ul v58). frame=side_data_list pe primul
+        # frame rata DV (AV1) si HDR10+. Folosim frame_side_data=side_data_type pe 5 frame +
+        # codec_tag pentru DV HEVC.
+        $tag = & ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string `
+            -of default=nw=1:nk=1 $f 2>$null
+        $sd = & ffprobe -v error -show_frames -select_streams v:0 -read_intervals "%+#5" `
+            -show_entries frame_side_data=side_data_type $f 2>$null | Out-String
         switch -regex ($ct) {
             'smpte2084'    { $hasHdr10 = $true }
             'arib-std-b67' { $hasHlg = $true }
             default        { $hasSdr = $true }
         }
-        if ($sd -match '(?i)dolby vision|dovi') { $hasDv = $true }
-        if ($sd -match '(?i)hdr dynamic metadata|hdr10\+') { $hasHdr10Plus = $true }
+        if (($tag -match '(?i)dovi|dvhe|dvh1') -or ($sd -match 'Dolby Vision Metadata')) { $hasDv = $true }
+        if ($sd -match 'HDR10\+|HDR Dynamic') { $hasHdr10Plus = $true }
     }
     if ($hasDv) { return "dv" }
     if ($hasSdr -and ($hasHdr10 -or $hasHlg)) { return "mixed" }
@@ -327,10 +332,23 @@ function Invoke-TrimFlow {
             $aArgs = @("-c:a","copy")
             if ($ac -eq "2") { $aArgs = @("-c:a","aac","-b:a","192k") }
             if ($ac -eq "3") { $aArgs = @("-c:a","eac3","-b:a","224k") }
+            # v60: HDR/LOG dialog + build args (re-encode strica HDR signaling fara astea)
+            $codecShort = if ($codec -eq "libx264") { "h264" } else { "hevc" }
+            Show-TcHdrDialog $src.FullName $codec
+            if (-not (Build-TcVideoArgs $src.FullName $codec)) {
+                Write-Host "  [SKIP] mod=$(Get-TcModeLabel $script:tcMode) — sar acest clip" -ForegroundColor Yellow
+                continue
+            }
+            if ($script:tcSourceType -ne "sdr") {
+                Write-Host "  Sursa: $($script:tcSourceType) -> mod: $(Get-TcModeLabel $script:tcMode)" -ForegroundColor Cyan
+                if ($script:tcDowngradeReason) { Write-Host "  /!\ $($script:tcDowngradeReason)" -ForegroundColor Yellow }
+            }
+            $vfArgs = @(); if ($script:tcVfPrepend) { $vfArgs = @("-vf",$script:tcVfPrepend) }
+            $ctag = Get-CodecTagForContainer $codecShort $srcExt
             Write-Host "  Encoding... $(Format-Seconds $clipS)" -ForegroundColor Green
             $ffArgs = @("-y","-ss",$startS,"-to",$endS,"-i",$src.FullName,
-                "-map","0","-map_metadata","0","-c:v",$codec,"-crf",$crf,"-preset","medium") +
-                $aArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
+                "-map","0","-map_metadata","0") + $vfArgs + @("-c:v",$codec,"-crf",$crf,"-preset","medium") +
+                $script:tcEncExtraArgs + $ctag + $aArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
             Invoke-FfmpegWithProgress -Label "Trim re-encode" -TotalSeconds ([int]$clipS) -Arguments $ffArgs | Out-Null
         } else {
             Write-Host ""
@@ -498,6 +516,27 @@ function Invoke-BatchTrimFlow {
         $sn = [System.IO.Path]::GetFileNameWithoutExtension($src.Name)
         $sext = $src.Extension.TrimStart('.')
         $sdur = Get-DurationSeconds $src.FullName
+        # v60: HDR/LOG dialog per src (acelasi pe toate cut-urile). Doar la re-encode.
+        $btSkipSrc = $false
+        $btCtag = @()
+        if ($mode -eq "2") {
+            $reCodecShort = if ($reCodec -eq "libx264") { "h264" } else { "hevc" }
+            Show-TcHdrDialog $src.FullName $reCodec
+            if (-not (Build-TcVideoArgs $src.FullName $reCodec)) {
+                Write-Host "[$($src.Name)] SKIP — mod=$(Get-TcModeLabel $script:tcMode)" -ForegroundColor Yellow
+                $btSkipSrc = $true
+            } else {
+                if ($script:tcSourceType -ne "sdr") {
+                    Write-Host "[$($src.Name)] sursa: $($script:tcSourceType) -> mod: $(Get-TcModeLabel $script:tcMode)" -ForegroundColor Cyan
+                    if ($script:tcDowngradeReason) { Write-Host "  /!\ $($script:tcDowngradeReason)" -ForegroundColor Yellow }
+                }
+                $btCtag = Get-CodecTagForContainer $reCodecShort $sext
+            }
+        }
+        if ($btSkipSrc) {
+            foreach ($cut in $cuts) { $op++; $skip++ }
+            continue
+        }
         $ci = 1
         foreach ($cut in $cuts) {
             $op++
@@ -513,9 +552,10 @@ function Invoke-BatchTrimFlow {
             Write-Host "[$op/$totalOps] $($src.Name) seg${ci}: $(Format-Seconds $cut.Start) → $(Format-Seconds $cut.End)" -ForegroundColor White
             $rc = 1
             if ($mode -eq "2") {
+                $btVf = @(); if ($script:tcVfPrepend) { $btVf = @("-vf",$script:tcVfPrepend) }
                 $ffArgs = @("-y","-ss",$cut.Start,"-to",$cut.End,"-i",$src.FullName,
-                    "-map","0","-map_metadata","0","-c:v",$reCodec,"-crf",$reCrf,"-preset","medium") +
-                    $reAArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
+                    "-map","0","-map_metadata","0") + $btVf + @("-c:v",$reCodec,"-crf",$reCrf,"-preset","medium") +
+                    $script:tcEncExtraArgs + $btCtag + $reAArgs + @("-c:s","copy","-avoid_negative_ts","make_zero",$outPath)
                 $rc = Invoke-FfmpegWithProgress -Label "Batch trim ($op/$totalOps)" -TotalSeconds ([int]$clipS) -Arguments $ffArgs
             } else {
                 & ffmpeg -y -ss $cut.Start -to $cut.End -i $src.FullName `
@@ -684,6 +724,67 @@ function Invoke-ConcatFlow {
         if ($ac -eq "2") { $aArgs = @("-c:a","eac3","-b:a","224k") }
         if ($ac -eq "3") { $aArgs = @("-c:a","copy") }
 
+        # v60: HDR detect agregat pe setul de fisiere (concat = N->1).
+        # Get-PipelineHdrMode returneaza sdr|hdr10|hdr10plus|hlg|dv|mixed
+        # (NU detecteaza LOG — limitare cunoscuta; LOG la concat tratat ca sdr).
+        Reset-TcHdrState
+        $agg = Get-PipelineHdrMode ($selected | ForEach-Object { $_.FullName })
+        if ($agg -ne "sdr") {
+            if ($env:TC_HDR_POLICY) {
+                switch ($env:TC_HDR_POLICY) {
+                    "preserve" {
+                        switch ($agg) {
+                            "dv"        { $script:tcMode = "tonemap" }
+                            "mixed"     { $script:tcMode = "tonemap" }
+                            "hdr10"     { $script:tcMode = "preserve_hdr10" }
+                            "hdr10plus" { $script:tcMode = "preserve_hdr10" }
+                            "hlg"       { $script:tcMode = "preserve_hlg" }
+                        }
+                    }
+                    "tonemap" { $script:tcMode = "tonemap" }
+                    "skip"    { $script:tcMode = "skip" }
+                    "lut"     { $script:tcMode = "tonemap" }
+                }
+            } else {
+                Write-Host ""
+                switch ($agg) {
+                    "mixed" {
+                        Write-Host "  /!\ Surse MIXTE (HDR + SDR amestecate) — preserve HDR imposibil uniform." -ForegroundColor Yellow
+                        Write-Host "  1) Tonemap -> SDR (uniform) [implicit]   2) Skip concat"
+                        $c = Read-Host "  Alege 1-2 [implicit: 1]"
+                        if ($c -eq "2") { $script:tcMode = "skip" } else { $script:tcMode = "tonemap" }
+                    }
+                    "dv" {
+                        Write-Host "  /!\ Surse Dolby Vision — re-encode concat nu pastreaza RPU." -ForegroundColor Yellow
+                        Write-Host "  1) Tonemap -> SDR [implicit]   2) Skip concat"
+                        $c = Read-Host "  Alege 1-2 [implicit: 1]"
+                        if ($c -eq "2") { $script:tcMode = "skip" } else { $script:tcMode = "tonemap" }
+                    }
+                    { $_ -in @("hdr10","hdr10plus") } {
+                        $l = "HDR10"
+                        if ($agg -eq "hdr10plus") { $l = "HDR10+ (concat re-encode pastreaza doar HDR10 base)" }
+                        Write-Host "  Surse $l" -ForegroundColor Cyan
+                        Write-Host "  1) Preserve HDR10 [implicit]   2) Tonemap -> SDR   3) Skip concat"
+                        $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                        switch ($c) { "2" { $script:tcMode = "tonemap" } "3" { $script:tcMode = "skip" } default { $script:tcMode = "preserve_hdr10" } }
+                    }
+                    "hlg" {
+                        Write-Host "  Surse HLG (BT.2100)" -ForegroundColor Cyan
+                        Write-Host "  1) Preserve HLG [implicit]   2) Tonemap -> SDR   3) Skip concat"
+                        $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                        switch ($c) { "2" { $script:tcMode = "tonemap" } "3" { $script:tcMode = "skip" } default { $script:tcMode = "preserve_hlg" } }
+                    }
+                }
+            }
+            if (-not (Build-TcVideoArgs $selected[0].FullName $codec)) {
+                Write-Host "  Concat anulat (mod=$(Get-TcModeLabel $script:tcMode))." -ForegroundColor Yellow
+                Remove-TempSubdirSafe $subdir ""
+                return
+            }
+            Write-Host "  Surse: $agg -> mod: $(Get-TcModeLabel $script:tcMode)" -ForegroundColor Cyan
+            if ($script:tcDowngradeReason) { Write-Host "  /!\ $($script:tcDowngradeReason)" -ForegroundColor Yellow }
+        }
+
         $ffIn = @()
         $fcMap = ""
         for ($i = 0; $i -lt $selected.Count; $i++) {
@@ -691,14 +792,21 @@ function Invoke-ConcatFlow {
             $fcMap += "[${i}:v:0][${i}:a:0?]"
         }
         $n = $selected.Count
-        $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
+        # v60: daca tonemap/lut activ, aplica filtru DUPA concat in graph
+        if ($script:tcVfPrepend) {
+            $fc = "${fcMap}concat=n=${n}:v=1:a=1[cv][outa];[cv]$($script:tcVfPrepend)[outv]"
+        } else {
+            $fc = "${fcMap}concat=n=${n}:v=1:a=1[outv][outa]"
+        }
+        $codecShort = if ($codec -eq "libx264") { "h264" } else { "hevc" }
+        $ctag = Get-CodecTagForContainer $codecShort $container
 
         Write-Host "  Concat re-encode ($codec CRF $crf)... durata totala $(Format-Seconds $totalS)" -ForegroundColor Green
         $ffArgs = @("-y") + $ffIn + @(
             "-filter_complex",$fc,
             "-map","[outv]","-map","[outa]",
             "-c:v",$codec,"-crf",$crf,"-preset","medium") +
-            $aArgs + @("-map_metadata","0",$outPath)
+            $script:tcEncExtraArgs + $ctag + $aArgs + @("-map_metadata","0",$outPath)
         Invoke-FfmpegWithProgress -Label "Concat ($codec)" -TotalSeconds ([int]$totalS) -Arguments $ffArgs | Out-Null
     }
 
@@ -1085,26 +1193,35 @@ function Invoke-PipelineFlow {
         Write-Host "  ✓ Capitole generate: $($trimmedFiles.Count) markeri în $(Split-Path $chaptersFile -Leaf)" -ForegroundColor Green
     }
 
-    # HDR-aware (v37): detectare mod HDR + injectare params x265 dacă re-encode
+    # HDR-aware (v37 + v60): detectare mod HDR + injectare params per codec.
+    # v60: codec-aware (libx265 + libsvtav1); HDR10 static master-display/max-cll inject;
+    # AV1 HDR10+ inline (svtav1 + caps); LOG note onest pe sdr; codec_tag pe output.
     $hdrColorArgs = @()
     $hdrPixArgs = @()
     $hdrX265Args = @()
+    $hdrSvtArgs = @()
     if (-not $smartCopy -and -not $audioOnly) {
         $hdrMode = Get-PipelineHdrMode ($chosen | ForEach-Object { $_.FullName })
         switch ($hdrMode) {
-            "sdr" { }
+            "sdr" {
+                # v60: Get-PipelineHdrMode nu clasifica LOG → nota onesta (fara transform)
+                $logDji = Get-DJITracks $chosen[0].FullName
+                $logExt = Get-SourceInfoExtended $chosen[0].FullName $logDji
+                if ($logExt.logProfile) {
+                    Write-Host ""
+                    Write-Host "  i Sursa pare LOG ($(Get-LogProfileLabel $logExt.logProfile))." -ForegroundColor Cyan
+                    Write-Host "    Pipeline pastreaza pixelii ca atare (fara LUT/tonemap)." -ForegroundColor Cyan
+                    Write-Host "    Pentru LUT Rec.709 / tonemap: encode principal sau Burn-in (opt 9)." -ForegroundColor DarkGray
+                }
+            }
             "mixed" {
                 Write-Host ""
-                Write-Host "  ⚠ HDR MIXED: input contine atat SDR cat si HDR." -ForegroundColor Yellow
+                Write-Host "  /!\ HDR MIXED: input contine atat SDR cat si HDR." -ForegroundColor Yellow
                 Write-Host "    HDR metadata NU va fi pastrat. Output = SDR-like." -ForegroundColor Yellow
             }
             default {
-                if ($codec -ne "libx265") {
-                    Write-Host ""
-                    Write-Host "  ⚠ HDR detectat ($hdrMode), dar codec=$codec nu suporta HDR10." -ForegroundColor Yellow
-                    Write-Host "    HDR metadata NU va fi pastrat. Pentru HDR10, foloseste libx265." -ForegroundColor Yellow
-                } else {
-                    $trc = if ($hdrMode -eq "hlg") { "arib-std-b67" } else { "smpte2084" }
+                $trc = if ($hdrMode -eq "hlg") { "arib-std-b67" } else { "smpte2084" }
+                if ($codec -eq "libx265") {
                     $hdrPixArgs   = @("-pix_fmt","yuv420p10le")
                     $hdrColorArgs = @("-color_primaries","bt2020","-color_trc",$trc,"-colorspace","bt2020nc")
                     if ($hdrMode -eq "hlg") {
@@ -1112,13 +1229,20 @@ function Invoke-PipelineFlow {
                         $x265Extra = "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
                     } else {
                         $x265Extra = "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
+                        # v60: HDR10 static master-display/max-cll
+                        Resolve-Hdr10Static $trimmedFiles[0] | Out-Null
+                        if ($script:hdr10StaticAvailable -and $script:hdr10MasterDisplayX265) {
+                            $x265Extra = "${x265Extra}:master-display=$($script:hdr10MasterDisplayX265)"
+                            if ($script:hdr10MaxCll) { $x265Extra = "${x265Extra}:max-cll=$($script:hdr10MaxCll)" }
+                        }
                     }
                     if ($hdrMode -eq "dv") {
                         Write-Host ""
-                        Write-Host "  ⚠ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
+                        Write-Host "  /!\ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
+                        Write-Host "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+->DV in HDR/DV tools (opt 8)." -ForegroundColor DarkGray
                     } elseif ($hdrMode -eq "hdr10plus") {
                         Write-Host ""
-                        Write-Host "  ⚡ HDR10+ detectat. Vrei sa pastrezi metadata dinamica? (necesita hdr10plus_tool)" -ForegroundColor Cyan
+                        Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita hdr10plus_tool)" -ForegroundColor Cyan
                         Write-Host "     1) Da [default]   2) Nu (doar HDR10 static)"
                         $hdr10pCh = Read-Host "     Alege 1-2"
                         if (-not $hdr10pCh -or $hdr10pCh -eq "1") {
@@ -1126,27 +1250,99 @@ function Invoke-PipelineFlow {
                             if ($toolAvail) {
                                 $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
                                 if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
-                                    $x265Extra = "${x265Extra}:dhdr10-info=${hdr10pJson}"
-                                    Write-Host "     ✓ HDR10+ JSON extras: $hdr10pJson" -ForegroundColor Green
+                                    if ($hdr10pJson -match ':') {
+                                        # v60: cale cu ':' (drive Windows) sparge x265-params (`:`-separat). Fallback static.
+                                        Write-Host "     /!\ Cale JSON contine ':' (incompatibil cu x265-params). Fallback HDR10 static." -ForegroundColor Yellow
+                                    } else {
+                                        $x265Extra = "${x265Extra}:dhdr10-info=${hdr10pJson}"
+                                        Write-Host "     HDR10+ JSON extras: $hdr10pJson" -ForegroundColor Green
+                                    }
                                 } else {
-                                    Write-Host "     ⚠ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
+                                    Write-Host "     /!\ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
                                 }
                             } else {
-                                Write-Host "     ⚠ hdr10plus_tool NU este instalat. Fallback HDR10 static." -ForegroundColor Yellow
+                                Write-Host "     /!\ hdr10plus_tool NU este instalat. Fallback HDR10 static." -ForegroundColor Yellow
                                 Write-Host "       Instaleaza: $ToolsDir\hdr10plus_parser.ps1" -ForegroundColor DarkGray
                             }
                         }
                     } elseif ($hdrMode -eq "hlg") {
                         Write-Host ""
-                        Write-Host "  ⚡ AUTO HLG: pix_fmt=yuv420p10le, transfer=arib-std-b67, color=bt2020" -ForegroundColor Cyan
+                        Write-Host "  AUTO HLG (x265): transfer=arib-std-b67, color=bt2020" -ForegroundColor Cyan
                     } else {
                         Write-Host ""
-                        Write-Host "  ⚡ AUTO HDR10: pix_fmt=yuv420p10le, transfer=$trc, color=bt2020" -ForegroundColor Cyan
+                        Write-Host "  AUTO HDR10 (x265): transfer=$trc, color=bt2020" -ForegroundColor Cyan
                     }
                     $hdrX265Args = @("-x265-params",$x265Extra)
                 }
+                elseif ($codec -eq "libsvtav1") {
+                    $hdrPixArgs   = @("-pix_fmt","yuv420p10le")
+                    $hdrColorArgs = @("-color_primaries","bt2020","-color_trc",$trc,"-colorspace","bt2020nc")
+                    if ($hdrMode -eq "hlg") {
+                        # HLG: transfer-characteristics=18 (ITU-T H.273)
+                        $svtExtra = "enable-hdr=1:color-primaries=9:transfer-characteristics=18:matrix-coefficients=9"
+                        Write-Host ""; Write-Host "  AUTO HLG (svtav1): enable-hdr=1, transfer=18 (HLG)" -ForegroundColor Cyan
+                    } else {
+                        # PQ: transfer-characteristics=16
+                        $svtExtra = "enable-hdr=1:color-primaries=9:transfer-characteristics=16:matrix-coefficients=9"
+                        Resolve-Hdr10Static $trimmedFiles[0] | Out-Null
+                        if ($script:hdr10StaticAvailable -and $script:hdr10MasterDisplaySvtAv1) {
+                            $svtExtra = "${svtExtra}:mastering-display=$($script:hdr10MasterDisplaySvtAv1)"
+                            if ($script:hdr10MaxCll) { $svtExtra = "${svtExtra}:content-light=$($script:hdr10MaxCll)" }
+                        }
+                        if ($hdrMode -eq "dv") {
+                            Write-Host ""
+                            Write-Host "  /!\ DOLBY VISION detectat. AV1 re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
+                            Write-Host "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+->DV in HDR/DV tools (opt 8)." -ForegroundColor DarkGray
+                        } elseif ($hdrMode -eq "hdr10plus") {
+                            Write-Host ""
+                            Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica inline (svtav1 hdr10plus-json)?" -ForegroundColor Cyan
+                            Write-Host "     1) Da [default]   2) Nu (doar HDR10 static)"
+                            $hdr10pCh = Read-Host "     Alege 1-2"
+                            if (-not $hdr10pCh -or $hdr10pCh -eq "1") {
+                                $srcCodecPl = Get-SourceCodec $trimmedFiles[0]
+                                if ((Test-Hdr10PlusToolFor -Codec $srcCodecPl) -and (Test-SvtAv1Hdr10PlusCaps)) {
+                                    $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
+                                    if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
+                                        if ($hdr10pJson -match ':') {
+                                            # v60: cale cu ':' sparge svtav1-params (`:`-separat). Fallback static.
+                                            Write-Host "     /!\ Cale JSON contine ':' (incompatibil cu svtav1-params). Fallback HDR10 static." -ForegroundColor Yellow
+                                        } else {
+                                            $svtExtra = "${svtExtra}:hdr10plus-json=${hdr10pJson}"
+                                            Write-Host "     HDR10+ JSON inline: $hdr10pJson" -ForegroundColor Green
+                                        }
+                                    } else {
+                                        Write-Host "     /!\ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
+                                    }
+                                } else {
+                                    Write-Host "     /!\ SVT-AV1 fara suport hdr10plus-json sau tool lipsa. Fallback HDR10 static." -ForegroundColor Yellow
+                                }
+                            }
+                        } else {
+                            Write-Host ""; Write-Host "  AUTO HDR10 (svtav1): enable-hdr=1, transfer=16 (PQ)" -ForegroundColor Cyan
+                        }
+                    }
+                    $hdrSvtArgs = @("-svtav1-params",$svtExtra)
+                }
+                else {
+                    Write-Host ""
+                    Write-Host "  /!\ HDR detectat ($hdrMode), dar codec=$codec nu suporta HDR (libx264/libaom)." -ForegroundColor Yellow
+                    Write-Host "    HDR metadata NU va fi pastrat. Pentru HDR foloseste libx265 sau libsvtav1." -ForegroundColor Yellow
+                }
             }
         }
+    }
+
+    # v60: codec_tag (hvc1/av01/avc1) pe output re-encode (DV-aware players)
+    $plCtag = @()
+    if (-not $smartCopy -and -not $audioOnly) {
+        $plTagCodec = switch ($codec) {
+            "libx265"    { "hevc" }
+            "libx264"    { "h264" }
+            "libsvtav1"  { "av1" }
+            "libaom-av1" { "av1" }
+            default      { "" }
+        }
+        if ($plTagCodec) { $plCtag = Get-CodecTagForContainer $plTagCodec $container }
     }
 
     # Pass 3/3
@@ -1190,7 +1386,7 @@ function Invoke-PipelineFlow {
             "-filter_complex",$fc,
             "-map","[outv]","-map","[outa]") + $chapMap + @(
             "-c:v",$codec,"-crf",$crf,"-preset",$preset) +
-            $hdrPixArgs + $hdrColorArgs + $hdrX265Args +
+            $hdrPixArgs + $hdrColorArgs + $hdrX265Args + $hdrSvtArgs + $plCtag +
             $aArgs + @("-map_metadata","0",$outPath)
         Invoke-FfmpegWithProgress -Label "Pass 3/3 ($codec)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     } else {
@@ -1199,7 +1395,7 @@ function Invoke-PipelineFlow {
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
             "-map","0","-map_metadata","0") + $chapMap + @(
             "-c:v",$codec,"-crf",$crf,"-preset",$preset) +
-            $hdrPixArgs + $hdrColorArgs + $hdrX265Args +
+            $hdrPixArgs + $hdrColorArgs + $hdrX265Args + $hdrSvtArgs + $plCtag +
             $aArgs + @($outPath)
         Invoke-FfmpegWithProgress -Label "Pass 3/3 ($codec)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     }
@@ -1935,6 +2131,7 @@ function Get-SourceInfoExtended {
         srcColorTrc = $srcColorTrc
         srcIsVfr    = $srcIsVfr
         isHLG       = $isHLG
+        isDV        = [bool]$dovi
     }
 }
 
@@ -2007,6 +2204,217 @@ function Find-CreativeLuts {
         return @{ files = $found; dir = $creativeDir }
     }
     return @{ files = @(); dir = "" }
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v60: HDR/LOG awareness pentru Trim/Concat re-encode (paritate cu bash
+# show_tc_hdr_dialog / build_tc_video_args din av_trimconcat.sh).
+# Encoder-ele oferite la trim/concat sunt libx265/libx264 (NU svtav1), deci
+# HDR10+ inline AV1 nu se aplica aici → HDR10+ cade pe HDR10 base (x265).
+# State globale (reset per fisier in Reset-TcHdrState):
+#   $script:tcSourceType = sdr|dv|hdr10|hdr10plus|hlg|log
+#   $script:tcMode       = sdr|preserve_hdr10|preserve_hlg|tonemap|lut_rec709|keep_log|skip
+#   $script:tcVfPrepend  = lant filter (tonemap/lut3d) de pus inaintea altor -vf
+#   $script:tcEncExtraArgs = array args ffmpeg (pix_fmt/color/x265-params)
+#   $script:tcLutFile / $script:tcDowngradeReason
+# Bypass non-interactiv: $env:TC_HDR_POLICY = preserve|tonemap|skip|lut
+# ══════════════════════════════════════════════════════════════════════
+
+function Get-TcModeLabel {
+    param([string]$mode)
+    switch ($mode) {
+        "sdr"            { "SDR (no transform)" }
+        "preserve_hdr10" { "Preserve HDR10" }
+        "preserve_hlg"   { "Preserve HLG" }
+        "tonemap"        { "Tonemap -> SDR" }
+        "lut_rec709"     { "Apply LUT (LOG -> Rec.709)" }
+        "keep_log"       { "Keep LOG (no color transform)" }
+        "skip"           { "Skip" }
+        default          { $mode }
+    }
+}
+
+function Reset-TcHdrState {
+    $script:tcSourceType    = "sdr"
+    $script:tcMode          = "sdr"
+    $script:tcVfPrepend     = ""
+    $script:tcEncExtraArgs  = @()
+    $script:tcLutFile       = ""
+    $script:tcDowngradeReason = ""
+}
+
+# Dialog per fisier. Detecteaza sursa, clasifica, intreaba modul.
+# $File + $Encoder (libx265|libx264). Seteaza $script:tcMode + state. Return void.
+function Show-TcHdrDialog {
+    param([string]$File, [string]$Encoder = "libx265")
+    Reset-TcHdrState
+    $dji = Get-DJITracks $File
+    $si  = Get-SourceInfo $File
+    $ext = Get-SourceInfoExtended $File $dji
+
+    # Clasificare (ordine: DV -> HDR10+ -> HDR10 -> HLG -> LOG)
+    $script:tcCameraMake = $ext.cameraMake
+    $script:tcLogProfile = $ext.logProfile
+    if     ($ext.isDV)                       { $script:tcSourceType = "dv" }
+    elseif ($si.isHDRPlus)                   { $script:tcSourceType = "hdr10plus" }
+    elseif ($si.transfer -eq "smpte2084")    { $script:tcSourceType = "hdr10" }
+    elseif ($ext.isHLG)                      { $script:tcSourceType = "hlg" }
+    elseif ($ext.logProfile)                 { $script:tcSourceType = "log" }
+    else                                     { $script:tcSourceType = "sdr" }
+
+    if ($script:tcSourceType -eq "sdr") { return }
+
+    # Env policy bypass (CI/batch)
+    if ($env:TC_HDR_POLICY) {
+        switch ($env:TC_HDR_POLICY) {
+            "preserve" {
+                switch ($script:tcSourceType) {
+                    "dv"        { $script:tcMode = "skip" }
+                    "hdr10"     { $script:tcMode = "preserve_hdr10" }
+                    "hdr10plus" { $script:tcMode = "preserve_hdr10" }
+                    "hlg"       { $script:tcMode = "preserve_hlg" }
+                    "log"       { $script:tcMode = "keep_log" }
+                }
+            }
+            "tonemap" { $script:tcMode = "tonemap" }
+            "skip"    { $script:tcMode = "skip" }
+            "lut" {
+                $lut = Find-LutForBrand $script:tcCameraMake $InputDir $InputDir
+                if ($script:tcSourceType -eq "log" -and $lut.files.Count -gt 0) {
+                    $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName
+                } else { $script:tcMode = "tonemap" }
+            }
+            default { $script:tcMode = "sdr" }
+        }
+        return
+    }
+
+    switch ($script:tcSourceType) {
+        "dv" {
+            Write-Host ""
+            Write-Host "  /!\ Sursa Dolby Vision" -ForegroundColor Yellow
+            Write-Host "     Re-encode trim/concat nu pastreaza RPU DV (encoder x265/x264" -ForegroundColor Yellow
+            Write-Host "     fara extract+inject). Pentru DV preserve foloseste fluxul" -ForegroundColor Yellow
+            Write-Host "     principal de encode sau av_hdr_dv_tools." -ForegroundColor Yellow
+            Write-Host "  1) Tonemap -> SDR (recomandat)"
+            Write-Host "  2) Skip [implicit]"
+            $c = Read-Host "  Alege 1-2 [implicit: 2]"
+            if ($c -eq "1") { $script:tcMode = "tonemap" } else { $script:tcMode = "skip" }
+        }
+        { $_ -in @("hdr10","hdr10plus") } {
+            $lbl = "HDR10"
+            if ($script:tcSourceType -eq "hdr10plus") {
+                $lbl = "HDR10+ (re-encode pastreaza doar HDR10 base — metadata dinamica se pierde la x265/x264)"
+            }
+            Write-Host ""
+            Write-Host "  Sursa $lbl" -ForegroundColor Cyan
+            Write-Host "  1) Preserve HDR10 (pix_fmt p010le + master-display + max-cll) [implicit]"
+            Write-Host "  2) Tonemap -> SDR"
+            Write-Host "  3) Skip"
+            $c = Read-Host "  Alege 1-3 [implicit: 1]"
+            switch ($c) {
+                "2" { $script:tcMode = "tonemap" }
+                "3" { $script:tcMode = "skip" }
+                default { $script:tcMode = "preserve_hdr10" }
+            }
+        }
+        "hlg" {
+            Write-Host ""
+            Write-Host "  Sursa HLG (BT.2100 HLG)" -ForegroundColor Cyan
+            Write-Host "  1) Preserve HLG (pix_fmt p010le + transfer arib-std-b67) [implicit]"
+            Write-Host "  2) Tonemap -> SDR"
+            Write-Host "  3) Skip"
+            $c = Read-Host "  Alege 1-3 [implicit: 1]"
+            switch ($c) {
+                "2" { $script:tcMode = "tonemap" }
+                "3" { $script:tcMode = "skip" }
+                default { $script:tcMode = "preserve_hlg" }
+            }
+        }
+        "log" {
+            $brand = if ($script:tcCameraMake) { $script:tcCameraMake } else { "unknown" }
+            $logLabel = Get-LogProfileLabel $script:tcLogProfile
+            $lut = Find-LutForBrand $brand $InputDir $InputDir
+            Write-Host ""
+            Write-Host "  Sursa LOG: $logLabel (brand=$brand)" -ForegroundColor Cyan
+            if ($lut.files.Count -gt 0) {
+                Write-Host "  1) Apply LUT Rec.709 ($($lut.files[0].Name)) [implicit]"
+                Write-Host "  2) Tonemap -> SDR (Hable, generic)"
+                Write-Host "  3) Keep LOG (fara transform — pentru grading ulterior)"
+                Write-Host "  4) Skip"
+                $c = Read-Host "  Alege 1-4 [implicit: 1]"
+                switch ($c) {
+                    "2" { $script:tcMode = "tonemap" }
+                    "3" { $script:tcMode = "keep_log" }
+                    "4" { $script:tcMode = "skip" }
+                    default { $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName }
+                }
+            } else {
+                Write-Host "  (LUT brand-specific lipseste din Luts/ — opt LUT indisponibila)" -ForegroundColor DarkGray
+                Write-Host "  1) Tonemap -> SDR [implicit]"
+                Write-Host "  2) Keep LOG (fara transform)"
+                Write-Host "  3) Skip"
+                $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                switch ($c) {
+                    "2" { $script:tcMode = "keep_log" }
+                    "3" { $script:tcMode = "skip" }
+                    default { $script:tcMode = "tonemap" }
+                }
+            }
+        }
+    }
+}
+
+# Construieste $script:tcVfPrepend + $script:tcEncExtraArgs pe baza $script:tcMode + encoder.
+# Return $true ok, $false skip (caller sare fisierul/operatia).
+function Build-TcVideoArgs {
+    param([string]$File, [string]$Encoder = "libx265")
+    $script:tcVfPrepend = ""
+    $script:tcEncExtraArgs = @()
+    $tonemap = "zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+    switch ($script:tcMode) {
+        "skip"     { return $false }
+        "sdr"      { return $true }
+        "keep_log" { return $true }
+        "lut_rec709" {
+            $esc = ($script:tcLutFile -replace '\\','/') -replace ':','\:'
+            $script:tcVfPrepend = "lut3d='${esc}'"
+            return $true
+        }
+        "tonemap" {
+            $script:tcVfPrepend = $tonemap
+            return $true
+        }
+        "preserve_hdr10" {
+            if ($Encoder -eq "libx264") {
+                $script:tcDowngradeReason = "libx264 nu suporta 10-bit HDR in builds standard — auto-tonemap"
+                $script:tcVfPrepend = $tonemap
+                return $true
+            }
+            $script:tcEncExtraArgs = @("-pix_fmt","yuv420p10le",
+                "-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
+            Resolve-Hdr10Static $File | Out-Null
+            $p = "hdr10=1:hdr10-opt=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+            if ($script:hdr10StaticAvailable -and $script:hdr10MasterDisplayX265) {
+                $p = "${p}:master-display=$($script:hdr10MasterDisplayX265)"
+                if ($script:hdr10MaxCll) { $p = "${p}:max-cll=$($script:hdr10MaxCll)" }
+            }
+            $script:tcEncExtraArgs += @("-x265-params",$p)
+            return $true
+        }
+        "preserve_hlg" {
+            if ($Encoder -eq "libx264") {
+                $script:tcDowngradeReason = "libx264 nu suporta 10-bit HLG in builds standard — auto-tonemap"
+                $script:tcVfPrepend = $tonemap
+                return $true
+            }
+            $script:tcEncExtraArgs = @("-pix_fmt","yuv420p10le",
+                "-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc",
+                "-x265-params","hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc")
+            return $true
+        }
+        default { return $true }
+    }
 }
 
 # ── Invoke-StreamCopy — helper partajat stream copy cu progress+stats ──

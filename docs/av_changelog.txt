@@ -3,9 +3,117 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v59 | 90 bug-uri fixate | 224+ features
-  102 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 60 teste [53 test_* + 7 infra]) | ~36100 linii cod+teste | ~5400 linii documentatie
+  TOTAL: v60 | 93 bug-uri fixate | 230+ features
+  106 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 64 teste [57 test_* + 7 infra]) | ~36800 linii cod+teste | ~5400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v60 — Trim/Concat/Pipeline: HDR/LOG awareness la re-encode
+═══════════════════════════════════════════════════════════════
+
+  Fluxurile Trim, Batch trim, Concat si Pipeline re-encodau sursele
+  HDR/LOG fara sa pastreze signaling-ul de culoare — output-ul iesea
+  cu metadata HDR pierduta (pix_fmt 8-bit, fara master display, fara
+  flag-uri BT.2020/PQ), exact lacuna reparata la Burn-in in v58. v60
+  aduce un dialog per-fisier (sau agregat la concat) care intreaba ce
+  sa faca cu sursa non-SDR inainte de re-encode.
+
+  Refactor structural: logica Trim/Concat a fost mutata din
+  av_common.sh intr-un script dedicat, av_trimconcat.sh, asa cum
+  sunt deja organizate Burn-in si Mux tools (scripturi de sine
+  statatoare). Pe Windows ramane in av_encode.ps1 (all-in-one prin
+  design). Pasul acesta nu schimba nimic functional — doar structura.
+
+  ADD dialog HDR/LOG la Trim, Batch trim si Concat (doar la re-encode):
+        clasifica sursa (Dolby Vision / HDR10 / HDR10+ / HLG / LOG) si
+        ofera optiunile potrivite — Preserve HDR10 (10-bit + master
+        display + max-cll), Preserve HLG, Tonemap la SDR (Hable),
+        Apply LUT Rec.709 (la LOG, daca exista in Luts/), Keep LOG
+        (fara transformare), Skip. Dolby Vision e refuzat explicit la
+        re-encode (metadata RPU nu supravietuieste) → doar Tonemap sau
+        Skip. HDR10+ cade pe HDR10 static (x265/x264 nu produc HDR10+
+        dinamic). Sursele SDR raman neschimbate, fara dialog. Bash si
+        PowerShell, aceleasi optiuni.
+
+  ADD bypass non-interactiv prin variabila TC_HDR_POLICY (preserve /
+        tonemap / skip / lut) — pentru scripting si CI, sare dialogul
+        cu o decizie uniforma. Bash si PowerShell.
+
+  ADD Pipeline pastreaza HDR si pe AV1, nu doar pe HEVC — pana acum
+        doar libx265 pastra HDR-ul la pasul de concatenare-encode
+        (restul avertiza "SDR-like"). Acum si libsvtav1 pastreaza
+        HDR10 / HLG, plus HDR10+ dinamic cand build-ul SVT-AV1 il
+        suporta si tool-ul e prezent; altfel cade curat pe HDR10
+        static. Bash si PowerShell.
+
+  ADD master display + max-cll injectate la Pipeline (x265 + svtav1)
+        — pana acum se pastra doar semnalizarea de culoare, fara
+        metadata de mastering. Valorile vin din sursa cand exista,
+        altfel din defaultul BT.2020 1000-nit. Bash si PowerShell.
+
+  ADD eticheta de container (hvc1 / av01 / avc1) pe output-ul
+        re-encodat din Trim / Batch / Concat / Pipeline pe MP4/MOV/M4V
+        — fara ea, playerele DV-aware nu engajau modul corect. Bash si
+        PowerShell.
+
+  ADD nota onesta la Pipeline cand sursa e LOG dar rezultatul agregat
+        e tratat ca SDR — output-ul pastreaza pixelii ca atare; pentru
+        gradare LUT sau tonemap se recomanda encode-ul principal sau
+        Burn-in (optiunea 9). Bash si PowerShell.
+
+  FIX re-encode Trim/Concat distrugea semnalizarea HDR (bug de
+        calitate pre-existent, mascat de fixture-urile sintetice SDR):
+        sursele HDR10 / HDR10+ / HLG ieseau SDR-like fara niciun
+        avertisment. Acum dialogul forteaza o decizie constienta
+        inainte de re-encode.
+
+  FIX Concat si Pipeline nu recunosteau corect Dolby Vision si HDR10+
+        pe sursele reale (bug pre-existent descoperit la audit) —
+        citeau metadata doar de pe primul cadru si raportau "hdr10"
+        pentru orice, asa ca nu avertizau la DV si nu ofereau
+        pastrarea HDR10+ dinamic. Acum detectia citeste mai multe
+        cadre si recunoaste corect tipul, aliniata cu restul suitei.
+        Verificat pe sample reale: AV1 DV si hibrid → Dolby Vision,
+        HDR10+ HEVC si AV1 → HDR10+. Bash si PowerShell.
+
+  FIX pastrarea HDR10+ inline esua pe Windows cand calea fisierului de
+        metadata continea litera de unitate (ex. C:\...) — caracterul
+        ":" se ciocnea cu formatul intern de parametri al encoderului
+        si ffmpeg pica. Acum cazul e detectat si se cade curat pe
+        HDR10 static, cu mesaj clar; pe Linux/Termux/macOS (cai fara
+        ":") pastrarea inline ramane activa. Bash si PowerShell.
+
+  Compatibilitate cu transformarea HDR10+ → Dolby Vision: Pipeline-ul
+  pastreaza HDR10+ ca sa ramana disponibil pasul HDR10+ → DV hybrid
+  din HDR/DV tools (optiunea 8). Dolby Vision propriu-zis se pastreaza
+  in fluxul principal de encode, nu in re-encode-ul de
+  trim/concat/pipeline.
+
+  Detalii tehnice:
+    - Refactor: av_trimconcat.sh sourceaza av_common.sh pentru helperii
+      HDR partajati; guard AV_TRIMCONCAT_TEST_MODE=1 pentru sourcing in
+      teste fara meniu.
+    - Detectia tipului de sursa aliniata cu detect_source_info (auditul
+      v58): frame_side_data=side_data_type pe 5 cadre + codec_tag
+      (dvhe / dvh1 / dovi) pentru DV HEVC; inainte frame=side_data_list
+      pe primul cadru rata DV pe AV1 si HDR10+ pe surse reale.
+    - get_duration_seconds: query-ul ffprobe pe un singur camp comutat
+      de la csv=p=0 la default=noprint_wrappers=1:nokey=1 (+ strip CR),
+      conform conventiei proiectului (evita virgula parazita pe surse
+      cu side_data).
+    - HDR10+ inline: svtav1-params hdr10plus-json / x265-params
+      dhdr10-info; ambele param-string-uri sunt ":"-separate, deci o
+      cale cu drive-colon le sparge → guard + fallback HDR10 static.
+    - Teste: test_v60_trimconcat.{sh,ps1} (63 asserts Bash / 57
+      PowerShell). Validat empiric pe sample reale: svtav1 AV1 HDR10
+      static (av01 + master display + content light), x265 HEVC HDR10
+      static (hvc1 + mastering metadata), trim HEVC HDR10+ preserve
+      (hvc1 + 10-bit + BT.2020 + smpte2084 + master display). Suite:
+      bash 31/0/2, PS1 24/0/0.
+
+  SYNC paritate Bash ↔ PowerShell mentinuta la toate dialogurile,
+        optiunile si fallback-urile noi.
 
 
 ═══════════════════════════════════════════════════════════════

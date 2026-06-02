@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v59** — 90 bugs fixed · 224+ features · ~36 100 LoC · 102 files
+**v60** — 93 bugs fixed · 230+ features · ~36 800 LoC · 106 files
 
 ---
 
@@ -171,7 +171,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 3. **Media analysis** (`av_check`) — 30-50 field CSV
 4. **Telemetry** — 6 modes: Standard / Full / SRT / All / Raw / Strip
 5. **External GPS** — GPX/FIT/KML → CSV/SRT
-6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass · batch trim · HDR-aware
+6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag)
 7. **Mux tools** (v49 + v50, no re-encode, lossless):
 
    | Flow | Action |
@@ -218,7 +218,7 @@ AV-Encoder-Suite/
 │   ├── av_encoder_prores.sh    # ProRes encoder (Apple professional)
 │   ├── av_encoder_apv.sh       # APV encoder (Samsung, ffmpeg 8.1+)
 │   ├── av_encoder_audio.sh     # Audio-only re-encode (video stream copy)
-│   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36/v37)
+│   ├── av_trimconcat.sh        # Trim & Concat pipeline (v36/v37 + v60 HDR/LOG, standalone)
 │   ├── av_mux.sh               # v49+v50 — Mux tools standalone (remux + demux + mux)
 │   ├── av_mux.ps1              # v49+v50 — PS1 mirror standalone
 │   ├── av_hdr_dv_tools.sh      # HDR/DV tools submenu (v44/v45/v56; remux moved to av_mux in v49)
@@ -376,10 +376,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v59** — 90 bugs fixed · 224+ features · ~36 100 LoC · 102 files
-
-**v59 highlights** — Regression audit on the Mux toolchain (Remux / Demux / Mux). Because all three flows use `-c copy` (no re-encode), HDR/DV/HDR10+ metadata are already preserved natively — re-verified empirically on HEVC HDR10+ → MKV (master display + MaxCLL + SMPTE2094-40 dynamic metadata all intact). Bugs fixed: cover art and DJI tracks were silently missed on HDR-rich sources (ffprobe quirk on streams with side-data blocks); Remux titles displayed with a stray trailing character; Demux attachments with duplicate filenames overwrote each other silently (now dedup with `_2`/`_3` suffix); chapters XML conversion failures now report a specific reason (empty / malformed / missing root / no `<ChapterAtom>` / no valid timestamps); PowerShell Mux lost the container `codec_tag` (hvc1/av01/avc1) on HDR sources — DV-aware players didn't engage DV mode on output, now aligned with bash; PS1 chapters XML with namespace declarations (`<Chapters xmlns="...">`) no longer rejected.
-
-**v58 highlights** — Burn-in flows are now HDR-aware. Until v58 all four burn-in flows (HUD telemetry, SRT, ASS, image subs PGS/VobSub) re-encoded into 8-bit SDR with no color signaling, silently breaking HDR sources. v58 adds a per-file dialog that detects source type and proposes the right path: preserve HDR10 (real 10-bit + master display + MaxCLL inject), preserve HDR10+ inline (svtav1+AV1 only — lossless), preserve HLG, apply a brand LUT for LOG (Apple/D-Log M/Samsung from `Luts/<brand>_*.cube`), tonemap to SDR, or refuse outright on Dolby Vision (overlay would break RPU references). Bypass via `BURNIN_HDR_POLICY=preserve|tonemap|skip|lut`. Audit also surfaced 4 critical latent bugs in the main encode pipeline that affected ffmpeg 8.x: HDR10+ on HEVC/AV1 was never being detected, AV1 Dolby Vision was never being detected (different metadata location than HEVC), Samsung S24 Ultra Log not recognized at encode, and 7 older tests were silently masking failures. Test runner now also picks up portable Windows binaries from `src/` automatically.
-
-**v57 highlights** — `av_check` regression sweep (the one flow not yet audited post-v44): fixed AV1 Dolby Vision detection (codec_tag is `[0][0][0][0]` for AV1 — DV now detected via per-frame side_data instead), correct 12-bit depth labeling (old pix_fmt `*10*` glob missed `yuv420p12le`), HDR rich diagnostic CSV (+7 cols: ColorPrimaries/Space/Range + MaxCLL/FALL + MasterDisplay primaries+nits + HDR10+ scene markers), MKV bitrate cascade fallback, expanded output-suffix list for the Comparison section (covers Mux/HDR-DV/Burn-in/Telemetry outputs), LOG sources no longer mis-typed as HLG. Also: latent bash audio-CSV bug (`-of csv=p=0` reorders fields → all audio metrics were wrong) fixed. PS1 ↔ bash CSV header now fully aligned. 148 new asserts (96 bash + 52 PS1), full suite green.
+Current: **v60** — 93 bugs fixed · 230+ features · ~36 800 LoC · 106 files
