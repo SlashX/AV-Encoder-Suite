@@ -34,6 +34,27 @@ function Ensure-TempDir {
     }
 }
 
+# v61: directorul de lucru pentru ffmpeg cand un parametru `:`-separat
+# (x265 dhdr10-info / svtav1 hdr10plus-json / stats=) refera un fisier prin NUME GOL.
+# Pe Windows calea absoluta contine drive-colon (C:\...) care sparge string-ul de
+# parametri `:`-separat al encoderului → ffmpeg hard-fail ("Error setting option ...
+# Invalid argument", output 0 bytes). Solutie: punem fisierul intr-un dir cunoscut
+# ($AV_TEMP_DIR), il referim prin nume gol (fara drive, fara `:`) si rulam ffmpeg cu
+# CWD = acel dir. Toate celelalte cai din comanda sunt absolute, deci schimbarea CWD
+# nu afecteaza nimic. Setat de Get-InlineParamName / Initialize-2PassState, resetat
+# per fisier. Consumat de fiecare apel Start-Process ffmpeg.
+$script:ffmpegWorkDir = ""
+
+# v61: pregateste un fisier (HDR10+ JSON) pentru a fi referit inline intr-un param
+# `:`-separat: seteaza CWD-ul ffmpeg pe directorul lui si returneaza numele gol
+# (colon-free). Pe bash nu e necesar (caile sunt colon-free) — helper exclusiv PS1.
+function Get-InlineParamName {
+    param([string]$Path)
+    if (-not $Path) { return "" }
+    $script:ffmpegWorkDir = Split-Path -Parent $Path
+    return (Split-Path -Leaf $Path)
+}
+
 # ── Trim & Concat helpers (v36) ───────────────────────────────────────
 function ConvertFrom-FlexibleTime {
     param([string]$t)
@@ -1143,9 +1164,10 @@ function Invoke-PipelineFlow {
     } else {
         # Smart stream copy detection (dacă nu e audio-only): sursa = target codec → oferă skip re-encode
         if (-not $audioOnly) {
-            $srcCodec = (& ffprobe -v error -select_streams v:0 `
+            # v61 audit: [0] prima linie — DJI v:0 dublu-listat (array ar sparge -eq + display)
+            $srcCodec = "$(@(& ffprobe -v error -select_streams v:0 `
                 -show_entries stream=codec_name `
-                -of default=noprint_wrappers=1:nokey=1 $trimmedFiles[0] 2>$null)
+                -of default=noprint_wrappers=1:nokey=1 $trimmedFiles[0] 2>$null)[0])"
             $targetCodecName = switch ($codec) {
                 "libx265"   { "hevc" }
                 "libx264"   { "h264" }
@@ -1200,6 +1222,8 @@ function Invoke-PipelineFlow {
     $hdrPixArgs = @()
     $hdrX265Args = @()
     $hdrSvtArgs = @()
+    $script:ffmpegWorkDir = ""   # v61: reset CWD ffmpeg (HDR10+ inline preserve)
+    $hdr10pJson = ""             # v61: tracking pt cleanup (JSON e in $AV_TEMP_DIR, nu in $subdir)
     if (-not $smartCopy -and -not $audioOnly) {
         $hdrMode = Get-PipelineHdrMode ($chosen | ForEach-Object { $_.FullName })
         switch ($hdrMode) {
@@ -1250,13 +1274,10 @@ function Invoke-PipelineFlow {
                             if ($toolAvail) {
                                 $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
                                 if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
-                                    if ($hdr10pJson -match ':') {
-                                        # v60: cale cu ':' (drive Windows) sparge x265-params (`:`-separat). Fallback static.
-                                        Write-Host "     /!\ Cale JSON contine ':' (incompatibil cu x265-params). Fallback HDR10 static." -ForegroundColor Yellow
-                                    } else {
-                                        $x265Extra = "${x265Extra}:dhdr10-info=${hdr10pJson}"
-                                        Write-Host "     HDR10+ JSON extras: $hdr10pJson" -ForegroundColor Green
-                                    }
+                                    # v61: nume gol + ffmpeg cu CWD=$AV_TEMP_DIR (drive-colon din calea
+                                    # absoluta ar sparge x265-params pe Windows) → PRESERVE real, nu fallback.
+                                    $x265Extra = "${x265Extra}:dhdr10-info=$(Get-InlineParamName $hdr10pJson)"
+                                    Write-Host "     HDR10+ JSON inline (preserve): $(Split-Path -Leaf $hdr10pJson)" -ForegroundColor Green
                                 } else {
                                     Write-Host "     /!\ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
                                 }
@@ -1303,13 +1324,9 @@ function Invoke-PipelineFlow {
                                 if ((Test-Hdr10PlusToolFor -Codec $srcCodecPl) -and (Test-SvtAv1Hdr10PlusCaps)) {
                                     $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
                                     if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
-                                        if ($hdr10pJson -match ':') {
-                                            # v60: cale cu ':' sparge svtav1-params (`:`-separat). Fallback static.
-                                            Write-Host "     /!\ Cale JSON contine ':' (incompatibil cu svtav1-params). Fallback HDR10 static." -ForegroundColor Yellow
-                                        } else {
-                                            $svtExtra = "${svtExtra}:hdr10plus-json=${hdr10pJson}"
-                                            Write-Host "     HDR10+ JSON inline: $hdr10pJson" -ForegroundColor Green
-                                        }
+                                        # v61: nume gol + ffmpeg cu CWD=$AV_TEMP_DIR → PRESERVE real (vezi nota x265)
+                                        $svtExtra = "${svtExtra}:hdr10plus-json=$(Get-InlineParamName $hdr10pJson)"
+                                        Write-Host "     HDR10+ JSON inline (preserve): $(Split-Path -Leaf $hdr10pJson)" -ForegroundColor Green
                                     } else {
                                         Write-Host "     /!\ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
                                     }
@@ -1401,6 +1418,9 @@ function Invoke-PipelineFlow {
     }
 
     Remove-TempSubdirSafe $subdir $outPath
+    # v61: HDR10+ JSON sta in $AV_TEMP_DIR (nu in $subdir) — cleanup explicit
+    if ($hdr10pJson -and (Test-Path $hdr10pJson)) { Remove-Item $hdr10pJson -Force -ErrorAction SilentlyContinue }
+    $script:ffmpegWorkDir = ""
 
     # Stats finale
     if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
@@ -1433,8 +1453,16 @@ function Format-Bytes {
 
 function Get-FFprobeValue {
     param([string]$file, [string]$stream, [string]$entry)
-    ($( & ffprobe -v error -select_streams $stream `
-        -show_entries "stream=$entry" -of csv=p=0 "$file" 2>$null) -join "").Trim()
+    # v61 audit: default= (NU csv=p=0). csv=p=0 single-field emite trailing comma pe
+    # surse cu [SIDE_DATA] (HDR10/HDR10+/DV/HEVC HDR): "smpte2084," / "hevc," / "1920,"
+    # → -eq/switch esueaza, -match '^\d+$' pe width/bitrate corupte. Plus -First 1: pe
+    # surse unde -select_streams v:0 raporteaza streamul de 2 ori (DJI: cover mjpeg +
+    # multi-track) `-join ""` concatena valorile ("hevchevc"/"26882688"). default= +
+    # prima linie = valoare curata. (Acelasi root-cause ca Get-MuxCodec, fixat in v59.)
+    $v = @(& ffprobe -v error -select_streams $stream `
+        -show_entries "stream=$entry" -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null)
+    if ($v.Count -ge 1 -and $null -ne $v[0]) { return ([string]$v[0]).Trim() }
+    return ""
 }
 
 function Test-BitrateFormat { param([string]$br); $br -match '^\d+[kKmM]$' }
@@ -1458,19 +1486,36 @@ function Convert-ToKbps {
 
 function Initialize-2PassState {
     param([string]$File)
+    Ensure-TempDir
     $name = [IO.Path]::GetFileNameWithoutExtension($File)
     $name = $name -replace '[^A-Za-z0-9._-]','_'
-    $script:statsDir = Join-Path $env:TEMP ("av2pass_"+[guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $script:statsDir -Force | Out-Null
-    $script:statsFile = Join-Path $script:statsDir "$name.passlog"
+    # v61: stats sub $AV_TEMP_DIR (NU $env:TEMP) — pe Windows `stats=C:\...` din
+    # x265-params/svtav1-params se tokenizeaza la `stats=C` (drive-colon sparge
+    # `:`-split) → stats scris in fisiere "C"/"C.cutree" in CWD, pass 2 esueaza.
+    # Referim stats prin NUME GOL ($script:statsBase) + ffmpeg ruleaza cu CWD =
+    # $AV_TEMP_DIR (vezi $script:ffmpegWorkDir). Caile absolute (passlogfile pe
+    # svtav1 fallback / libaom) raman neschimbate — ele sunt args separate, nu in
+    # string-ul `:`-separat.
+    $guid = [guid]::NewGuid().ToString("N").Substring(0,8)
+    $script:statsBase = "${name}_${guid}.passlog"
+    $script:statsFile = Join-Path $AV_TEMP_DIR $script:statsBase
+    $script:statsDir  = $AV_TEMP_DIR
+    $script:ffmpegWorkDir = $AV_TEMP_DIR
     $script:use2Pass = $true
 }
 
 function Clear-2PassState {
-    if ($script:statsDir -and (Test-Path $script:statsDir)) {
-        Remove-Item -Recurse -Force $script:statsDir -ErrorAction SilentlyContinue
+    # v61: statsDir e acum $AV_TEMP_DIR (partajat) — NU sterge dir-ul; doar
+    # fisierele de stats ale acestui encode (<base>, <base>.cutree, <base>.temp...).
+    if ($script:statsFile) {
+        $sDir  = Split-Path -Parent $script:statsFile
+        $sLeaf = Split-Path -Leaf $script:statsFile
+        if ($sDir -and (Test-Path $sDir)) {
+            Get-ChildItem -Path $sDir -Filter "${sLeaf}*" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
     }
-    $script:statsDir = ""; $script:statsFile = ""
+    $script:statsBase = ""; $script:statsDir = ""; $script:statsFile = ""
     $script:use2Pass = $false
     $script:ffmpegCmdPass1 = @(); $script:ffmpegCmdPass2 = @()
 }
@@ -1502,7 +1547,9 @@ function Invoke-2PassEncode {
     $prog1 = "$env:TEMP\ffprog_p1_$PID.txt"
     $p1Args = $script:ffmpegCmdPass1 + @("-progress",$prog1,"-nostats")
     $startP1 = Get-Date
-    $proc1 = Start-Process ffmpeg -ArgumentList $p1Args -NoNewWindow -PassThru -RedirectStandardError $errFile1
+    # v61: CWD pe $AV_TEMP_DIR — stats= (si eventual dhdr10-info) refera fisiere prin nume gol
+    $wd2 = @{}; if ($script:ffmpegWorkDir) { $wd2['WorkingDirectory'] = $script:ffmpegWorkDir }
+    $proc1 = Start-Process ffmpeg -ArgumentList $p1Args -NoNewWindow -PassThru -RedirectStandardError $errFile1 @wd2
     Show-Progress -proc $proc1 -progFile $prog1 -durSec $DurationSec -startTime $startP1 -Label "$Label P1"
     $proc1.WaitForExit()
     if (Test-Path $errFile1) { Get-Content $errFile1 | Add-Content -Path $LogFile }
@@ -1520,7 +1567,7 @@ function Invoke-2PassEncode {
     $errFile2 = "$env:TEMP\fferr_p2_$PID.txt"
     $p2Args = $script:ffmpegCmdPass2 + $TrailingArgs2 + @("-progress",$ProgressFile,"-nostats")
     $startP2 = Get-Date
-    $proc2 = Start-Process ffmpeg -ArgumentList $p2Args -NoNewWindow -PassThru -RedirectStandardError $errFile2
+    $proc2 = Start-Process ffmpeg -ArgumentList $p2Args -NoNewWindow -PassThru -RedirectStandardError $errFile2 @wd2
     Show-Progress -proc $proc2 -progFile $ProgressFile -durSec $DurationSec -startTime $startP2 -Label "$Label P2"
     $proc2.WaitForExit()
     if (Test-Path $errFile2) { Get-Content $errFile2 | Add-Content -Path $LogFile }
@@ -2498,7 +2545,9 @@ function Get-SourceCodec {
     # ffprobe 8.x (`av1,\n` in loc de `av1\n`); .Trim() strips whitespace, NU
     # comma → callerii primeau "av1," si gate-urile `-eq "av1"` esuau.
     # default=noprint_wrappers=1:nokey=1 returneaza valoarea curata (paritate bash).
-    return (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null).Trim()
+    # v61 audit: [0] (prima linie) — DJI Action 6 v:0 dublu-listat → array.Trim() returna
+    # array ["hevc","hevc"] → switch/`-eq` se comporta gresit (paritate cu head -1 bash).
+    return "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null)[0])".Trim()
 }
 
 # Get-ToolForExtract -Codec <hevc|av1|...> -Kind <dovi|hdr10plus>
@@ -2632,7 +2681,11 @@ function Show-Hdr10PlusDialog {
 # v44: foloseste Get-ToolForExtract pentru a alege binarul corect (HEVC vs AV1).
 function Extract-Hdr10PlusMetadata {
     param([string]$file)
-    $jsonFile = Join-Path $env:TEMP ("hdr10plus_"+[guid]::NewGuid().ToString("N")+".json")
+    # v61: JSON in $AV_TEMP_DIR (NU $env:TEMP) — asa poate fi referit prin nume gol
+    # in dhdr10-info=/hdr10plus-json= cu ffmpeg rulat cu CWD=$AV_TEMP_DIR (drive-colon
+    # din calea absoluta ar sparge string-ul `:`-separat de parametri pe Windows).
+    Ensure-TempDir
+    $jsonFile = Join-Path $AV_TEMP_DIR ("hdr10plus_"+[guid]::NewGuid().ToString("N")+".json")
     $srcCodec = Get-FFprobeValue $file "v:0" "codec_name"
     $hpTool   = Get-ToolForExtract -Codec $srcCodec -Kind "hdr10plus"
     Write-Host "  HDR10+: Extrag metadata dinamica (codec=$srcCodec, tool=$hpTool)..." -ForegroundColor Cyan
@@ -2973,7 +3026,8 @@ function Get-RemuxPreflight {
 
     # v57: default= in loc de csv=p=0 — csv emite trailing comma "av1,"
     # → gate-urile regex anchored esueaza. default= returneaza valori curate.
-    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String).Trim()
+    # v61 audit: [0] (prima linie) — DJI v:0 dublu-listat → Out-String concatena "hevc\nhevc".
+    $videoCodec = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null)[0])".Trim()
     $audioCodecsRaw = (& ffprobe -v error -select_streams a -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
     $subCodecsRaw   = (& ffprobe -v error -select_streams s -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
     $codecTags      = (& ffprobe -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
@@ -4000,7 +4054,9 @@ function Show-LogDialog {
         Write-Host "  LOG: Apply LUT — $(Split-Path -Leaf $selectedLut)" -ForegroundColor Green
         $script:selectedLutPath = $selectedLut
         # Windows: ffmpeg -vf lut3d needs forward slashes or escaped backslashes
-        $lutPathEscaped = $selectedLut -replace '\\','/'
+        # v61: escape si drive-colon (C: → C\:), nu doar backslash→slash — altfel
+        # `lut3d='C:/...'` sparge filtergraph-ul pe Windows (`:` separa optiunile de filtru).
+        $lutPathEscaped = ($selectedLut -replace '\\','/') -replace ':','\:'
         if ($encoderType -eq "x264") {
             $script:logVideoFilter = "lut3d='$lutPathEscaped',format=yuv420p"
             $script:logPixFmt = "yuv420p"
@@ -4054,7 +4110,7 @@ function Show-LogDialog {
         }
         Write-Host "  LOG: Apply HLG LUT — $(Split-Path -Leaf $selectedHlgLut)" -ForegroundColor Green
         $script:selectedLutPath = $selectedHlgLut
-        $hlgLutEscaped = $selectedHlgLut -replace '\\','/'
+        $hlgLutEscaped = ($selectedHlgLut -replace '\\','/') -replace ':','\:'   # v61: + drive-colon escape
         $script:logVideoFilter = "lut3d='$hlgLutEscaped',format=yuv420p10le"
         $script:logPixFmt = "yuv420p10le"
         $script:logColorFlags = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
@@ -4114,7 +4170,7 @@ function Show-LogDialog {
         }
         Write-Host "  LOG: Creative LUT — $(Split-Path -Leaf $selectedCreative)" -ForegroundColor Magenta
         $script:selectedLutPath = $selectedCreative
-        $creativePathEscaped = $selectedCreative -replace '\\','/'
+        $creativePathEscaped = ($selectedCreative -replace '\\','/') -replace ':','\:'   # v61: + drive-colon escape
         if ($encoderType -eq "x264") {
             $script:logVideoFilter = "lut3d='$creativePathEscaped',format=yuv420p"
             $script:logPixFmt = "yuv420p"
@@ -4306,8 +4362,10 @@ function Invoke-FfmpegWithProgress {
     $progFile = [System.IO.Path]::GetTempFileName()
     $errFile  = "$env:TEMP\fferr_$PID.txt"
     $allArgs  = @("-progress", $progFile, "-nostats") + $Arguments
+    # v61: CWD pe $AV_TEMP_DIR cand pipeline-ul refera HDR10+ JSON prin nume gol inline
+    $wd = @{}; if ($script:ffmpegWorkDir) { $wd['WorkingDirectory'] = $script:ffmpegWorkDir }
     $proc = Start-Process -FilePath ffmpeg -ArgumentList $allArgs -NoNewWindow -PassThru `
-        -RedirectStandardError $errFile
+        -RedirectStandardError $errFile @wd
     $startTime = Get-Date
     Show-Progress -proc $proc -progFile $progFile -durSec $TotalSeconds -startTime $startTime -Label $Label
     $proc.WaitForExit()
@@ -6409,15 +6467,27 @@ foreach ($f in $inputFiles) {
     }
 
     # Vidstab 2-pass: trecerea 1 (analiza)
+    # v61: .trf in $AV_TEMP_DIR, referit prin NUME GOL in filtergraph (result=/input=).
+    # Pe Windows calea absoluta (C:\...) sparge filtergraph-ul — `:` separa optiunile
+    # de filtru si nici escape-ul `\:` nu merge la vidstab → "Error parsing filterchain",
+    # output 0 bytes. Detect ruleaza cu Push-Location pe $AV_TEMP_DIR; transform-ul (in
+    # encode-ul principal) foloseste $script:ffmpegWorkDir=$AV_TEMP_DIR (reset conditional).
     $trfFile = $null
     if ($vfIsVidstab) {
         Write-Host "  Vidstab: Trecerea 1/2 — analiza miscare..." -ForegroundColor Cyan
-        $trfFile = Join-Path $env:TEMP ("vidstab_"+[guid]::NewGuid().ToString("N")+".trf")
-        & ffmpeg -threads 0 -i $f.FullName -vf "vidstabdetect=shakiness=5:accuracy=15:result=$trfFile" -f null NUL 2>>$LogFile
+        Ensure-TempDir
+        $trfFile = Join-Path $AV_TEMP_DIR ("vidstab_"+[guid]::NewGuid().ToString("N")+".trf")
+        $trfBare = Split-Path -Leaf $trfFile
+        Push-Location $AV_TEMP_DIR
+        try {
+            & ffmpeg -threads 0 -i $f.FullName -vf "vidstabdetect=shakiness=5:accuracy=15:result=$trfBare" -f null NUL 2>>$LogFile
+        } finally { Pop-Location }
         if (Test-Path $trfFile) {
-            $vfParts += "vidstabtransform=input=${trfFile}:smoothing=10:interpol=bicubic:optzoom=1:zoomspeed=0.25"
+            $vfParts += "vidstabtransform=input=${trfBare}:smoothing=10:interpol=bicubic:optzoom=1:zoomspeed=0.25"
+            $script:ffmpegWorkDir = $AV_TEMP_DIR   # encode-ul principal ruleaza cu CWD pe Temp (nume gol)
             Write-Host "  Vidstab: Trecerea 2/2 — encodare cu stabilizare" -ForegroundColor Green
         } else {
+            $trfFile = $null   # v61: detect esuat → indicator corect pt reset workdir + cleanup
             Write-Host "  Vidstab: analiza esuata — continuam fara stabilizare" -ForegroundColor Yellow
         }
     }
@@ -6679,6 +6749,9 @@ foreach ($f in $inputFiles) {
     $tripleLayerTargetCodec = "hevc"
     $hdr10PlusJson = ""
     $doviRpuFile = ""
+    # v61: reset CWD ffmpeg per fisier (HDR10+ inline / 2-pass stats); pastreaza-l daca
+    # vidstab e activ ($trfFile setat mai sus) — transform-ul refera .trf prin nume gol.
+    if (-not $trfFile) { $script:ffmpegWorkDir = "" }
     # Reset LOG vars per fisier — previne contaminare din fisierul anterior
     $script:logVideoFilter = ""
     $script:logColorFlags  = @()
@@ -6914,7 +6987,7 @@ foreach ($f in $inputFiles) {
                             Write-Host "  HDR10+ embedded + DV preserve: extragand HDR10+ JSON pentru inline injection..." -ForegroundColor Cyan
                             $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                             if ($hdr10PlusJson) {
-                                $hdr10PlusAv1Param = ":hdr10plus-json=$hdr10PlusJson"
+                                $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $hdr10PlusJson)"
                                 Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
                             }
                         }
@@ -6953,7 +7026,7 @@ foreach ($f in $inputFiles) {
                     $jsonPath = Extract-Hdr10PlusMetadata $f.FullName
                     if ($jsonPath) {
                         if ($hdr10pInlineOk) {
-                            $hdr10PlusAv1Param = ":hdr10plus-json=$jsonPath"
+                            $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $jsonPath)"
                             $hdr10PlusJson = $jsonPath
                         } else {
                             Write-Host "  HDR10+: Inline injection indisponibila — DV RPU post-encode ramane functional" -ForegroundColor Yellow
@@ -6971,7 +7044,7 @@ foreach ($f in $inputFiles) {
                     if ($hdr10pResult -eq "preserve") {
                         $jsonPath = Extract-Hdr10PlusMetadata $f.FullName
                         if ($jsonPath -and $hdr10pInlineOk) {
-                            $hdr10PlusAv1Param = ":hdr10plus-json=$jsonPath"
+                            $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $jsonPath)"
                             $hdr10PlusJson = $jsonPath
                         } elseif ($jsonPath) {
                             Write-Host "  HDR10+: Metadata extrasa dar inline injection indisponibila — fallback HDR10 static" -ForegroundColor Yellow
@@ -7087,8 +7160,9 @@ foreach ($f in $inputFiles) {
                 $svtParamsP1 = $svtParams; $svtParamsP2 = $svtParams
                 $passFlagP1 = @(); $passFlagP2 = @()
                 if ($script:svtav1TwoPassSupported) {
-                    $svtParamsP1 = "${svtParams}:pass=1:stats=$($script:statsFile)"
-                    $svtParamsP2 = "${svtParams}:pass=2:stats=$($script:statsFile)"
+                    # v61: nume gol (statsBase) — drive-colon ar sparge svtav1-params pe Windows
+                    $svtParamsP1 = "${svtParams}:pass=1:stats=$($script:statsBase)"
+                    $svtParamsP2 = "${svtParams}:pass=2:stats=$($script:statsBase)"
                 } else {
                     # Inline `pass=N:stats=PATH` (libsvtav1 v1.4+) nedetectat in
                     # ffmpeg help — folosim sintaxa generica `-pass/-passlogfile`
@@ -7484,7 +7558,7 @@ foreach ($f in $inputFiles) {
                 Write-Host "  HDR10+ embedded + DV preserve: extragand HDR10+ JSON pentru inline injection..." -ForegroundColor Cyan
                 $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                 if ($hdr10PlusJson) {
-                    $x265Hdr += "dhdr10-info=${hdr10PlusJson}:"
+                    $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):"
                     Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
                 }
             }
@@ -7514,14 +7588,14 @@ foreach ($f in $inputFiles) {
                     }
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
-                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=${hdr10PlusJson}:" }
+                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):" }
                 }
                 default {
                     # preserve HDR10+ metadata
                     $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
-                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=${hdr10PlusJson}:" }
+                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):" }
                 }
             }
 
@@ -7651,8 +7725,9 @@ foreach ($f in $inputFiles) {
             # VUI stream pe MKV → rezultat anterior bt2020nc/unknown/unknown).
             Initialize-2PassState -File $f.FullName
             $script:codecTagKey = "hevc"  # v57: pt trailing codec_tag
-            $x265ParamsP1 = "${x265Params}:pass=1:stats=$($script:statsFile):slow-firstpass=0"
-            $x265ParamsP2 = "${x265Params}:pass=2:stats=$($script:statsFile)"
+            # v61: nume gol (statsBase) — drive-colon ar sparge x265-params pe Windows
+            $x265ParamsP1 = "${x265Params}:pass=1:stats=$($script:statsBase):slow-firstpass=0"
+            $x265ParamsP2 = "${x265Params}:pass=2:stats=$($script:statsBase)"
             $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx265","-preset",$selectedPreset) + $tuneFlag +
                 @("-pix_fmt",$x265PixFmt,"-x265-params",$x265ParamsP1) +
@@ -7703,8 +7778,10 @@ foreach ($f in $inputFiles) {
             -TrailingArgs2 $trailing2 -ProgressFile $progFile -LogFile $LogFile
         Clear-2PassState
     } else {
+        # v61: CWD pe $AV_TEMP_DIR cand un param inline (dhdr10-info) refera JSON prin nume gol
+        $wd = @{}; if ($script:ffmpegWorkDir) { $wd['WorkingDirectory'] = $script:ffmpegWorkDir }
         $proc = Start-Process ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru `
-            -RedirectStandardError $errFile
+            -RedirectStandardError $errFile @wd
         Show-Progress -proc $proc -progFile $progFile -durSec $durSec -startTime $startTime -Label $encLabel
         $proc.WaitForExit()
         $exitCode = $proc.ExitCode

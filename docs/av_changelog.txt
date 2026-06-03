@@ -3,9 +3,142 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v60 | 93 bug-uri fixate | 230+ features
-  106 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 64 teste [57 test_* + 7 infra]) | ~36800 linii cod+teste | ~5400 linii documentatie
+  TOTAL: v61 | 100 bug-uri fixate | 230+ features
+  113 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 68 teste [61 test_* + 7 infra]) | ~37200 linii cod+teste | ~5400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v61 — Cale cu litera de unitate pe Windows (HDR10+, 2-pass, vidstab, LUT)
+═══════════════════════════════════════════════════════════════
+
+  Pe Windows, mai multe operatii esuau cand o cale de fisier continea
+  litera de unitate (ex. C:\... sau D:\...). Caracterul ":" din litera
+  de unitate se ciocneste cu doua formate interne ale ffmpeg care
+  folosesc ":" ca separator: (1) sirul de parametri ai encoderului
+  (x265 / SVT-AV1), si (2) lantul de filtre (-vf / -filter_complex).
+  In ambele, o cale cu ":" rupea parsarea → ffmpeg pica ("Invalid
+  argument" / "Error parsing filterchain", fisier de iesire de 0
+  octeti) sau scria in locul gresit. Bug pre-existent, mascat de
+  fixture-urile sintetice si de faptul ca apare DOAR pe Windows.
+
+  v60 atenuase doar un caz (HDR10+ la Pipeline, cazand pe HDR10
+  static); v61 face un audit complet pe partea PowerShell si REZOLVA
+  toate cazurile: HDR10+ dinamic (flux principal + Pipeline + Burn-in),
+  statistici 2-pass, fisierul de analiza al stabilizarii (vidstab) si
+  LUT-urile (LOG / HLG / creative).
+
+  Doua solutii, dupa context: pentru parametrii encoderului (unde
+  escaparea "\:" NU e onorata) fisierul temporar e dat prin nume scurt
+  iar ffmpeg ruleaza cu directorul curent fixat pe folderul lui;
+  pentru lantul de filtre, calea e escapata corect ("C:" → "C\:" +
+  slash-uri). Pe Linux / Termux / macOS caile nu au niciodata ":"
+  (incep cu "/"), deci acolo nu era nicio problema — fix exclusiv
+  Windows; comportamentul pe celelalte platforme ramane neschimbat.
+
+  FIX HDR10+ dinamic se pierdea pe Windows in fluxul principal de
+        encode (HEVC dhdr10-info + AV1 hdr10plus-json), inclusiv la
+        hibridul Dolby Vision + HDR10+ — ffmpeg pica cu "Invalid
+        argument" si nu producea fisier. Bug pre-existent (de la
+        introducerea HDR10+ inline), mascat de fixture-urile sintetice
+        SDR si de faptul ca apare doar pe Windows. Acum HDR10+ dinamic
+        e pastrat corect (SMPTE2094-40 prezent in output). Validat pe
+        sample real HEVC HDR10+.
+
+  FIX Burn-in (optiunea 9): pastrarea HDR10+ inline pe AV1 pica pe
+        Windows din acelasi motiv — vechea incercare de a "curata"
+        calea (inlocuind "\" cu "/") NU scotea litera de unitate
+        ("C:"), deci sirul de parametri tot se spargea. Acum e
+        pastrat corect.
+
+  FIX 2-pass VBR (x265 + SVT-AV1) era practic nefunctional pe Windows:
+        fisierul de statistici intre pasul 1 si pasul 2 ajungea pe o
+        cale cu litera de unitate, se scria in fisiere cu nume gresit
+        (ex. "C", "C.cutree") in directorul curent, iar pasul 2 esua.
+        Acum statisticile merg in folderul Temp local, referite prin
+        nume scurt, si 2-pass functioneaza corect. (Bug pre-existent,
+        Windows; pe celelalte platforme 2-pass mergea deja.)
+
+  FIX stabilizarea video (vidstab 2-pass, optiunea de filtru 10) era
+        rupta pe Windows: fisierul de analiza .trf ajungea pe o cale cu
+        litera de unitate pusa direct in lantul de filtre
+        (vidstabdetect=...:result=C:\...), iar ":" rupea filtergraph-ul
+        → "Error parsing filterchain", fara output. Aici nici escaparea
+        nu ajuta, asa ca .trf-ul e dat prin nume scurt cu directorul
+        curent fixat pe folderul Temp. Acum stabilizarea merge si pe
+        Windows. (Bug pre-existent, Windows.)
+
+  FIX aplicarea de LUT (LOG / HLG / creative, prin filtrul lut3d) esua
+        pe Windows cand .cube-ul avea litera de unitate in cale —
+        calea era trecuta in slash-uri dar litera de unitate ramanea
+        neescapata, deci ":" rupea filtrul. Acum e escapata corect
+        ("C:" → "C\:"), la fel ca la Burn-in. (Bug pre-existent,
+        Windows; fluxul Trim/Concat avea deja escaparea corecta din v60.)
+
+  ADD Pipeline (Trim / Concat / Pipeline) pastreaza acum HDR10+ dinamic
+        si pe Windows — nu mai cade pe HDR10 static ca in v60. Asta
+        mentine disponibil pasul HDR10+ → Dolby Vision hybrid din
+        HDR/DV tools (optiunea 8) si pentru sursele procesate pe
+        Windows.
+
+  Detalii tehnice:
+    - Helper nou Get-InlineParamName (av_encode.ps1): seteaza directorul
+      de lucru ffmpeg pe folderul fisierului si intoarce numele scurt
+      (colon-free) pentru a fi pus in dhdr10-info= / hdr10plus-json= /
+      stats=. Var de stare $script:ffmpegWorkDir, resetata per fisier.
+    - Injectie -WorkingDirectory pe toate apelurile Start-Process ffmpeg
+      (encode single-pass, Invoke-2PassEncode pass 1/2,
+      Invoke-FfmpegWithProgress pentru Pipeline). Sigur deoarece toate
+      celelalte cai din comanda sunt absolute (input/output/LUT/temp).
+    - Extract-Hdr10PlusMetadata + Initialize-2PassState scriu acum in
+      $AV_TEMP_DIR (inainte $env:TEMP); Clear-2PassState sterge doar
+      fisierele de stats, nu folderul partajat.
+    - Burn-in (av_burnin.ps1): wrapper Invoke-BurninEncode ruleaza
+      ffmpeg cu Push-Location pe $TempBase (apelurile folosesc call
+      operator, nu Start-Process); JSON-ul HDR10+ scris in $TempBase,
+      referit prin nume scurt.
+    - vidstab (av_encode.ps1): .trf mutat in $AV_TEMP_DIR; detect ruleaza
+      cu Push-Location (apel & ffmpeg), result=/input= prin nume scurt;
+      reset conditional al $script:ffmpegWorkDir (pastrat cand vidstab e
+      activ, fiindca transform-ul ruleaza in encode-ul principal).
+    - lut3d (av_encode.ps1, LOG/HLG/creative): escaparea extinsa de la
+      doar "\"→"/" la +drive-colon ("C:" → "C\:"); fluxul Trim/Concat o
+      avea deja din v60, iar Burn-in o are prin Get-EscapedFfmpegFilterPath.
+    - Doua clase distincte: parametrii encoderului (":"-split fara escape
+      → nume scurt + director de lucru) vs lantul de filtre (escapabil cu
+      "\:" → escapare; vidstab e exceptie unde nici escaparea nu merge).
+    - Audit complet PS1: mux / telemetrie / extractor GPS / av_check si
+      HDR/DV tools (opt 8, metadata-only in av_encode.ps1) NU sunt
+      afectate (paseaza caile ca argumente separate -i / -o / -j /
+      --rpu-in / --hdr10plus-json / -attach, nu in siruri ":"-separate).
+    - Bash neafectat: caile (/storage, /tmp, $SCRIPT_DIR) sunt mereu
+      colon-free; guard-ul belt-and-suspenders din av_trimconcat.sh
+      ramane (no-op pe bash → mereu preserve).
+    - Teste: test_v61_colon_paths.{sh,ps1} (10 asserts Bash / 43
+      PowerShell, integration inclus: HDR10+ encode, lut3d escaped,
+      vidstab nume gol). Validat empiric pe sample real: cale absoluta
+      cu ":" → ffmpeg exit -22 / "Error parsing filterchain" (bug
+      reprodus); nume scurt + WorkingDirectory (sau "\:" escape la
+      filtre) → exit 0 + SMPTE2094-40 pastrat. Suite: bash 33/0/2,
+      PS1 26/0/0.
+
+  SYNC paritate Bash ↔ PowerShell: fix exclusiv Windows (PS1); pe bash
+        feature-ul HDR10+ inline functiona deja (cai colon-free).
+        Paritatea de feature se mentine pe toate fluxurile.
+
+  FIX (audit pre-productie) Pe Windows, analiza fisierelor (optiunea 3)
+        si detectia automata a tipului sursei dadeau rezultate gresite
+        pe doua categorii de surse:
+    - Clipurile DJI Action 6 apareau cu rezolutia si codec-ul dublate
+      (ex. "2688x1512" devenea "26882688x15121512") — fisierul DJI
+      raporteaza intern stream-ul video de doua ori.
+    - Sursele HDR (HDR10 / HDR10+ / Dolby Vision) puteau fi etichetate
+      gresit din cauza unui caracter in plus citit din metadata.
+        Acum detectia e corecta pe toata gama testata (DJI, HDR10, HDR10+,
+        Dolby Vision, hibrid DV+HDR10+, Samsung Log), iar eticheta de codec
+        pusa la mux si telemetrie nu se mai dubleaza. Bug pre-existent, doar
+        pe Windows (PowerShell); pe celelalte platforme citirea era deja
+        corecta. Test nou: test_v61_ffprobe_robust (bash + PowerShell).
 
 
 ═══════════════════════════════════════════════════════════════

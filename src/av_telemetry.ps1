@@ -1117,9 +1117,11 @@ function Invoke-EmbedTelemetryLossless {
     if ($targetExt -in @("mp4","mov","m4v")) {
         # v57: tag codec_tag pe MP4/MOV — stream copy pastreaza tag-ul sursei
         # (adesea hev1) → DV-aware players nu engaja. Detectam codec sursa.
-        $srcCodec = (& ffprobe -v error -select_streams v:0 `
+        # v61 audit: [0] prima linie — DJI Action 6 v:0 dublu-listat → array.Trim()
+        # ar da ["hevc","hevc"] → Get-CodecTagForContainer dubla -tag:v.
+        $srcCodec = "$(@(& ffprobe -v error -select_streams v:0 `
             -show_entries stream=codec_name `
-            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null).Trim()
+            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null)[0])".Trim()
         $telemTag = Get-CodecTagForContainer $srcCodec $targetExt
         if ($telemTag.Count -gt 0) { $ffArgs.AddRange([string[]]$telemTag) }
         $ffArgs.AddRange([string[]]@("-movflags","+faststart"))

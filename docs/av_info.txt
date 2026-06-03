@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v60
+  Documentatie Setup & Utilizare — v61
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  102 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
-  2 Python engines + 53 test_* scripts + 7 infra).
+  113 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
+  2 Python engines + 61 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).

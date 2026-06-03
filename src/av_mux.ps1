@@ -36,7 +36,9 @@ $SupportedOutputExt = @("mkv","mp4","mov","webm")
 function Get-SourceCodec {
     param([string]$File)
     # v57: default= in loc de csv=p=0 — single-field emite trailing comma "av1,"
-    $c = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
+    # v61 audit: [0] (prima linie) — DJI v:0 dublu-listat → Out-String concatena "hevc\nhevc"
+    # → codec_tag (hvc1/av01) pierdut la mux (paritate cu head -1 bash).
+    $c = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null)[0])"
     return $c.Trim().ToLowerInvariant()
 }
 
@@ -145,7 +147,8 @@ function Get-RemuxPreflight {
     $target = $TargetContainer.ToLowerInvariant()
     # v57: default= in loc de csv=p=0 — single-field emite trailing comma "av1,"
     # care esua gate-urile regex anchored (`^av1$`).
-    $videoCodec = ((& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String).Trim()
+    # v61 audit: [0] (prima linie) — DJI v:0 dublu-listat → "hevc\nhevc".
+    $videoCodec = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null)[0])".Trim()
     $audioCodecs = ((& ffprobe -v error -select_streams a -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
     $subCodecs   = ((& ffprobe -v error -select_streams s -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String) -split "`r?`n" | Where-Object { $_ }
     $codecTags   = (& ffprobe -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String

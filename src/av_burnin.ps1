@@ -103,6 +103,19 @@ $script:BurninEncExtraArgs = @()
 $script:BurninLutFile = ""
 $script:BurninHdr10PlusJson = ""
 $script:BurninDowngradeReason = ""
+# v61: CWD ffmpeg cand HDR10+ JSON e referit prin nume gol in svtav1-params
+# (drive-colon din calea absoluta sparge string-ul `:`-separat pe Windows).
+$script:BurninWorkDir = ""
+
+# v61: wrapper care ruleaza ffmpeg cu CWD=$script:BurninWorkDir cand e setat, ca
+# parametrul svtav1 hdr10plus-json sa poata referi JSON-ul prin NUME GOL (colon-free).
+# Toate celelalte cai din comenzile de burn-in sunt absolute (video, secventa PNG,
+# subtitrare, output), deci schimbarea CWD nu afecteaza nimic. Fara param block →
+# $args capteaza verbatim toate argumentele (inclusiv flag-urile `-...`).
+function Invoke-BurninEncode {
+    if ($script:BurninWorkDir) { Push-Location $script:BurninWorkDir }
+    try { & ffmpeg @args } finally { if ($script:BurninWorkDir) { Pop-Location } }
+}
 
 function Get-BurninModeLabel {
     param([string]$Mode)
@@ -326,7 +339,9 @@ function Get-BurninHdr10PlusJson {
     $tool = if ($SrcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { return "" }
     $rawTmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("burnin_hp_{0}_{1}" -f $PID, [guid]::NewGuid().ToString().Substring(0,8)))
-    $jsonTmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("burnin_hp_{0}_{1}.json" -f $PID, [guid]::NewGuid().ToString().Substring(0,8)))
+    # v61: JSON in $TempBase (NU OS temp) — referit prin nume gol in svtav1-params
+    # cu ffmpeg rulat cu CWD=$TempBase (drive-colon ar sparge string-ul `:`-separat).
+    $jsonTmp = Join-Path $TempBase ("burnin_hp_{0}_{1}.json" -f $PID, [guid]::NewGuid().ToString().Substring(0,8))
     if ($SrcCodec -eq "av1") {
         $rawTmp = $rawTmp + ".ivf"
         & ffmpeg -y -v error -i $File -c:v copy -f ivf $rawTmp 2>$null | Out-Null
@@ -356,6 +371,7 @@ function Reset-BurninState {
     $script:BurninLutFile = ""
     $script:BurninHdr10PlusJson = ""
     $script:BurninDowngradeReason = ""
+    $script:BurninWorkDir = ""   # v61
 }
 
 # Dialog per fisier. Foloseste $encInfo.Name pentru encoder picked din Get-Encoder.
@@ -581,8 +597,10 @@ function Build-BurninVideoChain {
             $script:BurninEncExtraArgs += @("-pix_fmt","yuv420p10le")
             $script:BurninEncExtraArgs += @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
             $hdr = Get-BurninHdr10Static -File $File
-            $jsonEsc = ($json -replace '\\','/')
-            $av1p = "enable-hdr=1:hdr10plus-json=$jsonEsc"
+            # v61: nume gol + CWD=$TempBase (vechiul `\`→`/` NU scotea drive-colon `C:` →
+            # svtav1-params se spargea pe Windows; acum referim JSON colon-free).
+            $script:BurninWorkDir = Split-Path -Parent $json
+            $av1p = "enable-hdr=1:hdr10plus-json=$(Split-Path -Leaf $json)"
             if ($hdr.Available -and $hdr.MasterDisplaySvtav1) {
                 $av1p += ":mastering-display=$($hdr.MasterDisplaySvtav1)"
                 if ($hdr.MaxCll) { $av1p += ":content-light=$($hdr.MaxCll)" }
@@ -857,7 +875,7 @@ function Invoke-HudFlow {
         }
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Overlay + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        & ffmpeg -v error -stats `
+        Invoke-BurninEncode -v error -stats `
             @seekArgs `
             -i $p.Video `
             -framerate $hudFps `
@@ -980,7 +998,7 @@ function Invoke-SrtFlow {
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in SRT + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        & ffmpeg -v error -stats `
+        Invoke-BurninEncode -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
@@ -1096,7 +1114,7 @@ function Invoke-AssFlow {
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in ASS + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        & ffmpeg -v error -stats `
+        Invoke-BurninEncode -v error -stats `
             @seekArgs `
             -i $p.Video `
             -vf $vf `
@@ -1274,7 +1292,7 @@ function Invoke-ImgFlow {
         switch ($p.Kind) {
             { $_ -in @("ext_pgs","ext_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (sursa: $($p.Aux)) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-                & ffmpeg -v error -stats `
+                Invoke-BurninEncode -v error -stats `
                     @seekArgs `
                     -i $p.Video `
                     -i $p.Aux `
@@ -1286,7 +1304,7 @@ function Invoke-ImgFlow {
             }
             { $_ -in @("emb_pgs","emb_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (track s:$($p.Track) embedded) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-                & ffmpeg -v error -stats `
+                Invoke-BurninEncode -v error -stats `
                     @seekArgs `
                     -i $p.Video `
                     -filter_complex $fcEmb `

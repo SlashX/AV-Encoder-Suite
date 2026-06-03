@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v60** — 93 bugs fixed · 230+ features · ~36 800 LoC · 106 files
+**v61** — 100 bugs fixed · 230+ features · ~37 200 LoC · 113 files
 
 ---
 
@@ -376,4 +376,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v60** — 93 bugs fixed · 230+ features · ~36 800 LoC · 106 files
+Current: **v61** — 100 bugs fixed · 230+ features · ~37 200 LoC · 113 files

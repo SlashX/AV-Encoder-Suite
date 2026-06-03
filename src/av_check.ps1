@@ -34,8 +34,13 @@ function Get-FFprobeValue {
     # v57 FIX: csv=p=0 emite trailing comma chiar la single-field queries (ffprobe 8.x)
     # → polua display + CSV (`1920,x1080,`, `bt2020,`). default=noprint_wrappers=1:nokey=1
     # returneaza valoarea curata (paritate cu bash).
-    ($( & ffprobe -v error -select_streams $stream `
-        -show_entries "stream=$entry" -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null) -join "").Trim()
+    # v61 audit: -First 1 (paritate cu awk '...{exit}' din av_check.sh). Pe surse unde
+    # -select_streams v:0 raporteaza streamul de 2 ori (DJI: cover mjpeg + multi-track),
+    # `-join ""` concatena valorile → "hevchevc" / "26882688x15121512" in CSV.
+    $v = @(& ffprobe -v error -select_streams $stream `
+        -show_entries "stream=$entry" -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null)
+    if ($v.Count -ge 1 -and $null -ne $v[0]) { return ([string]$v[0]).Trim() }
+    return ""
 }
 
 function Get-SizeEst {

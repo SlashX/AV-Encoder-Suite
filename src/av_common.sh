@@ -975,8 +975,11 @@ _warn_audio_metadata() {
 detect_source_codec() {
     local file="$1"
     [[ -z "$file" || ! -f "$file" ]] && { echo ""; return 1; }
+    # v61 audit: head -1 — DJI Action 6 raporteaza stream v:0 de 2 ori (`-select_streams
+    # v:0` → "hevc\nhevc"); fara head -1 case/== exacte esueaza. Paritate cu restul
+    # citirilor single-field v:0 din av_common.sh + Get-SourceCodec PS1.
     ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
-        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1
 }
 
 # tool_for_extract <codec> <kind>

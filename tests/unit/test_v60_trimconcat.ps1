@@ -187,6 +187,9 @@ if ($gpmAst) {
     Assert-Eq $false ([bool]($gpmBody -match 'frame=side_data_list')) "Get-PipelineHdrMode NU mai foloseste side_data_list"
 }
 
-# ── 16. v60 audit: colon-guard pe inline injection (dhdr10-info / hdr10plus-json) ──
-Assert-Contains $ENCODE_TXT 'incompatibil cu x265-params'   "colon-guard x265 dhdr10-info"
-Assert-Contains $ENCODE_TXT 'incompatibil cu svtav1-params' "colon-guard svtav1 hdr10plus-json"
+# ── 16. v61: pipeline pastreaza HDR10+ inline (degrade-guard v60 inlocuit cu preserve) ──
+# Pe Windows JSON-ul e referit prin nume gol (Get-InlineParamName) + ffmpeg cu CWD=$AV_TEMP_DIR,
+# deci nu mai cade pe HDR10 static. Vezi test_v61_colon_paths pentru mecanismul complet.
+Assert-Contains    $ENCODE_TXT 'dhdr10-info=$(Get-InlineParamName'   "pipeline x265: preserve HDR10+ (nume gol)"
+Assert-Contains    $ENCODE_TXT 'hdr10plus-json=$(Get-InlineParamName' "pipeline svtav1: preserve HDR10+ (nume gol)"
+Assert-NotContains $ENCODE_TXT 'incompatibil cu x265-params'        "pipeline: degrade-guard v60 eliminat (x265)"

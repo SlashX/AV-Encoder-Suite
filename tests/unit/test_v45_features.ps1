@@ -64,9 +64,10 @@ foreach ($name in @('Get-DvRpu','Generate-DvRpuFromHdr10Plus','Extract-Hdr10Plus
 # ─────────────────────────────────────────────────────────────────
 # HEVC DV preserve branch trebuie sa extraga HDR10+ inline:
 Assert-Match $srcText 'HDR10\+ embedded \+ DV preserve' "DOVI+HDR10+ co-existence: HEVC branch has inline HDR10+ extract path"
-Assert-Match $srcText 'dhdr10-info=\$\{hdr10PlusJson\}' "DOVI+HDR10+ co-existence: HEVC branch sets dhdr10-info= when both present"
+# v61: calea JSON e referita prin nume gol (Get-InlineParamName) — drive-colon Windows
+Assert-Match $srcText 'dhdr10-info=\$\(Get-InlineParamName \$hdr10PlusJson\)' "DOVI+HDR10+ co-existence: HEVC branch sets dhdr10-info= (v61 nume gol)"
 # AV1 DV preserve branch trebuie sa extraga HDR10+ inline (svtav1-params):
-Assert-Match $srcText 'hdr10plus-json=\$hdr10PlusJson' "DOVI+HDR10+ co-existence: AV1 branch sets hdr10plus-json= when both present"
+Assert-Match $srcText 'hdr10plus-json=\$\(Get-InlineParamName \$hdr10PlusJson\)' "DOVI+HDR10+ co-existence: AV1 branch sets hdr10plus-json= (v61 nume gol)"
 
 # ─────────────────────────────────────────────────────────────────
 # 6) DOVI_PRESERVE_POLICY — schema + dialog bypass markers
