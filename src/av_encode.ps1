@@ -1943,14 +1943,22 @@ function Get-SourceInfo {
 
 function Get-DVProfile {
     param([string]$file)
-    $fd = & ffprobe -v error -show_frames -select_streams v:0 `
-        -read_intervals "%+#5" `
-        -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id `
-        -of default "$file" 2>$null
-    $n = ($fd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) `
-        -replace "dv_profile=",""
-    $c = ($fd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) `
-        -replace "dv_bl_signal_compatibility_id=",""
+    # v62: sursa autoritara = STREAM side_data "DOVI configuration record" (HEVC + AV1);
+    # frame_side_data=dv_profile e GOL pe AV1 (doar vdr_rpu_profile) → P10 ramanea nedetectat.
+    $sd = & ffprobe -v error -select_streams v:0 `
+        -show_entries stream_side_data=dv_profile,dv_bl_signal_compatibility_id `
+        -of default=noprint_wrappers=1 "$file" 2>$null
+    $n = ($sd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) -replace "dv_profile=",""
+    $c = ($sd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) -replace "dv_bl_signal_compatibility_id=",""
+    if (-not ($n -match '^\d+$')) {
+        # fallback: frame side_data (unele surse HEVC expun DV doar per-frame)
+        $fd = & ffprobe -v error -show_frames -select_streams v:0 `
+            -read_intervals "%+#5" `
+            -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id `
+            -of default "$file" 2>$null
+        $n = ($fd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) -replace "dv_profile=",""
+        $c = ($fd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) -replace "dv_bl_signal_compatibility_id=",""
+    }
     if ($n -match '^\d+$') {
         switch ($n) {
             "4" { "Profil 4 (DV+HDR10 fallback)" }
@@ -1965,6 +1973,7 @@ function Get-DVProfile {
                 }
             }
             "9" { "Profil 9 (DV+SDR)" }
+            "10" { switch ($c) { "1"{"Profil 10.1 (DV AV1 + HDR10)"} "2"{"Profil 10.2 (DV AV1 + SDR)"} "4"{"Profil 10.4 (DV AV1 + HLG)"} default{"Profil 10 (DV AV1)"} } }
             default { "Profil $n" }
         }
     } else { "Dolby Vision (profil nedetectat)" }
@@ -2101,9 +2110,17 @@ function Get-SourceInfoExtended {
         # Detect color transfer
         $srcColorTrc = Get-FFprobeValue $file "v:0" "color_transfer"
 
-        # Detect bit depth
+        # Detect bit depth — fallback pe pix_fmt. v62: bits_per_raw_sample e N/A pe multe
+        # surse HEVC 10-bit → cadea pe 8 → ratam Apple Log / D-Log bt2020 / unknown_log
+        # (toate cer >=10-bit). Paritate cu av_check.ps1 + av_common.sh.
         $srcBps = Get-FFprobeValue $file "v:0" "bits_per_raw_sample"
-        if (-not $srcBps -or $srcBps -eq "0" -or $srcBps -notmatch '^\d+$') { $srcBps = "8" }
+        if (-not $srcBps -or $srcBps -eq "0" -or $srcBps -notmatch '^\d+$') {
+            $pfBd = Get-FFprobeValue $file "v:0" "pix_fmt"
+            if     ($pfBd -match 'p16|p016') { $srcBps = "16" }
+            elseif ($pfBd -match 'p12|p012') { $srcBps = "12" }
+            elseif ($pfBd -match 'p10|p010') { $srcBps = "10" }
+            else                             { $srcBps = "8"  }
+        }
         $srcBps = [int]$srcBps
 
         # Detect color primaries
@@ -2139,18 +2156,27 @@ function Get-SourceInfoExtended {
             }
         } elseif ($cameraMake -eq "samsung") {
             if ($samsungLogTag -or ($srcBps -ge 10 -and $srcPrimaries -match "bt2020")) {
-                # Samsung HDR10+ is NOT Log
-                if (-not $isHdrPlus -and $transfer -ne "smpte2084") {
+                # Samsung HDR10+ is NOT Log; v62: exclude si HLG (arib-std-b67) — Samsung
+                # Log raporteaza transfer=unknown, HLG raporteaza arib (ex. clip gradat
+                # Log+LUT in editorul Samsung → output arib/bt2020 ar fi marcat gresit Log).
+                if (-not $isHdrPlus -and $transfer -ne "smpte2084" -and $transfer -ne "arib-std-b67") {
                     $logProfile = "samsung_log"
                 }
             }
         } elseif ($cameraMake -eq "dji") {
-            if ($srcBps -ge 10 -and $srcPrimaries -match "bt2020") {
-                $logProfile = "dlog_m"
+            # v62: exclude HLG (drone DJI — Mavic/Air — pot emite HLG bt2020/arib)
+            if ($srcBps -ge 10 -and $srcPrimaries -match "bt2020" -and $transfer -ne "arib-std-b67") {
+                $logProfile = "dlog_m"   # DJI vechi (Mavic/Air) D-Log Wide → container bt2020
+            } elseif ($srcBps -ge 10 -and $transfer -ne "arib-std-b67" `
+                    -and $transfer -ne "smpte2084" -and -not $dovi -and -not $isHdrPlus) {
+                # v62 Faza B: Osmo Action 6 D-Log M e bt709 in container (identic cu Normal)
+                # → sondam djmd protobuf (.2.4.1==19). Normal / non-AC006 / fara djmd → SDR.
+                if ((Test-DjiDLogM $file) -eq "dlog_m") { $logProfile = "dlog_m" }
             }
         } elseif ($srcBps -ge 10 -and $srcPrimaries -match "bt2020" `
                 -and -not $isHdrPlus -and $transfer -ne "smpte2084" -and -not $dovi) {
-            if ($srcColorTrc -eq "unknown" -or $srcColorTrc -match "log|arib") {
+            # v62: NU mai tratam arib ca semnal Log (arib-std-b67 = HLG, prins separat)
+            if ($srcColorTrc -eq "unknown" -or $srcColorTrc -match "log") {
                 $logProfile = "unknown_log"
                 $cameraMake = "unknown"
             }
@@ -2212,7 +2238,9 @@ function Find-LutForBrand {
     if ($prefix) {
         $found = @(Get-ChildItem -Path $lutsDir -Filter "${prefix}*.cube" -ErrorAction SilentlyContinue)
     }
-    if ($found.Count -eq 0 -and ($brand -eq "unknown" -or -not $brand)) {
+    # v62: fara LUT cu prefix de brand → cadem pe TOATE .cube (orice brand, nu doar
+    # unknown). LUT-ul e obligatoriu pt transformare → userul poate folosi orice are.
+    if ($found.Count -eq 0) {
         $found = @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -ErrorAction SilentlyContinue)
     }
     if ($found.Count -gt 0) {
@@ -2384,28 +2412,25 @@ function Show-TcHdrDialog {
             $lut = Find-LutForBrand $brand $InputDir $InputDir
             Write-Host ""
             Write-Host "  Sursa LOG: $logLabel (brand=$brand)" -ForegroundColor Cyan
+            # v62: conversia fara-LUT (tonemap) ELIMINATA pe LOG — Log→Rec.709 cere LUT.
             if ($lut.files.Count -gt 0) {
                 Write-Host "  1) Apply LUT Rec.709 ($($lut.files[0].Name)) [implicit]"
-                Write-Host "  2) Tonemap -> SDR (Hable, generic)"
-                Write-Host "  3) Keep LOG (fara transform — pentru grading ulterior)"
-                Write-Host "  4) Skip"
-                $c = Read-Host "  Alege 1-4 [implicit: 1]"
-                switch ($c) {
-                    "2" { $script:tcMode = "tonemap" }
-                    "3" { $script:tcMode = "keep_log" }
-                    "4" { $script:tcMode = "skip" }
-                    default { $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName }
-                }
-            } else {
-                Write-Host "  (LUT brand-specific lipseste din Luts/ — opt LUT indisponibila)" -ForegroundColor DarkGray
-                Write-Host "  1) Tonemap -> SDR [implicit]"
-                Write-Host "  2) Keep LOG (fara transform)"
+                Write-Host "  2) Keep LOG (fara transform — pentru grading ulterior)"
                 Write-Host "  3) Skip"
                 $c = Read-Host "  Alege 1-3 [implicit: 1]"
                 switch ($c) {
                     "2" { $script:tcMode = "keep_log" }
                     "3" { $script:tcMode = "skip" }
-                    default { $script:tcMode = "tonemap" }
+                    default { $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName }
+                }
+            } else {
+                Write-Host "  (Fara LUT in Luts/ — conversia corecta Log->Rec.709 nu e posibila.)" -ForegroundColor DarkGray
+                Write-Host "  1) Keep LOG (fara transform) [implicit]"
+                Write-Host "  2) Skip"
+                $c = Read-Host "  Alege 1-2 [implicit: 1]"
+                switch ($c) {
+                    "2" { $script:tcMode = "skip" }
+                    default { $script:tcMode = "keep_log" }
                 }
             }
         }
@@ -2425,7 +2450,9 @@ function Build-TcVideoArgs {
         "keep_log" { return $true }
         "lut_rec709" {
             $esc = ($script:tcLutFile -replace '\\','/') -replace ':','\:'
-            $script:tcVfPrepend = "lut3d='${esc}'"
+            # v62 audit: setparams re-eticheteaza culoarea pe frame (lut3d nu o atinge →
+            # mis-tagged pe ORICE container fara ea).
+            $script:tcVfPrepend = "lut3d='${esc}',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             return $true
         }
         "tonemap" {
@@ -2817,6 +2844,33 @@ function Repair-Av1DvT35 {
     Remove-Item $fixed -Force -ErrorAction SilentlyContinue
     Write-Host "  DV: ⚠ repair T.35 AV1 esuat — DV poate fi pierdut la dav1d" -ForegroundColor Yellow
     return $false
+}
+
+# Test-DjiDLogM — detecteaza D-Log M pe DJI Osmo Action 6 (AC006) din track-ul
+# djmd. Container raporteaza bt709 identic pt Normal SI D-Log M → singura cale e
+# protobuf-ul djmd (path .2.4.1==19). Engine partajat src/dji_djmd_dlogm.py
+# (model-gate intern pe dvtm_ac206.proto). Return: "dlog_m" | "normal" | "unknown".
+# Soft-fail (python/engine/ffmpeg lipsa, fara track djmd) → "unknown".
+function Test-DjiDLogM {
+    param([string]$File)
+    $engine = Join-Path $PSScriptRoot "dji_djmd_dlogm.py"
+    if (-not (Test-Path $engine)) { return "unknown" }
+    $py = _Get-AvPython
+    if (-not $py) { return "unknown" }
+    $idxLine = @(& ffprobe -v error -show_entries stream=index,codec_tag_string -of csv=p=0 -- $File 2>$null) |
+        Where-Object { ($_ -split ',')[1] -eq 'djmd' } | Select-Object -First 1
+    if (-not $idxLine) { return "unknown" }
+    $djmdIdx = ($idxLine -split ',')[0].Trim()
+    if ($djmdIdx -notmatch '^\d+$') { return "unknown" }
+    $dump = Join-Path $env:TEMP ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
+    & ffmpeg -v error -y -i $File -map "0:$djmdIdx" -c copy -f data $dump 2>$null | Out-Null
+    $mode = "unknown"
+    if ((Test-Path $dump) -and (Get-Item $dump).Length -gt 0) {
+        $out = (& $py $engine $dump 2>$null | Select-Object -First 1)
+        if ($out -eq "dlog_m" -or $out -eq "normal") { $mode = $out }
+    }
+    Remove-Item $dump -Force -ErrorAction SilentlyContinue
+    return $mode
 }
 
 # ── Inject-DvRpu — injecteaza DV RPU in HEVC sau AV1 stream ────────
@@ -3910,6 +3964,8 @@ function Show-LogDialog {
     $script:logColorFlags  = @()
     $script:logPixFmt      = ""
     $script:logExtraX265   = ""
+    $script:logExtraX264   = ""   # v62 Bug2: culoare in x264-params (LUT Rec.709 / Creative)
+    # Nota: av1/svtav1 NU are var aici — deriva VUI corect din $logColorFlags (av1VuiParam).
     $script:selectedLutPath = ""
 
     $profileLabel = Get-LogProfileLabel $logProfile
@@ -3935,7 +3991,17 @@ function Show-LogDialog {
     }
 
     $optNum = 1
-    $optLut = 0; $optSdr = 0; $optHdr = 0; $optHlgLut = 0; $optHlg = 0; $optPreserve = 0; $optCopy = 0; $optSkip = 0
+    $optLut = 0; $optHlgLut = 0; $optPreserve = 0; $optCreative = 0; $optCopy = 0; $optSkip = 0
+    # v62: conversiile fara-LUT (zscale tonemap) ELIMINATE — Log→Rec.709/HLG cere un LUT
+    # (.cube) ca sa fie corect (zscale crapa oricum pe LOG cu transfer=unknown).
+    $anyLut = $hasLut -or ($hasHlgLut -and $encoderType -ne "x264") -or $hasCreativeLut
+    if (-not $anyLut) {
+        Write-Host "  ║  Nu am gasit LUT in Luts/ pentru acest brand.  ║" -ForegroundColor Yellow
+        Write-Host "  ║  Fara LUT, LOG-ul NU poate fi transformat       ║" -ForegroundColor Yellow
+        Write-Host "  ║  corect in Rec.709 (cere un .cube). Optiuni:    ║" -ForegroundColor Yellow
+        Write-Host "  ║  pune un LUT in Luts/, sau Preserve / Copy.     ║" -ForegroundColor Yellow
+        Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
+    }
 
     if ($encoderType -eq "x264") {
         # x264: no HDR10 option
@@ -3950,10 +4016,6 @@ function Show-LogDialog {
             }
             $optNum++
         }
-        $optSdr = $optNum
-        Write-Host ("  ║  {0}) Convert SDR (fara LUT) → 8-bit Rec.709  ║" -f $optNum) -ForegroundColor White
-        Write-Host "  ║     (best-effort — LUT recomandat)           ║" -ForegroundColor DarkGray
-        $optNum++
         $optPreserve = $optNum
         Write-Host ("  ║  {0}) Preserve Log (compresie 8-bit)           ║" -f $optNum) -ForegroundColor White
         Write-Host "  ║     ⚠ 8-bit Log pierde gradatii — x265 rec.  ║" -ForegroundColor Yellow
@@ -3983,14 +4045,6 @@ function Show-LogDialog {
             }
             $optNum++
         }
-        $optSdr = $optNum
-        Write-Host ("  ║  {0}) Convert SDR (fara LUT) → 10-bit Rec.709 ║" -f $optNum) -ForegroundColor White
-        Write-Host "  ║     (best-effort — LUT recomandat)           ║" -ForegroundColor DarkGray
-        $optNum++
-        $optHdr = $optNum
-        Write-Host ("  ║  {0}) Convert HDR10 (fara LUT) → 10-bit       ║" -f $optNum) -ForegroundColor White
-        Write-Host "  ║     BT.2020 / PQ (HDR10 static)              ║" -ForegroundColor DarkGray
-        $optNum++
         if ($hasHlgLut) {
             $optHlgLut = $optNum
             if ($hlgLutResult.files.Count -eq 1) {
@@ -4002,10 +4056,6 @@ function Show-LogDialog {
             }
             $optNum++
         }
-        $optHlg = $optNum
-        Write-Host ("  ║  {0}) Convert HLG (fara LUT) → 10-bit         ║" -f $optNum) -ForegroundColor White
-        Write-Host "  ║     BT.2020 / HLG (arib-std-b67)             ║" -ForegroundColor DarkGray
-        $optNum++
         $optPreserve = $optNum
         Write-Host ("  ║  {0}) Preserve Log (compresie, pastreaza prof) ║" -f $optNum) -ForegroundColor White
         $optNum++
@@ -4025,7 +4075,7 @@ function Show-LogDialog {
     Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
 
     $maxOpt = $optSkip
-    $defaultOpt = $optSdr
+    $defaultOpt = $optPreserve
     if ($hasLut) { $defaultOpt = $optLut }
     $logChoice = Read-Host "  Alege 1-$maxOpt [implicit: $defaultOpt]"
     if (-not $logChoice) { $logChoice = $defaultOpt }
@@ -4057,37 +4107,22 @@ function Show-LogDialog {
         # v61: escape si drive-colon (C: → C\:), nu doar backslash→slash — altfel
         # `lut3d='C:/...'` sparge filtergraph-ul pe Windows (`:` separa optiunile de filtru).
         $lutPathEscaped = ($selectedLut -replace '\\','/') -replace ':','\:'
+        # v62 audit: setparams re-eticheteaza culoarea pe FRAME (lut3d nu o atinge →
+        # ramanea bt2020/unknown de la sursa). Pe MKV ffprobe citeste Matroska Colour
+        # din frame (nu VUI/SPS) → fara setparams iesirea LUT Rec.709 era mis-tagged.
         if ($encoderType -eq "x264") {
-            $script:logVideoFilter = "lut3d='$lutPathEscaped',format=yuv420p"
+            $script:logVideoFilter = "lut3d='$lutPathEscaped',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             $script:logPixFmt = "yuv420p"
         } else {
-            $script:logVideoFilter = "lut3d='$lutPathEscaped',format=yuv420p10le"
+            $script:logVideoFilter = "lut3d='$lutPathEscaped',format=yuv420p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             $script:logPixFmt = "yuv420p10le"
         }
         $script:logColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
+        # v62 Bug2: culoarea bt709 si in params nativi encoder (ffmpeg -color_* nu propaga
+        # VUI la x265/x264 → output ramanea marcat bt2020/unknown). av1 = via av1VuiParam.
+        $script:logExtraX265 = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+        $script:logExtraX264 = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
         return "lut"
-    }
-    elseif ($logChoice -eq $optSdr) {
-        Write-Host "  LOG: Convert SDR (best-effort, fara LUT)" -ForegroundColor Green
-        if ($encoderType -eq "x264") {
-            $script:logVideoFilter = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
-            $script:logPixFmt = "yuv420p"
-        } else {
-            $script:logVideoFilter = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p10le"
-            $script:logPixFmt = "yuv420p10le"
-        }
-        $script:logColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
-        return "sdr"
-    }
-    elseif ($logChoice -eq $optHdr -and $optHdr -gt 0) {
-        Write-Host "  LOG: Convert HDR10 static (fara LUT)" -ForegroundColor Green
-        $script:logVideoFilter = "zscale=t=linear:npl=100,zscale=t=smpte2084:p=bt2020:m=bt2020nc,format=yuv420p10le"
-        $script:logPixFmt = "yuv420p10le"
-        $script:logColorFlags = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
-        if ($encoderType -eq "x265") {
-            $script:logExtraX265 = "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
-        }
-        return "hdr10"
     }
     elseif ($logChoice -eq $optHlgLut -and $optHlgLut -gt 0) {
         # v39: Apply LUT Log → HLG
@@ -4111,18 +4146,7 @@ function Show-LogDialog {
         Write-Host "  LOG: Apply HLG LUT — $(Split-Path -Leaf $selectedHlgLut)" -ForegroundColor Green
         $script:selectedLutPath = $selectedHlgLut
         $hlgLutEscaped = ($selectedHlgLut -replace '\\','/') -replace ':','\:'   # v61: + drive-colon escape
-        $script:logVideoFilter = "lut3d='$hlgLutEscaped',format=yuv420p10le"
-        $script:logPixFmt = "yuv420p10le"
-        $script:logColorFlags = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
-        if ($encoderType -eq "x265") {
-            $script:logExtraX265 = "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
-        }
-        return "hlg"
-    }
-    elseif ($logChoice -eq $optHlg -and $optHlg -gt 0) {
-        # v39: Convert HLG (no LUT) — best-effort
-        Write-Host "  LOG: Convert HLG (best-effort, fara LUT)" -ForegroundColor Green
-        $script:logVideoFilter = "zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+        $script:logVideoFilter = "lut3d='$hlgLutEscaped',format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc"
         $script:logPixFmt = "yuv420p10le"
         $script:logColorFlags = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
         if ($encoderType -eq "x265") {
@@ -4172,13 +4196,16 @@ function Show-LogDialog {
         $script:selectedLutPath = $selectedCreative
         $creativePathEscaped = ($selectedCreative -replace '\\','/') -replace ':','\:'   # v61: + drive-colon escape
         if ($encoderType -eq "x264") {
-            $script:logVideoFilter = "lut3d='$creativePathEscaped',format=yuv420p"
+            $script:logVideoFilter = "lut3d='$creativePathEscaped',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             $script:logPixFmt = "yuv420p"
         } else {
-            $script:logVideoFilter = "lut3d='$creativePathEscaped',format=yuv420p10le"
+            $script:logVideoFilter = "lut3d='$creativePathEscaped',format=yuv420p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             $script:logPixFmt = "yuv420p10le"
         }
         $script:logColorFlags = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
+        # v62 Bug2: culoare bt709 in params encoder
+        $script:logExtraX265 = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+        $script:logExtraX264 = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
         return "creative_lut"
     }
     elseif ($logChoice -eq $optCopy) {
@@ -6757,6 +6784,7 @@ foreach ($f in $inputFiles) {
     $script:logColorFlags  = @()
     $script:logPixFmt      = ""
     $script:logExtraX265   = ""
+    $script:logExtraX264   = ""   # v62 audit: lipsea — x264 il consuma neconditionat (6859) → leak intre fisiere
     $script:selectedLutPath = ""
 
     # v38: Smart stream copy detection — daca source codec == target codec
@@ -6870,15 +6898,15 @@ foreach ($f in $inputFiles) {
         $x264HrdParam = ""
         if ($encMode -eq "2" -or $encMode -eq "3") { $x264HrdParam = "nal-hrd=vbr" }
         $x264ExtraFlag = @()
-        # v51 fix: auto HRD primul, EXTRA user LAST (x264 ia ultima valoare la chei
-        # duplicate — user-ul poate suprascrie nal-hrd=vbr cu propria valoare)
-        if ($extraParams -and $x264HrdParam) {
-            $x264ExtraFlag = @("-x264-params","${x264HrdParam}:${extraParams}")
-        } elseif ($extraParams) {
-            $x264ExtraFlag = @("-x264-params",$extraParams)
-        } elseif ($x264HrdParam) {
-            $x264ExtraFlag = @("-x264-params",$x264HrdParam)
-        }
+        # v51 fix + v62: LOG color (Bug2) si HRD primele, EXTRA user LAST (x264 ia ultima
+        # valoare la chei duplicate → user poate suprascrie). v62 Bug2: logExtraX264 baga
+        # colorprim/transfer/colormatrix in x264-params (ffmpeg -color_* nu propaga VUI →
+        # output LUT Rec.709 ramanea marcat gresit).
+        $x264Parts = @()
+        if ($script:logExtraX264) { $x264Parts += $script:logExtraX264 }
+        if ($x264HrdParam)        { $x264Parts += $x264HrdParam }
+        if ($extraParams)         { $x264Parts += $extraParams }
+        if ($x264Parts.Count -gt 0) { $x264ExtraFlag = @("-x264-params", ($x264Parts -join ":")) }
         $x264ColorFlags = if ($script:logColorFlags) { $script:logColorFlags } else { @() }
         if ($encMode -eq "2" -or $encMode -eq "3") {
             Write-Host "  Profil: $x264Profile | Level: $x264Level | HRD=vbr | Container: $container" -ForegroundColor White

@@ -91,7 +91,7 @@ encoder_setup_file() {
         local mc_dv_profile=""
         if [[ -n "$DOVI" ]]; then
             mc_source_type="dv"
-            mc_dv_profile="$DOVI"
+            mc_dv_profile="$(get_dv_profile "$file")"   # v62: eticheta prietenoasa (Profil 8.1/10.1...) nu marker brut
         elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
             mc_source_type="hdr10plus"
         elif [[ "${IS_HLG:-0}" == "1" ]]; then

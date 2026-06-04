@@ -60,7 +60,7 @@ encoder_setup_file() {
         local mc_source_type=""
         local mc_dv_profile=""
         if [[ -n "$DOVI" ]]; then
-            mc_source_type="dv"; mc_dv_profile="$DOVI"
+            mc_source_type="dv"; mc_dv_profile="$(get_dv_profile "$file")"   # v62: eticheta prietenoasa (Profil 8.1/10.1...)
         elif [[ "$HDR_PLUS" == *"HDR10+"* ]]; then
             mc_source_type="hdr10plus"
         elif [[ "${IS_HLG:-0}" == "1" ]]; then
@@ -115,8 +115,9 @@ encoder_setup_file() {
     # ── Diagnostic sursa ─────────────────────────────────────────────
     local src_is_hdr=0 src_is_hdrplus=0 src_is_dv=0 src_bitdepth="8-bit"
     local src_pixfmt
+    # v62 audit: default= + head -1 (csv=p=0 single-field emite trailing comma pe surse HDR)
     src_pixfmt=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=pix_fmt -of csv=p=0 "$file" 2>/dev/null)
+        -show_entries stream=pix_fmt -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
     [[ "$src_pixfmt" == *"10"* ]] && src_bitdepth="10-bit"
     [[ "$HDR_TYPE" == "smpte2084" ]] && src_is_hdr=1
     [[ "$HDR_PLUS" == *"HDR10+"* ]] && { src_is_hdr=1; src_is_hdrplus=1; }
@@ -267,15 +268,15 @@ encoder_setup_file() {
     # v51: HRD compliance pe VBR/2-pass — append nal-hrd=vbr la -x264-params
     local _x264_hrd_param=""
     [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]] && _x264_hrd_param="nal-hrd=vbr"
-    # v51 fix: auto HRD primul, EXTRA_X264 user LAST (x264 ia ultima valoare la chei
-    # duplicate — user-ul poate suprascrie nal-hrd=vbr cu propria valoare daca doreste)
-    if [[ -n "$EXTRA_X264" && -n "$_x264_hrd_param" ]]; then
-        x264extra="-x264-params ${_x264_hrd_param}:${EXTRA_X264}"
-    elif [[ -n "$EXTRA_X264" ]]; then
-        x264extra="-x264-params $EXTRA_X264"
-    elif [[ -n "$_x264_hrd_param" ]]; then
-        x264extra="-x264-params $_x264_hrd_param"
-    fi
+    # v51 fix + v62: LOG color (Bug2) si HRD primele, EXTRA_X264 user LAST (x264 ia
+    # ultima valoare la chei duplicate → user poate suprascrie). v62 Bug2: LOG_EXTRA_X264
+    # baga colorprim/transfer/colormatrix in x264-params (ffmpeg -color_* nu propaga VUI
+    # → output LUT Rec.709 ramanea marcat gresit).
+    local _x264_parts=""
+    [[ -n "${LOG_EXTRA_X264:-}" ]] && _x264_parts="${LOG_EXTRA_X264}"
+    [[ -n "$_x264_hrd_param" ]] && _x264_parts="${_x264_parts:+${_x264_parts}:}${_x264_hrd_param}"
+    [[ -n "$EXTRA_X264" ]] && _x264_parts="${_x264_parts:+${_x264_parts}:}${EXTRA_X264}"
+    [[ -n "$_x264_parts" ]] && x264extra="-x264-params $_x264_parts"
     local video_params="-profile:v $local_profile -level:v $x264_level -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-} ${x264_hlg_color_flags}"
     if [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
         log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt | HRD=vbr"

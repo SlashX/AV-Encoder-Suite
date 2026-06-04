@@ -409,12 +409,24 @@ detect_source_info() {
             -show_entries stream=color_transfer \
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
 
-        # Detect bit depth
-        local src_bps
+        # Detect bit depth — bits_per_raw_sample, fallback pe pix_fmt. v62: pe multe
+        # surse HEVC 10-bit bits_per_raw_sample e N/A → cadea pe 8 → ratam Apple Log /
+        # D-Log bt2020 / unknown_log (toate cer >=10-bit). Paritate cu av_check.sh.
+        local src_bps src_pixfmt_bd
         src_bps=$(ffprobe -v error -select_streams v:0 \
             -show_entries stream=bits_per_raw_sample \
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
-        [[ ! "$src_bps" =~ ^[0-9]+$ ]] && src_bps=8
+        if [[ ! "$src_bps" =~ ^[0-9]+$ ]]; then
+            src_pixfmt_bd=$(ffprobe -v error -select_streams v:0 \
+                -show_entries stream=pix_fmt \
+                -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+            case "$src_pixfmt_bd" in
+                *p16*|*p016*) src_bps=16 ;;
+                *p12*|*p012*) src_bps=12 ;;
+                *p10*|*p010*) src_bps=10 ;;
+                *)            src_bps=8  ;;
+            esac
+        fi
 
         # Detect color primaries
         local src_primaries
@@ -436,22 +448,32 @@ detect_source_info() {
         elif [[ "$CAMERA_MAKE" == "samsung" ]]; then
             if [[ -n "$samsung_log_tag" ]] || { [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]]; }; then
                 # Samsung HDR10+ is NOT Log — already handled by HDR_PLUS check
-                # Only mark as Log if no HDR10+ detected
-                if [[ -z "$HDR_PLUS" ]] && [[ "$HDR_TYPE" != *"smpte2084"* ]]; then
+                # v62: exclude HLG (arib-std-b67) — Samsung Log raporteaza transfer=unknown,
+                # HLG raporteaza arib. Fara excludere, un clip Samsung gradat-HLG (Log+LUT in
+                # editorul de telefon → output arib/bt2020) ar fi marcat gresit samsung_log.
+                if [[ -z "$HDR_PLUS" ]] && [[ "$HDR_TYPE" != *"smpte2084"* ]] && [[ "$HDR_TYPE" != *"arib"* ]]; then
                     LOG_PROFILE="samsung_log"
                 fi
             fi
         # DJI D-Log M
         elif [[ "$CAMERA_MAKE" == "dji" ]]; then
-            if [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]]; then
-                LOG_PROFILE="dlog_m"
+            # v62: exclude HLG (drone DJI — Mavic/Air — pot emite HLG bt2020/arib)
+            if [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]] && [[ "$HDR_TYPE" != *"arib"* ]]; then
+                LOG_PROFILE="dlog_m"   # DJI vechi (Mavic/Air) D-Log Wide → container bt2020
+            elif [[ "$src_bps" -ge 10 ]] && [[ "$HDR_TYPE" != *"arib"* ]] \
+                 && [[ "$HDR_TYPE" != *"smpte2084"* ]] && [[ -z "$DOVI" ]] && [[ -z "$HDR_PLUS" ]]; then
+                # v62 Faza B: Osmo Action 6 D-Log M e bt709 in container (identic cu
+                # Normal) → sondam djmd protobuf. dlog_m → LOG; "normal"/"unknown"
+                # (non-AC006 / djmd lipsa / fara python) ramane SDR onest.
+                [[ "$(_detect_dji_dlogm "$file")" == "dlog_m" ]] && LOG_PROFILE="dlog_m"
             fi
         # Unknown brand but looks like Log (10-bit + bt2020 + no HDR metadata)
         elif [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]] \
              && [[ -z "$HDR_PLUS" ]] && [[ "$HDR_TYPE" != *"smpte2084"* ]] && [[ -z "$DOVI" ]]; then
             # Check for known Log transfer characteristics
-            if [[ "$SRC_COLOR_TRC" == "unknown" || "$SRC_COLOR_TRC" == *"log"* \
-                || "$SRC_COLOR_TRC" == *"arib"* ]]; then
+            # v62: NU mai tratam arib ca semnal Log — arib-std-b67 e HLG (prins separat
+            # mai jos). Log necunoscut raporteaza transfer=unknown sau *log*.
+            if [[ "$SRC_COLOR_TRC" == "unknown" || "$SRC_COLOR_TRC" == *"log"* ]]; then
                 LOG_PROFILE="unknown_log"
                 CAMERA_MAKE="unknown"
             fi
@@ -643,11 +665,19 @@ build_map_flags() {
 # ══════════════════════════════════════════════════════════════════════
 get_dv_profile() {
     local file="$1" dv_info dv_profile_num dv_compat
-    dv_info=$(ffprobe -v error -show_frames -select_streams v:0 -read_intervals 0%+#5 \
-        -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id \
-        -of default "$file" 2>/dev/null)
+    # v62: STREAM side_data "DOVI configuration record" (HEVC + AV1); frame_side_data e gol pe AV1
+    dv_info=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream_side_data=dv_profile,dv_bl_signal_compatibility_id \
+        -of default=noprint_wrappers=1 "$file" 2>/dev/null)
     dv_profile_num=$(echo "$dv_info" | grep "dv_profile=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
     dv_compat=$(echo "$dv_info" | grep "dv_bl_signal_compatibility_id=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    if [[ -z "$dv_profile_num" ]]; then  # fallback: frame side_data (HEVC fara config record)
+        dv_info=$(ffprobe -v error -show_frames -select_streams v:0 -read_intervals 0%+#5 \
+            -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id \
+            -of default "$file" 2>/dev/null)
+        dv_profile_num=$(echo "$dv_info" | grep "dv_profile=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+        dv_compat=$(echo "$dv_info" | grep "dv_bl_signal_compatibility_id=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    fi
     if [[ -n "$dv_profile_num" && "$dv_profile_num" =~ ^[0-9]+$ ]]; then
         case "$dv_profile_num" in
             4) echo "Profil 4 (DV + HDR10 fallback)" ;; 5) echo "Profil 5 (DV only)" ;;
@@ -655,7 +685,11 @@ get_dv_profile() {
             8) case "$dv_compat" in
                 1) echo "Profil 8.1 (DV + HDR10, Blu-ray)" ;; 2) echo "Profil 8.2 (DV + SDR)" ;;
                 4) echo "Profil 8.4 (DV + HLG)" ;; *) echo "Profil 8 (DV + HDR10)" ;; esac ;;
-            9) echo "Profil 9 (DV + SDR)" ;; *) echo "Profil $dv_profile_num" ;; esac
+            9) echo "Profil 9 (DV + SDR)" ;;
+            10) case "$dv_compat" in
+                1) echo "Profil 10.1 (DV AV1 + HDR10)" ;; 2) echo "Profil 10.2 (DV AV1 + SDR)" ;;
+                4) echo "Profil 10.4 (DV AV1 + HLG)" ;; *) echo "Profil 10 (DV AV1)" ;; esac ;;
+            *) echo "Profil $dv_profile_num" ;; esac
     else
         local codec_tag
         codec_tag=$(ffprobe -v error -show_entries stream=codec_tag_string \
@@ -1376,6 +1410,32 @@ _av_python() {
     return 1
 }
 
+# v62 Faza B: detecteaza D-Log M pe DJI Osmo Action 6 (AC006) din track-ul djmd.
+# Container-ul raporteaza bt709 identic pt Normal SI D-Log M → singura cale e
+# protobuf-ul djmd (path .2.4.1==19). Engine partajat src/dji_djmd_dlogm.py
+# (model-gate intern pe dvtm_ac206.proto). Echo: dlog_m | normal | unknown.
+# Soft-fail (python/engine/ffmpeg lipsa, fara track djmd) → unknown.
+_detect_dji_dlogm() {
+    local file="$1"
+    local engine="$SCRIPT_DIR/dji_djmd_dlogm.py"
+    [[ -f "$engine" ]] || { echo "unknown"; return 0; }
+    local py; py=$(_av_python) || { echo "unknown"; return 0; }
+    # index track djmd (prima potrivire — DJI listeaza uneori stream-uri dublu)
+    local djmd_idx
+    djmd_idx=$(ffprobe -v error -show_entries stream=index,codec_tag_string \
+        -of csv=p=0 "$file" 2>/dev/null | awk -F, '$2=="djmd"{print $1; exit}')
+    [[ -n "$djmd_idx" ]] || { echo "unknown"; return 0; }
+    local dump; dump=$(av_mktemp_ext djmd)
+    if ffmpeg -v error -y -i "$file" -map 0:"$djmd_idx" -c copy -f data "$dump" 2>/dev/null && [[ -s "$dump" ]]; then
+        local mode; mode=$("$py" "$engine" "$dump" 2>/dev/null)
+        rm -f "$dump"
+        case "$mode" in dlog_m|normal) echo "$mode" ;; *) echo "unknown" ;; esac
+        return 0
+    fi
+    rm -f "$dump"
+    echo "unknown"
+}
+
 # v56: repara trailing byte-ul T.35 (0x80) pe care av1dovi_tool inject-rpu il
 # arunca din OBU-urile DV (crate dolby_vision 3.3.x). dav1d il cere; fara el,
 # DV-ul e pierdut silentios. Engine partajat src/av1_dv_t35_repair.py.
@@ -1970,8 +2030,9 @@ handle_source_dialog() {
 
     # Detect source characteristics for display
     local src_pixfmt src_bitdepth="8-bit" src_label
+    # v62 audit: default= + head -1 (csv=p=0 single-field emite trailing comma pe surse HDR)
     src_pixfmt=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=pix_fmt -of csv=p=0 "$file" 2>/dev/null)
+        -show_entries stream=pix_fmt -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
     [[ "$src_pixfmt" == *"10"* ]] && src_bitdepth="10-bit"
 
     local is_hdr10=0
@@ -2110,7 +2171,7 @@ show_hdr_mediacodec_dialog() {
     echo "  ╔══════════════════════════════════════════════════════╗"
     case "$source_type" in
         dv)
-            echo "  ║  ⚠ Sursa este Dolby Vision (profil ${dv_profile:-?})"
+            echo "  ║  ⚠ Sursa este Dolby Vision — ${dv_profile:-profil nedetectat}"
             echo "  ║  MediaCodec nu poate produce DV nativ. Optiuni:"
             echo "  ╠══════════════════════════════════════════════════════╣"
             echo "  ║  1) SW libx265 — pastreaza DV complet (recomandat)"
@@ -2301,7 +2362,10 @@ find_lut_for_brand() {
         found=("$luts_dir"/${prefix}*.cube)
         shopt -u nocaseglob nullglob
     fi
-    if [[ ${#found[@]} -eq 0 ]] && [[ "$brand" == "unknown" || "$brand" == "" ]]; then
+    # v62: daca nu exista LUT cu prefix de brand, cadem pe TOATE .cube din Luts/ (pentru
+    # ORICE brand, nu doar unknown). Acum ca LUT-ul e obligatoriu pentru transformare,
+    # userul poate folosi orice LUT are la indemana (vede numele in dialog si alege).
+    if [[ ${#found[@]} -eq 0 ]]; then
         shopt -s nullglob nocaseglob
         found=("$luts_dir"/*.cube)
         shopt -u nocaseglob nullglob
@@ -2383,6 +2447,9 @@ handle_log_dialog() {
     LOG_COLOR_FLAGS=""
     LOG_PIX_FMT=""
     LOG_EXTRA_X265=""
+    LOG_EXTRA_X264=""   # v62 Bug2: culoare in x264-params (LUT Rec.709 / Creative)
+    # Nota: av1/svtav1 NU are nevoie de var aici — av_encoder_av1.sh deriva VUI-ul
+    # corect din $color_params (mecanismul _av1_vui, v52). x265 = LOG_EXTRA_X265.
 
     local profile_label
     profile_label=$(_log_profile_label "$LOG_PROFILE")
@@ -2413,7 +2480,19 @@ handle_log_dialog() {
     fi
 
     local opt_num=1
-    local opt_lut=0 opt_sdr=0 opt_hdr=0 opt_hlg_lut=0 opt_hlg=0 opt_preserve=0 opt_creative=0 opt_copy=0 opt_skip=0
+    local opt_lut=0 opt_hlg_lut=0 opt_preserve=0 opt_creative=0 opt_copy=0 opt_skip=0
+    # v62: conversia fara LUT (zscale tonemap) a fost ELIMINATA — transformarea
+    # Log→Rec.709/HLG cere un LUT (.cube) ca sa fie corecta (si zscale crapa pe
+    # surse LOG cu transfer=unknown). Fara LUT raman doar Preserve / Stream copy / Skip.
+    local any_lut=0
+    { [[ "$has_lut" -eq 1 ]] || { [[ "$has_hlg_lut" -eq 1 ]] && [[ "$encoder_type" != "x264" ]]; } || [[ "$has_creative_lut" -eq 1 ]]; } && any_lut=1
+    if [[ "$any_lut" -eq 0 ]]; then
+        echo "  ║  Nu am gasit LUT in Luts/ pentru acest brand.  ║"
+        echo "  ║  Fara LUT, LOG-ul NU poate fi transformat       ║"
+        echo "  ║  corect in Rec.709 (cere un .cube). Optiuni:    ║"
+        echo "  ║  pune un LUT in Luts/, sau Preserve / Copy.     ║"
+        echo "  ╠══════════════════════════════════════════════╣"
+    fi
 
     # ── Build menu based on encoder type ─────────────────────────────
     if [[ "$encoder_type" == "x264" ]]; then
@@ -2431,10 +2510,6 @@ handle_log_dialog() {
             fi
             opt_num=$((opt_num + 1))
         fi
-        opt_sdr=$opt_num
-        printf "  ║  %d) Convert SDR (fara LUT) → 8-bit Rec.709  ║\n" "$opt_num"
-        echo "  ║     (best-effort — LUT recomandat)           ║"
-        opt_num=$((opt_num + 1))
         opt_preserve=$opt_num
         printf "  ║  %d) Preserve Log (compresie 8-bit)           ║\n" "$opt_num"
         echo "  ║     ⚠ 8-bit Log pierde gradatii — x265 rec.  ║"
@@ -2463,14 +2538,6 @@ handle_log_dialog() {
             fi
             opt_num=$((opt_num + 1))
         fi
-        opt_sdr=$opt_num
-        printf "  ║  %d) Convert SDR (fara LUT) → 10-bit Rec.709 ║\n" "$opt_num"
-        echo "  ║     (best-effort — LUT recomandat)           ║"
-        opt_num=$((opt_num + 1))
-        opt_hdr=$opt_num
-        printf "  ║  %d) Convert HDR10 (fara LUT) → 10-bit       ║\n" "$opt_num"
-        echo "  ║     BT.2020 / PQ (HDR10 static)              ║"
-        opt_num=$((opt_num + 1))
         if [[ "$has_hlg_lut" -eq 1 ]]; then
             opt_hlg_lut=$opt_num
             if [[ ${#HLG_LUT_FILES[@]} -eq 1 ]]; then
@@ -2482,10 +2549,6 @@ handle_log_dialog() {
             fi
             opt_num=$((opt_num + 1))
         fi
-        opt_hlg=$opt_num
-        printf "  ║  %d) Convert HLG (fara LUT) → 10-bit         ║\n" "$opt_num"
-        echo "  ║     BT.2020 / HLG (arib-std-b67)             ║"
-        opt_num=$((opt_num + 1))
         opt_preserve=$opt_num
         printf "  ║  %d) Preserve Log (compresie, pastreaza prof) ║\n" "$opt_num"
         opt_num=$((opt_num + 1))
@@ -2504,7 +2567,7 @@ handle_log_dialog() {
     echo "  ╚══════════════════════════════════════════════╝"
 
     local max_opt=$opt_skip
-    local default_opt=$opt_sdr
+    local default_opt=$opt_preserve
     [[ "$has_lut" -eq 1 ]] && default_opt=$opt_lut
     read -p "  Alege 1-$max_opt [implicit: $default_opt]: " log_choice
     log_choice="${log_choice:-$default_opt}"
@@ -2532,38 +2595,21 @@ handle_log_dialog() {
             fi
         fi
         log "  LOG: Apply LUT — $(basename "$selected_lut")"
+        # v62 audit: setparams re-eticheteaza culoarea pe FRAME (lut3d nu o atinge →
+        # ramanea bt2020/unknown de la sursa). Pe MKV ffprobe citeste Matroska Colour
+        # din frame (nu VUI/SPS) → fara setparams iesirea LUT Rec.709 era mis-tagged.
         if [[ "$encoder_type" == "x264" ]]; then
-            LOG_VIDEO_FILTER="lut3d='$selected_lut',format=yuv420p"
+            LOG_VIDEO_FILTER="lut3d='$selected_lut',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p"
         else
-            LOG_VIDEO_FILTER="lut3d='$selected_lut',format=yuv420p10le"
+            LOG_VIDEO_FILTER="lut3d='$selected_lut',format=yuv420p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p10le"
         fi
         LOG_COLOR_FLAGS="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
-        return 0
-
-    elif [[ "$log_choice" -eq "$opt_sdr" ]]; then
-        # Convert SDR (no LUT) — best-effort tonemap
-        log "  LOG: Convert SDR (best-effort, fara LUT)"
-        if [[ "$encoder_type" == "x264" ]]; then
-            LOG_VIDEO_FILTER="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p"
-            LOG_PIX_FMT="yuv420p"
-        else
-            LOG_VIDEO_FILTER="zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p10le"
-            LOG_PIX_FMT="yuv420p10le"
-        fi
-        LOG_COLOR_FLAGS="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
-        return 0
-
-    elif [[ "$log_choice" -eq "$opt_hdr" ]] && [[ "$opt_hdr" -gt 0 ]]; then
-        # Convert HDR10 (no LUT)
-        log "  LOG: Convert HDR10 static (fara LUT)"
-        LOG_VIDEO_FILTER="zscale=t=linear:npl=100,zscale=t=smpte2084:p=bt2020:m=bt2020nc,format=yuv420p10le"
-        LOG_PIX_FMT="yuv420p10le"
-        LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
-        if [[ "$encoder_type" == "x265" ]]; then
-            LOG_EXTRA_X265="hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
-        fi
+        # v62 Bug2: culoarea bt709 si in params nativi encoder (ffmpeg -color_* nu
+        # propaga VUI la x265/x264/svtav1 → output ramanea marcat bt2020/unknown).
+        LOG_EXTRA_X265="colorprim=bt709:transfer=bt709:colormatrix=bt709"
+        LOG_EXTRA_X264="colorprim=bt709:transfer=bt709:colormatrix=bt709"
         return 0
 
     elif [[ "$log_choice" -eq "$opt_hlg_lut" ]] && [[ "$opt_hlg_lut" -gt 0 ]]; then
@@ -2588,18 +2634,7 @@ handle_log_dialog() {
             fi
         fi
         log "  LOG: Apply HLG LUT — $(basename "$selected_hlg_lut")"
-        LOG_VIDEO_FILTER="lut3d='$selected_hlg_lut',format=yuv420p10le"
-        LOG_PIX_FMT="yuv420p10le"
-        LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
-        if [[ "$encoder_type" == "x265" ]]; then
-            LOG_EXTRA_X265="hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
-        fi
-        return 0
-
-    elif [[ "$log_choice" -eq "$opt_hlg" ]] && [[ "$opt_hlg" -gt 0 ]]; then
-        # v39: Convert HLG (no LUT) — best-effort
-        log "  LOG: Convert HLG (best-effort, fara LUT)"
-        LOG_VIDEO_FILTER="zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+        LOG_VIDEO_FILTER="lut3d='$selected_hlg_lut',format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc"
         LOG_PIX_FMT="yuv420p10le"
         LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
         if [[ "$encoder_type" == "x265" ]]; then
@@ -2658,13 +2693,16 @@ handle_log_dialog() {
         fi
         log "  LOG: Creative LUT — $(basename "$selected_creative")"
         if [[ "$encoder_type" == "x264" ]]; then
-            LOG_VIDEO_FILTER="lut3d='$selected_creative',format=yuv420p"
+            LOG_VIDEO_FILTER="lut3d='$selected_creative',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p"
         else
-            LOG_VIDEO_FILTER="lut3d='$selected_creative',format=yuv420p10le"
+            LOG_VIDEO_FILTER="lut3d='$selected_creative',format=yuv420p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p10le"
         fi
         LOG_COLOR_FLAGS="-color_primaries bt709 -color_trc bt709 -colorspace bt709"
+        # v62 Bug2: culoare bt709 in params encoder
+        LOG_EXTRA_X265="colorprim=bt709:transfer=bt709:colormatrix=bt709"
+        LOG_EXTRA_X264="colorprim=bt709:transfer=bt709:colormatrix=bt709"
         return 0
 
     elif [[ "$log_choice" -eq "$opt_copy" ]]; then
@@ -4962,6 +5000,12 @@ run_encode_loop() {
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
         HW_HDR_MODE=""
         HLG_DIALOG_MODE=""
+        # v62 audit: reset LOG color state — altfel un fisier LOG (x264 + LUT) lasa
+        # LOG_COLOR_FLAGS / LOG_EXTRA_X264 setate, iar fisierul NE-LOG urmator (x264 le
+        # consuma neconditionat in video_params) era marcat gresit bt709/bt2020. x265/av1
+        # gateaza pe ramura LOG → nu sufera; x264 le pune in builder-ul general.
+        LOG_VIDEO_FILTER=""; LOG_COLOR_FLAGS=""; LOG_PIX_FMT=""
+        LOG_EXTRA_X265=""; LOG_EXTRA_X264=""
         cleanup_2pass_state
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"

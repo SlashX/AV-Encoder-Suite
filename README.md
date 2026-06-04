@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v61** — 100 bugs fixed · 230+ features · ~37 200 LoC · 113 files
+**v62** — 106 bugs fixed · 232+ features · ~37 500 LoC · 118 files
 
 ---
 
@@ -16,6 +16,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 
 - **Dolby Vision preserve end-to-end** — HEVC↔AV1 cross-codec (P5/P7/P8.1↔P10), SW + all 6 HW backends (v46), HDR10+ co-existence when source carries both layers
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
+- **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata)
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
 - **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
@@ -114,7 +115,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 | **HDR10+** dynamic | HEVC + SVT-AV1 v1.5+ | ✅ | all 4 directions | synthesize DV from HDR10+ (v45) |
 | **Dolby Vision** | HEVC 8.1 (v45) · AV1 P10 (v44) | ✅ | HEVC↔AV1 (v44/v45) | profile transform 5/7→8.1, 8.1↔10 |
 | **HLG** | all encoders + HW + MediaCodec (v39) | ✅ | ✅ | — |
-| **LOG** (Apple/D-Log M/Samsung) | `.cube` LUT or tonemap | ✅ | Log→HDR10/HLG/Rec.709 | — |
+| **LOG** (Apple/D-Log M/Samsung) | `.cube` LUT → Rec.709 / HLG · keep LOG | ✅ | — | — |
 | **SDR tonemap** | Hable zscale → Rec.709 | — | — | — |
 
 - **Triple-layer hybrid** — DV 8.1 (HEVC) or DV P10 (AV1) + HDR10 base + HDR10+ dynamic in one bitstream; v45 preserves both layers when source has DV + HDR10+ embedded
@@ -233,6 +234,7 @@ AV-Encoder-Suite/
 │   ├── av_burnin.ps1           # v48 — PS1 mirror standalone
 │   ├── burnin_render.py        # v48 — Python+matplotlib HUD render engine
 │   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat)
+│   ├── dji_djmd_dlogm.py       # v62 — DJI Action 6 D-Log M detector (djmd protobuf .2.4.1==19)
 │   ├── burnin_presets/         # v48 — HUD layout presets (.conf)
 │   │   ├── minimal.conf        # timestamp + speed corner overlay
 │   │   ├── data-strip.conf     # bottom bar gauges (speed/alt/heading/temp)
@@ -376,4 +378,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v61** — 100 bugs fixed · 230+ features · ~37 200 LoC · 113 files
+Current: **v62** — 106 bugs fixed · 232+ features · ~37 500 LoC · 118 files

@@ -109,19 +109,29 @@ function Get-SourceInfo {
 
 function Get-DVProfile {
     param([string]$file)
-    $fd = & ffprobe -v error -show_frames -select_streams v:0 `
-        -read_intervals "%+#5" `
-        -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id `
-        -of default "$file" 2>$null
-    $n = ($fd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) `
-        -replace "dv_profile=",""
-    $c = ($fd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) `
-        -replace "dv_bl_signal_compatibility_id=",""
+    # v62: sursa autoritara = STREAM side_data "DOVI configuration record" (HEVC + AV1);
+    # frame_side_data=dv_profile e GOL pe AV1 (doar vdr_rpu_profile) → P10 ramanea N/A.
+    $sd = & ffprobe -v error -select_streams v:0 `
+        -show_entries stream_side_data=dv_profile,dv_bl_signal_compatibility_id `
+        -of default=noprint_wrappers=1 "$file" 2>$null
+    $n = ($sd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) -replace "dv_profile=",""
+    $c = ($sd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) -replace "dv_bl_signal_compatibility_id=",""
+    if (-not ($n -match '^\d+$')) {
+        # fallback: frame side_data (unele surse HEVC expun DV doar per-frame, fara config record)
+        $fd = & ffprobe -v error -show_frames -select_streams v:0 `
+            -read_intervals "%+#5" `
+            -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id `
+            -of default "$file" 2>$null
+        $n = ($fd | Where-Object { $_ -match "^dv_profile=(\d+)" } | Select-Object -First 1) -replace "dv_profile=",""
+        $c = ($fd | Where-Object { $_ -match "^dv_bl_signal_compatibility_id=(\d+)" } | Select-Object -First 1) -replace "dv_bl_signal_compatibility_id=",""
+    }
     if ($n -match '^\d+$') {
         switch ($n) {
             "4" { "Profil 4 (DV+HDR10)" } "5" { "Profil 5 (DV only)" } "7" { "Profil 7 (DV+HDR10+)" }
             "8" { switch ($c) { "1"{"Profil 8.1 (DV+HDR10, Blu-ray)"} "2"{"Profil 8.2 (DV+SDR)"} "4"{"Profil 8.4 (DV+HLG)"} default{"Profil 8 (DV+HDR10)"} } }
-            "9" { "Profil 9 (DV+SDR)" } default { "Profil $n" }
+            "9" { "Profil 9 (DV+SDR)" }
+            "10" { switch ($c) { "1"{"Profil 10.1 (DV AV1 + HDR10)"} "2"{"Profil 10.2 (DV AV1 + SDR)"} "4"{"Profil 10.4 (DV AV1 + HLG)"} default{"Profil 10 (DV AV1)"} } }
+            default { "Profil $n" }
         }
     } else {
         # v57: fallback codec_tag (paritate cu bash get_dv_profile) — apare cand
@@ -214,6 +224,40 @@ function Get-DJITracks {
     return @{ hasDjmd=$hasDjmd; hasDbgi=$hasDbgi; hasTC=$hasTC; isDji=($hasDjmd -or $hasDbgi) }
 }
 
+# _Get-AvPython — interpretor Python 3 (python3 preferat, fallback python 3.x).
+function _Get-AvPython {
+    if (Get-Command python3 -ErrorAction SilentlyContinue) { return "python3" }
+    $p = Get-Command python -ErrorAction SilentlyContinue
+    if ($p -and ((& python --version 2>&1) -match "3\.")) { return "python" }
+    return $null
+}
+
+# Test-DjiDLogM — detecteaza D-Log M pe DJI Osmo Action 6 (AC006) din track-ul djmd.
+# Container raporteaza bt709 identic pt Normal SI D-Log M → singura cale e protobuf-ul
+# djmd (.2.4.1==19). Engine partajat src/dji_djmd_dlogm.py (model-gate intern pe
+# dvtm_ac206.proto). Return: "dlog_m" | "normal" | "unknown". Soft-fail → "unknown".
+function Test-DjiDLogM {
+    param([string]$File)
+    $engine = Join-Path $PSScriptRoot "dji_djmd_dlogm.py"
+    if (-not (Test-Path $engine)) { return "unknown" }
+    $py = _Get-AvPython
+    if (-not $py) { return "unknown" }
+    $idxLine = @(& ffprobe -v error -show_entries stream=index,codec_tag_string -of csv=p=0 -- $File 2>$null) |
+        Where-Object { ($_ -split ',')[1] -eq 'djmd' } | Select-Object -First 1
+    if (-not $idxLine) { return "unknown" }
+    $djmdIdx = ($idxLine -split ',')[0].Trim()
+    if ($djmdIdx -notmatch '^\d+$') { return "unknown" }
+    $dump = Join-Path $env:TEMP ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
+    & ffmpeg -v error -y -i $File -map "0:$djmdIdx" -c copy -f data $dump 2>$null | Out-Null
+    $mode = "unknown"
+    if ((Test-Path $dump) -and (Get-Item $dump).Length -gt 0) {
+        $out = (& $py $engine $dump 2>$null | Select-Object -First 1)
+        if ($out -eq "dlog_m" -or $out -eq "normal") { $mode = $out }
+    }
+    Remove-Item $dump -Force -ErrorAction SilentlyContinue
+    return $mode
+}
+
 function Get-LogProfile {
     param([string]$file, [bool]$isDji)
     $allTags = & ffprobe -v error -show_entries format_tags `
@@ -252,12 +296,20 @@ function Get-LogProfile {
 
     if ($cameraMake -eq "apple" -and $srcBps -ge 10 -and ($srcPrimaries -match "bt2020" -or $srcTrc -match "arib|log")) {
         return "Apple Log (iPhone)"
-    } elseif ($cameraMake -eq "samsung" -and $srcBps -ge 10 -and $srcPrimaries -match "bt2020" -and -not $isHdrPlus -and $transfer -ne "smpte2084") {
+    } elseif ($cameraMake -eq "samsung" -and $srcBps -ge 10 -and $srcPrimaries -match "bt2020" -and -not $isHdrPlus -and $transfer -ne "smpte2084" -and $transfer -ne "arib-std-b67") {
+        # v62: exclude HLG (arib) — Samsung gradat-HLG nu mai e marcat Log
         return "Samsung Log (S24 Ultra)"
-    } elseif ($cameraMake -eq "dji" -and $srcBps -ge 10 -and $srcPrimaries -match "bt2020") {
-        return "D-Log M (DJI)"
+    } elseif ($cameraMake -eq "dji" -and $srcBps -ge 10 -and $transfer -ne "arib-std-b67") {
+        if ($srcPrimaries -match "bt2020") {
+            return "D-Log M (DJI)"   # DJI vechi (Mavic/Air) D-Log Wide → container bt2020
+        } elseif ($transfer -ne "smpte2084" -and -not $dovi -and -not $isHdrPlus) {
+            # v62 Faza B: Osmo Action 6 D-Log M e bt709 in container → djmd protobuf
+            # (.2.4.1==19). Normal / non-AC006 / fara djmd → cade pe N/A (SDR onest).
+            if ((Test-DjiDLogM $file) -eq "dlog_m") { return "D-Log M (DJI)" }
+        }
     } elseif ($srcBps -ge 10 -and $srcPrimaries -match "bt2020" -and -not $isHdrPlus -and $transfer -ne "smpte2084" -and -not $dovi) {
-        if ($srcTrc -eq "unknown" -or $srcTrc -match "log|arib") { return "LOG (brand necunoscut)" }
+        # v62: arib NU mai e semnal Log (e HLG)
+        if ($srcTrc -eq "unknown" -or $srcTrc -match "log") { return "LOG (brand necunoscut)" }
     }
     return "N/A"
 }

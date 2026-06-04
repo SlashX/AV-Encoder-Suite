@@ -501,23 +501,10 @@ function Show-BurninHdrDialog {
             $luts = Get-BurninLutFiles -Brand $info.CameraMake
             Write-Host ""
             Write-Host "  Sursa LOG: $logLabel (brand=$($info.CameraMake))"
+            # v62: conversia fara-LUT (tonemap) ELIMINATA pe LOG — Log→Rec.709 cere LUT.
             if ($luts.Count -gt 0) {
                 $lutName = Split-Path $luts[0] -Leaf
                 Write-Host "  1) Apply LUT Rec.709 ($lutName) [implicit]"
-                Write-Host "  2) Tonemap -> SDR (Hable, generic)"
-                Write-Host "  3) Burn-in raw (pastreaza LOG look)"
-                Write-Host "  4) Skip"
-                $c = Read-Host "  Alege 1-4 [implicit: 1]"
-                if (-not $c) { $c = "1" }
-                switch ($c) {
-                    "2"     { $script:BurninMode = "tonemap" }
-                    "3"     { $script:BurninMode = "burnin_raw" }
-                    "4"     { $script:BurninMode = "skip" }
-                    default { $script:BurninMode = "lut_rec709"; $script:BurninLutFile = $luts[0] }
-                }
-            } else {
-                Write-Host "  (LUT-ul brand-specific lipseste din Luts/ — opt LUT indisponibila)"
-                Write-Host "  1) Tonemap -> SDR (Hable, generic) [implicit]"
                 Write-Host "  2) Burn-in raw (pastreaza LOG look)"
                 Write-Host "  3) Skip"
                 $c = Read-Host "  Alege 1-3 [implicit: 1]"
@@ -525,7 +512,17 @@ function Show-BurninHdrDialog {
                 switch ($c) {
                     "2"     { $script:BurninMode = "burnin_raw" }
                     "3"     { $script:BurninMode = "skip" }
-                    default { $script:BurninMode = "tonemap" }
+                    default { $script:BurninMode = "lut_rec709"; $script:BurninLutFile = $luts[0] }
+                }
+            } else {
+                Write-Host "  (Fara LUT in Luts/ — conversia corecta Log->Rec.709 nu e posibila.)"
+                Write-Host "  1) Burn-in raw (pastreaza LOG look) [implicit]"
+                Write-Host "  2) Skip"
+                $c = Read-Host "  Alege 1-2 [implicit: 1]"
+                if (-not $c) { $c = "1" }
+                switch ($c) {
+                    "2"     { $script:BurninMode = "skip" }
+                    default { $script:BurninMode = "burnin_raw" }
                 }
             }
         }
@@ -548,7 +545,9 @@ function Build-BurninVideoChain {
         "burnin_raw"  { return $true }
         "lut_rec709" {
             $lutEsc = Get-EscapedFfmpegFilterPath -Path $script:BurninLutFile
-            $script:BurninPreFilter = "lut3d='$lutEsc'"
+            # v62 audit: setparams re-eticheteaza culoarea pe frame (lut3d nu o atinge →
+            # ramanea bt2020/unknown de la sursa, mis-tagged pe ORICE container).
+            $script:BurninPreFilter = "lut3d='$lutEsc',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             return $true
         }
         "tonemap" {

@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v61
+  Documentatie Setup & Utilizare — v62
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  113 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
-  2 Python engines + 61 test_* scripts + 7 infra).
+  118 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
+  3 Python engines + 65 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -854,24 +854,66 @@ CUPRINS
   ─── 8.3. LOG format video (Apple Log / D-Log M / Samsung Log) ───
 
   Detectie automata: 10-bit + BT.2020 + brand din metadata ffprobe.
+  Adancimea de biti se deduce si din formatul de pixel (yuv420p10le →
+  10-bit) cand bits_per_raw_sample lipseste (frecvent pe HEVC 10-bit).
     Apple Log — iPhone (com.apple.quicktime.make=Apple)
     D-Log M   — DJI Action/Pocket
-    Samsung Log — Samsung S24 Ultra (exclus daca HDR10+ sau smpte2084)
-    Unknown   — 10-bit + bt2020 fara HDR = probabil LOG
+    Samsung Log — Samsung S24 Ultra (exclus daca HDR10+ / smpte2084 / HLG)
+    Unknown   — 10-bit + bt2020 fara HDR, transfer necunoscut = probabil LOG
 
-  Meniu per-file pentru x265 / AV1:
-    1) Apply LUT (.cube) → 10-bit SDR Rec.709 [doar daca .cube exista]
-    2) Convert SDR (fara LUT) → 10-bit Rec.709 (best-effort)
-    3) Convert HDR10 (fara LUT) → 10-bit BT.2020/PQ
-    4) Preserve Log — compresie fara schimbare culori
-    5) Stream copy
-    6) Skip
+  DJI Osmo Action 6 D-Log M — detectie din djmd: pe Action 6, atat
+  profilul Normal cat si D-Log M raporteaza identic bt709 in container
+  (curba LOG sta doar in pixeli) → indetectabil din metadatele uzuale.
+  Discriminatorul real sta in track-ul de telemetrie djmd (protobuf), pe
+  care exiftool nu il expune. Suite-ul citeste djmd-ul si recunoaste
+  semnatura D-Log M a modelului Action 6 → eticheteaza corect "D-Log M
+  (DJI)" si ofera dialogul LOG de mai jos. Necesita ffmpeg + Python 3
+  (soft-fail la "SDR" daca lipsesc). Detectia e specifica modelului
+  Action 6; alte modele DJI (sau clipuri cu djmd eliminat) raporteaza
+  cinstit "SDR" → forteaza manual cu FORCE LOG DETECTION (vezi mai jos).
 
-  + 2 optiuni HLG (v39, doar x265/AV1 — vezi 8.5):
+  HLG vs LOG: un clip HLG (transfer arib-std-b67) NU e tratat ca LOG —
+  e exclus din ramurile Samsung / DJI / necunoscut si gestionat ca HLG
+  (vezi 8.5). Samsung Log iese cu transfer "necunoscut", HLG cu arib —
+  asa se disting. (Apple Log poate raporta tot arib → ramane ambiguu
+  prin natura, eticheta Apple Log se pastreaza.)
+
+  Meniu per-file (transformarea LOG → Rec.709 cere LUT):
+    Cand exista LUT(uri):
+      1) Apply LUT (.cube) → 10-bit Rec.709 [implicit]
+      2) Apply Creative LUT (cand creative_*.cube gasit)
+      3) Preserve Log — compresie fara schimbare culori
+      4) Stream copy
+      5) Skip
+    Cand NU exista niciun LUT:
+      Mesaj cinstit: fara LUT, LOG-ul nu poate fi transformat corect.
+      1) Preserve Log (pentru grading ulterior) [implicit]
+      2) Stream copy
+      3) Skip
+
+  + optiune HLG (v39, doar x265/AV1 — vezi 8.5):
     "Apply LUT Log→HLG → 10-bit BT.2100" (cand hlg_*.cube gasit)
-    "Convert HLG (fara LUT) → 10-bit"
 
-  x264: fara optiune HDR10. Forteaza 8-bit. Warning la Preserve Log.
+  Conversia fara LUT (Convert SDR/HDR10/HLG) a fost scoasa din dialogul
+  LOG: se baza pe zscale, care nu poate liniariza un transfer
+  "necunoscut" (cazul Samsung Log) → "no path between colorspaces".
+  Tonemap-ul pentru surse HDR reale (PQ/HLG) ramane (transfer cunoscut).
+
+  ETICHETARE CULOARE: la Apply LUT / Creative / Log→HLG, iesirea e
+  marcata corect (Rec.709, respectiv HLG) prin DOUA mecanisme:
+    1. Filtrul setparams, adaugat dupa lut3d in lantul de filtre —
+       re-eticheteaza culoarea pe imagine (lut3d schimba pixelii, dar nu
+       si eticheta). Necesar pentru MKV, unde playerul citeste eticheta
+       din imagine, nu din fluxul video; fara el, iesirea LUT ramanea
+       marcata gresit (bt2020/unknown de la sursa) in MKV.
+    2. Parametrii encoderului (x265-params / x264-params:
+       colorprim=bt709:transfer=bt709:colormatrix=bt709) — pentru VUI in
+       fluxul video; steagurile -color_* ale ffmpeg nu propaga VUI la
+       x265/x264. AV1/SVT seteaza VUI din color_params (corect deja).
+  Acelasi tratament (setparams) la Burn-in si Trim/Concat. Valabil pentru
+  toate containerele (MP4 / MOV / MKV).
+
+  x264: forteaza 8-bit. Warning la Preserve Log.
   DNxHR / ProRes: auto-preserve LOG (fara dialog, mesaj informativ).
 
   CAUTARE LUT (.cube):
@@ -884,7 +926,8 @@ CUPRINS
       HLG LUT     → hlg_apple_log_*.cube / hlg_dji_dlog_m_*.cube etc.
       Creative    → creative_*.cube (sau in Luts/Creative/)
 
-    Daca 1 LUT → auto-select. Daca mai multe → dialog. Brand unknown → toate.
+    Daca 1 LUT → auto-select. Daca mai multe → dialog. Daca nu exista LUT
+    cu prefixul brandului → cad pe TOATE .cube din Luts/ (orice brand).
 
   SURSE LUT-uri:
     Apple:   developer.apple.com → "Apple Log Profile Delivery SDK"

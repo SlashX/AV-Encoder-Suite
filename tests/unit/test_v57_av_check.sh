@@ -67,6 +67,26 @@ assert_contains "$(cat "$PS1")" 'Dolby Vision Metadata' "PS1 side_data DV match"
 # Get-DVProfile in PS1 are codec_tag fallback (paritate bash)
 assert_contains "$(cat "$PS1")" "dvhe" "PS1 Get-DVProfile codec_tag fallback"
 
+# v62: get_dv_profile cu STREAM side_data "DOVI configuration record" — extrage profilul
+# pe HEVC SI AV1 DV (frame_side_data=dv_profile e gol pe AV1 → P10 ramanea N/A). Case P10 nou.
+SCRIPT_DIR="$PROJECT_ROOT/src"
+COMMON_SH="$(cat "$SCRIPT_DIR/av_common.sh")"
+ENC_PS1="$(cat "$SCRIPT_DIR/av_encode.ps1")"
+assert_contains "$(cat "$SH")"   'stream_side_data=dv_profile' "bash av_check get_dv_profile: query STREAM side_data"
+assert_contains "$(cat "$SH")"   'Profil 10'                   "bash av_check get_dv_profile: case Profil 10 (DV AV1)"
+assert_contains "$COMMON_SH"     'stream_side_data=dv_profile' "bash av_common get_dv_profile: query STREAM side_data"
+assert_contains "$COMMON_SH"     'Profil 10'                   "bash av_common get_dv_profile: case Profil 10"
+assert_contains "$(cat "$PS1")"  'stream_side_data=dv_profile' "PS1 av_check Get-DVProfile: query STREAM side_data"
+assert_contains "$(cat "$PS1")"  'Profil 10.1'                 "PS1 av_check Get-DVProfile: case Profil 10.1 (DV AV1)"
+assert_contains "$ENC_PS1"       'stream_side_data=dv_profile' "PS1 av_encode Get-DVProfile: query STREAM side_data"
+assert_contains "$ENC_PS1"       'Profil 10.1'                 "PS1 av_encode Get-DVProfile: case Profil 10.1"
+# Functional (skip daca sample AV1 DV lipseste — gitignored)
+if command -v ffprobe >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/Upload_S02E01_DV_40s_AV1.mkv" ]]; then
+    eval "$(sed -n '/^get_dv_profile()/,/^}/p' "$SCRIPT_DIR/av_check.sh")"
+    assert_match "$(get_dv_profile "$SCRIPT_DIR/Upload_S02E01_DV_40s_AV1.mkv")" "Profil 10" \
+        "functional: AV1 DV real → Profil 10 (nu N/A)"
+fi
+
 # ══════════════════════════════════════════════════════════════════════
 # 4. TYPE/LOG mutual exclusion
 # ══════════════════════════════════════════════════════════════════════

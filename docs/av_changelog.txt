@@ -3,10 +3,127 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v61 | 100 bug-uri fixate | 230+ features
-  113 fisiere (22 src + 2 Python engines + 12 tools + 6 profile + 3 burnin presets + 68 teste [61 test_* + 7 infra]) | ~37200 linii cod+teste | ~5400 linii documentatie
+  TOTAL: v62 | 106 bug-uri fixate | 232+ features
+  118 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 72 teste [65 test_* + 7 infra]) | ~37500 linii cod+teste | ~5400 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v62 — Detectie LOG + flux LUT (corectitudine culoare + curatare)
+═══════════════════════════════════════════════════════════════
+
+  Audit complet pe fluxul LOG (Apple Log / D-Log M / Samsung Log /
+  necunoscut) si pe aplicarea LUT-urilor .cube — detectie, dialog si
+  etichetarea culorii la iesire — plus o noutate: detectia D-Log M pe
+  DJI Osmo Action 6 (care pana acum era imposibil de identificat). Toate
+  validate pe surse reale (Samsung Log, Samsung gradat-HLG, 4 clipuri
+  DJI Action 6, HDR10+, Dolby Vision).
+
+  FIX Sursele 10-bit nu mai sunt confundate cu 8-bit. Multe camere
+        filmeaza 10-bit dar nu scriu adancimea de biti explicit in
+        metadata → detectia o lua drept 8-bit si ratam complet
+        identificarea LOG-ului (care cere 10-bit). Acum adancimea se
+        deduce si din formatul de pixel (ex. yuv420p10le = 10-bit), la
+        fel ca in analizatorul de fisiere. Validat: toate cele 4 clipuri
+        DJI + Samsung Log raportate corect 10-bit.
+
+  FIX Clipurile HLG nu mai sunt confundate cu LOG. Un clip Samsung
+        gradat in editorul de telefon iese ca HLG (transfer
+        arib-std-b67), in timp ce LOG-ul Samsung iese cu transfer
+        "necunoscut". Inainte, ambele intrau pe ramura LOG → un clip
+        HLG era marcat gresit "Samsung Log". Acum HLG (arib) e exclus
+        din ramurile LOG (Samsung / DJI / necunoscut) si tratat corect
+        ca HLG. (Apple Log ramane ambiguu prin natura — poate raporta
+        tot arib; acolo eticheta Apple Log e pastrata.)
+
+  FIX Culoarea corecta la iesirea LOG → Rec.709 (LUT). Cand aplici un
+        LUT de conversie, iesirea trebuie marcata Rec.709. Steagurile de
+        culoare obisnuite ale ffmpeg nu ajung pana la encoderul x265 /
+        x264 → fisierul iesea marcat gresit (raportat tot ca bt2020, cu
+        transfer "necunoscut") si era redat eronat de playere. Acum
+        culoarea Rec.709 e pusa direct in parametrii encoderului →
+        iesire marcata corect Rec.709. (AV1 / SVT era deja corect.)
+
+  UPDATE Conversia fara LUT a fost scoasa din dialogul LOG. Optiunile
+        "Convert SDR / HDR10 / HLG (fara LUT)" se bazau pe zscale, care
+        NU poate liniariza un transfer "necunoscut" (cazul real al
+        Samsung Log) → esuau cu "no path between colorspaces". O
+        transformare corecta LOG → Rec.709 cere un LUT. Acum, daca nu
+        exista LUT, dialogul spune cinstit ca LOG-ul nu poate fi
+        transformat si ofera doar Pastreaza LOG (pentru grading
+        ulterior) / Stream copy / Skip. Tonemap-ul pentru sursele HDR
+        reale (PQ / HLG, cu transfer cunoscut) ramane neatins. Aceeasi
+        curatare la Burn-in (optiunea 9) si la Trim / Concat
+        (optiunea 6).
+
+  ADD Cautarea de LUT e mai permisiva. Daca nu exista un LUT cu
+        prefixul brandului (apple_log_ / dji_dlog_m_ / samsung_log_),
+        se cade pe TOATE fisierele .cube din Luts/ (pentru orice brand,
+        nu doar "necunoscut") — acum ca LUT-ul e obligatoriu pentru
+        transformare, poti folosi orice LUT ai la indemana (il vezi
+        dupa nume in dialog si alegi).
+
+  FIX Culoarea unui fisier LOG nu se mai "scurge" in fisierul urmator
+        dintr-un lot. La encodarea x264, daca un fisier LOG cu LUT era
+        urmat de un fisier obisnuit (non-LOG) in acelasi lot, al doilea
+        mostenea gresit etichetele de culoare ale primului (ex. un clip
+        SDR ajungea marcat Rec.709, sau chiar HLG daca primul folosise
+        un LUT Log→HLG). Acum starea de culoare LOG e resetata intre
+        fisiere. (x265 / AV1 nu erau afectate.) Descoperit la auditul
+        pre-productie; pe partea bash starea nu era resetata deloc, pe
+        PowerShell lipsea doar variabila noua de la x264-params.
+
+  FIX Culoarea corecta si in fisierele MKV (nu doar MP4 / MOV) la
+        conversia LOG → Rec.709 (sau Log → HLG) cu LUT. Filtrul LUT
+        schimba pixelii corect, dar nu si eticheta de culoare a imaginii;
+        in MKV playerul citeste exact acea eticheta, deci fisierul iesea
+        marcat gresit (ca si cum ar fi tot material brut, bt2020) desi
+        pixelii erau corect Rec.709 → culori redate eronat. La Burn-in si
+        la Trim / Concat eticheta lipsea cu totul, asa ca acolo erau
+        marcate gresit inclusiv fisierele MP4. Acum culoarea tinta e
+        fixata explicit pe imagine imediat dupa aplicarea LUT-ului, in
+        toate fluxurile (encode / burn-in / trim-concat) si pentru toate
+        containerele. Descoperit la auditul pre-productie.
+
+  ADD Detectie automata D-Log M pe DJI Osmo Action 6. Pana acum,
+        D-Log M-ul de pe Action 6 era imposibil de identificat din
+        metadatele fisierului: atat profilul Normal cat si D-Log M
+        raporteaza identic bt709 in container (curba LOG sta doar in
+        pixeli, nu in semnalizare). Discriminatorul real se afla in
+        track-ul de telemetrie djmd (protobuf), pe care exiftool nu il
+        expune. S-a adaugat un motor Python partajat (bash ↔ PowerShell)
+        care citeste djmd-ul si recunoaste semnatura D-Log M a modelului
+        Action 6 → analizatorul de fisiere si fluxul de encode marcheaza
+        acum corect "D-Log M (DJI)" si ofera dialogul LOG (aplica LUT
+        Rec.709 / pastreaza LOG). Validat pe 4 clipuri reale Action 6
+        (2 D-Log M + 2 Normal). Detectia e specifica modelului Action 6;
+        alte modele DJI (sau clipurile cu djmd eliminat) raporteaza
+        cinstit "SDR"; LOG-ul se poate forta manual ca pana acum
+        (FORCE_LOG_DETECTION). Motorul verifica intai modelul camerei,
+        deci ruleaza doar pe Action 6 — nu da rezultate gresite pe alte
+        surse.
+
+  FIX Profilul Dolby Vision e acum afisat si pentru fisierele AV1
+        (Profil 10), nu doar pentru HEVC. Analizatorul citea numarul de
+        profil dintr-un loc care, pe AV1, e gol → coloana de profil
+        ramanea goala desi tipul era corect "Dolby Vision". Acum profilul
+        se citeste din inregistrarea de configurare DV a stream-ului
+        (valabila pentru ambele codec-uri) → AV1 DV apare corect ca
+        "Profil 10.1" (sau 10.2 / 10.4, dupa compatibilitate). Aliniat in
+        toate locurile care afiseaza profilul (analiza CSV, dialogurile de
+        encodare). In plus, dialogul HDR pentru encodarea hardware pe
+        Android (MediaCodec) arata acum eticheta clara de profil (ex.
+        "Profil 10.1") in loc de un marker tehnic brut.
+
+  SYNC Toate modificarile pastreaza paritatea bash ↔ PowerShell
+        (detectie sursa, cele 3 dialoguri LOG — encode / burn-in /
+        trim-concat, encoderele x265 / x264, motorul D-Log M partajat).
+        Teste noi: test_v62_log_lut (bash 26 / PS1 18 aserturi, inclusiv
+        generare reala de clip HLG si verificarea etichetarii corecte a
+        culorii LUT in MKV) si test_v62_dji_dlogm (bash 11 / PS1 11
+        aserturi, protobuf sintetic hermetic + validare functionala pe
+        sample-uri reale). Detectia profilului DV pe AV1 (Profil 10) e
+        acoperita de teste de regresie in test_v57_av_check (bash + PS1).
 
 ═══════════════════════════════════════════════════════════════
   v61 — Cale cu litera de unitate pe Windows (HDR10+, 2-pass, vidstab, LUT)

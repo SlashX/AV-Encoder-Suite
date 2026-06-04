@@ -1679,28 +1679,26 @@ show_tc_hdr_dialog() {
             find_lut_for_brand "$_brand" >/dev/null 2>&1 && _has_lut=1
             echo ""
             echo "  Sursa LOG: $_log_label (brand=$_brand)"
+            # v62: conversia fara-LUT (tonemap) ELIMINATA pe LOG — Log→Rec.709 cere LUT.
+            # Fara LUT raman Keep LOG (pt grading ulterior) / Skip.
             if [[ "$_has_lut" == 1 ]]; then
                 echo "  1) Apply LUT Rec.709 (${LUT_FILES[0]##*/}) [implicit]"
-                echo "  2) Tonemap → SDR (Hable, generic)"
-                echo "  3) Keep LOG (fara transform — pentru grading ulterior)"
-                echo "  4) Skip"
-                read -p "  Alege 1-4 [implicit: 1]: " _c
-                case "${_c:-1}" in
-                    2) TC_MODE="tonemap" ;;
-                    3) TC_MODE="keep_log" ;;
-                    4) TC_MODE="skip" ;;
-                    *) TC_MODE="lut_rec709"; TC_LUT_FILE="${LUT_FILES[0]}" ;;
-                esac
-            else
-                echo "  (LUT brand-specific lipseste din Luts/ — opt LUT indisponibila)"
-                echo "  1) Tonemap → SDR [implicit]"
-                echo "  2) Keep LOG (fara transform)"
+                echo "  2) Keep LOG (fara transform — pentru grading ulterior)"
                 echo "  3) Skip"
                 read -p "  Alege 1-3 [implicit: 1]: " _c
                 case "${_c:-1}" in
                     2) TC_MODE="keep_log" ;;
                     3) TC_MODE="skip" ;;
-                    *) TC_MODE="tonemap" ;;
+                    *) TC_MODE="lut_rec709"; TC_LUT_FILE="${LUT_FILES[0]}" ;;
+                esac
+            else
+                echo "  (Fara LUT in Luts/ — conversia corecta Log→Rec.709 nu e posibila.)"
+                echo "  1) Keep LOG (fara transform) [implicit]"
+                echo "  2) Skip"
+                read -p "  Alege 1-2 [implicit: 1]: " _c
+                case "${_c:-1}" in
+                    2) TC_MODE="skip" ;;
+                    *) TC_MODE="keep_log" ;;
                 esac
             fi ;;
     esac
@@ -1718,7 +1716,9 @@ build_tc_video_args() {
         sdr|keep_log) return 0 ;;
         lut_rec709)
             local _esc; _esc=$(printf '%s' "$TC_LUT_FILE" | sed 's/\\/\//g; s/:/\\:/g')
-            TC_VF_PREPEND="lut3d='${_esc}'"
+            # v62 audit: setparams re-eticheteaza culoarea pe frame (lut3d nu o atinge →
+            # mis-tagged pe ORICE container fara ea).
+            TC_VF_PREPEND="lut3d='${_esc}',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             return 0 ;;
         tonemap)
             TC_VF_PREPEND="$_tonemap"

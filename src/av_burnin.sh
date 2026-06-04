@@ -300,29 +300,27 @@ show_burnin_hdr_dialog() {
             find_lut_for_brand "$_brand" >/dev/null 2>&1 && _has_lut=1
             echo ""
             echo "  Sursa LOG: $_log_label (brand=$_brand)"
+            # v62: conversia fara-LUT (tonemap) ELIMINATA pe LOG — Log→Rec.709 cere LUT.
+            # Fara LUT raman doar Burn-in raw (pastreaza look-ul flat) / Skip.
             if [[ "$_has_lut" == 1 ]]; then
                 local _lut_name="${LUT_FILES[0]##*/}"
                 echo "  1) Apply LUT Rec.709 (${_lut_name}) [implicit]"
-                echo "  2) Tonemap → SDR (Hable, generic)"
-                echo "  3) Burn-in raw (pastreaza LOG look)"
-                echo "  4) Skip"
-                read -p "  Alege 1-4 [implicit: 1]: " lg_choice
-                case "${lg_choice:-1}" in
-                    2) BURNIN_MODE="tonemap" ;;
-                    3) BURNIN_MODE="burnin_raw" ;;
-                    4) BURNIN_MODE="skip" ;;
-                    *) BURNIN_MODE="lut_rec709"; BURNIN_LUT_FILE="${LUT_FILES[0]}" ;;
-                esac
-            else
-                echo "  (LUT-ul brand-specific lipseste din Luts/ — opt LUT indisponibila)"
-                echo "  1) Tonemap → SDR (Hable, generic) [implicit]"
                 echo "  2) Burn-in raw (pastreaza LOG look)"
                 echo "  3) Skip"
                 read -p "  Alege 1-3 [implicit: 1]: " lg_choice
                 case "${lg_choice:-1}" in
                     2) BURNIN_MODE="burnin_raw" ;;
                     3) BURNIN_MODE="skip" ;;
-                    *) BURNIN_MODE="tonemap" ;;
+                    *) BURNIN_MODE="lut_rec709"; BURNIN_LUT_FILE="${LUT_FILES[0]}" ;;
+                esac
+            else
+                echo "  (Fara LUT in Luts/ — conversia corecta Log→Rec.709 nu e posibila.)"
+                echo "  1) Burn-in raw (pastreaza LOG look) [implicit]"
+                echo "  2) Skip"
+                read -p "  Alege 1-2 [implicit: 1]: " lg_choice
+                case "${lg_choice:-1}" in
+                    2) BURNIN_MODE="skip" ;;
+                    *) BURNIN_MODE="burnin_raw" ;;
                 esac
             fi ;;
     esac
@@ -343,7 +341,9 @@ build_burnin_video_chain() {
             return 0 ;;
         lut_rec709)
             local _lut_esc; _lut_esc=$(escape_ffmpeg_filter_path "$BURNIN_LUT_FILE")
-            BURNIN_PRE_FILTER="lut3d='${_lut_esc}'"
+            # v62 audit: setparams re-eticheteaza culoarea pe frame (lut3d nu o atinge →
+            # ramanea bt2020/unknown de la sursa, mis-tagged pe ORICE container).
+            BURNIN_PRE_FILTER="lut3d='${_lut_esc}',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             return 0 ;;
         tonemap)
             BURNIN_PRE_FILTER="zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"

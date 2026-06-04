@@ -86,3 +86,10 @@ src/exiftool.exe
 src/exiftool_files/
 src/tools/exiftool.exe
 src/tools/exiftool_files/
+
+# ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
+# Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,
+# licentiate separat). Folderul src/Luts/ contine LUT-uri pentru testarea
+# fluxului LOG → Rec.709 / HLG. Conventia de denumire e in docs/av_info.txt.
+src/Luts/
+*.cube

@@ -44,6 +44,19 @@ Assert-Contains $PS1_TEXT 'Dolby Vision Metadata' "PS1 DV side_data match"
 Assert-Contains $PS1_TEXT 'dvhe' "PS1 Get-DVProfile fallback codec_tag dvhe"
 Assert-Contains $PS1_TEXT 'dvh1' "PS1 Get-DVProfile fallback codec_tag dvh1"
 
+# v62: get_dv_profile / Get-DVProfile cu STREAM side_data "DOVI configuration record" —
+# extrage profilul pe HEVC SI AV1 DV (frame_side_data=dv_profile e gol pe AV1 → P10 = N/A).
+$COMMON_TEXT = Get-Content (Join-Path $PROJECT_ROOT "src\av_common.sh")  -Raw
+$ENC_TEXT    = Get-Content (Join-Path $PROJECT_ROOT "src\av_encode.ps1") -Raw
+Assert-Contains $PS1_TEXT    'stream_side_data=dv_profile' "PS1 av_check Get-DVProfile: query STREAM side_data"
+Assert-Contains $PS1_TEXT    'Profil 10.1'                 "PS1 av_check Get-DVProfile: case Profil 10.1 (DV AV1)"
+Assert-Contains $ENC_TEXT    'stream_side_data=dv_profile' "PS1 av_encode Get-DVProfile: query STREAM side_data"
+Assert-Contains $ENC_TEXT    'Profil 10.1'                 "PS1 av_encode Get-DVProfile: case Profil 10.1"
+Assert-Contains $SH_TEXT     'stream_side_data=dv_profile' "bash av_check get_dv_profile: query STREAM side_data"
+Assert-Contains $SH_TEXT     'Profil 10'                   "bash av_check get_dv_profile: case Profil 10"
+Assert-Contains $COMMON_TEXT 'stream_side_data=dv_profile' "bash av_common get_dv_profile: query STREAM side_data"
+Assert-Contains $COMMON_TEXT 'Profil 10'                   "bash av_common get_dv_profile: case Profil 10"
+
 # ══════════════════════════════════════════════════════════════════════
 # 4. TYPE/LOG mutual exclusion
 # ══════════════════════════════════════════════════════════════════════

@@ -86,14 +86,25 @@ get_source_format() {
 get_dv_profile() {
     local file="$1"
     local dv_info dv_profile_num dv_compat
-    dv_info=$(ffprobe -v error -show_frames -select_streams v:0 \
-        -read_intervals 0%+#5 \
-        -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id \
-        -of default "$file" 2>/dev/null)
-    dv_profile_num=$(echo "$dv_info" | grep "dv_profile=" \
-        | head -1 | cut -d= -f2 | tr -d '[:space:]')
-    dv_compat=$(echo "$dv_info" | grep "dv_bl_signal_compatibility_id=" \
-        | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    # v62: sursa autoritara = STREAM side_data "DOVI configuration record" (dvcC/dvvC) —
+    # merge pe HEVC SI AV1 DV. frame_side_data=dv_profile e GOL pe AV1 (frame-ul are doar
+    # vdr_rpu_profile, profilul intern RPU) → P10 ramanea nedetectat (N/A).
+    dv_info=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream_side_data=dv_profile,dv_bl_signal_compatibility_id \
+        -of default=noprint_wrappers=1 "$file" 2>/dev/null)
+    dv_profile_num=$(echo "$dv_info" | grep "dv_profile=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    dv_compat=$(echo "$dv_info" | grep "dv_bl_signal_compatibility_id=" | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    # Fallback: frame side_data (unele surse HEVC expun DV doar per-frame, fara config record)
+    if [[ -z "$dv_profile_num" ]]; then
+        dv_info=$(ffprobe -v error -show_frames -select_streams v:0 \
+            -read_intervals 0%+#5 \
+            -show_entries frame_side_data=dv_profile,dv_bl_signal_compatibility_id \
+            -of default "$file" 2>/dev/null)
+        dv_profile_num=$(echo "$dv_info" | grep "dv_profile=" \
+            | head -1 | cut -d= -f2 | tr -d '[:space:]')
+        dv_compat=$(echo "$dv_info" | grep "dv_bl_signal_compatibility_id=" \
+            | head -1 | cut -d= -f2 | tr -d '[:space:]')
+    fi
     if [[ -n "$dv_profile_num" && "$dv_profile_num" =~ ^[0-9]+$ ]]; then
         case "$dv_profile_num" in
             4) echo "Profil 4 (DV + HDR10)" ;;
@@ -105,6 +116,11 @@ get_dv_profile() {
                 4) echo "Profil 8.4 (DV + HLG)" ;;
                 *) echo "Profil 8 (DV + HDR10)" ;; esac ;;
             9) echo "Profil 9 (DV + SDR)" ;;
+            10) case "$dv_compat" in
+                1) echo "Profil 10.1 (DV AV1 + HDR10)" ;;
+                2) echo "Profil 10.2 (DV AV1 + SDR)" ;;
+                4) echo "Profil 10.4 (DV AV1 + HLG)" ;;
+                *) echo "Profil 10 (DV AV1)" ;; esac ;;
             *) echo "Profil $dv_profile_num" ;;
         esac
     else
@@ -231,18 +247,27 @@ get_log_profile() {
             log_profile="Apple Log (iPhone)"
         fi
     elif [[ "$camera_make" == "samsung" ]]; then
+        # v62: exclude HLG (arib-std-b67) — Samsung Log = transfer unknown, HLG = arib;
+        # un clip Samsung gradat-HLG (Log+LUT in editor) ar fi marcat gresit Log.
         if [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]]; then
-            if [[ -z "$hdr_plus_local" ]] && [[ "$transfer" != *"smpte2084"* ]]; then
+            if [[ -z "$hdr_plus_local" ]] && [[ "$transfer" != *"smpte2084"* ]] && [[ "$transfer" != *"arib"* ]]; then
                 log_profile="Samsung Log (S24 Ultra)"
             fi
         fi
     elif [[ "$camera_make" == "dji" ]]; then
-        if [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]]; then
+        # v62: exclude HLG (drone DJI cu HLG bt2020/arib)
+        if [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]] && [[ "$transfer" != *"arib"* ]]; then
             log_profile="D-Log M (DJI)"
+        elif [[ "$src_bps" -ge 10 ]] && [[ "$transfer" != *"arib"* ]] \
+             && [[ "$transfer" != *"smpte2084"* ]] && [[ -z "$dovi_local" ]] && [[ -z "$hdr_plus_local" ]]; then
+            # v62 Faza B: Osmo Action 6 D-Log M e bt709 in container → djmd protobuf
+            # (.2.4.1==19). Normal / non-AC006 / fara djmd → ramane SDR onest.
+            [[ "$(_detect_dji_dlogm "$file")" == "dlog_m" ]] && log_profile="D-Log M (DJI)"
         fi
     elif [[ "$src_bps" -ge 10 ]] && [[ "$src_primaries" == *"bt2020"* ]] \
          && [[ -z "$hdr_plus_local" ]] && [[ "$transfer" != *"smpte2084"* ]] && [[ -z "$dovi_local" ]]; then
-        if [[ "$src_trc" == "unknown" || "$src_trc" == *"log"* || "$src_trc" == *"arib"* ]]; then
+        # v62: arib NU mai e semnal Log (e HLG, prins la TYPE)
+        if [[ "$src_trc" == "unknown" || "$src_trc" == *"log"* ]]; then
             log_profile="LOG (brand necunoscut)"
         fi
     fi
