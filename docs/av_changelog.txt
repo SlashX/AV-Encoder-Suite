@@ -3,10 +3,86 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v62 | 106 bug-uri fixate | 232+ features
-  118 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 72 teste [65 test_* + 7 infra]) | ~37500 linii cod+teste | ~5400 linii documentatie
+  TOTAL: v63 | 110 bug-uri fixate | 235+ features
+  130 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 84 teste [77 test_* + 7 infra]) | ~41000 linii cod+teste | ~5850 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v63 — HDR10 → HLG + dry-run pipeline + MaxCLL masurat (+ audit robustete pre-release)
+═══════════════════════════════════════════════════════════════
+
+  UPDATE Fisierele temporare pe Windows stau acum in folderul propriu al
+        suitei (langa videoclipuri), nu in folderul temp al Windows-ului.
+        Conteaza pentru ca extragerile temporare de pe fluxul Dolby
+        Vision pot ajunge la sute de MB / GB — acum nu mai umplu drive-ul
+        de sistem (de obicei C:) si nu mai necesita copiere intre
+        drive-uri (stau pe acelasi disc cu videoclipurile, deci mai
+        rapid). Curatarea automata a folderului temp se ocupa de
+        eventualele ramasite. Pe Linux / Termux / macOS comportamentul nu
+        se schimba.
+
+  ADD Conversie HDR10 → HLG la encodare (HEVC si AV1). Pana acum aveai
+        doar HLG → HDR10; acum si inversul. Cand sursa e HDR10, dialogul
+        ofera optiunea "Converteste la HLG 10-bit (BT.2100)" pe langa
+        pastrare HDR10 / tonemap SDR. Util pentru ca HLG se reda gratios
+        si pe ecrane SDR (backward-compatible) si e prietenos cu
+        telefoanele / broadcast-ul. (x264 nu apare — 8-bit nu suporta
+        HDR.) Validat empiric: sursa PQ → iesire HLG corecta (BT.2100),
+        fara metadata statica (HLG nu o foloseste).
+
+  ADD Mod "dry-run" pentru pipeline-ul Trim + Concat + Encode. La intrarea
+        in pipeline poti alege "2-Dry-run": dupa ce configurezi totul
+        (fisiere, taieturi, codec, container), suita afiseaza planul pe
+        cele 3 etape (trim → concat → encode) plus modul HDR detectat, dar
+        NU ruleaza nimic — nu se creeaza niciun fisier si niciun folder
+        temporar. Util ca sa verifici ce s-ar intampla inainte de o operatie
+        lunga. Acelasi comportament pe Termux/Linux/macOS si Windows.
+
+  ADD MaxCLL/MaxFALL masurat real pentru HDR10 (optional). Cand encodezi
+        HDR10 (sau converteste HLG → HDR10), valorile de luminozitate a
+        continutului (MaxCLL/MaxFALL) erau pana acum o estimare generica
+        (1000/400). Acum, daca alegi optiunea "Masoara real din video",
+        suita analizeaza efectiv clipul si scrie valorile reale. Costa o
+        trecere de analiza in plus, deci e optional — pentru un master de
+        calitate / control strict. Implicit ramane rapid (1000/400). Daca
+        sursa are deja valorile inscrise, sunt folosite acelea (nu se
+        masoara degeaba). Util mai ales la HLG → HDR10, care nu are deloc
+        astfel de metadata.
+
+  FIX HDR10: valorile reale de luminozitate ale sursei (mastering display +
+        MaxCLL) nu se mai citeau corect pe versiunile recente de FFmpeg →
+        encodarea HDR10 folosea mereu valori generice (1000 niti) in loc de
+        cele reale ale clipului. Acum sunt citite corect — conteaza pentru
+        pastrarea fidela a culorii la re-encodarea surselor HDR10.
+
+  FIX Burn-in pe Windows: sursele LOG (Samsung Log, Apple Log, DJI D-Log M)
+        erau recunoscute gresit ca SDR la burn-in → textul/HUD-ul se ardea
+        peste imaginea LOG spalacita, fara sa-ti ofere optiunea de LUT
+        Rec.709 sau tonemap. Acum sunt detectate corect, identic cu encodarea
+        normala, cu analizatorul de fisiere si cu versiunea de Linux/Termux.
+        (Inclusiv D-Log M de pe DJI Osmo Action 6, care e invizibil in
+        container si necesita citirea track-ului de telemetrie.)
+
+  FIX Audio surround (Linux/macOS/Termux): pe unele surse numarul de canale
+        nu se citea robust (cand pista audio avea metadata embedded, sau pe
+        clipuri DJI care raporteaza streamul de doua ori) → o sursa 5.1/7.1
+        era tratata ca stereo → bitrate audio prea mic. Acum numarul de canale
+        e citit corect → bitrate-ul se scaleaza fidel (ex. E-AC3 5.1=640k,
+        7.1=1024k). (Pe Windows era deja corect.)
+
+  FIX Trim & Concat: clipurile DJI Osmo Action 6 nu mai sunt declarate
+        gresit "incompatibile" la concatenare. DJI Action 6 raporteaza
+        streamul video de doua ori in fisierele sale → semnatura de format
+        (folosita ca sa decida daca fisierele se pot lipi direct, fara
+        re-encodare) iesea "dublata" → un clip DJI alaturi de un clip de
+        ACELASI format (de la alta camera) era considerat diferit → suita
+        re-encoda inutil in loc sa lipeasca lossless (stream copy, instant).
+        Acum semnatura ia doar primul stream → concatenarea ramane lossless
+        cand formatul chiar coincide. La fel pe Termux/Linux/macOS si
+        Windows. Intarire minora aditionala: detectia codecului video la
+        re-encodarea audio a surselor WebM ia acum prima linie (robusta la
+        aceeasi dublare).
 
 ═══════════════════════════════════════════════════════════════
   v62 — Detectie LOG + flux LUT (corectitudine culoare + curatare)

@@ -223,9 +223,10 @@ for file in "${FILES[@]}"; do
         rm -f "$output"
     fi
 
-    # Detectie surround
+    # Detectie surround — v63: default= + head -1 + tr -d '\r' (csv=p=0 single-field fragil:
+    # trailing comma pe side_data / 2 linii pe DJI → regex esua → fallback 2 → bitrate gresit)
     SRC_CHANNELS=$(ffprobe -v error -select_streams a:0 \
-        -show_entries stream=channels -of csv=p=0 "$file" 2>/dev/null)
+        -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
     [[ ! "$SRC_CHANNELS" =~ ^[0-9]+$ ]] && SRC_CHANNELS=2
 
     # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix pe orice codec
@@ -315,8 +316,10 @@ for file in "${FILES[@]}"; do
     # v53: WebM — verifica codec video sursa (DOAR vp8/vp9/av1 pot fi stream-copied in webm)
     if [[ "$CONTAINER" == "webm" ]]; then
         # v57: default= in loc de csv=p=0 — trailing comma "av1," esua regex anchored
+        # v63: head -1 + tr -d '\r' — DJI Action 6 dubla v:0 ("vp9\nvp9") si Windows/git-bash
+        # adauga \r → regex ancorat ^(vp8|vp9|av1)$ ar esua → fals SKIP pe sursa WebM valida.
         SRC_VCODEC=$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
+            -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
         if [[ ! "$SRC_VCODEC" =~ ^(vp8|vp9|av1)$ ]]; then
             echo "  SKIP: WebM accepta DOAR vp8/vp9/av1 ca video (sursa: ${SRC_VCODEC:-necunoscut})" | tee -a "$LOG_FILE"
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))

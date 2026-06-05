@@ -349,7 +349,12 @@ encoder_setup_file() {
                 ;;
             hlg_to_hdr10)
                 # v51: HLG→HDR10 — defaults BT.2020 + 1000 nits
-                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"; _set_av1_hdr10_static
+                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"
+                # v63: opt-in — masoara CLL real (HLG n-are light-level inscris → default 1000,400 e generic)
+                if [ "${HDR10_MEASURE_CLL:-0}" = "1" ] && measure_hdr10_cll "$file"; then
+                    HDR10_MAX_CLL="${HDR10_MEASURED_CLL},${HDR10_MEASURED_FALL}"; HDR10_STATIC_SOURCE="measured-hlg-to-hdr10"
+                fi
+                _set_av1_hdr10_static
                 color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
                 local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
                 if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
@@ -403,6 +408,18 @@ encoder_setup_file() {
                 # v51: HDR10 source — extract real metadata (fallback defaults)
                 hdr10_static_resolve "$file"; _set_av1_hdr10_static
                 color_params="-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc"
+                ;;
+            hdr10_to_hlg)
+                # v63: HDR10 → HLG. _av1_vui deriva transfer-characteristics=18 din
+                # color_params (arib-std-b67); fallback HDR10-static (PQ) NU se declanseaza
+                # (HLG e metadata-free).
+                color_params="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
+                local _h2h_vf="zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+                if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+                    VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_h2h_vf},}"
+                else
+                    VIDEO_FILTER="-vf $_h2h_vf"
+                fi
                 ;;
             sdr_tonemap)
                 color_params="-color_primaries bt709 -color_trc bt709 -colorspace bt709"

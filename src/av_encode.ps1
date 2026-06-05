@@ -437,9 +437,13 @@ function New-PreviewThumbnails {
 
 function Get-VideoSignature {
     param([string]$file)
+    # v63: -select_streams v:0 dublu-listat pe DJI Action 6 (cover mjpeg + multi-track) →
+    # cele 5 campuri se repeta → "-join" dubla signature ("hevc|..|hevc|..") → un clip DJI vs
+    # unul non-DJI de acelasi format ieseau "diferite" → fals incompat → re-encode in loc de
+    # stream-copy. Select -First 5 = primul stream (5 campuri ceruite). Paritate cu head -5 bash.
     $out = & ffprobe -v error -select_streams v:0 `
         -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt `
-        -of default=noprint_wrappers=1:nokey=1 $file 2>$null
+        -of default=noprint_wrappers=1:nokey=1 $file 2>$null | Select-Object -First 5
     return ($out -join "|")
 }
 
@@ -851,6 +855,15 @@ function Invoke-PipelineFlow {
         return
     }
 
+    # v63: mod pipeline — executie vs dry-run (calea TrimConcat nu trece prin $dryRun-ul global)
+    $dryRun = [bool]$dryRun
+    if (-not $dryRun) {
+        Write-Host ""
+        Write-Host "Mod pipeline: 1-Executa [implicit]  2-Dry-run (afiseaza planul, fara executie)" -ForegroundColor Cyan
+        $plMode = Read-Host "Alege [implicit: 1]"
+        if ($plMode -eq "2") { $dryRun = $true }
+    }
+
     # Pas 1: selectie fisiere
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -1075,6 +1088,24 @@ function Invoke-PipelineFlow {
     }
     Write-Host "║  Output: $(Split-Path $outPath -Leaf)" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+
+    # v63: Dry-run — afiseaza planul pe pass-uri (+ HDR) si opreste inainte de orice ffmpeg/temp.
+    if ($dryRun) {
+        $dryHdr = Get-PipelineHdrMode ($chosen | ForEach-Object { $_.FullName })
+        $dryNtrim = @($segments | Where-Object { $_.Count -gt 0 }).Count
+        Write-Host ""
+        Write-Host "  ─────────────────────────────────────────────" -ForegroundColor DarkGray
+        Write-Host "  🟡 DRY-RUN — plan executie (fara ffmpeg/temp):" -ForegroundColor Yellow
+        Write-Host ("     Pass 1/3: trim {0} segment(e) (stream copy -c copy)" -f $dryNtrim) -ForegroundColor Gray
+        Write-Host "     Pass 2/3: concat (demuxer/filter auto) + verificare compat" -ForegroundColor Gray
+        if ($audioOnly) {
+            Write-Host "     Pass 3/3: audio-only re-encode (video stream copy)" -ForegroundColor Gray
+        } else {
+            Write-Host ("     Pass 3/3: {0} CRF {1} ({2})  |  HDR: {3}" -f $codec, $crf, $preset, $dryHdr) -ForegroundColor Gray
+        }
+        Write-Host "  ─────────────────────────────────────────────" -ForegroundColor DarkGray
+        return
+    }
 
     # HDR info (v37: detecția detaliată + auto-injectare se face pre-Pass 3)
     if (Test-TcInputHDR ($chosen | ForEach-Object { $_.FullName })) {
@@ -1442,6 +1473,7 @@ function Invoke-PipelineFlow {
     }
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+Ensure-TempDir   # v63: creeaza $AV_TEMP_DIR la startup — toate temp-urile merg aici (nu in $env:TEMP)
 
 # ── Functii utilitare ─────────────────────────────────────────────────
 function Format-Bytes {
@@ -1543,8 +1575,8 @@ function Invoke-2PassEncode {
 
     Write-Host ""
     Write-Host "  -- 2-PASS: Pass 1/2 (analiza, fara audio, output NUL) --" -ForegroundColor Cyan
-    $errFile1 = "$env:TEMP\fferr_p1_$PID.txt"
-    $prog1 = "$env:TEMP\ffprog_p1_$PID.txt"
+    $errFile1 = "$AV_TEMP_DIR\fferr_p1_$PID.txt"
+    $prog1 = "$AV_TEMP_DIR\ffprog_p1_$PID.txt"
     $p1Args = $script:ffmpegCmdPass1 + @("-progress",$prog1,"-nostats")
     $startP1 = Get-Date
     # v61: CWD pe $AV_TEMP_DIR — stats= (si eventual dhdr10-info) refera fisiere prin nume gol
@@ -1564,7 +1596,7 @@ function Invoke-2PassEncode {
     Remove-Item $errFile1,$prog1 -Force -ErrorAction SilentlyContinue
 
     Write-Host "  -- 2-PASS: Pass 2/2 (encodare finala + audio) --" -ForegroundColor Cyan
-    $errFile2 = "$env:TEMP\fferr_p2_$PID.txt"
+    $errFile2 = "$AV_TEMP_DIR\fferr_p2_$PID.txt"
     $p2Args = $script:ffmpegCmdPass2 + $TrailingArgs2 + @("-progress",$ProgressFile,"-nostats")
     $startP2 = Get-Date
     $proc2 = Start-Process ffmpeg -ArgumentList $p2Args -NoNewWindow -PassThru -RedirectStandardError $errFile2 @wd2
@@ -1777,9 +1809,12 @@ function Get-Hdr10StaticMetadata {
     if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { return $false }
     if (-not (Test-Path $File)) { return $false }
 
+    # v63 FIX: `frame=side_data_list` nu mai expune cheile nested in ffprobe-ul curent (output gol
+    # → HDR10 static cadea mereu pe default, nu citea master-display/MaxCLL real). Cerem cheile
+    # explicit prin `frame_side_data=` — parsing-ul de mai jos (pe side_data_type) ramane neschimbat.
     $probe = & ffprobe -v error -select_streams v:0 `
         -read_intervals "%+#1" `
-        -show_entries frame=side_data_list `
+        -show_entries frame_side_data=side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,white_point_x,white_point_y,max_luminance,min_luminance,max_content,max_average `
         -of default=noprint_wrappers=1 `
         $File 2>$null | Out-String
     if (-not $probe) { return $false }
@@ -1848,14 +1883,61 @@ function Set-Hdr10StaticDefaults {
     $script:hdr10MaxCll = "1000,400"
 }
 
+# v63: Masoara MaxCLL/MaxFALL real din continut (1 pass de analiza) cand $script:hdr10MeasureCll
+# si sursa NU are light-level inscris. Luma-based (signalstats YMAX/YAVG, linearizat zscale);
+# npl=10000 PQ (smpte2084) / 1000 HLG. Soft-fail → pastreaza default. Seteaza $script:hdr10MeasuredCll.
+function Measure-Hdr10Cll {
+    param([string]$File)
+    $script:hdr10MeasuredCll = ""
+    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-Path -LiteralPath $File)) { return $false }
+    $trc = (& ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1)
+    $npl = if ("$trc".Trim() -eq "smpte2084") { 10000 } else { 1000 }
+    Write-Host "  Masor MaxCLL/MaxFALL real (1 pass de analiza, poate dura)..." -ForegroundColor DarkGray
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $ymax = 0.0; $yavg = 0.0
+    & ffmpeg -hide_banner -v error -i $File `
+        -vf "zscale=t=linear:npl=$npl,format=yuv444p16le,signalstats,metadata=print:file=-" `
+        -an -f null - 2>$null | ForEach-Object {
+        if ($_ -match 'YMAX=([\d.]+)') { $v = [double]::Parse($Matches[1], $inv); if ($v -gt $ymax) { $ymax = $v } }
+        elseif ($_ -match 'YAVG=([\d.]+)') { $v = [double]::Parse($Matches[1], $inv); if ($v -gt $yavg) { $yavg = $v } }
+    }
+    if ($ymax -le 0) { return $false }
+    $cll  = [int][math]::Round($ymax / 65535.0 * $npl)
+    $fall = [int][math]::Round($yavg / 65535.0 * $npl)
+    $script:hdr10MeasuredCll = "$cll,$fall"   # virgula = separator MaxCLL,MaxFALL (intregi → fara locale)
+    return $true
+}
+
+# v63: prompt opt-in MaxCLL/MaxFALL real (Varianta B). Seteaza $script:hdr10MeasureCll pt fisierul curent.
+# Sare daca flag-ul e deja activ (env/profil → reset per-iteratie il pastreaza) sau non-interactiv.
+function Read-Hdr10MeasureChoice {
+    if ($script:hdr10MeasureCll) { return }
+    if ($env:AV_NONINTERACTIVE -eq "1") { return }
+    Write-Host "  MaxCLL/MaxFALL (luminanta continut HDR10):" -ForegroundColor Cyan
+    Write-Host "    1) Implicit 1000,400 (rapid) [implicit]" -ForegroundColor White
+    Write-Host "    2) Masoara real din video (+1 pass de analiza — master de calitate)" -ForegroundColor White
+    $cllCh = Read-Host "  Alege 1-2 [implicit: 1]"
+    if ($cllCh -eq "2") { $script:hdr10MeasureCll = $true; Write-Host "  MaxCLL/MaxFALL: masurare reala activata" -ForegroundColor Green }
+}
+
 function Resolve-Hdr10Static {
     param([string]$File)
     Get-Hdr10StaticMetadata -File $File | Out-Null
+    $realCll = $script:hdr10MaxCll   # non-gol doar daca probe a gasit light-level real
     if ($script:hdr10StaticAvailable) {
         $script:hdr10StaticSource = "probe"
     } else {
         Set-Hdr10StaticDefaults
         $script:hdr10StaticSource = "default-bt2020-1000nit"
+    }
+    # v63: opt-in — masoara CLL real cand userul a cerut SI nu exista light-level inscris.
+    if ($script:hdr10MeasureCll -and -not $realCll) {
+        if (Measure-Hdr10Cll -File $File) {
+            $script:hdr10MaxCll = $script:hdr10MeasuredCll
+            $script:hdr10StaticSource = "measured-cll"
+        }
     }
     if (-not $script:hdr10MaxCll) { $script:hdr10MaxCll = "1000,400" }
 }
@@ -2501,7 +2583,7 @@ function Invoke-StreamCopy {
         [string]$logFile,
         [string[]]$audioParams = @("-c:a","copy")
     )
-    $scProgFile = Join-Path $env:TEMP ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
+    $scProgFile = Join-Path $AV_TEMP_DIR ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
     $scStart = Get-Date
     $durRaw = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $fileInfo.FullName 2>$null
@@ -2513,7 +2595,7 @@ function Invoke-StreamCopy {
     $scArgs = @("-threads","0","-i",$fileInfo.FullName) + $mapFlags +
               @("-c:v","copy") + $audioParams + $scSubCodec + @("-c:t","copy") +
               $scContFlags + @("-progress",$scProgFile,"-nostats",$outFile)
-    $scErrFile = "$env:TEMP\fferr_sc_$PID.txt"
+    $scErrFile = "$AV_TEMP_DIR\fferr_sc_$PID.txt"
     $scProc = Start-Process ffmpeg -ArgumentList $scArgs -NoNewWindow -PassThru `
         -RedirectStandardError $scErrFile
     Show-Progress -proc $scProc -progFile $scProgFile -durSec $durSec -startTime $scStart -Label "Stream copy"
@@ -2721,7 +2803,7 @@ function Extract-Hdr10PlusMetadata {
     # tool-ul esueaza. Plus Out-Null: tool-urile scriu progres pe STDOUT (ar contamina
     # valoarea returnata). Consistent cu Get-DvRpu.
     $rawExt = if ($srcCodec -eq "av1") { "ivf" } else { "hevc" }
-    $rawTmp = Join-Path $env:TEMP ("hp_raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $rawTmp = Join-Path $AV_TEMP_DIR ("hp_raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
     if ($srcCodec -eq "av1") {
         & ffmpeg -y -v error -i "$file" -c:v copy -f ivf $rawTmp 2>$null | Out-Null
     } else {
@@ -2753,8 +2835,8 @@ function Generate-DvRpuFromHdr10Plus {
         [string]$SourceFile = ""
     )
     $doviBin = Get-ToolForExtract -Codec $TargetCodec -Kind "dovi"
-    $rpuFile = Join-Path $env:TEMP ("dv_rpu_"+[guid]::NewGuid().ToString("N")+".bin")
-    $configFile = Join-Path $env:TEMP ("dv_config_"+[guid]::NewGuid().ToString("N")+".json")
+    $rpuFile = Join-Path $AV_TEMP_DIR ("dv_rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+    $configFile = Join-Path $AV_TEMP_DIR ("dv_config_"+[guid]::NewGuid().ToString("N")+".json")
 
     # v55: L6 (mastering display + light level) din metadata HDR10 reala a sursei
     # cand SourceFile e dat; altfel BT.2020 1000-nit defaults. Parse cu
@@ -2834,7 +2916,7 @@ function Repair-Av1DvT35 {
         Write-Host "  DV: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" -ForegroundColor Yellow
         return $false
     }
-    $fixed = Join-Path $env:TEMP ("t35fix_"+[guid]::NewGuid().ToString("N")+".ivf")
+    $fixed = Join-Path $AV_TEMP_DIR ("t35fix_"+[guid]::NewGuid().ToString("N")+".ivf")
     & $py $engine $File $fixed 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $fixed) -and (Get-Item $fixed).Length -gt 0) {
         Move-Item -Force $fixed $File
@@ -2862,7 +2944,7 @@ function Test-DjiDLogM {
     if (-not $idxLine) { return "unknown" }
     $djmdIdx = ($idxLine -split ',')[0].Trim()
     if ($djmdIdx -notmatch '^\d+$') { return "unknown" }
-    $dump = Join-Path $env:TEMP ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
+    $dump = Join-Path $AV_TEMP_DIR ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
     & ffmpeg -v error -y -i $File -map "0:$djmdIdx" -c copy -f data $dump 2>$null | Out-Null
     $mode = "unknown"
     if ((Test-Path $dump) -and (Get-Item $dump).Length -gt 0) {
@@ -2915,7 +2997,7 @@ function Get-DvRpu {
     $useInput = $InputFile
     if ($ext -notin @("hevc","h265","265","ivf","obu")) {
         $rawExt = if ($SourceCodec -eq "av1") { "ivf" } else { "hevc" }
-        $rawTmp = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+        $rawTmp = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
         if ($SourceCodec -eq "av1") {
             & ffmpeg -y -v error -i $InputFile -c:v copy -f ivf $rawTmp 2>$null
         } else {
@@ -2952,7 +3034,7 @@ function Convert-RpuProfile {
     $doviBin = Get-ToolForInject -Codec $TargetCodec -Kind "dovi"
     if (-not $doviBin) { return $false }
     # editor cere un JSON de edit; `{}` gol => doar conversia de profil (mode global)
-    $editCfg = Join-Path $env:TEMP ("dv_edit_"+[guid]::NewGuid().ToString("N")+".json")
+    $editCfg = Join-Path $AV_TEMP_DIR ("dv_edit_"+[guid]::NewGuid().ToString("N")+".json")
     '{}' | Out-File $editCfg -Encoding ASCII
     Write-Host "  RPU convert: $RpuIn -> $RpuOut (mode=$Mode, codec=$TargetCodec, tool=$doviBin)" -ForegroundColor Cyan
     if ($script:LogFile -and (Test-Path -LiteralPath (Split-Path -Parent $script:LogFile))) {
@@ -3017,7 +3099,7 @@ function Test-Hdr10PlusPresent {
     $useInput = $InputFile
     if ($ext -notin @("hevc","h265","265","ivf","obu")) {
         $rawExt = if ($Codec -eq "av1") { "ivf" } else { "hevc" }
-        $rawTmp = Join-Path $env:TEMP ("verraw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+        $rawTmp = Join-Path $AV_TEMP_DIR ("verraw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
         if (-not (Get-RawVideo -InputFile $InputFile -OutputFile $rawTmp -Codec $Codec)) {
             Remove-Item $rawTmp -Force -ErrorAction SilentlyContinue
             return $false
@@ -3060,7 +3142,7 @@ function Get-DvPlot {
 # elimina silentios DV. Return: $true=DV prezent, $false=DV pierdut.
 function Test-DvSurvived {
     param([string]$File, [string]$Codec = "hevc")
-    $rpuChk = Join-Path $env:TEMP ("dvchk_"+[guid]::NewGuid().ToString("N")+".bin")
+    $rpuChk = Join-Path $AV_TEMP_DIR ("dvchk_"+[guid]::NewGuid().ToString("N")+".bin")
     $ok = (Get-DvRpu -InputFile $File -RpuOut $rpuChk -SourceCodec $Codec)
     $present = ($ok -and (Test-Path $rpuChk) -and (Get-Item $rpuChk).Length -gt 0)
     Remove-Item $rpuChk -Force -ErrorAction SilentlyContinue
@@ -3449,8 +3531,8 @@ function Invoke-TransformRpu {
         return
     }
 
-    $rpuSrc = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
-    $rpuOut = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+    $rpuSrc = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+    $rpuOut = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
 
     Write-Host ""
     Write-Host "  [1/3] Extract RPU sursa..." -ForegroundColor Cyan
@@ -3469,8 +3551,8 @@ function Invoke-TransformRpu {
     }
 
     $rawExt = if ($targetCodec -eq "av1") { "ivf" } else { "hevc" }
-    $rawVideo = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
-    $injected = Join-Path $env:TEMP ("inj_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $rawVideo = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $injected = Join-Path $AV_TEMP_DIR ("inj_"+[guid]::NewGuid().ToString("N")+".$rawExt")
     $outExt = [System.IO.Path]::GetExtension($file).TrimStart('.')
     $finalOut = Join-Path $OutputDir ("{0}_rpu{1}.{2}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $mode, $outExt)
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
@@ -3533,7 +3615,7 @@ function Invoke-InspectMetadata {
 
     if (Test-DoviToolFor -Codec $srcCodec) {
         $doviBin = Get-ToolForExtract -Codec $srcCodec -Kind "dovi"
-        $rpuTmp = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+        $rpuTmp = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
         if (Get-DvRpu -InputFile $file -RpuOut $rpuTmp -SourceCodec $srcCodec) {
             Write-Host ""
             Write-Host "── DV RPU summary ($doviBin) ──" -ForegroundColor Cyan
@@ -3622,8 +3704,8 @@ function Invoke-Hdr10PlusToDv {
     }
 
     $rawExt = if ($srcCodec -eq "av1") { "ivf" } else { "hevc" }
-    $rawVideo = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
-    $injected = Join-Path $env:TEMP ("inj_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $rawVideo = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $injected = Join-Path $AV_TEMP_DIR ("inj_"+[guid]::NewGuid().ToString("N")+".$rawExt")
 
     Write-Host ""
     Write-Host "  [3/4] Extract raw video ($srcCodec) + inject RPU..." -ForegroundColor Cyan
@@ -3697,8 +3779,8 @@ function Invoke-RemoveDv {
     }
 
     $rawExt = if ($srcCodec -eq "av1") { "ivf" } else { "hevc" }
-    $rawVideo = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
-    $cleanVideo = Join-Path $env:TEMP ("nodv_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $rawVideo = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $cleanVideo = Join-Path $AV_TEMP_DIR ("nodv_"+[guid]::NewGuid().ToString("N")+".$rawExt")
     $outExt = [System.IO.Path]::GetExtension($file).TrimStart('.')
     $finalOut = Join-Path $OutputDir ("{0}_nodv.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $outExt)
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
@@ -3758,8 +3840,8 @@ function Invoke-RemoveHdr10Plus {
     }
 
     $rawExt = if ($srcCodec -eq "av1") { "ivf" } else { "hevc" }
-    $rawVideo = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
-    $cleanVideo = Join-Path $env:TEMP ("nohp_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $rawVideo = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+    $cleanVideo = Join-Path $AV_TEMP_DIR ("nohp_"+[guid]::NewGuid().ToString("N")+".$rawExt")
     $outExt = [System.IO.Path]::GetExtension($file).TrimStart('.')
     $finalOut = Join-Path $OutputDir ("{0}_nohdr10plus.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $outExt)
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
@@ -3828,7 +3910,7 @@ function Invoke-PlotDvMetadata {
         default { Write-Host "Optiune invalida." -ForegroundColor Red; return }
     }
 
-    $rpuTmp = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+    $rpuTmp = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
     Write-Host ""
     Write-Host "  [1/2] Extract RPU..." -ForegroundColor Cyan
     if (-not (Get-DvRpu -InputFile $file -RpuOut $rpuTmp -SourceCodec $srcCodec)) {
@@ -3879,7 +3961,7 @@ function Invoke-HdrDvTools {
 }
 
 # ── Show-SourceDialog — ANALIZA SURSA HDR10/SDR per fisier ──────────
-# Return: "hdr10" | "sdr_tonemap" | "sdr" | "copy" | "skip"
+# Return: "hdr10" | "hdr10_to_hlg" (v63) | "sdr_tonemap" | "sdr" | "copy" | "skip"
 function Show-SourceDialog {
     param([string]$file, [string]$filename, [hashtable]$sourceInfo)
     $srcPixfmt = Get-FFprobeValue $file "v:0" "pix_fmt"
@@ -3899,16 +3981,18 @@ function Show-SourceDialog {
 
     if ($isHdr10) {
         Write-Host "  ║  1) Encodeaza HDR10 10-bit                   ║" -ForegroundColor White
-        Write-Host "  ║  2) Encodeaza SDR 10-bit (tonemap Rec.709)   ║" -ForegroundColor White
-        Write-Host "  ║  3) Stream copy video                        ║" -ForegroundColor White
-        Write-Host "  ║  4) Sari acest fisier                        ║" -ForegroundColor White
+        Write-Host "  ║  2) Converteste la HLG 10-bit (BT.2100)      ║" -ForegroundColor White
+        Write-Host "  ║  3) Encodeaza SDR 10-bit (tonemap Rec.709)   ║" -ForegroundColor White
+        Write-Host "  ║  4) Stream copy video                        ║" -ForegroundColor White
+        Write-Host "  ║  5) Sari acest fisier                        ║" -ForegroundColor White
         Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-        $ch = Read-Host "  Alege 1-4 [implicit: 1]"
+        $ch = Read-Host "  Alege 1-5 [implicit: 1]"
         switch ($ch) {
-            "2" { Write-Host "  Ales: SDR 10-bit (tonemap din HDR10)" -ForegroundColor Green; return "sdr_tonemap" }
-            "3" { Write-Host "  Ales: Stream copy video" -ForegroundColor Green; return "copy" }
-            "4" { Write-Host "  Sarit de utilizator" -ForegroundColor DarkYellow; return "skip" }
-            default { Write-Host "  Ales: HDR10 10-bit" -ForegroundColor Green; return "hdr10" }
+            "2" { Write-Host "  Ales: HLG 10-bit (din HDR10)" -ForegroundColor Green; return "hdr10_to_hlg" }
+            "3" { Write-Host "  Ales: SDR 10-bit (tonemap din HDR10)" -ForegroundColor Green; return "sdr_tonemap" }
+            "4" { Write-Host "  Ales: Stream copy video" -ForegroundColor Green; return "copy" }
+            "5" { Write-Host "  Sarit de utilizator" -ForegroundColor DarkYellow; return "skip" }
+            default { Write-Host "  Ales: HDR10 10-bit" -ForegroundColor Green; Read-Hdr10MeasureChoice; return "hdr10" }
         }
     } else {
         Write-Host "  ║  1) Encodeaza 10-bit SDR                     ║" -ForegroundColor White
@@ -3944,7 +4028,7 @@ function Show-HLGDialog {
     Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
     $ch = Read-Host "  Alege 1-5 [implicit: 1]"
     switch ($ch) {
-        "2" { Write-Host "  Ales: HLG → HDR10 (PQ)" -ForegroundColor Green; return "hlg_to_hdr10" }
+        "2" { Write-Host "  Ales: HLG → HDR10 (PQ)" -ForegroundColor Green; Read-Hdr10MeasureChoice; return "hlg_to_hdr10" }
         "3" { Write-Host "  Ales: HLG → SDR tonemap" -ForegroundColor Green; return "hlg_to_sdr" }
         "4" { Write-Host "  Ales: Stream copy video" -ForegroundColor Green; return "copy" }
         "5" { Write-Host "  Sarit de utilizator" -ForegroundColor DarkYellow; return "skip" }
@@ -4386,8 +4470,8 @@ function Invoke-FfmpegWithProgress {
         [int]$TotalSeconds,
         [string[]]$Arguments
     )
-    $progFile = [System.IO.Path]::GetTempFileName()
-    $errFile  = "$env:TEMP\fferr_$PID.txt"
+    $progFile = Join-Path $AV_TEMP_DIR ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
+    $errFile  = "$AV_TEMP_DIR\fferr_$PID.txt"
     $allArgs  = @("-progress", $progFile, "-nostats") + $Arguments
     # v61: CWD pe $AV_TEMP_DIR cand pipeline-ul refera HDR10+ JSON prin nume gol inline
     $wd = @{}; if ($script:ffmpegWorkDir) { $wd['WorkingDirectory'] = $script:ffmpegWorkDir }
@@ -4968,6 +5052,7 @@ function Get-ProfileSchema {
         'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
         'ENCODE_MODE'          { 'enum:1,2,3'; return }
         'FORCE_LOG_DETECTION'  { 'enum:0,1'; return }
+        'HDR10_MEASURE_CLL'    { 'enum:0,1'; return }
         'INTERACTIVE_MODE'     { 'enum:0,1'; return }
         'LOG_PROFILE'          { 'enum:,apple_log,samsung_log,dlog_m'; return }
         'FPS_METHOD'           { 'enum:,drop,minterpolate'; return }
@@ -6127,6 +6212,10 @@ if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc) {
     }
 }
 
+# ── MaxCLL/MaxFALL masurat (v63) — baza din env/profil; promptul HDR10 o suprascrie per fisier ──
+$script:hdr10MeasureCllBase = (($env:HDR10_MEASURE_CLL -eq "1") -or ($HDR10_MEASURE_CLL -eq "1"))
+$script:hdr10MeasureCll = $script:hdr10MeasureCllBase
+
 # ── Interactive Mode (optional) ─────────────────────────────────────
 $interactiveMode = $false
 Write-Host ""
@@ -6189,6 +6278,7 @@ if ($saveProf -ieq "d") {
             "VBR_MAXRATE=$vbrMaxrate"
             "VBR_BUFSIZE=$vbrBufsize"
             "FORCE_LOG_DETECTION=$(if ($forceLogDetection) { '1' } else { '0' })"
+            "HDR10_MEASURE_CLL=$(if ($script:hdr10MeasureCll) { '1' } else { '0' })"
             "LOG_PROFILE=$logProfileSave"
             "LUT_PATH=$lutPathSave"
             "INTERACTIVE_MODE=$(if ($interactiveMode) { '1' } else { '0' })"
@@ -6761,8 +6851,9 @@ foreach ($f in $inputFiles) {
     $script:hdr10MasterDisplaySvtAv1 = ""
     $script:hdr10MaxCll = ""
     $script:hdr10StaticSource = ""
+    $script:hdr10MeasureCll = $script:hdr10MeasureCllBase   # v63: revine la baza env/profil per fisier
 
-    $progFile  = Join-Path $env:TEMP ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
+    $progFile  = Join-Path $AV_TEMP_DIR ("ffprog_"+[guid]::NewGuid().ToString("N")+".txt")
     $startTime = Get-Date
 
     # ══════════════════════════════════════════════════════════════════
@@ -7001,7 +7092,7 @@ foreach ($f in $inputFiles) {
                     $av1Color = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                 } else {
                     Write-Host "  DV (AV1 P10): Extrag RPU din sursa ($srcCodec)..." -ForegroundColor Cyan
-                    $srcRpu = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+                    $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
                     if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $srcCodec) {
                         $doviRpuFile = $srcRpu
                         $tripleLayerMode = $true
@@ -7127,6 +7218,14 @@ foreach ($f in $inputFiles) {
                 "copy"        { $doStreamCopy = $true }
                 "skip"        { $skipFile = $true }
                 "hdr10"       { $av1Color = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc") }
+                "hdr10_to_hlg" {
+                    # v63: HDR10 → HLG. av1VuiParam deriva transfer-characteristics=18 din
+                    # arib-std-b67; HDR10-static (PQ) NU se declanseaza (HLG metadata-free).
+                    $av1Color = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
+                    $h2hVf = "zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+                    if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$h2hVf,$($videoFilter[1])") }
+                    else { $videoFilter = @("-vf",$h2hVf) }
+                }
                 "sdr_tonemap" {
                     $av1Color = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
                     $tmVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p10le"
@@ -7150,7 +7249,13 @@ foreach ($f in $inputFiles) {
         if ($av1HasPq -and $av1Impl -eq "libsvtav1") {
             $isRealHdr10 = $si.isHDRPlus -or $doViAv1
             if ($isRealHdr10) { Resolve-Hdr10Static -File $f.FullName }
-            else { Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit" }
+            else {
+                Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit"
+                # v63: opt-in — masoara CLL real (HLG→HDR10 / PQ fara light-level inscris)
+                if ($script:hdr10MeasureCll -and (Measure-Hdr10Cll -File $f.FullName)) {
+                    $script:hdr10MaxCll = $script:hdr10MeasuredCll; $script:hdr10StaticSource = "measured-hlg-to-hdr10"
+                }
+            }
             if ($script:hdr10StaticAvailable) {
                 $av1Hdr10StaticParam = ":mastering-display=$($script:hdr10MasterDisplaySvtAv1)"
                 if ($script:hdr10MaxCll) { $av1Hdr10StaticParam += ":content-light=$($script:hdr10MaxCll)" }
@@ -7376,7 +7481,7 @@ foreach ($f in $inputFiles) {
 
             if ($hwCanDvPreserve -and $hwDvc -eq "2") {
                 # v46: extract RPU + setup triple-layer; HW produce HDR10 base layer
-                $srcRpu = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+                $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
                 Write-Host "  v46 HW DV preserve: Extrag RPU sursa ($hwSrcCodec)..." -ForegroundColor Cyan
                 if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $hwSrcCodec) {
                     $doviRpuFile = $srcRpu
@@ -7562,7 +7667,7 @@ foreach ($f in $inputFiles) {
                 continue
             }
             if ($dvc -eq "3" -and $canDvPreserve) {
-                $srcRpu = Join-Path $env:TEMP ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+                $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
                 Write-Host "  DV preserve (HEVC): Extrag RPU din sursa ($dvSrcCodec)..." -ForegroundColor Cyan
                 if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $dvSrcCodec) {
                     $doviRpuFile = $srcRpu
@@ -7693,6 +7798,15 @@ foreach ($f in $inputFiles) {
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
                 }
+                "hdr10_to_hlg" {
+                    # v63: HDR10 → HLG. x265VuiParams deriva HLG din arib-std-b67; fara
+                    # hdr10=1 → x265StaticParams NU se adauga (HLG e metadata-free).
+                    $colorParams = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
+                    $x265Hdr = "hdr-opt=1:repeat-headers=1:"
+                    $h2hVf = "zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+                    if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$h2hVf,$($videoFilter[1])") }
+                    else { $videoFilter = @("-vf",$h2hVf) }
+                }
                 "sdr_tonemap" {
                     $colorParams = @("-color_primaries","bt709","-color_trc","bt709","-colorspace","bt709")
                     $tmVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709,format=yuv420p10le"
@@ -7730,7 +7844,13 @@ foreach ($f in $inputFiles) {
         if ($x265Hdr -match "hdr10=1") {
             $isRealHdr10 = ($srcResult -eq "hdr10") -or $si.isHDRPlus -or $doVi
             if ($isRealHdr10) { Resolve-Hdr10Static -File $f.FullName }
-            else { Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit" }
+            else {
+                Set-Hdr10StaticDefaults; $script:hdr10StaticSource = "default-bt2020-1000nit"
+                # v63: opt-in — masoara CLL real (HLG→HDR10, HLG n-are light-level inscris)
+                if ($script:hdr10MeasureCll -and (Measure-Hdr10Cll -File $f.FullName)) {
+                    $script:hdr10MaxCll = $script:hdr10MeasuredCll; $script:hdr10StaticSource = "measured-hlg-to-hdr10"
+                }
+            }
             if ($script:hdr10StaticAvailable) {
                 $x265StaticParams = "master-display=$($script:hdr10MasterDisplayX265)"
                 if ($script:hdr10MaxCll) { $x265StaticParams += ":max-cll=$($script:hdr10MaxCll)" }
@@ -7790,7 +7910,7 @@ foreach ($f in $inputFiles) {
         "*amf"      { (($rtEncoder -replace "_amf","").ToUpper()) + "-AMF" }
         default     { if ($rtEncoder) { $rtEncoder.ToUpper() } else { "FFmpeg" } }
     }
-    $errFile = "$env:TEMP\fferr_$PID.txt"
+    $errFile = "$AV_TEMP_DIR\fferr_$PID.txt"
     $exitCode = 0
     if ($script:use2Pass) {
         # v51: 2-pass branch — encoderul a populat ffmpegCmdPass1/Pass2 + statsFile.
@@ -7839,7 +7959,7 @@ foreach ($f in $inputFiles) {
         $tlLabel = if ($tlCodec -eq "av1") { "DV P10 + HDR10 + HDR10+ (AV1)" } else { "DV 8.1 + HDR10 + HDR10+ (HEVC)" }
         Write-Host "  Triple-layer: Injectez DV RPU in output ($tlCodec)..." -ForegroundColor Cyan
         $rawExt = if ($tlCodec -eq "av1") { "ivf" } else { "hevc" }
-        $rawTemp = Join-Path $env:TEMP ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+        $rawTemp = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
         $extractArgs = if ($tlCodec -eq "av1") {
             @("-c:v","copy","-f","ivf",$rawTemp)
         } else {
@@ -7847,9 +7967,9 @@ foreach ($f in $inputFiles) {
         }
         & ffmpeg -v error -i $outFile @extractArgs 2>>"$LogFile"
         if ($LASTEXITCODE -eq 0 -and (Test-Path $rawTemp)) {
-            $injectedTemp = Join-Path $env:TEMP ("injected_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+            $injectedTemp = Join-Path $AV_TEMP_DIR ("injected_"+[guid]::NewGuid().ToString("N")+".$rawExt")
             if (Inject-DvRpu $rawTemp $doviRpuFile $injectedTemp -TargetCodec $tlCodec) {
-                $finalTemp = Join-Path $env:TEMP ("final_"+[guid]::NewGuid().ToString("N")+".$container")
+                $finalTemp = Join-Path $AV_TEMP_DIR ("final_"+[guid]::NewGuid().ToString("N")+".$container")
                 $tlContFlags = Get-ContainerFlags $container
                 $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
                            "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",

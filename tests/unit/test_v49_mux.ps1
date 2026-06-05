@@ -301,3 +301,5 @@ if ($encContent -match 'av_mux\.ps1') { _pass } else { _fail "Main menu dispatch
 
 # Invoke-Remux (worker) pastrat pentru back-compat
 if ($encContent -match 'function Invoke-Remux\b') { _pass } else { _fail "Invoke-Remux worker pastrat" }
+
+Invoke-TestSummary   # v63: lipsea → testul iesea mereu exit 0 fara sa valideze

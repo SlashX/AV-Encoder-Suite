@@ -173,7 +173,9 @@ $env:TC_HDR_POLICY = $null
 
 # ── 14. Integrare: fluxurile cheama Show-TcHdrDialog (trim/batch/concat) ──
 $dlgCount = ([regex]'Show-TcHdrDialog').Matches($ENCODE_TXT).Count
-Assert-Eq $true ($dlgCount -ge 4) "Show-TcHdrDialog: definitie + >=3 call-site (trim/batch/concat)"
+# v63 fix asertiune stale: concat NU cheama Show-TcHdrDialog (foloseste Get-PipelineHdrMode agregat,
+# N->1 — vezi asertiunea de la linia urmatoare); call-site reale = Trim + Batch => def + 2 calls = 3.
+Assert-Eq $true ($dlgCount -ge 3) "Show-TcHdrDialog: definitie + 2 call-site (trim/batch; concat = detectie agregata)"
 Assert-Contains $ENCODE_TXT "Build-TcVideoArgs" "Build-TcVideoArgs integrat in fluxuri"
 Assert-Contains $ENCODE_TXT "Get-PipelineHdrMode" "Concat foloseste Get-PipelineHdrMode (agregat)"
 
@@ -184,7 +186,9 @@ if ($gpmAst) {
     $gpmBody = $gpmAst.Extent.Text
     Assert-Contains $gpmBody 'side_data_type'        "Get-PipelineHdrMode: side_data_type (NU list)"
     Assert-Contains $gpmBody 'Dolby Vision Metadata' "Get-PipelineHdrMode: DV AV1 via side_data"
-    Assert-Eq $false ([bool]($gpmBody -match 'frame=side_data_list')) "Get-PipelineHdrMode NU mai foloseste side_data_list"
+    # v63 fix: regex vechi 'frame=side_data_list' matcha COMENTARIUL din corp, nu codul real.
+    # Verificam absenta formei ffprobe vechi (-show_entries frame=side_data_list); codul foloseste side_data_type.
+    Assert-Eq $false ([bool]($gpmBody -match '-show_entries frame=side_data_list')) "Get-PipelineHdrMode NU mai foloseste -show_entries frame=side_data_list (forma veche)"
 }
 
 # ── 16. v61: pipeline pastreaza HDR10+ inline (degrade-guard v60 inlocuit cu preserve) ──
@@ -193,3 +197,5 @@ if ($gpmAst) {
 Assert-Contains    $ENCODE_TXT 'dhdr10-info=$(Get-InlineParamName'   "pipeline x265: preserve HDR10+ (nume gol)"
 Assert-Contains    $ENCODE_TXT 'hdr10plus-json=$(Get-InlineParamName' "pipeline svtav1: preserve HDR10+ (nume gol)"
 Assert-NotContains $ENCODE_TXT 'incompatibil cu x265-params'        "pipeline: degrade-guard v60 eliminat (x265)"
+
+Invoke-TestSummary   # v63: lipsea → testul iesea mereu exit 0 fara sa valideze

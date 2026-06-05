@@ -16,6 +16,18 @@ dsc="$(awk '/^detect_source_codec\(\)/,/^}/' "$SRC/av_common.sh")"
 assert_contains "$dsc" "default=noprint_wrappers=1:nokey=1" "detect_source_codec foloseste default= (nu csv=p=0)"
 assert_contains "$dsc" "head -1" "detect_source_codec ia prima linie (head -1) — DJI v:0 dublu-listat"
 
+# ── 1b. v63: probe_video_signature (av_trimconcat.sh) ia primul stream (head -5) ──
+# -select_streams v:0 dublu-listat pe DJI Action 6 → signature multi-field (paste) se dubla
+# ("hevc|..|hevc|..") → un clip DJI vs unul non-DJI de ACELASI format ieseau "diferite" →
+# fals incompat → re-encode in loc de stream-copy la concat. head -5 = primul stream (5 campuri).
+pvs="$(awk '/^probe_video_signature\(\)/,/^}/' "$SRC/av_trimconcat.sh")"
+assert_contains "$pvs" "codec_name,width,height,r_frame_rate,pix_fmt" "probe_video_signature: 5 campuri"
+assert_contains "$pvs" "head -5" "probe_video_signature ia primul stream (head -5) — DJI v:0 dublu"
+
+# ── 1c. v63: av_encoder_audio.sh — gate-ul webm SRC_VCODEC ia prima linie (head -1) ──
+svc="$(grep -A1 'SRC_VCODEC=$(ffprobe' "$SRC/av_encoder_audio.sh")"
+assert_contains "$svc" "head -1" "SRC_VCODEC (webm gate) ia prima linie — DJI v:0 dublu / CRLF"
+
 # ── 2. Functional: HDR10 real → codec/transfer curate (fara trailing comma) ──
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
     skip_test "ffmpeg/ffprobe lipsesc — sar testul functional"

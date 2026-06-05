@@ -359,7 +359,12 @@ encoder_setup_file() {
                 # v51: HLG→HDR10 transform — sursa nu are master_display real,
                 # folosim defaults BT.2020 + 1000 nits
                 # v52: colorprim/transfer/colormatrix EXPLICIT in x265-params (fara ffmpeg flags)
-                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"; _set_x265_hdr10_static
+                hdr10_static_defaults; HDR10_STATIC_SOURCE="default-hlg-to-hdr10"
+                # v63: opt-in — masoara CLL real (HLG n-are light-level inscris → default 1000,400 e generic)
+                if [ "${HDR10_MEASURE_CLL:-0}" = "1" ] && measure_hdr10_cll "$file"; then
+                    HDR10_MAX_CLL="${HDR10_MEASURED_CLL},${HDR10_MEASURED_FALL}"; HDR10_STATIC_SOURCE="measured-hlg-to-hdr10"
+                fi
+                _set_x265_hdr10_static
                 x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")
                 video_params="-pix_fmt yuv420p10le -x265-params $x265params"
                 local _hlg2hdr10_vf="zscale=t=linear:npl=1000,zscale=t=smpte2084:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
@@ -428,6 +433,18 @@ encoder_setup_file() {
                 hdr10_static_resolve "$file"; _set_x265_hdr10_static
                 x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc")
                 video_params="-pix_fmt yuv420p10le -x265-params $x265params"
+                ;;
+            hdr10_to_hlg)
+                # v63: HDR10 → HLG (oglinda lui hlg_to_hdr10): PQ→linear→HLG. HLG e
+                # metadata-free → fara hdr10=1 / master-display / max-cll. Validat empiric.
+                x265params=$(build_x265_params "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc")
+                video_params="-pix_fmt yuv420p10le -x265-params $x265params"
+                local _hdr10toHlg_vf="zscale=t=linear:npl=1000,zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv,format=yuv420p10le"
+                if [[ -n "$VIDEO_FILTER" ]] && [[ "$VIDEO_FILTER" == *"-vf "* ]]; then
+                    VIDEO_FILTER="${VIDEO_FILTER/-vf /-vf ${_hdr10toHlg_vf},}"
+                else
+                    VIDEO_FILTER="-vf $_hdr10toHlg_vf"
+                fi
                 ;;
             sdr_tonemap)
                 # v52: VUI Rec.709 explicit in x265-params (fara ffmpeg flags)

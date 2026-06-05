@@ -21,6 +21,8 @@ if (-not $py3) {
 $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutputDir = Join-Path $InputDir "output"
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+$TempBase  = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (script Python temporar), nu $env:TEMP
+if (-not (Test-Path $TempBase)) { New-Item -ItemType Directory -Force -Path $TempBase | Out-Null }
 
 $gpsFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.gpx","*.fit","*.kml" -File -ErrorAction SilentlyContinue
 Write-Host ""
@@ -48,7 +50,7 @@ if (-not $gpsFiles -or $gpsFiles.Count -eq 0) {
 }
 
 # Generate Python script as temp file
-$pyScript = Join-Path $env:TEMP "av_gps_extract_$(Get-Random).py"
+$pyScript = Join-Path $TempBase "av_gps_extract_$(Get-Random).py"
 @"
 import xml.etree.ElementTree as ET
 import csv, sys, os, math, struct, re

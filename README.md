@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v62** — 106 bugs fixed · 232+ features · ~37 500 LoC · 118 files
+**v63** — 110 bugs fixed · 235+ features · ~41 000 LoC · 130 files
 
 ---
 
@@ -23,7 +23,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
 - **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
 - **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
-- **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output
+- **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output, with opt-in **measured** MaxCLL/MaxFALL (v63)
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
@@ -54,8 +54,8 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **Video** | HEVC · H.264 · AV1 (SVT-AV1 / libaom) · DNxHR · ProRes · APV |
 | **HW backends** | NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec |
 | **HDR** | HDR10 · HDR10+ · Dolby Vision (P5/P7/P8.1 HEVC + P10 AV1) · HLG · LOG |
-| **Audio encode** | AAC · Opus · FLAC · E-AC3 · LPCM |
-| **Audio passthrough** | AC3 · TrueHD · DTS · DTS-HD (auto stream copy) |
+| **Audio encode** | AAC · Opus · FLAC · E-AC3 · AC3 · LPCM |
+| **Audio passthrough** | TrueHD · DTS · DTS-HD (auto stream copy; AC3 source copies too) |
 | **Telemetry** | DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 |
 | **Workflows** | Encode · Audio-only · Trim & Concat · Remux · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
 
@@ -120,6 +120,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 
 - **Triple-layer hybrid** — DV 8.1 (HEVC) or DV P10 (AV1) + HDR10 base + HDR10+ dynamic in one bitstream; v45 preserves both layers when source has DV + HDR10+ embedded
 - **HDR10+ → DV hybrid** (v45, transform-only) — extract HDR10+ JSON → synthesize DV RPU → inject → re-mux; 100% lossless on video
+- **HDR10 → HLG** (v63) — encode-time conversion (HEVC + AV1), symmetric with HLG → HDR10; HLG is metadata-free and plays gracefully on SDR screens (broadcast/phone-friendly)
 
 ---
 
@@ -132,6 +133,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 | **AAC** | 192k | 5.1 → 384k · 7.1 → 768k | all |
 | **Opus** | 128k | 5.1 → 256k · 7.1 → 512k | mkv/webm |
 | **E-AC3** | 224k stereo | 5.1 → 640k · 7.1 → 1024k | ❌ MOV |
+| **AC3** legacy (v53) | 224k stereo | 5.1 → 448k (max 640k) · 7.1 → 5.1 downmix | ❌ MOV |
 | **FLAC** lossless | level 8 | passthrough | mkv only |
 | **LPCM** | 16/24/32 le | passthrough | all |
 
@@ -172,7 +174,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 3. **Media analysis** (`av_check`) — 30-50 field CSV
 4. **Telemetry** — 6 modes: Standard / Full / SRT / All / Raw / Strip
 5. **External GPS** — GPX/FIT/KML → CSV/SRT
-6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag)
+6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass (+ dry-run preview, v63) · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag)
 7. **Mux tools** (v49 + v50, no re-encode, lossless):
 
    | Flow | Action |
@@ -378,4 +380,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v62** — 106 bugs fixed · 232+ features · ~37 500 LoC · 118 files
+Current: **v63** — 110 bugs fixed · 235+ features · ~41 000 LoC · 130 files

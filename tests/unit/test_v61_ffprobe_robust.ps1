@@ -41,6 +41,14 @@ Assert-NotContains $gsc '-of csv=p=0' "av_encode Get-SourceCodec foloseste defau
 $gscm = [regex]::Match($MUX_TXT, 'function Get-SourceCodec\s*\{.*?\n\}', 'Singleline').Value
 Assert-Match $gscm '\[0\]' "av_mux Get-SourceCodec ia prima linie [0]"
 
+# ── 1b. v63: Get-VideoSignature (concat compat) ia primul stream (Select -First 5) ──
+# -select_streams v:0 dublu-listat pe DJI → "-join" dubla signature ("hevc|..|hevc|..") →
+# clip DJI vs non-DJI de acelasi format ieseau "diferite" → fals incompat → re-encode la concat.
+$gvs = [regex]::Match($ENCODE_TXT, 'function Get-VideoSignature\s*\{.*?\n\}', 'Singleline').Value
+Assert-Nonzero $gvs.Length "av_encode Get-VideoSignature gasit"
+Assert-Match $gvs 'codec_name,width,height,r_frame_rate,pix_fmt' "Get-VideoSignature: 5 campuri"
+Assert-Match $gvs 'Select-Object -First 5' "Get-VideoSignature ia primul stream (First 5) — DJI v:0 dublu"
+
 # ── 2. Functional sanity: Get-FFprobeValue pe o sursa HDR10 reala → valori curate ──
 if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue) -or -not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Skip-Test "ffmpeg/ffprobe lipsesc — sar testul functional"

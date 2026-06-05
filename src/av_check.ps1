@@ -20,6 +20,8 @@ else                    { $InputDir  = Split-Path -Parent $MyInvocation.MyComman
 if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR }
 else                    { $OutputDir = Join-Path $InputDir "output" }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+$TempBase = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (djmd dump), nu $env:TEMP
+New-Item -ItemType Directory -Force -Path $TempBase | Out-Null
 
 # ── Functii utilitare ─────────────────────────────────────────────────
 function Format-Bytes {
@@ -247,7 +249,7 @@ function Test-DjiDLogM {
     if (-not $idxLine) { return "unknown" }
     $djmdIdx = ($idxLine -split ',')[0].Trim()
     if ($djmdIdx -notmatch '^\d+$') { return "unknown" }
-    $dump = Join-Path $env:TEMP ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
+    $dump = Join-Path $TempBase ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
     & ffmpeg -v error -y -i $File -map "0:$djmdIdx" -c copy -f data $dump 2>$null | Out-Null
     $mode = "unknown"
     if ((Test-Path $dump) -and (Get-Item $dump).Length -gt 0) {

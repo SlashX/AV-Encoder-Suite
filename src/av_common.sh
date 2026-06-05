@@ -331,9 +331,18 @@ _cleanup_on_exit() {
 # ══════════════════════════════════════════════════════════════════════
 detect_source_info() {
     local file="$1"
-    read -r WIDTH HEIGHT HDR_TYPE < <(ffprobe -v error -select_streams v:0 \
+    # v63 robust (multi-field csv=p=0 — verificat empiric pe surse reale):
+    #  (a) `tr -d '\r'` — ffprobe scrie CRLF pe Windows/git-bash → fara strip, HDR_TYPE capta `\r`
+    #      → match-ul EXACT al HLG (`== "arib-std-b67"`, ~485) esua → IS_HLG=0. No-op pe Unix (LF).
+    #  (b) trailing comma: pe surse cu [SIDE_DATA] (HDR10/HDR10+/DV) csv da `1920,1080,smpte2084,`
+    #      (camp gol in plus) → `tr ',' ' '` → spatiu trailing.
+    #  (c) DJI Action 6: raporteaza v:0 de 2 ori (3 linii: val + gol + val) → `read` ia PRIMA linie.
+    #  Var `_csv_extra` absoarbe EXPLICIT orice camp dupa al 3-lea → HDR_TYPE = mereu exact campul 3
+    #  (nu depinde de absorbtia subtila a spatiului trailing de catre read).
+    local _csv_extra
+    read -r WIDTH HEIGHT HDR_TYPE _csv_extra < <(ffprobe -v error -select_streams v:0 \
         -show_entries stream=width,height,color_transfer \
-        -of csv=p=0 "$file" 2>/dev/null | tr ',' ' ')
+        -of csv=p=0 "$file" 2>/dev/null | tr -d '\r' | tr ',' ' ')
     [[ ! "$WIDTH"  =~ ^[0-9]+$ ]] && WIDTH=0
     [[ ! "$HEIGHT" =~ ^[0-9]+$ ]] && HEIGHT=0
     IS_HLG=0
@@ -407,7 +416,7 @@ detect_source_info() {
         # Detect color transfer characteristic
         SRC_COLOR_TRC=$(ffprobe -v error -select_streams v:0 \
             -show_entries stream=color_transfer \
-            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
 
         # Detect bit depth — bits_per_raw_sample, fallback pe pix_fmt. v62: pe multe
         # surse HEVC 10-bit bits_per_raw_sample e N/A → cadea pe 8 → ratam Apple Log /
@@ -415,7 +424,7 @@ detect_source_info() {
         local src_bps src_pixfmt_bd
         src_bps=$(ffprobe -v error -select_streams v:0 \
             -show_entries stream=bits_per_raw_sample \
-            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
         if [[ ! "$src_bps" =~ ^[0-9]+$ ]]; then
             src_pixfmt_bd=$(ffprobe -v error -select_streams v:0 \
                 -show_entries stream=pix_fmt \
@@ -922,8 +931,10 @@ get_audio_params() {
     fi
     local codec="${AUDIO_CODEC_ARG%%:*}" br="${AUDIO_CODEC_ARG#*:}" channels=2
     if [[ -n "$file" ]]; then
+        # v63: default= + head -1 + tr -d '\r' (csv=p=0 single-field putea da trailing comma pe
+        # audio cu side_data / 2 linii pe DJI → regex `^[0-9]+$` esua → channels=2 → bitrate gresit)
         local ch_raw; ch_raw=$(ffprobe -v error -select_streams a:0 \
-            -show_entries stream=channels -of csv=p=0 "$file" 2>/dev/null)
+            -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
         [[ "$ch_raw" =~ ^[0-9]+$ ]] && channels=$ch_raw
     fi
     # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix (5.1/7.1 → 2.0) cu matricea
@@ -2053,21 +2064,26 @@ handle_source_dialog() {
 
     if [ "$is_hdr10" -eq 1 ]; then
         echo "  ║  1) Encodeaza HDR10 10-bit                   ║"
-        echo "  ║  2) Encodeaza SDR 10-bit (tonemap Rec.709)   ║"
-        echo "  ║  3) Stream copy video                        ║"
-        echo "  ║  4) Sari acest fisier                        ║"
+        echo "  ║  2) Converteste la HLG 10-bit (BT.2100)      ║"
+        echo "  ║  3) Encodeaza SDR 10-bit (tonemap Rec.709)   ║"
+        echo "  ║  4) Stream copy video                        ║"
+        echo "  ║  5) Sari acest fisier                        ║"
         echo "  ╚══════════════════════════════════════════════╝"
-        read -p "  Alege 1-4 [implicit: 1]: " src_choice
+        read -p "  Alege 1-5 [implicit: 1]: " src_choice
         case "${src_choice:-1}" in
-            2) log "  Ales: SDR 10-bit (tonemap din HDR10)"
+            2) log "  Ales: HLG 10-bit (din HDR10)"
+               SRC_DIALOG_MODE="hdr10_to_hlg"
+               return 0 ;;
+            3) log "  Ales: SDR 10-bit (tonemap din HDR10)"
                SRC_DIALOG_MODE="sdr_tonemap"
                return 0 ;;
-            3) log "  Ales: Stream copy video"
+            4) log "  Ales: Stream copy video"
                return 97 ;;
-            4) log "  Sarit de utilizator"
+            5) log "  Sarit de utilizator"
                return 98 ;;
             *) log "  Ales: HDR10 10-bit"
                SRC_DIALOG_MODE="hdr10"
+               ask_hdr10_measure_cll   # v63: opt-in MaxCLL/MaxFALL real
                return 0 ;;
         esac
     else
@@ -2111,7 +2127,7 @@ handle_hlg_dialog() {
     echo "  ╚══════════════════════════════════════════════╝"
     read -p "  Alege 1-5 [implicit: 1]: " hlg_choice
     case "${hlg_choice:-1}" in
-        2) log "  Ales: HLG → HDR10 (PQ)"; HLG_DIALOG_MODE="hlg_to_hdr10"; return 0 ;;
+        2) log "  Ales: HLG → HDR10 (PQ)"; HLG_DIALOG_MODE="hlg_to_hdr10"; ask_hdr10_measure_cll; return 0 ;;
         3) log "  Ales: HLG → SDR tonemap (Rec.709)"; HLG_DIALOG_MODE="hlg_to_sdr"; return 0 ;;
         4) log "  Ales: Stream copy video"; return 97 ;;
         5) log "  Sarit de utilizator"; return 98 ;;
@@ -2282,8 +2298,10 @@ repair_hdr10_signaling() {
     # Daca lipsesc, extrage din sursa originala
     if [[ -z "$md_str" || -z "$cll_str" ]] && [[ -n "${MC_REPAIR_SRC:-}" && -f "$MC_REPAIR_SRC" ]]; then
         local sd_json
+        # v63: `frame_side_data` (robust, ca av_check) in loc de `frame_side_data_list` (varianta
+        # non-standard pe selectorul fragil; mergea cu -show_frames, dar uniformizam metadata).
         sd_json=$(ffprobe -v error -select_streams v:0 -read_intervals "%+#1" \
-            -show_frames -show_entries frame_side_data_list \
+            -show_frames -show_entries frame_side_data \
             -of default=nw=1 "$MC_REPAIR_SRC" 2>/dev/null)
         # Mastering display: format ffmpeg "G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"
         if [[ -z "$md_str" ]]; then
@@ -3164,10 +3182,14 @@ extract_hdr10_static_metadata() {
     [ -f "$file" ] || return 1
 
     # ffprobe single-frame side_data — primul keyframe pentru viteza
+    # v63 FIX: `frame=side_data_list` nu mai expune cheile nested in ffprobe-ul curent
+    # (output gol → extract esua mereu → HDR10 static cadea PE DEFAULT, nu citea master-display/
+    # MaxCLL real). Acelasi anti-pattern ca `frame_side_data=type`. Cerem cheile explicit prin
+    # `frame_side_data=` — awk-ul de mai jos (grupat pe side_data_type) ramane neschimbat.
     local probe
     probe=$(LC_ALL=C ffprobe -v error -select_streams v:0 \
         -read_intervals "%+#1" \
-        -show_entries frame=side_data_list \
+        -show_entries frame_side_data=side_data_type,red_x,red_y,green_x,green_y,blue_x,blue_y,white_point_x,white_point_y,max_luminance,min_luminance,max_content,max_average \
         -of default=noprint_wrappers=1 \
         "$file" 2>/dev/null)
     [ -z "$probe" ] && return 1
@@ -3260,16 +3282,65 @@ hdr10_static_defaults() {
     HDR10_MAX_CLL="1000,400"
 }
 
+# v63: Masoara MaxCLL/MaxFALL real din continut (1 pass de analiza) cand userul opteaza
+# (HDR10_MEASURE_CLL=1) si sursa NU are light-level inscris. Luma-based: signalstats YMAX/YAVG
+# pe semnal linearizat cu zscale; npl=10000 pt sursa PQ (smpte2084), 1000 pt HLG. Subestimeaza
+# usor vs max(R,G,B) per CTA-861.3 — acceptabil pt opt-in QC. Soft-fail → pastreaza default 1000,400.
+# Seteaza HDR10_MEASURED_CLL / HDR10_MEASURED_FALL (nits intregi). Return 0=ok, 1=esec.
+measure_hdr10_cll() {
+    local file="$1"
+    HDR10_MEASURED_CLL=""; HDR10_MEASURED_FALL=""
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    [ -f "$file" ] || return 1
+    local _trc; _trc=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer \
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
+    local _npl=1000; [ "$_trc" = "smpte2084" ] && _npl=10000
+    echo "  Masor MaxCLL/MaxFALL real (1 pass de analiza, poate dura)..." >&2
+    local _res
+    _res=$(ffmpeg -hide_banner -v error -i "$file" \
+        -vf "zscale=t=linear:npl=${_npl},format=yuv444p16le,signalstats,metadata=print:file=-" \
+        -an -f null - 2>/dev/null | awk -F= -v npl="$_npl" '
+            /YMAX=/{v=$2+0; if(v>ymax)ymax=v}
+            /YAVG=/{v=$2+0; if(v>yavg)yavg=v}
+            END{ if(ymax>0) printf "%d %d", int(ymax/65535*npl+0.5), int(yavg/65535*npl+0.5) }')
+    [ -z "$_res" ] && return 1
+    HDR10_MEASURED_CLL="${_res%% *}"
+    HDR10_MEASURED_FALL="${_res##* }"
+    return 0
+}
+
+# v63: prompt opt-in MaxCLL/MaxFALL real (Varianta B). Seteaza HDR10_MEASURE_CLL pt fisierul curent.
+# Sare promptul daca flag-ul e deja activ (env/profil → reset-ul per-iteratie il pastreaza) sau non-interactiv.
+ask_hdr10_measure_cll() {
+    [ "${HDR10_MEASURE_CLL:-0}" = "1" ] && return 0
+    [ "${AV_NONINTERACTIVE:-0}" = "1" ] && return 0
+    echo "  MaxCLL/MaxFALL (luminanta continut HDR10):"
+    echo "    1) Implicit 1000,400 (rapid) [implicit]"
+    echo "    2) Masoara real din video (+1 pass de analiza — master de calitate)"
+    read -p "  Alege 1-2 [implicit: 1]: " _cll_ch
+    [ "${_cll_ch:-1}" = "2" ] && { HDR10_MEASURE_CLL=1; log "  MaxCLL/MaxFALL: masurare reala activata"; }
+    return 0
+}
+
 # Helper combinat: extract daca exista, altfel defaults; setează _SOURCE marker
 # pentru log. Apel: hdr10_static_resolve "$file"
 hdr10_static_resolve() {
     local file="$1"
     extract_hdr10_static_metadata "$file"
+    local _real_cll="$HDR10_MAX_CLL"   # non-gol doar daca probe a gasit light-level real
     if [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ]; then
         HDR10_STATIC_SOURCE="probe"
     else
         hdr10_static_defaults
         HDR10_STATIC_SOURCE="default-bt2020-1000nit"
+    fi
+    # v63: opt-in — masoara CLL real cand userul a cerut SI nu exista light-level inscris
+    # (HLG-origin / PQ fara metadata). NU suprascrie valori reale probate.
+    if [ "${HDR10_MEASURE_CLL:-0}" = "1" ] && [ -z "$_real_cll" ]; then
+        if measure_hdr10_cll "$file"; then
+            HDR10_MAX_CLL="${HDR10_MEASURED_CLL},${HDR10_MEASURED_FALL}"
+            HDR10_STATIC_SOURCE="measured-cll"
+        fi
     fi
     [ -z "$HDR10_MAX_CLL" ] && HDR10_MAX_CLL="1000,400"
 }
@@ -4941,6 +5012,9 @@ run_encode_loop() {
     COUNT=0; TOTAL_SAVED=0; TOTAL_ERRORS=0; TOTAL_SKIPPED=0; TOTAL_DONE=0
     GRAND_START=$(date +%s); PROGRESS_FILE=""; BATCH_STOP=0
     TRIPLE_LAYER_MODE=0; DOVI_RPU_FILE=""; TRIPLE_LAYER_TARGET_CODEC=""
+    # v63: baza HDR10_MEASURE_CLL (env/profil) — promptul per-fisier o suprascrie doar local;
+    # reset-ul per-iteratie revine la baza (env/profil persista, alegerea per-fisier NU leak-uie).
+    HDR10_MEASURE_CLL_BASE="${HDR10_MEASURE_CLL:-0}"
     ORIG_CONTAINER="$CONTAINER"; ORIG_CONTAINER_FLAGS="$CONTAINER_FLAGS"
     BATCH_NAMES=(); BATCH_TIMES=(); BATCH_ORIG=(); BATCH_NEW=(); BATCH_RATIOS=()
 
@@ -5000,6 +5074,7 @@ run_encode_loop() {
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
         HW_HDR_MODE=""
         HLG_DIALOG_MODE=""
+        HDR10_MEASURE_CLL="${HDR10_MEASURE_CLL_BASE:-0}"   # v63: revine la baza env/profil per fisier
         # v62 audit: reset LOG color state — altfel un fisier LOG (x264 + LUT) lasa
         # LOG_COLOR_FLAGS / LOG_EXTRA_X264 setate, iar fisierul NE-LOG urmator (x264 le
         # consuma neconditionat in video_params) era marcat gresit bt709/bt2020. x265/av1
@@ -5245,6 +5320,7 @@ profile_schema_get() {
         AUDIO_NORMALIZE)      echo "enum:0,1" ;;
         ENCODE_MODE)          echo "enum:1,2,3" ;;
         FORCE_LOG_DETECTION)  echo "enum:0,1" ;;
+        HDR10_MEASURE_CLL)    echo "enum:0,1" ;;
         INTERACTIVE_MODE)     echo "enum:0,1" ;;
         LOG_PROFILE)          echo "enum:,apple_log,samsung_log,dlog_m" ;;
         FPS_METHOD)           echo "enum:,drop,minterpolate" ;;

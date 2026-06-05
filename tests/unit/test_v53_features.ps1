@@ -51,7 +51,7 @@ Assert-Match $srcText 'isHwActive -and -not \$hwSupports2Pass' "menu gate hides 
 
 # ── HW build uses Get-HwVuiBsf output ────────────────────────────────
 Assert-Match $srcText '\$nvencQualityFlag' "nvencQualityFlag variable"
-Assert-Match $srcText '\$hwQpFlag \+ \$hwPresetFlag \+ \$nvencQualityFlag' "ffArgs include quality flags"
+Assert-Match $srcText '\$hwQpFlag \+ \$hwPresetFlag \+ \$nvencTuneFlag \+ \$nvencQualityFlag' "ffArgs include quality flags"
 
 # ── Schema/profile validation if needed (no new schema fields in v53) ──
 Assert-Match $srcText "'AUDIO_CODEC_ARG'.*ac3:" "AUDIO_CODEC_ARG schema accepts ac3"
@@ -76,4 +76,4 @@ Assert-Match $srcText 'WebM suporta doar Opus' "audio-only WebM Opus enforcement
 # ── Inter-batch audio change prompt mentions AC3 ─────────────────────
 Assert-Match $srcText 'ac3 224k' "inter-batch audio prompt lists ac3"
 
-exit 0
+Invoke-TestSummary   # v63: inlocuit `exit 0` hardcodat (mascha esecurile → testul nu valida nimic)

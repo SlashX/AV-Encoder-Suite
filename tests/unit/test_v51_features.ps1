@@ -9,8 +9,13 @@ $srcText = Get-Content -LiteralPath $srcPath -Raw
 Import-AvEncodeFunctions -Names @(
     'Get-VbvCaps','Get-MinLevelForResolution','Suggest-VbvForTarget','Get-BitrateKbps',
     'Set-Hdr10StaticDefaults','Get-Hdr10StaticMetadata','Resolve-Hdr10Static',
-    'Initialize-2PassState','Clear-2PassState','Test-SvtAv1TwoPassCaps'
+    'Initialize-2PassState','Clear-2PassState','Test-SvtAv1TwoPassCaps','Ensure-TempDir'
 )
+
+# v63: Initialize-2PassState foloseste $AV_TEMP_DIR + Ensure-TempDir (runtime-only, nesetate la
+# importul AST de functii). Setam un temp real (testele pot folosi OS temp prin conventie).
+$AV_TEMP_DIR = Join-Path ([IO.Path]::GetTempPath()) ("v51stats_" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $AV_TEMP_DIR | Out-Null
 
 # ══════════════════════════════════════════════════════════════════════
 # Faza C: VBV / Level helpers
@@ -83,7 +88,9 @@ Assert-Eq "default-bt2020-1000nit" $script:hdr10StaticSource "resolve fallback s
 Initialize-2PassState -File "C:\test video!@#.mp4"
 if ($script:use2Pass) { _pass } else { _fail "Initialize-2PassState sets use2Pass=true" }
 if (Test-Path $script:statsDir) { _pass } else { _fail "statsDir exists" }
-Assert-Match $script:statsFile 'test_video___\.passlog$' "statsFile sanitized name (3 underscores from !@#)"
+# v63: v61 a adaugat _<guid8> in statsBase ("${name}_${guid}.passlog") → name = "test_video___"
+# (space + !@# = 4 underscores dupa "test_video"), apoi separator _ + 8 hex.
+Assert-Match $script:statsFile 'test_video____[0-9a-f]{8}\.passlog$' "statsFile sanitized name (4 underscores: space+!@#) + guid"
 
 Clear-2PassState
 if (-not $script:use2Pass) { _pass } else { _fail "Clear-2PassState resets use2Pass" }
@@ -142,4 +149,6 @@ Assert-Match $srcText '\$encMode -ne "3"'                   "smart-copy guard sk
 Assert-Match $srcText 'if \(\$script:use2Pass\)'            "dispatcher branches on use2Pass"
 Assert-Match $srcText 'Invoke-2PassEncode -File'            "dispatcher invokes 2-pass helper"
 
-exit 0
+# v63: cleanup temp mock + sumar real (inlocuit `exit 0` hardcodat care mascha esecurile)
+Remove-Item $AV_TEMP_DIR -Recurse -Force -ErrorAction SilentlyContinue
+Invoke-TestSummary

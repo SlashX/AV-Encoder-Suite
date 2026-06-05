@@ -627,10 +627,14 @@ generate_preview_thumbnails() {
 # Arg: $1=file. Output: "codec|WxH|fps|pix_fmt" pe stdout
 probe_video_signature() {
     local f="$1"
+    # v63: -select_streams v:0 raporteaza streamul de 2x pe DJI Action 6 (cover mjpeg +
+    # multi-track moov) → blocul celor 5 campuri se repeta → signature dublata
+    # ("hevc|..|hevc|..") → un clip DJI vs unul non-DJI de ACELASI format ieseau "diferite"
+    # → fals incompat → re-encode in loc de stream-copy. head -5 = primul stream (5 campuri).
     ffprobe -v error -select_streams v:0 \
         -show_entries stream=codec_name,width,height,r_frame_rate,pix_fmt \
         -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null | \
-        paste -sd'|' -
+        head -5 | paste -sd'|' -
 }
 
 # Verifică dacă toate fișierele au signature identică. Return 0=compat, 1=diferit
@@ -908,6 +912,15 @@ trimconcat_flow_pipeline() {
         echo "Nu exista fisiere video in $INPUT_DIR"; return 1
     fi
 
+    # v63: mod pipeline — executie vs dry-run (respecta si DRY_RUN din env pt CI/scripting)
+    local DRY_RUN="${DRY_RUN:-0}"
+    if [[ "$DRY_RUN" != "1" ]]; then
+        echo ""
+        echo "Mod pipeline: 1-Executa [implicit]  2-Dry-run (afiseaza planul, fara executie)"
+        read -p "Alege [implicit: 1]: " _pl_mode
+        [[ "$_pl_mode" == "2" ]] && DRY_RUN=1
+    fi
+
     # Pas 1: selectie fisiere incluse in pipeline
     echo ""
     echo "╔══════════════════════════════════════════════╗"
@@ -1145,6 +1158,25 @@ trimconcat_flow_pipeline() {
     fi
     echo "║  Output: $(basename "$out_path")"
     echo "╚══════════════════════════════════════════════╝"
+
+    # v63: Dry-run — afiseaza planul pe pass-uri (+ HDR) si opreste inainte de orice ffmpeg/temp.
+    if [[ "$DRY_RUN" == "1" ]]; then
+        local _dry_hdr; _dry_hdr=$(detect_pipeline_hdr_mode "${chosen[@]}" 2>/dev/null || echo sdr)
+        local _dry_ntrim=0 _s
+        for _s in "${segments[@]}"; do [[ -n "$_s" ]] && _dry_ntrim=$((_dry_ntrim+1)); done
+        echo ""
+        echo "  ─────────────────────────────────────────────"
+        echo "  🟡 DRY-RUN — plan executie (fara ffmpeg/temp):"
+        printf "     Pass 1/3: trim %d segment(e) (stream copy -c copy)\n" "$_dry_ntrim"
+        echo "     Pass 2/3: concat (demuxer/filter auto) + verificare compat"
+        if (( audio_only == 1 )); then
+            echo "     Pass 3/3: audio-only re-encode (video stream copy)"
+        else
+            printf "     Pass 3/3: %s CRF %s (%s)  |  HDR: %s\n" "$codec" "$crf" "$preset" "$_dry_hdr"
+        fi
+        echo "  ─────────────────────────────────────────────"
+        return 0
+    fi
 
     # HDR info (v37: detecția detaliată + auto-injectare se face pre-Pass 3)
     if tc_check_hdr_files "${chosen[@]}"; then

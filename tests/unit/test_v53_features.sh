@@ -45,6 +45,13 @@ HW_HDR_MODE="hw_repair"
 _hw_hdr_setup "hevc"
 assert_contains "$_HW_VUI_BSF" "transfer_characteristics=16" "hw_repair → HDR10 PQ VUI"
 
+# v63 audit: build_mediacodec_cmd are bsf-ul INLINE (Android/Termux) — paritate cu _hw_hdr_setup.
+# Scopat pe corpul functiei (build_mediacodec_cmd → _hw_hdr_setup) ca sa prinda drift real.
+MC_FN=$(awk '/^build_mediacodec_cmd\(\)/{f=1} /^_hw_hdr_setup\(\)/{f=0} f' "$SCRIPT_DIR/av_common.sh")
+assert_contains "$MC_FN" "colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9" "MediaCodec HDR10 BSF (paritate _hw_hdr_setup)"
+assert_contains "$MC_FN" "transfer_characteristics=18"  "MediaCodec HLG BSF transfer=18"
+assert_contains "$MC_FN" "MC_NEEDS_REPAIR=1"            "MediaCodec HDR10 → SEI repair flag setat"
+
 # Empty mode — no BSF (SDR default path)
 HW_HDR_MODE=""
 _HW_VUI_BSF=""
@@ -109,6 +116,22 @@ common_src=$(cat "$SCRIPT_DIR/av_common.sh")
 assert_contains "$common_src" 'AV_DOWNMIX_STEREO:-0}" == "1"' "downmix env var check present"
 assert_contains "$common_src" 'channels=2' "downmix sets channels=2"
 assert_contains "$common_src" '-ac:a:0 2' "downmix appends -ac:a:0 2 flag"
+
+# v63 audit: detectia canalelor robusta — default= (NU csv=p=0 fragil: trailing comma pe audio
+# cu side_data / 2 linii pe DJI → regex `^[0-9]+$` esua → channels=2 → bitrate surround gresit).
+gap_fn=$(awk '/^get_audio_params\(\)/{f=1} /^_warn_audio_metadata\(\)/{f=0} f' "$SCRIPT_DIR/av_common.sh")
+assert_not_contains "$gap_fn" "stream=channels -of csv=p=0" "get_audio_params channels: default= (NU csv=p=0)"
+command -v ffmpeg >/dev/null 2>&1 || export PATH="$SCRIPT_DIR:$PATH"
+if command -v ffmpeg >/dev/null 2>&1; then
+    _t5="$(mktemp -d)"
+    if ffmpeg -hide_banner -v error -y -f lavfi -i "sine=frequency=440:duration=1" \
+        -af "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0" -c:a aac "$_t5/51.mkv" 2>/dev/null; then
+        AUDIO_CODEC_ARG="aac:192k"; CONTAINER="mkv"
+        _r51=$(get_audio_params "$_t5/51.mkv" 2>/dev/null)
+        assert_contains "$_r51" "384k" "functional: 5.1 → channels=6 detectat → bitrate 384k (NU fallback 192k)"
+    fi
+    rm -rf "$_t5"
+fi
 
 # ══════════════════════════════════════════════════════════════════════
 # Markers in encoder/launcher files

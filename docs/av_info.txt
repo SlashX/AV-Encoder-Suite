@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v62
+  Documentatie Setup & Utilizare — v63
 ═══════════════════════════════════════════════════════════════
 
 
@@ -739,6 +739,17 @@ CUPRINS
   static metadata, player-ul ghiceste (1000 nits implicit) — cu metadata
   corecta, highlights nu sunt clipped/crushed.
 
+  v63 — MaxCLL/MaxFALL masurat real (optional). Implicit, cand sursa NU are
+  light-level inscris, se folosesc valorile generice 1000,400. Cu optiunea
+  "Masoara real din video" (flag HDR10_MEASURE_CLL — env / camp profil /
+  prompt per-fisier in dialogul HDR10-preserve si HLG → HDR10), suita face o
+  trecere de analiza si scrie MaxCLL = peak luma real / MaxFALL = average.
+  Util mai ales la HLG → HDR10 (HLG nu are niciodata light-level inscris).
+  Mastering display ramane 1000 (descriptorul monitorului de gradare). Daca
+  sursa are deja CLL inscris, acela e folosit (nu se masoara degeaba).
+  Masuratoarea e luma-based (subestimeaza usor vs max(R,G,B) per CTA-861.3)
+  — potrivita pentru QC opt-in, fara costul implicit pe fiecare encodare.
+
 
   ─── 7.11.3. NVENC 2-pass quality boost (v53) ───
 
@@ -998,6 +1009,15 @@ CUPRINS
   Pipeline + Trim & Concat: detect HDR mode "hlg" + injectare params HLG
   corect (fara hdr10=1) la Pass 3.
 
+  v63 — HDR10 → HLG (HEVC + AV1), simetric cu HLG → HDR10. Cand sursa e HDR10
+  (PQ), dialogul ofera optiunea "Converteste la HLG 10-bit (BT.2100)" pe langa
+  pastrare HDR10 / tonemap SDR. Filtru oglinda (doar transfer-ul difera):
+  zscale PQ → linear → HLG (arib-std-b67). HLG e metadata-free → fara hdr10=1 /
+  master-display / max-cll; VUI derivat din color params (x265 transfer=
+  arib-std-b67, svtav1 transfer 18). Doar x265 / AV1 (x264 e 8-bit, fara HDR).
+  Util: HLG se reda gratios si pe ecrane SDR (backward-compatible) + e prietenos
+  cu telefoanele / broadcast-ul.
+
 
   ─── 8.6. DJI tracks ───
 
@@ -1114,6 +1134,14 @@ CUPRINS
     - Info HDR daca e cazul (auto-detect inainte de Pass 3)
     - Preview thumbnails (v37, opt-in): 3-frame tile 320p per fisier
     - Confirm
+
+  Mod dry-run (v63): la intrarea in pipeline poti alege "2-Dry-run". Dupa
+  configurarea completa (fisiere / taieturi / codec / container), suita
+  afiseaza planul pe 3 pass-uri + modul HDR detectat, dar NU executa nimic —
+  zero fisiere, zero foldere temp. Guard plasat dupa rezumatul de la Pas 5,
+  inainte de crearea subdir-ului temp. Bypass non-interactiv: env DRY_RUN.
+  Doar pipeline-ul are dry-run (Trim / Concat / Batch sunt single-step,
+  majoritar stream-copy).
 
   Pas 6: Executie in 3 pass-uri:
     [Pass 1/3] Trim stream copy → subdir temp.

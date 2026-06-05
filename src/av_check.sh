@@ -408,9 +408,10 @@ for file in "${FILES[@]}"; do
     [[ "$AUDIO_SAMPLERATE" =~ ^[0-9]+$ ]] && \
         AUDIO_SAMPLERATE_KHZ=$(awk "BEGIN{printf \"%.1f\", $AUDIO_SAMPLERATE/1000}")
 
-    # Bit depth — fallback daca bits_per_raw_sample e gol
+    # Bit depth — fallback daca bits_per_raw_sample e gol. v63: default= + head -1 + tr -d '\r'
+    # (csv=p=0 single-field putea da "16," in CSV pe surse cu side_data → si comparatia == "0" frasila)
     [[ -z "$AUDIO_BITDEPTH" || "$AUDIO_BITDEPTH" == "N/A" ]] && AUDIO_BITDEPTH=$(ffprobe -v error -select_streams a:0 \
-        -show_entries stream=bits_per_sample -of csv=p=0 "$file" 2>/dev/null)
+        -show_entries stream=bits_per_sample -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
     [[ -z "$AUDIO_BITDEPTH" || "$AUDIO_BITDEPTH" == "0" ]] && AUDIO_BITDEPTH="N/A"
 
     # Channel layout — fallback la numar canale

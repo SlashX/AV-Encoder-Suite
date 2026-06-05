@@ -7,6 +7,9 @@ $ROOT   = if ($env:PROJECT_ROOT) { $env:PROJECT_ROOT } else { (Resolve-Path "$PS
 $ENC    = Get-Content (Join-Path $ROOT "src\av_encode.ps1") -Raw
 $CHK    = Get-Content (Join-Path $ROOT "src\av_check.ps1") -Raw
 $ENGINE = Join-Path $ROOT "src\dji_djmd_dlogm.py"
+$SRC    = Join-Path $ROOT "src"
+# ffmpeg: global (PATH) sau bundle-uit in src/ (Windows testing) — pt sectiunea functionala
+if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$SRC;$env:PATH" }
 
 # ── 1. Helper + integrare prezente (av_encode + av_check) ──
 Assert-Match $ENC 'function Test-DjiDLogM'  "av_encode.ps1: Test-DjiDLogM definit"
@@ -42,8 +45,28 @@ Assert-Eq "unknown" (& $py $ENGINE $empty    | Select-Object -First 1) "engine: 
 Assert-Eq "unknown" (& $py $ENGINE (Join-Path $tmp "nonexistent") | Select-Object -First 1) "engine: fisier lipsa → unknown"
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
-# Nota: validarea PS1 end-to-end pe sample-uri reale (ffprobe+ffmpeg+engine prin
-# Test-DjiDLogM) se face prin rularea av_check.ps1; aici nu importam functia prin AST
-# (PSScriptRoot ar pointa la folderul testului, nu la src/ → engine negasit). Engine-ul
-# e partajat cu bash, iar test_v62_dji_dlogm.sh il valideaza functional pe sample-uri reale.
+# ── 3. Functional — Test-DjiDLogM (av_encode) pe sample-uri reale, via AST ──
+# v63: _helpers.ps1 injecteaza acum $PSScriptRoot (src/) la importul AST → Test-DjiDLogM din
+# av_encode isi gaseste engine-ul si ruleaza functional (inainte: $PSScriptRoot gol → engine
+# negasit → "unknown"; faceam doar hermetic + bash functional). Skip daca lipsesc ffmpeg/samples.
+if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+    . "$PSScriptRoot\..\_helpers.ps1"
+    Import-AvEncodeFunctions -Names @('Test-DjiDLogM','_Get-AvPython') | Out-Null
+    # $AV_TEMP_DIR e citit de Test-DjiDLogM (script-scope) — il setam la un temp izolat de test
+    $AV_TEMP_DIR = Join-Path ([IO.Path]::GetTempPath()) ("v62b_enc_" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $AV_TEMP_DIR | Out-Null
+    $expDji = [ordered]@{
+        'DJI_20260529221103_0009_D.MP4' = 'dlog_m'
+        'DJI_20260603165715_0014_D.MP4' = 'dlog_m'
+        'DJI_20260524143912_0007_D.MP4' = 'normal'
+        'DJI_20260603165650_0013_D.MP4' = 'normal'
+    }
+    $ranDji = $false
+    foreach ($s in $expDji.Keys) {
+        $sp = Join-Path $SRC $s
+        if (Test-Path $sp) { $ranDji = $true; Assert-Eq $expDji[$s] (Test-DjiDLogM $sp) "av_encode AST functional: $s -> $($expDji[$s])" }
+    }
+    if (-not $ranDji) { Write-Host "  (info: sample-uri DJI absente — sar functionalul av_encode)" }
+    Remove-Item $AV_TEMP_DIR -Recurse -Force -ErrorAction SilentlyContinue
+}
 Invoke-TestSummary

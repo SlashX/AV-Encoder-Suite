@@ -22,6 +22,8 @@ if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
 $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutputDir = Join-Path $InputDir "output"
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+$TempBase  = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (scripturi Python temporare), nu $env:TEMP
+if (-not (Test-Path $TempBase)) { New-Item -ItemType Directory -Force -Path $TempBase | Out-Null }
 
 function Format-Bytes {
     param([long]$bytes)
@@ -259,7 +261,7 @@ if ($wantPyDjiNorm) {
 # ── GPMF parser Python — scris in temp ───────────────────────────────
 $gpmfPy = $null
 if ($needPy) {
-    $gpmfPy = Join-Path $env:TEMP "av_gpmf_$(Get-Random).py"
+    $gpmfPy = Join-Path $TempBase "av_gpmf_$(Get-Random).py"
     @"
 import struct, sys, os, csv
 
@@ -798,7 +800,7 @@ with open(sys.argv[1], encoding='utf-8-sig', errors='replace') as fi, open(sys.a
         if not wrote: w.writerow(NORM); wrote=True
         w.writerow([out[c] for c in NORM])
 "@
-            $pyTmp = Join-Path $env:TEMP "av_dji_norm_$(Get-Random).py"
+            $pyTmp = Join-Path $TempBase "av_dji_norm_$(Get-Random).py"
             $pyDji | Out-File $pyTmp -Encoding UTF8
             & $py3 $pyTmp $normSrc $normOut 2>$null
             Remove-Item $pyTmp -Force -ErrorAction SilentlyContinue

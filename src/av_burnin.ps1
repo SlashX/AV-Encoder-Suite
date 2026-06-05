@@ -144,6 +144,37 @@ function Get-LogProfileLabel {
     }
 }
 
+# v63: port din av_check.ps1 — D-Log M pe DJI Osmo Action 6 (AC006) e invizibil in container
+# (bt709 identic Normal/D-Log M); singura cale e protobuf-ul djmd (.2.4.1==19), engine partajat
+# src/dji_djmd_dlogm.py (model-gate intern pe dvtm_ac206.proto). Soft-fail → "unknown".
+function _Get-AvPython {
+    if (Get-Command python3 -ErrorAction SilentlyContinue) { return "python3" }
+    $p = Get-Command python -ErrorAction SilentlyContinue
+    if ($p -and ((& python --version 2>&1) -match "3\.")) { return "python" }
+    return $null
+}
+function Test-DjiDLogM {
+    param([string]$File)
+    $engine = Join-Path $PSScriptRoot "dji_djmd_dlogm.py"
+    if (-not (Test-Path $engine)) { return "unknown" }
+    $py = _Get-AvPython
+    if (-not $py) { return "unknown" }
+    $idxLine = @(& ffprobe -v error -show_entries stream=index,codec_tag_string -of csv=p=0 -- $File 2>$null) |
+        Where-Object { ($_ -split ',')[1] -eq 'djmd' } | Select-Object -First 1
+    if (-not $idxLine) { return "unknown" }
+    $djmdIdx = ($idxLine -split ',')[0].Trim()
+    if ($djmdIdx -notmatch '^\d+$') { return "unknown" }
+    $dump = Join-Path $TempBase ("djmd_" + [guid]::NewGuid().ToString("N") + ".djmd")
+    & ffmpeg -v error -y -i $File -map "0:$djmdIdx" -c copy -f data $dump 2>$null | Out-Null
+    $mode = "unknown"
+    if ((Test-Path $dump) -and (Get-Item $dump).Length -gt 0) {
+        $out = (& $py $engine $dump 2>$null | Select-Object -First 1)
+        if ($out -eq "dlog_m" -or $out -eq "normal") { $mode = $out }
+    }
+    Remove-Item $dump -Force -ErrorAction SilentlyContinue
+    return $mode
+}
+
 # Detecteaza sursa via ffprobe. Returneaza hashtable cu:
 #   SourceType (sdr|dv|hdr10|hdr10plus|hlg|log)
 #   Codec (av1|hevc|h264|...)
@@ -176,6 +207,15 @@ function Get-BurninSourceInfo {
         -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
     $srcBps = 8
     if ($bpsRaw -and $bpsRaw -match '^\d+$') { $srcBps = [int]$bpsRaw }
+    else {
+        # v63 (v62 Bug-1): bits_per_raw_sample e N/A pe multe surse HEVC 10-bit → cadea pe 8
+        # → gate-ul LOG (>=10) esua → Samsung/Apple/D-Log nedetectate. Fallback pe pix_fmt.
+        $pfBd = (& ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt `
+            -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
+        if     ($pfBd -match 'p16|p016') { $srcBps = 16 }
+        elseif ($pfBd -match 'p12|p012') { $srcBps = 12 }
+        elseif ($pfBd -match 'p10|p010') { $srcBps = 10 }
+    }
     $codecTag = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string `
         -of default=noprint_wrappers=1:nokey=1 $File 2>$null | Select-Object -First 1) -as [string]
 
@@ -216,8 +256,17 @@ function Get-BurninSourceInfo {
             "apple"   { $info.LogProfile = "apple_log" }
             "samsung" { if (-not $isHlg) { $info.LogProfile = "samsung_log" } }
             "dji"     { $info.LogProfile = "dlog_m" }
-            default   { if ($colorPrim -match "bt2020") { $info.LogProfile = "unknown_log" } }
+            # v63 (v62 Finding 4): exclud arib (HLG) — o sursa HLG brandless (bt2020+arib) nu mai
+            # devine unknown_log dupa fix-ul bit-depth; cade corect pe hlg mai jos.
+            default   { if ($colorPrim -match "bt2020" -and $colorTrc -notmatch "arib") { $info.LogProfile = "unknown_log" } }
         }
+    }
+    # v63 (v62 Faza B): DJI Osmo Action 6 D-Log M — bt709 10-bit (invizibil in container, NU prins
+    # de gate-ul bt2020 de mai sus), discriminat din djmd protobuf. DJI vechi D-Log Wide e bt2020.
+    if (-not $info.LogProfile -and $info.CameraMake -eq "dji" -and $srcBps -ge 10 `
+        -and -not $isDV -and -not $isHdr10Plus -and -not $isHdr10 -and -not $isHlg `
+        -and ((Test-DjiDLogM $File) -eq "dlog_m")) {
+        $info.LogProfile = "dlog_m"
     }
 
     # Classify (HLG e mutual exclusiv cu LOG; LOG suprascrie HLG cand brand+bps confirma)
@@ -268,8 +317,11 @@ function Get-BurninHdr10Static {
         MasterDisplaySvtav1 = ""
         MaxCll              = ""
     }
+    # v63: `frame_side_data` (robust) in loc de `frame=side_data_list` (selector fragil —
+    # gol fara -show_frames; vezi fix-ul din extract_hdr10_static_metadata). Aici mergea (avea
+    # -show_frames) dar uniformizam pe forma proof-uita din av_check.
     $sd = & ffprobe -v error -read_intervals "0%+#5" -select_streams v:0 `
-        -show_entries frame=side_data_list -show_frames $File 2>$null
+        -show_entries frame_side_data -show_frames $File 2>$null
     if (-not $sd) {
         # Defaults BT.2020 1000-nit
         $ret.Available = $true
@@ -338,7 +390,7 @@ function Get-BurninHdr10PlusJson {
     param([string]$File, [string]$SrcCodec)
     $tool = if ($SrcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { return "" }
-    $rawTmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("burnin_hp_{0}_{1}" -f $PID, [guid]::NewGuid().ToString().Substring(0,8)))
+    $rawTmp = Join-Path $TempBase ("burnin_hp_{0}_{1}" -f $PID, [guid]::NewGuid().ToString().Substring(0,8))   # v63: temp-ul nostru, nu OS temp
     # v61: JSON in $TempBase (NU OS temp) — referit prin nume gol in svtav1-params
     # cu ffmpeg rulat cu CWD=$TempBase (drive-colon ar sparge string-ul `:`-separat).
     $jsonTmp = Join-Path $TempBase ("burnin_hp_{0}_{1}.json" -f $PID, [guid]::NewGuid().ToString().Substring(0,8))

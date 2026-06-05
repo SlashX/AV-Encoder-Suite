@@ -184,4 +184,13 @@ Assert-Contains $BURNIN_TXT "Dolby Vision detectata" "Mesaj DV refuse prezent"
 Assert-Contains $BURNIN_TXT "RPU references"        "DV refuse explica RPU breakage"
 Assert-Contains $BURNIN_TXT "av_hdr_dv_tools"       "DV refuse sugereaza av_hdr_dv_tools"
 
+# v63: Get-BurninSourceInfo aliniat cu detect_source_info (bash burn-in delega la el; PS1 e standalone).
+# Bug: lipsea fallback bit-depth (v62 Bug-1) → Samsung/Apple/D-Log → SDR in burn-in. Plus djmd D-Log M
+# (Action 6) + excludere arib la unknown_log. Validat empiric: SamsungLog→samsung_log, DJI A6→dlog_m.
+Assert-Contains $BURNIN_TXT "'p10|p010'"                       "burnin: fallback bit-depth pix_fmt (v62 Bug-1)"
+Assert-Contains $BURNIN_TXT "function Test-DjiDLogM"           "burnin: Test-DjiDLogM portat (DJI Action 6 D-Log M)"
+Assert-Contains $BURNIN_TXT "function _Get-AvPython"           "burnin: _Get-AvPython portat"
+Assert-Contains $BURNIN_TXT '$colorTrc -notmatch "arib"'      "burnin: arib exclus la unknown_log (v62 Finding 4)"
+Assert-Contains $BURNIN_TXT '(Test-DjiDLogM $File) -eq "dlog_m"' "burnin: djmd D-Log M check pe DJI"
+
 Invoke-TestSummary

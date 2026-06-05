@@ -15,7 +15,8 @@ $env:PATH = "$PSScriptRoot;$env:PATH"
 $ScriptDir = $PSScriptRoot
 $InputDir  = Join-Path $ScriptDir "InputVideos"
 $OutputDir = Join-Path $ScriptDir "OutputVideos"
-New-Item -ItemType Directory -Force -Path $InputDir, $OutputDir | Out-Null
+$TempBase  = Join-Path $ScriptDir "Temp"   # v63: temp-ul nostru (chapters ffmetadata), nu OS temp
+New-Item -ItemType Directory -Force -Path $InputDir, $OutputDir, $TempBase | Out-Null
 
 if (-not (Get-Command "ffmpeg" -ErrorAction SilentlyContinue)) {
     Write-Host "EROARE: ffmpeg nu este in PATH." -ForegroundColor Red
@@ -1307,7 +1308,7 @@ function Invoke-MuxFlow {
         $chExt = [System.IO.Path]::GetExtension($chFile).TrimStart('.').ToLowerInvariant()
         if ($chExt -eq "xml") {
             # Convert Matroska XML → FFMETADATA1 (ffmpeg nu citeste XML direct)
-            $chaptersTmpFFMeta = Join-Path ([System.IO.Path]::GetTempPath()) ("av_mux_ch_" + [guid]::NewGuid().ToString('N') + ".ffmetadata")
+            $chaptersTmpFFMeta = Join-Path $TempBase ("av_mux_ch_" + [guid]::NewGuid().ToString('N') + ".ffmetadata")
             if (Convert-XmlChaptersToFFMetadata -XmlIn $chFile -OutFile $chaptersTmpFFMeta) {
                 $inArgs.Add("-i") | Out-Null; $inArgs.Add($chaptersTmpFFMeta) | Out-Null
                 $chaptersInputIdx = $inputIdx

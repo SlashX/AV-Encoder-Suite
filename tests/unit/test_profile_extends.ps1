@@ -2,7 +2,7 @@
 . "$PSScriptRoot\..\framework.ps1"
 . "$PSScriptRoot\..\_helpers.ps1"
 
-Import-AvEncodeFunctions -Names @('Resolve-ExtendsPath','Get-ExtendsField','Build-ExtendsChain')
+Import-AvEncodeFunctions -Names @('Resolve-ExtendsPath','Get-ExtendsField','Build-ExtendsChain','Get-CanonicalPath')
 
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ('av_test_ext_' + [guid]::NewGuid().ToString('N'))
 $userDir    = Join-Path $tmpDir 'user'
