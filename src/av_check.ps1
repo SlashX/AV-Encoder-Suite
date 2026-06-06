@@ -100,6 +100,7 @@ function Get-SourceInfo {
             else                { "AV1 $depthLabel SDR" }
         }
         "prores"     { "Apple ProRes" }
+        "dnxhd"      { "Avid DNxHR $depthLabel" }
         "apv"        { "Samsung APV $depthLabel" }
         "mpeg2video" { "MPEG-2" }
         default      { "$codec $depthLabel" }

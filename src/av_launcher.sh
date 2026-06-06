@@ -519,14 +519,14 @@ if [[ "$ENCODER_NAME" == "dnxhr" ]]; then
     echo "║  1) LB  — ~45 Mbps  offline edit     ║"
     echo "║  2) SQ  — ~145 Mbps standard [impl]  ║"
     echo "║  3) HQ  — ~220 Mbps high quality     ║"
-    echo "║  4) HQX — ~220 Mbps 12-bit HDR       ║"
+    echo "║  4) HQX — ~220 Mbps 10-bit HDR       ║"
     echo "║  5) 444 — ~440 Mbps 4:4:4 grading    ║"
     echo "╚══════════════════════════════════════╝"
     read -p "Alege 1-5 [implicit: 2]: " dnxhr_choice
     case "${dnxhr_choice:-2}" in
         1) DNXHR_PROFILE="lb";  echo "  Profil: DNxHR LB (~45 Mbps)" ;;
         3) DNXHR_PROFILE="hq";  echo "  Profil: DNxHR HQ (~220 Mbps)" ;;
-        4) DNXHR_PROFILE="hqx"; echo "  Profil: DNxHR HQX (~220 Mbps, 12-bit HDR)" ;;
+        4) DNXHR_PROFILE="hqx"; echo "  Profil: DNxHR HQX (~220 Mbps, 10-bit HDR)" ;;
         5) DNXHR_PROFILE="444"; echo "  Profil: DNxHR 444 (~440 Mbps, 4:4:4)" ;;
         *) DNXHR_PROFILE="sq";  echo "  Profil: DNxHR SQ (~145 Mbps)" ;;
     esac
@@ -573,7 +573,7 @@ if [[ "$ENCODER_NAME" == "prores" ]]; then
         2) PRORES_PROFILE="lt";       echo "  Profil: ProRes 422 LT" ;;
         3) PRORES_PROFILE="standard"; echo "  Profil: ProRes 422 Standard" ;;
         5) PRORES_PROFILE="4444";     echo "  Profil: ProRes 4444" ;;
-        6) PRORES_PROFILE="4444xq";   echo "  Profil: ProRes 4444 XQ" ;;
+        6) PRORES_PROFILE="xq";       echo "  Profil: ProRes 4444 XQ" ;;
         *) PRORES_PROFILE="hq";       echo "  Profil: ProRes 422 HQ" ;;
     esac
 fi
@@ -1088,6 +1088,36 @@ if [[ "$AUDIO_CODEC_ARG" == pcm:* ]] && [[ "$CONTAINER" == "mp4" ]]; then
         2) CONTAINER="mov"; echo "  Container schimbat la MOV" ;;
         3) AUDIO_CODEC_ARG="aac:192k"; echo "  Audio schimbat la AAC 192k" ;;
         *) CONTAINER="mkv"; echo "  Container schimbat la MKV" ;;
+    esac
+fi
+
+# MXF: suporta DOAR audio PCM (muxer-ul ffmpeg insereaza pcm_rechunk →
+# AAC/E-AC3/AC3/FLAC/copy non-PCM esueaza "not supported by pcm_rechunk").
+# Default-ul AAC + MXF ar pica fara aceasta gardare.
+if [[ "$CONTAINER" == "mxf" ]] && [[ "$AUDIO_CODEC_ARG" != pcm:* ]] && [[ "$AUDIO_CODEC_ARG" != "copy" ]]; then
+    echo ""
+    echo "  ATENTIE: MXF suporta doar audio PCM (necomprimat)."
+    echo "  Audio curent: $AUDIO_CODEC_ARG"
+    echo "  1) Schimba audio la PCM 16-bit [recomandat]"
+    echo "  2) Schimba container la MOV (pastreaza audio-ul ales)"
+    read -p "  Alege 1 sau 2 [implicit: 1]: " mxf_fix
+    case "${mxf_fix:-1}" in
+        2) CONTAINER="mov"; echo "  Container schimbat la MOV" ;;
+        *) AUDIO_CODEC_ARG="pcm:16le"; echo "  Audio schimbat la PCM 16-bit" ;;
+    esac
+fi
+# MXF + audio copy: doar sursele PCM se pot copia in MXF (altfel ffmpeg esueaza)
+if [[ "$CONTAINER" == "mxf" ]] && [[ "$AUDIO_CODEC_ARG" == "copy" ]]; then
+    echo ""
+    echo "  ATENTIE: MXF + audio copy — daca sursa nu este PCM, ffmpeg va esua."
+    echo "  1) Schimba audio la PCM 16-bit [recomandat]"
+    echo "  2) Schimba container la MOV"
+    echo "  3) Continua (copy) [risc]"
+    read -p "  Alege 1, 2 sau 3 [implicit: 1]: " mxfcopy_fix
+    case "${mxfcopy_fix:-1}" in
+        2) CONTAINER="mov"; echo "  Container schimbat la MOV" ;;
+        3) echo "  Continui cu audio copy (risc daca sursa nu e PCM)." ;;
+        *) AUDIO_CODEC_ARG="pcm:16le"; echo "  Audio schimbat la PCM 16-bit" ;;
     esac
 fi
 

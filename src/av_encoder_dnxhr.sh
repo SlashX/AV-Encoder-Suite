@@ -41,27 +41,61 @@ encoder_setup_file() {
     local file="$1"
 
     # ── LOG format — DNxHR pastreaza Log-ul intact automat ────────────
+    # Doar HQX/444 (10-bit) pastreaza precizia + tag-ul wide-gamut. Pe LB/SQ/HQ
+    # (8-bit) curba Log ramane in pixeli, dar transfer=unknown (Samsung/DJI Log)
+    # face dnxhd sa reseteze primaries bt2020 -> bt709 (verificat empiric).
     if [[ -n "$LOG_PROFILE" ]]; then
         local profile_label
         profile_label=$(_log_profile_label "$LOG_PROFILE")
-        log "  LOG detectat: $profile_label — DNxHR pastreaza profilul Log intact."
+        if [[ "$DNXHR_PROFILE" == "hqx" || "$DNXHR_PROFILE" == "444" ]]; then
+            log "  LOG detectat: $profile_label — DNxHR pastreaza Log intact (10-bit, wide gamut)."
+        else
+            log "  LOG detectat: $profile_label — ATENTIE: profilul $DNXHR_PROFILE e 8-bit."
+            log "    Curba Log ramane in pixeli, dar se pierde precizia 10-bit si tag-ul"
+            log "    wide-gamut (bt2020 devine bt709) — afecteaza grading/LUT ulterior."
+            log "    Recomandat pentru Log: profil HQX sau 444 (10-bit)."
+        fi
     fi
 
-    # ── Avertisment HDR/HLG cu profil non-HQX ─────────────────────────
-    if { [[ "$HDR_TYPE" == "smpte2084" ]] || [[ "${IS_HLG:-0}" == "1" ]]; } && [[ "$DNXHR_PROFILE" != "hqx" ]]; then
-        log "  ATENTIE: Sursa HDR/HLG detectata. Recomandat: profil HQX (12-bit)."
-        log "  Profilul curent ($DNXHR_PROFILE) va converti la SDR range."
+    # ── Avertisment HDR/HLG cu profil 8-bit (LB/SQ/HQ) ────────────────
+    # HDR10 (PQ) si HLG isi pastreaza semnalizarea chiar si pe 8-bit (verificat),
+    # dar precizia scade 10->8 bit. HQX/444 (10-bit) sunt alegerea corecta.
+    if { [[ "$HDR_TYPE" == "smpte2084" ]] || [[ "${IS_HLG:-0}" == "1" ]]; } \
+       && [[ "$DNXHR_PROFILE" != "hqx" && "$DNXHR_PROFILE" != "444" ]]; then
+        log "  ATENTIE: Sursa HDR/HLG detectata, profil $DNXHR_PROFILE (8-bit)."
+        log "    Semnalizarea HDR se pastreaza, dar precizia scade 10 la 8 bit (risc de benzi)."
+        log "    Recomandat: profil HQX sau 444 (10-bit)."
+    fi
+
+    # ── DV / HDR10+ — metadata dinamica NU se pastreaza in mezzanine ───
+    # DNxHR nu transporta RPU Dolby Vision sau HDR10+ (SMPTE2094-40); iese baza
+    # HDR10 statica (PQ + mastering display + MaxCLL, verificat empiric).
+    if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: DV + HDR10+ (hibrid) detectat — DNxHR NU pastreaza nici RPU DV, nici HDR10+."
+        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
+        log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${DOVI:-}" ]]; then
+        log "  ATENTIE: Dolby Vision detectat — DNxHR NU pastreaza RPU-ul DV."
+        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+        log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
+        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
     fi
 
     # ── Profil DNxHR → codec params ───────────────────────────────────
+    # PixFmt per profil (constrans de encoderul dnxhd):
+    #   LB/SQ/HQ  = 8-bit  4:2:2 → yuv422p   (10-bit e RESPINS: "incompatible with DNxHR LB/SQ/HQ")
+    #   HQX       = 10-bit 4:2:2 → yuv422p10le (build-ul ffmpeg e 10-bit max; 12le ar fi coborat tacut)
+    #   444       = 10-bit 4:4:4 → yuv444p10le
     local codec="dnxhd" pixfmt profile_flag label
     case "$DNXHR_PROFILE" in
-        lb)  pixfmt="yuv422p10le"; profile_flag="dnxhr_lb";  label="DNxHR_LB" ;;
-        sq)  pixfmt="yuv422p10le"; profile_flag="dnxhr_sq";  label="DNxHR_SQ" ;;
-        hq)  pixfmt="yuv422p10le"; profile_flag="dnxhr_hq";  label="DNxHR_HQ" ;;
-        hqx) pixfmt="yuv422p12le"; profile_flag="dnxhr_hqx"; label="DNxHR_HQX" ;;
+        lb)  pixfmt="yuv422p";     profile_flag="dnxhr_lb";  label="DNxHR_LB" ;;
+        sq)  pixfmt="yuv422p";     profile_flag="dnxhr_sq";  label="DNxHR_SQ" ;;
+        hq)  pixfmt="yuv422p";     profile_flag="dnxhr_hq";  label="DNxHR_HQ" ;;
+        hqx) pixfmt="yuv422p10le"; profile_flag="dnxhr_hqx"; label="DNxHR_HQX" ;;
         444) pixfmt="yuv444p10le"; profile_flag="dnxhr_444"; label="DNxHR_444" ;;
-        *)   pixfmt="yuv422p10le"; profile_flag="dnxhr_sq";  label="DNxHR_SQ" ;;
+        *)   pixfmt="yuv422p";     profile_flag="dnxhr_sq";  label="DNxHR_SQ" ;;
     esac
     log "  Profil: $label | PixFmt: $pixfmt | Container: $CONTAINER"
 

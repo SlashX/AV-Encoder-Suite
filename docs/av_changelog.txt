@@ -3,9 +3,59 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v63 | 110 bug-uri fixate | 235+ features
-  130 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 84 teste [77 test_* + 7 infra]) | ~41000 linii cod+teste | ~5850 linii documentatie
+  TOTAL: v64 | 115 bug-uri fixate | 236+ features
+  132 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 86 teste [79 test_* + 7 infra]) | ~42000 linii cod+teste | ~5900 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v64 — Corectitudine DNxHR + ProRes (codecuri mezzanine) + audio MXF
+═══════════════════════════════════════════════════════════════
+
+  FIX DNxHR: profilurile LB, SQ si HQ nu produceau niciun fisier.
+        Acestea sunt profiluri pe 8 biti, dar suita le trimitea imaginea
+        pe 10 biti, iar encoderul le respingea — encodarea se oprea cu
+        eroare, fara rezultat. Acum folosesc formatul corect (8 biti) si
+        functioneaza. Profilurile HQX si 444 (cele pentru HDR / grading)
+        raman pe 10 biti.
+
+  FIX ProRes: scara de calitate a profilurilor era distrusa. Un reglaj
+        intern fortat la maxim facea ca toate profilurile (de la Proxy la
+        HQ) sa iasa la acelasi bitrate urias — un fisier "Proxy" (menit
+        sa fie usor) iesea de cateva ori mai mare decat HQ. Acum fiecare
+        profil isi respecta bitrate-ul propriu (Proxy mic si rapid, HQ
+        mare si de calitate).
+
+  FIX ProRes 4444 XQ: optiunea producea de fapt un fisier ProRes 4444
+        obisnuit (etichetat gresit), nu varianta XQ. Acum scrie corect
+        profilul 4444 XQ, recunoscut ca atare de Resolve / Final Cut.
+
+  FIX Export DNxHR in container MXF + audio: orice audio comprimat
+        (inclusiv AAC, care e cel implicit) ducea la o eroare criptica si
+        zero rezultat — MXF accepta doar audio necomprimat (PCM). Acum
+        suita te avertizeaza si iti ofera fie audio PCM, fie schimbarea
+        containerului in MOV.
+
+  ADD Avertismente oneste la export DNxHR / ProRes (codecuri "mezzanine",
+        pentru montaj). Aceste codecuri pastreaza imaginea si culoarea
+        (HDR10, HLG, Log), dar NU pot purta metadata dinamica Dolby Vision
+        sau HDR10+. Pana acum conversia se facea in tacere; acum, cand
+        sursa e Dolby Vision sau HDR10+, suita te anunta clar ca iese un
+        HDR10 standard (cu sugestia de a folosi x265 / AV1 daca vrei sa
+        pastrezi Dolby Vision). La fel, pe Log cu profil DNxHR pe 8 biti
+        te avertizeaza ca pierzi precizie si gama de culoare (recomanda
+        profilul HQX sau 444).
+
+  UPDATE Etichetare consistenta in analizatorul de fisiere: un fisier
+        DNxHR apare acum ca "Avid DNxHR" (inainte aparea numele brut al
+        codecului), la fel cum ProRes apare ca "Apple ProRes". Etichetele
+        de profil DNxHR HQX / 444 au fost corectate la "10-bit" (erau
+        marcate gresit "12-bit").
+
+  Note: paritate completa intre versiunea de linie de comanda (bash) si
+        cea Windows (PowerShell). Toate corectiile validate empiric cu
+        FFmpeg pe clipuri reale (DNxHR / ProRes pe surse SDR, HDR10,
+        HDR10+, HLG, Log, Dolby Vision si hibrid DV + HDR10+).
 
 
 ═══════════════════════════════════════════════════════════════

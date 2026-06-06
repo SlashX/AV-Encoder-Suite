@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v63
+  Documentatie Setup & Utilizare — v64
 ═══════════════════════════════════════════════════════════════
 
 
@@ -374,11 +374,11 @@ CUPRINS
     - Streaming sau upload (x265 / x264 / AV1)
 
   PROFILURI (toate 5):
-    LB  ~45 Mbps  yuv422p10le   offline edit, spatiu limitat
-    SQ  ~145 Mbps yuv422p10le   standard interchange [implicit recomandat]
-    HQ  ~220 Mbps yuv422p10le   color grading intensiv / broadcast
-    HQX ~220 Mbps yuv422p12le   12-bit HDR workflow (singur recomandat pt HDR)
-    444 ~440 Mbps yuv444p10le   4:4:4 — VFX, compositing, keying green/blue
+    LB  ~45 Mbps  yuv422p (8-bit)   offline edit, spatiu limitat
+    SQ  ~145 Mbps yuv422p (8-bit)   standard interchange [implicit recomandat]
+    HQ  ~220 Mbps yuv422p (8-bit)   color grading intensiv / broadcast
+    HQX ~220 Mbps yuv422p10le       10-bit HDR workflow (singur recomandat pt HDR)
+    444 ~440 Mbps yuv444p10le       4:4:4 10-bit — VFX, compositing, keying
 
   DIMENSIUNI ESTIMATE (1080p/25fps, 1 ora material):
     LB ~20 GB / SQ ~65 GB / HQ-HQX ~99 GB / 444 ~198 GB.
@@ -386,6 +386,15 @@ CUPRINS
   CONTAINERE: .mov (QuickTime — FCP/Premiere/Resolve) sau .mxf (Avid native).
   LIMITARI: track-uri DJI omise automat; PGS/DVDSUB incompatibile cu .mov;
             fara CRF / preset / tune / VBR — bitrate fix per profil.
+  HDR / Dolby Vision: profilurile HQX si 444 (10-bit) pastreaza imaginea si
+            semnalizarea HDR10 / HLG. LB/SQ/HQ (8-bit) sunt pentru SDR / proxy
+            (pe surse Log pierd gama wide — esti avertizat, recomandat HQX/444).
+            Ca orice codec mezzanine, DNxHR NU poate purta metadata dinamica
+            Dolby Vision (RPU) sau HDR10+ — sursele DV / HDR10+ ies ca HDR10
+            standard (suita te anunta clar).
+  MXF + audio: containerul .mxf accepta DOAR audio PCM (necomprimat). Daca alegi
+            audio comprimat (ex. AAC) + .mxf, suita iti ofera audio PCM sau
+            schimbarea containerului in .mov.
 
 
   ─── 7.4. ProRes — codec profesional Apple ───
@@ -399,7 +408,12 @@ CUPRINS
     Standard ~145 Mbps  interchange
     HQ       ~220 Mbps  [implicit recomandat] high quality broadcast
     4444     ~330 Mbps  4:4:4 + alpha channel
-    4444 XQ  ~500 Mbps  calitate maxima VFX / compositing
+    4444 XQ  ~500 Mbps  calitate maxima VFX / compositing (profil nativ XQ)
+
+  HDR / Dolby Vision: ProRes (10/12-bit) pastreaza imaginea si culoarea HDR10 /
+            HLG / Log intacte (toate profilurile sunt 10-bit). Ca orice codec
+            mezzanine, NU poate purta Dolby Vision (RPU) sau HDR10+ dinamic —
+            sursele DV / HDR10+ ies ca HDR10 standard (suita te anunta clar).
 
 
   ─── 7.5. Surse DVD si Blu-ray ───
@@ -617,8 +631,11 @@ CUPRINS
     LPCM                      → mkv, mov, mxf
     Copy                      → orice container compatibil cu sursa
 
+  MXF accepta DOAR audio PCM (necomprimat). AAC / E-AC3 / AC3 / FLAC + .mxf
+  esueaza la muxare — suita ofera audio PCM sau schimbarea in .mov.
+
   Daca alegi combinatie incompatibila (FLAC + mp4, E-AC3 + mov, LPCM + mp4,
-  WebM + non-Opus), scriptul ofera switch automat.
+  audio comprimat + mxf, WebM + non-Opus), scriptul ofera switch automat.
 
   Nota APV: Decodare APV este inclusa in ffmpeg 8.1 standard — fisierele
   APV pot fi citite si convertite la orice alt codec. Encodare APV

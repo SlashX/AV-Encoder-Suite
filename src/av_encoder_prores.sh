@@ -58,20 +58,36 @@ encoder_setup_file() {
         log "  LOG detectat: $profile_label — ProRes pastreaza profilul Log intact."
     fi
 
+    # ── DV / HDR10+ — metadata dinamica NU se pastreaza in mezzanine ───
+    # ProRes (toate profilele 10-bit) nu transporta RPU Dolby Vision sau HDR10+;
+    # iese baza HDR10 statica (PQ + mastering display + MaxCLL, verificat empiric).
+    if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: DV + HDR10+ (hibrid) detectat — ProRes NU pastreaza nici RPU DV, nici HDR10+."
+        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
+        log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${DOVI:-}" ]]; then
+        log "  ATENTIE: Dolby Vision detectat — ProRes NU pastreaza RPU-ul DV."
+        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+        log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
+        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+    fi
+
     # ── ProRes profil → codec params ────────────────────────────────
+    # prores_ks: profile 0=proxy 1=lt 2=standard 3=hq 4=4444 5=4444xq.
+    # XQ = profil 5 nativ (tag corect "XQ"); NU profil 4 + qscale (acela scrie tag "4444").
+    # Acceptam si token-ul vechi "4444xq" pentru compat cu profile salvate.
     local profile_num pixfmt quality_label
     case "$PRORES_PROFILE" in
-        proxy)    profile_num=0; pixfmt="yuv422p10le"; quality_label="ProRes Proxy (~45 Mbps)" ;;
-        lt)       profile_num=1; pixfmt="yuv422p10le"; quality_label="ProRes LT (~100 Mbps)" ;;
-        standard) profile_num=2; pixfmt="yuv422p10le"; quality_label="ProRes Standard (~145 Mbps)" ;;
-        hq)       profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
-        4444)     profile_num=4; pixfmt="yuva444p10le"; quality_label="ProRes 4444 (~330 Mbps, alpha)" ;;
-        xq)       profile_num=4; pixfmt="yuva444p10le"; quality_label="ProRes 4444 XQ (~500 Mbps)" ;;
-        *)        profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
+        proxy)     profile_num=0; pixfmt="yuv422p10le"; quality_label="ProRes Proxy (~45 Mbps)" ;;
+        lt)        profile_num=1; pixfmt="yuv422p10le"; quality_label="ProRes LT (~100 Mbps)" ;;
+        standard)  profile_num=2; pixfmt="yuv422p10le"; quality_label="ProRes Standard (~145 Mbps)" ;;
+        hq)        profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
+        4444)      profile_num=4; pixfmt="yuva444p10le"; quality_label="ProRes 4444 (~330 Mbps, alpha)" ;;
+        xq|4444xq) profile_num=5; pixfmt="yuva444p10le"; quality_label="ProRes 4444 XQ (~500 Mbps)" ;;
+        *)         profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
     esac
-    # XQ = profil 4444 cu qscale maxim (prores_ks nu are profil 5)
-    local xq_flag=""
-    [[ "$PRORES_PROFILE" == "xq" ]] && xq_flag="-qscale:v 1"
     log "  Profil: $quality_label | PixFmt: $pixfmt | Container: $CONTAINER"
 
     # ── Dry-run ──────────────────────────────────────────────────────
@@ -81,9 +97,11 @@ encoder_setup_file() {
     fi
 
     # ── Comanda ffmpeg ────────────────────────────────────────────────
+    # FARA -bits_per_mb: rate-control nativ per profil. Fortarea 8000 (max)
+    # umfla toate profilele la acelasi bitrate (proxy ~16x peste nominal).
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v prores_ks -profile:v $profile_num -pix_fmt $pixfmt \
-        -vendor apl0 -bits_per_mb 8000 $xq_flag \
+        -vendor apl0 \
         $VIDEO_FILTER $AUDIO_PARAMS"
     return 0
 }

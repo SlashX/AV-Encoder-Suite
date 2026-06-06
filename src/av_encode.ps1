@@ -5039,7 +5039,7 @@ function Get-ProfileSchema {
         'AV1_IMPL'             { 'enum:,libsvtav1,libaom-av1'; return }
         'DNXHR_PROFILE'        { 'enum:,lb,sq,hq,hqx,444'; return }
         'APV_PROFILE'          { 'enum:,light,standard,high,422_10,444_10'; return }
-        'PRORES_PROFILE'       { 'enum:,proxy,lt,standard,hq,4444,4444xq'; return }
+        'PRORES_PROFILE'       { 'enum:,proxy,lt,standard,hq,4444,xq,4444xq'; return }
         'X264_PROFILE'         { 'enum:,auto,high,high10,high422'; return }
         'CONTAINER'            { 'enum:mkv,mp4,mov,mxf,webm'; return }
         'HW_ENC_CODEC'         { 'enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf'; return }
@@ -5590,7 +5590,7 @@ if ($useDNxHR) {
     Write-Host "║  1-LB  ~45 Mbps  offline edit        ║" -ForegroundColor White
     Write-Host "║  2-SQ  ~145 Mbps standard [implicit] ║" -ForegroundColor White
     Write-Host "║  3-HQ  ~220 Mbps high quality        ║" -ForegroundColor White
-    Write-Host "║  4-HQX ~220 Mbps 12-bit HDR          ║" -ForegroundColor White
+    Write-Host "║  4-HQX ~220 Mbps 10-bit HDR          ║" -ForegroundColor White
     Write-Host "║  5-444 ~440 Mbps 4:4:4 grading       ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     $dnxhrChoice = Read-Host "Alege 1-5 [implicit: 2]"
@@ -5600,7 +5600,7 @@ if ($useDNxHR) {
     $dnxhrLabel = switch ($dnxhrProfile) {
         "lb"  { "DNxHR LB (~45 Mbps)"  }
         "hq"  { "DNxHR HQ (~220 Mbps)" }
-        "hqx" { "DNxHR HQX (~220 Mbps, 12-bit HDR)" }
+        "hqx" { "DNxHR HQX (~220 Mbps, 10-bit HDR)" }
         "444" { "DNxHR 444 (~440 Mbps, 4:4:4)" }
         default { "DNxHR SQ (~145 Mbps)" }
     }
@@ -6155,6 +6155,32 @@ if ($audioCodec -eq "pcm" -and $container -eq "mp4") {
         "2" { $container = "mov"; $containerFlags = @("-movflags","+faststart"); Write-Host "  Container schimbat la MOV" -ForegroundColor Yellow }
         "3" { $audioCodec = "aac"; $audioBitrate = "192k"; Write-Host "  Audio schimbat la AAC 192k" -ForegroundColor Yellow }
         default { $container = "mkv"; $containerFlags = @(); Write-Host "  Container schimbat la MKV" -ForegroundColor Yellow }
+    }
+}
+
+# MXF: suporta DOAR audio PCM (pcm_rechunk → AAC/E-AC3/AC3/FLAC esueaza).
+# Default-ul AAC + MXF ar pica fara aceasta gardare.
+if ($container -eq "mxf" -and $audioCodec -ne "pcm" -and -not $audioCopy) {
+    Write-Host "`n  ATENTIE: MXF suporta doar audio PCM (necomprimat). Audio curent: $audioCodec" -ForegroundColor Red
+    Write-Host "  1-PCM 16-bit [recomandat]  2-Schimba container la MOV" -ForegroundColor Yellow
+    $mxfFix = Read-Host "  Alege [implicit: 1]"
+    if ($mxfFix -eq "2") {
+        $container = "mov"; $containerFlags = @("-movflags","+faststart")
+        Write-Host "  Container schimbat la MOV" -ForegroundColor Yellow
+    } else {
+        $audioCodec = "pcm"; $pcmDepth = "16le"
+        Write-Host "  Audio schimbat la PCM 16-bit" -ForegroundColor Yellow
+    }
+}
+# MXF + audio copy: doar sursele PCM se pot copia in MXF (altfel ffmpeg esueaza)
+if ($container -eq "mxf" -and $audioCopy) {
+    Write-Host "`n  ATENTIE: MXF + audio copy — daca sursa nu este PCM, ffmpeg va esua." -ForegroundColor Yellow
+    Write-Host "  1-PCM 16-bit [recomandat]  2-Schimba container la MOV  3-Continua (copy) [risc]" -ForegroundColor Yellow
+    $mxfCopyFix = Read-Host "  Alege [implicit: 1]"
+    switch ($mxfCopyFix) {
+        "2" { $container = "mov"; $containerFlags = @("-movflags","+faststart"); Write-Host "  Container schimbat la MOV" -ForegroundColor Yellow }
+        "3" { Write-Host "  Continui cu audio copy (risc daca sursa nu e PCM)." -ForegroundColor Yellow }
+        default { $audioCodec = "pcm"; $pcmDepth = "16le"; $audioCopy = $false; Write-Host "  Audio schimbat la PCM 16-bit" -ForegroundColor Yellow }
     }
 }
 
@@ -7568,47 +7594,93 @@ foreach ($f in $inputFiles) {
             $profileLabel = Get-LogProfileLabel $logInfo.logProfile
             Write-Host "  LOG detectat: $profileLabel — ProRes pastreaza profilul Log intact." -ForegroundColor Green
         }
+        # DV / HDR10+ — ProRes (toate profilele 10-bit) nu transporta RPU DV sau
+        # HDR10+; iese baza HDR10 statica (PQ + mastering + MaxCLL, verificat).
+        if ($logInfo.isDV -and $si.isHDRPlus) {
+            Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — ProRes NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
+            Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($logInfo.isDV) {
+            Write-Host "  ATENTIE: Dolby Vision detectat — ProRes NU pastreaza RPU-ul DV." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+            Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($si.isHDRPlus) {
+            Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+        }
+        # prores_ks: 0=proxy 1=lt 2=standard 3=hq 4=4444 5=4444xq.
+        # XQ = profil 5 nativ (tag corect "XQ"), NU profil 4 + qscale (tag "4444").
         $profileNum = switch ($proresProfile) {
-            "proxy" { 0 } "lt" { 1 } "standard" { 2 } "hq" { 3 } "4444" { 4 } "xq" { 4 } default { 3 }
+            "proxy" { 0 } "lt" { 1 } "standard" { 2 } "hq" { 3 } "4444" { 4 } "xq" { 5 } "4444xq" { 5 } default { 3 }
         }
         $proresPixFmt = switch ($proresProfile) {
-            "4444" { "yuva444p10le" } "xq" { "yuva444p10le" } default { "yuv422p10le" }
+            "4444" { "yuva444p10le" } "xq" { "yuva444p10le" } "4444xq" { "yuva444p10le" } default { "yuv422p10le" }
         }
         $proresQuality = switch ($proresProfile) {
             "proxy" { "ProRes Proxy (~45 Mbps)" } "lt" { "ProRes LT (~100 Mbps)" }
             "standard" { "ProRes Standard (~145 Mbps)" } "hq" { "ProRes HQ (~220 Mbps)" }
             "4444" { "ProRes 4444 (~330 Mbps, alpha)" } "xq" { "ProRes 4444 XQ (~500 Mbps)" }
+            "4444xq" { "ProRes 4444 XQ (~500 Mbps)" }
             default { "ProRes HQ (~220 Mbps)" }
         }
-        $xqFlag = if ($proresProfile -eq "xq") { @("-qscale:v","1") } else { @() }
         Write-Host "  Profil: $proresQuality | PixFmt: $proresPixFmt | Container: $container" -ForegroundColor White
         "  Profil: $proresQuality | Container: $container" | Out-File $LogFile -Append -Encoding UTF8
 
         # ProRes uses simple map flags (no DJI tracks in mov)
         $proresMapFlags = @("-map","0:v:0","-map","0:a?","-map","0:s?","-map_metadata","0","-map_chapters","0")
 
+        # FARA -bits_per_mb: rate-control nativ per profil (8000=max umfla toate profilele egal)
         $ffArgs = @("-threads","0","-i",$f.FullName) + $proresMapFlags +
                   @("-c:v","prores_ks","-profile:v",$profileNum,"-pix_fmt",$proresPixFmt,
-                    "-vendor","apl0","-bits_per_mb","8000") + $xqFlag +
+                    "-vendor","apl0") +
                   $videoFilter + $fpsFlag + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                   $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
 
     } elseif ($useDNxHR) {
         # ── DNxHR per-file ───────────────────────────────────────────
-        # LOG format — DNxHR pastreaza Log-ul intact automat
+        # LOG format — doar HQX/444 (10-bit) pastreaza precizia + tag-ul wide-gamut;
+        # pe LB/SQ/HQ (8-bit), transfer=unknown (Samsung/DJI Log) face dnxhd sa
+        # reseteze primaries bt2020 -> bt709 (verificat empiric).
         if ($logInfo.logProfile) {
             $profileLabel = Get-LogProfileLabel $logInfo.logProfile
-            Write-Host "  LOG detectat: $profileLabel — DNxHR pastreaza profilul Log intact." -ForegroundColor Green
+            if ($dnxhrProfile -eq "hqx" -or $dnxhrProfile -eq "444") {
+                Write-Host "  LOG detectat: $profileLabel — DNxHR pastreaza Log intact (10-bit, wide gamut)." -ForegroundColor Green
+            } else {
+                Write-Host "  LOG detectat: $profileLabel — ATENTIE: profilul $dnxhrProfile e 8-bit." -ForegroundColor Yellow
+                Write-Host "    Curba Log ramane in pixeli, dar se pierde precizia 10-bit si tag-ul" -ForegroundColor Yellow
+                Write-Host "    wide-gamut (bt2020 devine bt709) — afecteaza grading/LUT ulterior." -ForegroundColor Yellow
+                Write-Host "    Recomandat pentru Log: profil HQX sau 444 (10-bit)." -ForegroundColor Yellow
+            }
         }
+        # PixFmt per profil (constrans de encoderul dnxhd): LB/SQ/HQ=8-bit yuv422p
+        # (10-bit RESPINS), HQX=10-bit yuv422p10le, 444=10-bit yuv444p10le
         $dnxhrPixFmt = switch ($dnxhrProfile) {
-            "hqx" { "yuv422p12le" } "444" { "yuv444p10le" } default { "yuv422p10le" }
+            "hqx" { "yuv422p10le" } "444" { "yuv444p10le" } default { "yuv422p" }
         }
         $dnxhrProfFlag = switch ($dnxhrProfile) {
             "lb" { "dnxhr_lb" } "hq" { "dnxhr_hq" } "hqx" { "dnxhr_hqx" } "444" { "dnxhr_444" } default { "dnxhr_sq" }
         }
-        if ($si.isHDR -and $dnxhrProfile -ne "hqx") {
-            Write-Host "  ATENTIE: Sursa HDR — pentru HDR workflow recomandat profil HQX (12-bit)." -ForegroundColor Yellow
+        # HDR10 (PQ) si HLG isi pastreaza semnalizarea chiar si pe 8-bit, dar
+        # precizia scade 10->8 bit. HQX/444 (10-bit) = alegerea corecta.
+        if (($si.isHDR -or $si.isHLG) -and $dnxhrProfile -ne "hqx" -and $dnxhrProfile -ne "444") {
+            Write-Host "  ATENTIE: Sursa HDR/HLG detectata, profil $dnxhrProfile (8-bit)." -ForegroundColor Yellow
+            Write-Host "    Semnalizarea HDR se pastreaza, dar precizia scade 10 la 8 bit (risc de benzi)." -ForegroundColor Yellow
+            Write-Host "    Recomandat: profil HQX sau 444 (10-bit)." -ForegroundColor Yellow
+        }
+        # DV / HDR10+ — DNxHR nu transporta RPU DV sau HDR10+; iese baza HDR10
+        # statica (PQ + mastering + MaxCLL, verificat empiric).
+        if ($logInfo.isDV -and $si.isHDRPlus) {
+            Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — DNxHR NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
+            Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($logInfo.isDV) {
+            Write-Host "  ATENTIE: Dolby Vision detectat — DNxHR NU pastreaza RPU-ul DV." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+            Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($si.isHDRPlus) {
+            Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
         }
         Write-Host "  Profil: $dnxhrProfile | PixFmt: $dnxhrPixFmt | Container: $container" -ForegroundColor White
         "  Profil: $dnxhrProfile | Container: $container" | Out-File $LogFile -Append -Encoding UTF8

@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v63** — 110 bugs fixed · 235+ features · ~41 000 LoC · 130 files
+**v64** — 115 bugs fixed · 236+ features · ~42 000 LoC · 132 files
 
 ---
 
@@ -82,9 +82,11 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **libx264** | 8/10 | ⚠ basic | — | — | ⚠ native only | ✅ |
 | **SVT-AV1** | 10 | ✅ | ✅ inline (v1.5+) | ✅ P10 preserve (v44) | ✅ | ✅ |
 | **libaom-av1** | 10 | ✅ | fallback HDR10 | — | ✅ | ✅ |
-| **DNxHR** | 8/10 | — | — | — | — | mezzanine |
-| **ProRes** KS | 10/12 | ✅ HQ/4444 | — | — | ✅ | ✅ |
+| **DNxHR** | 8/10 | ✅ preserve¹ | — | — | ✅ preserve¹ | ✅¹ |
+| **ProRes** KS | 10/12 | ✅ preserve | — | — | ✅ preserve | ✅ |
 | **APV** (FF 8.1+) | 10 / 4:2:2 / 4:4:4 | ✅ | — | — | — | ✅ |
+
+¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lose wide gamut on LOG, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU or HDR10+ dynamic metadata → v64 adds honest per-source warnings (DV / HDR10+ → clean HDR10 base; use x265/AV1 to keep DV). ProRes 4444 XQ = native XQ profile (v64). DNxHR MXF audio = PCM only (v64).
 
 DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` AV1) → re-encode HDR10 base → post-encode RPU inject → re-mux audio.
 
@@ -380,4 +382,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v63** — 110 bugs fixed · 235+ features · ~41 000 LoC · 130 files
+Current: **v64** — 115 bugs fixed · 236+ features · ~42 000 LoC · 132 files

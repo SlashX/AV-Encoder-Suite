@@ -5307,7 +5307,7 @@ profile_schema_get() {
         AV1_ENCODER_NAME)     echo "enum:,libsvtav1,libaom-av1" ;;
         DNXHR_PROFILE)        echo "enum:,lb,sq,hq,hqx,444" ;;
         APV_PROFILE)          echo "enum:,light,standard,high,422_10,444_10" ;;
-        PRORES_PROFILE)       echo "enum:,proxy,lt,standard,hq,4444,4444xq" ;;
+        PRORES_PROFILE)       echo "enum:,proxy,lt,standard,hq,4444,xq,4444xq" ;;
         X264_PROFILE)         echo "enum:,auto,high,high10,high422" ;;
         CONTAINER)            echo "enum:mkv,mp4,mov,mxf,webm" ;;
         HW_ENC_CODEC)         echo "enum:,hevc_nvenc,h264_nvenc,av1_nvenc,hevc_qsv,h264_qsv,av1_qsv,hevc_amf,h264_amf,av1_amf" ;;

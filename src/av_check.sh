@@ -74,6 +74,7 @@ get_source_format() {
         mpeg4)      fmt="MPEG-4" ;;
         mpeg2video) fmt="MPEG-2" ;;
         prores)     fmt="Apple ProRes" ;;
+        dnxhd)      fmt="Avid DNxHR $depth_label" ;;
         apv)        fmt="Samsung APV $depth_label" ;;
         *)          fmt="$codec $depth_label" ;;
     esac
