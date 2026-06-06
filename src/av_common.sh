@@ -5150,8 +5150,10 @@ run_encode_loop() {
         PROGRESS_FILE=$(mktemp); START_TIME=$(date +%s)
         # v38: stderr capture într-un fișier separat (în paralel cu LOG_FILE)
         local _enc_err; _enc_err=$(mktemp)
-        # v38: label dinamic — uppercase ENCODER_NAME (ex: LIBX265, AV1, DNXHR)
-        local _enc_label; _enc_label="${ENCODER_NAME:-FFmpeg}"; _enc_label="${_enc_label^^}"
+        # v38: label dinamic — uppercase ENCODER_NAME (ex: X265, AV1, DNXHR, APV).
+        # v65: ENCODER_NAME nu e exportat la procesul encoder → fallback pe ENCODER_TYPE
+        # (setat in fiecare encoder: x265/x264/av1/dnxhr/prores/apv); inainte cadea pe "FFMPEG".
+        local _enc_label; _enc_label="${ENCODER_NAME:-${ENCODER_TYPE:-FFmpeg}}"; _enc_label="${_enc_label^^}"
 
         if [[ "${USE_2PASS:-0}" == "1" ]]; then
             # v51: 2-pass branch — encoderul a populat FFMPEG_CMD_PASS1/PASS2 + STATS_FILE
@@ -5306,7 +5308,10 @@ profile_schema_get() {
         ENCODER_NAME)         echo "enum:libx265,libx264,av1,dnxhr,prores,apv,hwenc" ;;
         AV1_ENCODER_NAME)     echo "enum:,libsvtav1,libaom-av1" ;;
         DNXHR_PROFILE)        echo "enum:,lb,sq,hq,hqx,444" ;;
-        APV_PROFILE)          echo "enum:,light,standard,high,422_10,444_10" ;;
+        APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10" ;;
+        APV_PRESET)           echo "enum:,fastest,fast,medium,slow,placebo" ;;
+        APV_QP)               echo "intrange:0,63" ;;
+        APV_EXTRA)            echo "string" ;;
         PRORES_PROFILE)       echo "enum:,proxy,lt,standard,hq,4444,xq,4444xq" ;;
         X264_PROFILE)         echo "enum:,auto,high,high10,high422" ;;
         CONTAINER)            echo "enum:mkv,mp4,mov,mxf,webm" ;;
@@ -5325,7 +5330,7 @@ profile_schema_get() {
         LOG_PROFILE)          echo "enum:,apple_log,samsung_log,dlog_m" ;;
         FPS_METHOD)           echo "enum:,drop,minterpolate" ;;
         VIDEO_FILTER_PRESET)  echo "regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*)?$" ;;
-        AUDIO_CODEC_ARG)      echo "regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k)?$" ;;
+        AUDIO_CODEC_ARG)      echo "regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k|pcm:[0-9]+(le|be))?$" ;;
         SCALE_WIDTH)          echo "regex:^([0-9]{2,5})?$" ;;
         TARGET_FPS)           echo "regex:^([0-9]+(\.[0-9]+)?|[0-9]+/[0-9]+)?$" ;;
         CRF_PARAM)            echo "regex:^([0-9]+)?$" ;;

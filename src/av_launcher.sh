@@ -532,26 +532,54 @@ if [[ "$ENCODER_NAME" == "dnxhr" ]]; then
     esac
 fi
 
-# ── Profil APV ────────────────────────────────────────────────────────
-APV_PROFILE=""
+# ── APV: profil/pixfmt + preset viteza + qp + extra (model real liboapv) ──
+APV_PIXFMT=""; APV_PRESET=""; APV_QP=""; APV_EXTRA=""
 if [[ "$ENCODER_NAME" == "apv" ]]; then
     echo ""
     echo "╔══════════════════════════════════════╗"
-    echo "║  Preset APV                          ║"
-    echo "║  1) Light    — editare rapida        ║"
-    echo "║  2) Standard — balans [implicit]     ║"
-    echo "║  3) High     — calitate ridicata     ║"
-    echo "║  4) 422_10   — 4:2:2 10-bit          ║"
-    echo "║  5) 444_10   — 4:4:4 10-bit grading  ║"
+    echo "║  APV — profil / pixel format         ║"
+    echo "║  1) 4:2:2 10-bit (422-10) [implicit] ║"
+    echo "║  2) 4:2:2 12-bit (422-12)            ║"
+    echo "║  3) 4:4:4 10-bit (444-10) grading    ║"
+    echo "║  4) 4:4:4 12-bit (444-12) grading    ║"
+    echo "║  5) 4:4:4 + alpha 10-bit (4444-10)   ║"
     echo "╚══════════════════════════════════════╝"
-    read -p "Alege 1-5 [implicit: 2]: " apv_choice
-    case "${apv_choice:-2}" in
-        1) APV_PROFILE="light";    echo "  Preset: APV Light" ;;
-        3) APV_PROFILE="high";     echo "  Preset: APV High" ;;
-        4) APV_PROFILE="422_10";   echo "  Preset: APV 4:2:2 10-bit" ;;
-        5) APV_PROFILE="444_10";   echo "  Preset: APV 4:4:4 10-bit" ;;
-        *) APV_PROFILE="standard"; echo "  Preset: APV Standard" ;;
+    read -p "Alege 1-5 [implicit: 1]: " apv_pf_choice
+    case "${apv_pf_choice:-1}" in
+        2) APV_PIXFMT="422_12";  echo "  Profil: APV 4:2:2 12-bit" ;;
+        3) APV_PIXFMT="444_10";  echo "  Profil: APV 4:4:4 10-bit" ;;
+        4) APV_PIXFMT="444_12";  echo "  Profil: APV 4:4:4 12-bit" ;;
+        5) APV_PIXFMT="4444_10"; echo "  Profil: APV 4:4:4 + alpha 10-bit" ;;
+        *) APV_PIXFMT="422_10";  echo "  Profil: APV 4:2:2 10-bit" ;;
     esac
+    echo ""
+    echo "╔══════════════════════════════════════╗"
+    echo "║  APV — preset viteza                 ║"
+    echo "║  1) fastest    2) fast               ║"
+    echo "║  3) medium [implicit]    4) slow     ║"
+    echo "║  5) placebo (cel mai lent / bun)     ║"
+    echo "╚══════════════════════════════════════╝"
+    read -p "Alege 1-5 [implicit: 3]: " apv_sp_choice
+    case "${apv_sp_choice:-3}" in
+        1) APV_PRESET="fastest" ;;
+        2) APV_PRESET="fast" ;;
+        4) APV_PRESET="slow" ;;
+        5) APV_PRESET="placebo" ;;
+        *) APV_PRESET="medium" ;;
+    esac
+    echo "  Preset: $APV_PRESET"
+    echo ""
+    echo "  QP — calitate (0-63; mai mic = mai bun; implicit 32)"
+    read -p "  Introdu QP [implicit: 32]: " apv_qp_in
+    if [[ "$apv_qp_in" =~ ^[0-9]+$ ]] && [ "$apv_qp_in" -ge 0 ] && [ "$apv_qp_in" -le 63 ]; then
+        APV_QP="$apv_qp_in"
+    else
+        APV_QP="32"
+    fi
+    echo "  QP: $APV_QP"
+    echo ""
+    read -p "  Parametri extra oapv (optional, ex: key=value:key=value) [Enter=niciunul]: " APV_EXTRA
+    [[ -n "$APV_EXTRA" ]] && echo "  Extra: -oapv-params $APV_EXTRA"
 fi
 
 # ── Profil ProRes ─────────────────────────────────────────────────────
@@ -598,12 +626,12 @@ elif [[ "$ENCODER_NAME" == "apv" ]]; then
     echo "║  Format container output (APV)       ║"
     echo "║  1) mp4 — ISOBMFF [implicit]         ║"
     echo "║  2) mov — QuickTime / editare        ║"
-    echo "║  3) mxf — broadcast profesional      ║"
+    echo "║  3) mkv — flexibil                   ║"
     echo "╚══════════════════════════════════════╝"
     read -p "Alege 1-3 [implicit: 1]: " container_choice
     case "${container_choice:-1}" in
         2) CONTAINER="mov" ;;
-        3) CONTAINER="mxf" ;;
+        3) CONTAINER="mkv" ;;
         *) CONTAINER="mp4" ;;
     esac
     echo "  Container ales: $CONTAINER"
@@ -1045,10 +1073,12 @@ case "${audio_choice:-1}" in
        echo "  Audio: AAC 192k / 5.1 384k / 7.1 768k" ;;
 esac
 
-# FLAC + mp4/mov — avertisment (nu se aplica DNxHR — FLAC compatibil cu mov/mxf)
-if [[ "$AUDIO_CODEC_ARG" == flac:* ]] && [[ "$CONTAINER" != "mkv" ]] && [[ "$ENCODER_NAME" != "dnxhr" ]] && [[ "$ENCODER_NAME" != "apv" ]] && [[ "$ENCODER_NAME" != "prores" ]]; then
+# FLAC incompatibil cu mov (ffmpeg: "flac only supported in MP4"); mp4/mkv OK.
+# mxf e gestionat de regula MXF=PCM de mai jos. Independent de encoder —
+# DNxHR/ProRes/APV pe mov pic la fel (vechea scutire dnxhr/apv/prores era gresita).
+if [[ "$AUDIO_CODEC_ARG" == flac:* ]] && [[ "$CONTAINER" == "mov" ]]; then
     echo ""
-    echo "  ATENTIE: FLAC nu este compatibil cu $CONTAINER."
+    echo "  ATENTIE: FLAC nu este compatibil cu .mov (doar mp4 / mkv)."
     echo "  1) Schimba container la MKV [recomandat]"
     echo "  2) Schimba audio la AAC 192k"
     read -p "  Alege 1 sau 2 [implicit: 1]: " flac_fix
@@ -1191,7 +1221,10 @@ if [[ "${save_prof,,}" == "d" ]]; then
 ENCODER_NAME="$ENCODER_NAME"
 AV1_ENCODER_NAME="${AV1_ENCODER_NAME:-}"
 DNXHR_PROFILE="${DNXHR_PROFILE:-}"
-APV_PROFILE="${APV_PROFILE:-}"
+APV_PIXFMT="${APV_PIXFMT:-}"
+APV_PRESET="${APV_PRESET:-}"
+APV_QP="${APV_QP:-}"
+APV_EXTRA="${APV_EXTRA:-}"
 PRORES_PROFILE="${PRORES_PROFILE:-}"
 X264_PROFILE="${X264_PROFILE:-}"
 CONTAINER="$CONTAINER"
@@ -1272,9 +1305,9 @@ if [[ "$ENCODER_NAME" == "dnxhr" ]]; then
         "$DNXHR_PROFILE" "$CONTAINER" "$SCALE_WIDTH" "$TARGET_FPS" "$FPS_METHOD" \
         "$VIDEO_FILTER_PRESET" "$AUDIO_NORMALIZE"
 elif [[ "$ENCODER_NAME" == "apv" ]]; then
-    echo "Rulez $ENCODER_SCRIPT (preset: $APV_PROFILE, container: $CONTAINER)..."
+    echo "Rulez $ENCODER_SCRIPT (profil: $APV_PIXFMT, preset: $APV_PRESET, qp: $APV_QP, container: $CONTAINER)..."
     ./"$ENCODER_SCRIPT" "$AUDIO_CODEC_ARG" \
-        "$APV_PROFILE" "$CONTAINER" "$SCALE_WIDTH" "$TARGET_FPS" "$FPS_METHOD" \
+        "$APV_PIXFMT" "$APV_PRESET" "$APV_QP" "$APV_EXTRA" "$CONTAINER" "$SCALE_WIDTH" "$TARGET_FPS" "$FPS_METHOD" \
         "$VIDEO_FILTER_PRESET" "$AUDIO_NORMALIZE"
 elif [[ "$ENCODER_NAME" == "prores" ]]; then
     echo "Rulez $ENCODER_SCRIPT (profil: $PRORES_PROFILE, container: mov)..."

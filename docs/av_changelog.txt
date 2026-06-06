@@ -3,9 +3,48 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v64 | 115 bug-uri fixate | 236+ features
-  132 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 86 teste [79 test_* + 7 infra]) | ~42000 linii cod+teste | ~5900 linii documentatie
+  TOTAL: v65 | 121 bug-uri fixate | 237+ features
+  134 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 88 teste [81 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v65 — APV (Samsung) functional + paritate Windows
+═══════════════════════════════════════════════════════════════
+
+  FIX APV: encoderul APV nu a functionat niciodata pana acum (era inclus
+        in meniu din versiuni vechi, dar incercarea de encodare se oprea
+        cu eroare). Doua cauze: numele intern al encoderului era gresit
+        (difera intre versiunile de FFmpeg) si "preset"-urile oferite nu
+        existau de fapt. Acum APV encodeaza corect — codecul a fost adus la
+        modelul lui real: profil / format de pixel (4:2:2 sau 4:4:4, 10 sau
+        12 biti, optional cu canal alpha), preset de viteza (de la fastest
+        la placebo) si calitate QP (0-63), plus parametri avansati optionali.
+
+  ADD APV disponibil acum si pe Windows (PowerShell), nu doar pe linia de
+        comanda. Selectabil din meniul de encodere (optiunea 7), cu aceleasi
+        reglaje (profil / pixfmt, preset, QP). Paritate completa cu versiunea
+        Termux / Linux / macOS.
+
+  FIX APV: containerul MXF a fost scos din optiuni — FFmpeg nu poate pune
+        APV in MXF (esua complet). APV foloseste acum mp4 / mov / mkv.
+
+  FIX FLAC + .mov: la export cu audio FLAC in container .mov, encodarea
+        esua tacut (FFmpeg accepta FLAC doar in mp4 / mkv). Avertismentul
+        era sarit gresit pentru codecurile de montaj (DNxHR / ProRes / APV)
+        → fisier fara rezultat, fara explicatie. Acum esti avertizat si ti
+        se ofera schimbarea in mkv sau audio AAC.
+
+  FIX Profiluri cu audio LPCM (necomprimat): un profil salvat cu audio LPCM
+        era marcat gresit ca invalid la reincarcare. Acum se valideaza
+        corect (afecta si profilurile DNxHR in MXF, care folosesc PCM).
+
+  UPDATE Bara de progres afiseaza acum numele encoderului (X265 / X264 /
+        AV1 / DNXHR / PRORES / APV) in loc de un generic "FFMPEG".
+
+  Note: paritate completa bash ↔ PowerShell. Toate validate empiric cu
+        FFmpeg pe clipuri reale (APV pe toate profilurile, surse SDR /
+        HDR10 / HDR10+ / HLG / Log / Dolby Vision; decodare APV ca sursa).
 
 
 ═══════════════════════════════════════════════════════════════

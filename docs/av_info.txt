@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v64
+  Documentatie Setup & Utilizare — v65
 ═══════════════════════════════════════════════════════════════
 
 
@@ -333,8 +333,11 @@ CUPRINS
                Film-grain via denoise-noise-level. NU suporta HDR10+ inline.
   dnxhd      — DNxHR (Avid mezzanine, codec lossless optic — vezi 7.3).
   prores_ks  — Apple ProRes (codec lossless optic Apple — vezi 7.4).
-  libopenapv — Samsung APV. NU este in build-ul Termux standard;
-               necesita ffmpeg --enable-libopenapv.
+  liboapv    — Samsung APV (codec profesional intra-frame, 10/12-bit —
+               vezi 7.4.1). Numele encoderului difera intre build-uri
+               (liboapv sau libopenapv) — suita il detecteaza automat.
+               Necesita ffmpeg 8.1+ cu OpenAPV (nu in build-ul Termux
+               standard). Decodarea APV e inclusa in ffmpeg 8.1 standard.
 
 
   ─── 7.2. Container ───
@@ -414,6 +417,33 @@ CUPRINS
             HLG / Log intacte (toate profilurile sunt 10-bit). Ca orice codec
             mezzanine, NU poate purta Dolby Vision (RPU) sau HDR10+ dinamic —
             sursele DV / HDR10+ ies ca HDR10 standard (suita te anunta clar).
+
+
+  ─── 7.4.1. APV — codec profesional Samsung ───
+
+  Encoder Samsung intra-frame (OpenAPV), profesional, 10/12-bit. Necesita
+  ffmpeg 8.1+ cu OpenAPV (encoderul `liboapv` sau `libopenapv`, detectat
+  automat). Decodarea e inclusa in ffmpeg 8.1 standard.
+
+  Spre deosebire de DNxHR / ProRes (bitrate fix per profil), APV are reglaje
+  INDEPENDENTE (ca x265): alegi separat profilul, viteza si calitatea.
+
+  PROFIL / PIXEL FORMAT (profil intern auto din pixfmt):
+    4:2:2 10-bit  (422-10) [implicit]   interchange standard
+    4:2:2 12-bit  (422-12)              precizie mai mare
+    4:4:4 10-bit  (444-10)              grading / VFX
+    4:4:4 12-bit  (444-12)              grading maxim
+    4:4:4 + alpha 10-bit (4444-10)      compositing cu transparenta
+
+  PRESET VITEZA: fastest / fast / medium [implicit] / slow / placebo.
+  QP (CALITATE): 0-63, mai mic = mai bun, implicit 32 (ca un CRF).
+  EXTRA: parametri avansati optionali (-oapv-params key=value:key=value).
+
+  CONTAINERE: mp4 / mov / mkv (NU mxf — ffmpeg nu poate pune APV in MXF).
+  HDR / Dolby Vision: APV (10/12-bit) pastreaza imaginea + culoarea HDR10 /
+            HLG / Log. Ca orice codec mezzanine, NU poate purta Dolby Vision
+            (RPU) sau HDR10+ dinamic — sursele DV / HDR10+ ies ca HDR10
+            standard (esti anuntat).
 
 
   ─── 7.5. Surse DVD si Blu-ray ───
@@ -620,12 +650,12 @@ CUPRINS
     libsvtav1 / libaom-av1    → mp4, mkv, webm
     dnxhd                     → mkv, mov, mxf
     prores_ks                 → mov (OBLIGATORIU)
-    libopenapv                → NU in build standard Termux
+    liboapv / libopenapv      → mp4, mov, mkv (ffmpeg 8.1+ OpenAPV)
 
   AUDIO ENCODERE (ce putem SCRIE):
     AAC                       → mp4, mkv, mov
     Opus                      → mp4 (4.3+), mkv, webm
-    FLAC                      → mkv
+    FLAC                      → mp4, mkv (incompat .mov / .mxf)
     E-AC3                     → mp4, mkv (incompat .mov)
     AC3                       → mp4, mkv (incompat .mov)
     LPCM                      → mkv, mov, mxf
@@ -634,12 +664,13 @@ CUPRINS
   MXF accepta DOAR audio PCM (necomprimat). AAC / E-AC3 / AC3 / FLAC + .mxf
   esueaza la muxare — suita ofera audio PCM sau schimbarea in .mov.
 
-  Daca alegi combinatie incompatibila (FLAC + mp4, E-AC3 + mov, LPCM + mp4,
+  Daca alegi combinatie incompatibila (FLAC + mov, E-AC3 + mov, LPCM + mp4,
   audio comprimat + mxf, WebM + non-Opus), scriptul ofera switch automat.
 
-  Nota APV: Decodare APV este inclusa in ffmpeg 8.1 standard — fisierele
-  APV pot fi citite si convertite la orice alt codec. Encodare APV
-  necesita compilare ffmpeg cu --enable-libopenapv (nu in build Termux).
+  Nota APV: Decodarea APV e inclusa in ffmpeg 8.1 standard — fisierele APV
+  pot fi citite si convertite la orice alt codec. Encodarea APV functioneaza
+  acum complet (vezi 7.4.1) — necesita ffmpeg 8.1+ cu OpenAPV (liboapv /
+  libopenapv, detectat automat; nu e in build-ul Termux standard).
 
 
   ─── 7.11. CRF / VBR 1-pass / VBR 2-pass (v51) ───

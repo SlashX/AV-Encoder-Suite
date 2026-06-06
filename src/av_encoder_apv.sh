@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_apv.sh — Encoder APV (Samsung Advanced Professional Video)
-# Necesita: ffmpeg 8.1+ compilat cu --enable-libopenapv
-# v28: Doar logica specifica — loop-ul e in av_common.sh
+# Necesita: ffmpeg 8.1+ cu encoderul APV (liboapv SAU libopenapv — difera
+# intre builduri; auto-detectat mai jos).
+# v65: model real liboapv — pixfmt/profil + preset viteza + qp + oapv-params.
+#      Loop-ul e in av_common.sh.
 # ══════════════════════════════════════════════════════════════════════
 
 ENCODER_TYPE="apv"
 
 AUDIO_CODEC_ARG="${1:-aac:192k}"
-APV_PRESET="${2:-standard}"; CONTAINER="${3:-mp4}"; SCALE_WIDTH="${4}"
-TARGET_FPS="${5}"; FPS_METHOD="${6}"; VIDEO_FILTER_PRESET="${7}"
-AUDIO_NORMALIZE="${8:-0}"
+APV_PIXFMT="${2:-422_10}"; APV_PRESET="${3:-medium}"; APV_QP="${4:-32}"
+APV_EXTRA="${5}"; CONTAINER="${6:-mp4}"; SCALE_WIDTH="${7}"
+TARGET_FPS="${8}"; FPS_METHOD="${9}"; VIDEO_FILTER_PRESET="${10}"
+AUDIO_NORMALIZE="${11:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/av_common.sh"
@@ -19,58 +22,93 @@ LOG_FILE="$OUTPUT_DIR/av_encode_log_apv.txt"
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 setup_trap
 
-# ── Runtime check: libopenapv disponibil? ─────────────────────────────
-if ! ffmpeg -encoders 2>/dev/null | grep -q "libopenapv"; then
+# ── Detectie nume encoder APV (liboapv pe builduri recente; libopenapv pe altele)
+APV_ENCODER=""
+if ffmpeg -hide_banner -encoders 2>/dev/null | grep -qw "liboapv"; then
+    APV_ENCODER="liboapv"
+elif ffmpeg -hide_banner -encoders 2>/dev/null | grep -qw "libopenapv"; then
+    APV_ENCODER="libopenapv"
+fi
+
+# ── Runtime check: encoder APV disponibil? ────────────────────────────
+if [[ -z "$APV_ENCODER" ]]; then
     echo ""
     echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║  EROARE: libopenapv NU este disponibil in ffmpeg!    ║"
-    echo "  ║  Build-ul curent nu include --enable-libopenapv.     ║"
-    echo "  ║  APV encoder necesita ffmpeg compilat cu aceasta     ║"
-    echo "  ║  optiune. APV DECODE functioneaza (citire fisiere).  ║"
-    echo "  ║                                                      ║"
+    echo "  ║  EROARE: encoderul APV NU este disponibil in ffmpeg! ║"
+    echo "  ║  Build-ul curent nu include liboapv / libopenapv.    ║"
+    echo "  ║  APV encode necesita ffmpeg 8.1+ compilat cu OpenAPV.║"
+    echo "  ║  APV DECODE functioneaza (citire fisiere .apv).      ║"
     echo "  ║  Alternativa: foloseste x265 sau AV1 pentru encode.  ║"
     echo "  ╚══════════════════════════════════════════════════════╝"
     exit 1
 fi
 
 encoder_get_suffix() { echo "_apv"; }
-encoder_get_label()  { echo "APV ($APV_PRESET)"; }
+encoder_get_label()  { echo "APV ($APV_PIXFMT)"; }
 
 encoder_log_header() {
-    log "Preset         : $APV_PRESET"
-    log "Note           : APV = codec Samsung profesional intra-frame"
-    log "                 Necesita libopenapv in ffmpeg build"
+    log "Encoder        : $APV_ENCODER"
+    log "Profil/pixfmt  : $APV_PIXFMT | Preset: $APV_PRESET | QP: $APV_QP"
+    log "Note           : APV = codec Samsung profesional intra-frame (10/12-bit)"
 }
 
-# Override get_container_flags — APV in mp4/mov/mxf
+# Override get_container_flags — APV in mp4/mov/mkv (NU mxf — liboapv nu se muxa)
 get_container_flags() {
-    case "$CONTAINER" in mkv|mxf) echo "" ;; *) echo "-movflags +faststart" ;; esac
+    case "$CONTAINER" in mkv) echo "" ;; *) echo "-movflags +faststart" ;; esac
 }
 
 encoder_setup_file() {
     local file="$1"
 
-    # ── APV preset → codec params ───────────────────────────────────
-    local pixfmt quality_label
-    case "$APV_PRESET" in
-        light)    pixfmt="yuv422p10le"; quality_label="APV Light (editare rapida)" ;;
-        standard) pixfmt="yuv422p10le"; quality_label="APV Standard (balans calitate/spatiu)" ;;
-        high)     pixfmt="yuv422p10le"; quality_label="APV High (calitate ridicata)" ;;
-        422_10)   pixfmt="yuv422p10le"; quality_label="APV 4:2:2 10-bit" ;;
-        444_10)   pixfmt="yuv444p10le"; quality_label="APV 4:4:4 10-bit (grading)" ;;
-        *)        pixfmt="yuv422p10le"; quality_label="APV Standard" ;;
+    # ── APV pixfmt/profil → pix_fmt + eticheta (profil auto din pix_fmt) ──
+    #   422_10→33  422_12→44  444_10→55  444_12→66  4444_10→77 (alpha)
+    local pixfmt prof_label
+    case "$APV_PIXFMT" in
+        422_10)  pixfmt="yuv422p10le";  prof_label="APV 4:2:2 10-bit (profil 422-10)" ;;
+        422_12)  pixfmt="yuv422p12le";  prof_label="APV 4:2:2 12-bit (profil 422-12)" ;;
+        444_10)  pixfmt="yuv444p10le";  prof_label="APV 4:4:4 10-bit (profil 444-10)" ;;
+        444_12)  pixfmt="yuv444p12le";  prof_label="APV 4:4:4 12-bit (profil 444-12)" ;;
+        4444_10) pixfmt="yuva444p10le"; prof_label="APV 4:4:4+alpha 10-bit (profil 4444-10)" ;;
+        *)       pixfmt="yuv422p10le";  prof_label="APV 4:2:2 10-bit (profil 422-10)" ;;
     esac
-    log "  Preset: $quality_label | PixFmt: $pixfmt | Container: $CONTAINER"
+    log "  $prof_label | Preset: $APV_PRESET | QP: $APV_QP | Container: $CONTAINER"
+
+    # ── LOG format — APV (10/12-bit) pastreaza Log-ul intact ──────────
+    if [[ -n "$LOG_PROFILE" ]]; then
+        local profile_label
+        profile_label=$(_log_profile_label "$LOG_PROFILE")
+        log "  LOG detectat: $profile_label — APV pastreaza profilul Log intact (10/12-bit)."
+    fi
+
+    # ── DV / HDR10+ — metadata dinamica NU se pastreaza in mezzanine ───
+    # APV nu transporta RPU Dolby Vision sau HDR10+ (SMPTE2094-40); iese baza
+    # HDR10 statica (PQ + mastering display + MaxCLL pastrate).
+    if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: DV + HDR10+ (hibrid) detectat — APV NU pastreaza nici RPU DV, nici HDR10+."
+        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
+        log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${DOVI:-}" ]]; then
+        log "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV."
+        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+        log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
+    elif [[ -n "${HDR_PLUS:-}" ]]; then
+        log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
+        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+    fi
 
     # ── Dry-run ──────────────────────────────────────────────────────
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        dry_run_report "$file" "$output" "APV $quality_label" "$WIDTH" "$DURATION" "APV $APV_PRESET"
+        dry_run_report "$file" "$output" "$prof_label" "$WIDTH" "$DURATION" "APV $APV_PIXFMT"
         return 0
     fi
 
     # ── Comanda ffmpeg ────────────────────────────────────────────────
+    # -preset = viteza (fastest..placebo), -qp = calitate CQP (0-63, mai mic=mai bun),
+    # -oapv-params = override avansat (optional, key=value:key=value)
+    local apv_extra_arg=""
+    [[ -n "$APV_EXTRA" ]] && apv_extra_arg="-oapv-params $APV_EXTRA"
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
-        -c:v libopenapv -preset $APV_PRESET -pix_fmt $pixfmt \
+        -c:v $APV_ENCODER -preset $APV_PRESET -qp $APV_QP $apv_extra_arg -pix_fmt $pixfmt \
         $VIDEO_FILTER $AUDIO_PARAMS"
     return 0
 }

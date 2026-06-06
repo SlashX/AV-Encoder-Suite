@@ -5038,7 +5038,10 @@ function Get-ProfileSchema {
         'AV1_ENCODER_NAME'     { 'enum:,libsvtav1,libaom-av1'; return }
         'AV1_IMPL'             { 'enum:,libsvtav1,libaom-av1'; return }
         'DNXHR_PROFILE'        { 'enum:,lb,sq,hq,hqx,444'; return }
-        'APV_PROFILE'          { 'enum:,light,standard,high,422_10,444_10'; return }
+        'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10'; return }
+        'APV_PRESET'           { 'enum:,fastest,fast,medium,slow,placebo'; return }
+        'APV_QP'               { 'intrange:0,63'; return }
+        'APV_EXTRA'            { 'string'; return }
         'PRORES_PROFILE'       { 'enum:,proxy,lt,standard,hq,4444,xq,4444xq'; return }
         'X264_PROFILE'         { 'enum:,auto,high,high10,high422'; return }
         'CONTAINER'            { 'enum:mkv,mp4,mov,mxf,webm'; return }
@@ -5058,7 +5061,7 @@ function Get-ProfileSchema {
         'FPS_METHOD'           { 'enum:,drop,minterpolate'; return }
         'VIDEO_FILTER_PRESET'  { 'regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*)?$'; return }
         'VF_PRESET'            { 'regex:^(denoise_light|denoise_medium|denoise_strong|sharpen_light|sharpen_medium|deinterlace|upscale_4k|vidstab|custom:.*|scale=.*)?$'; return }
-        'AUDIO_CODEC_ARG'      { 'regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k)?$'; return }
+        'AUDIO_CODEC_ARG'      { 'regex:^(copy|aac:[0-9]+k|opus:[0-9]+k|flac:[0-9]+|eac3:[0-9]+k|ac3:[0-9]+k|pcm:[0-9]+(le|be))?$'; return }
         'AUDIO_CODEC'          { 'enum:,aac,opus,flac,eac3,ac3,pcm,copy'; return }
         'AUDIO_BITRATE'        { 'regex:^([0-9]+k)?$'; return }
         'AUDIO_COPY'           { 'enum:0,1'; return }
@@ -5405,6 +5408,7 @@ if ($profiles.Count -gt 0 -and -not $avProfileAuto) {
         $useDNxHR = ($ENCODER -eq "dnxhr")
         $useProRes = ($ENCODER -eq "prores")
         $useHWEnc  = ($ENCODER -eq "hwenc")
+        $useAPV    = ($ENCODER -eq "apv")
         $av1Impl  = if ($AV1_IMPL) { $AV1_IMPL } else { "libsvtav1" }
         $container = $CONTAINER
         $scaleWidth = if ($SCALE_WIDTH) { [int]$SCALE_WIDTH } else { $null }
@@ -5430,6 +5434,10 @@ if ($profiles.Count -gt 0 -and -not $avProfileAuto) {
         $vbrBufsize = $VBR_BUFSIZE
         $dnxhrProfile = if ($DNXHR_PROFILE) { $DNXHR_PROFILE } else { "sq" }
         $proresProfile = if ($PRORES_PROFILE) { $PRORES_PROFILE } else { "hq" }
+        $apvPixFmt = if ($APV_PIXFMT) { $APV_PIXFMT } else { "422_10" }
+        $apvPreset = if ($APV_PRESET) { $APV_PRESET } else { "medium" }
+        $apvQp = if ($APV_QP) { $APV_QP } else { "32" }
+        $apvExtra = $APV_EXTRA
         $x264ProfileGlobal = if ($X264_PROFILE) { $X264_PROFILE } else { "auto" }
         $forceLogDetection = ($FORCE_LOG_DETECTION -eq "1")
         $interactiveMode = ($INTERACTIVE_MODE -eq "1")
@@ -5468,8 +5476,8 @@ if ($profiles.Count -gt 0 -and -not $avProfileAuto) {
             }
         }
 
-        $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
-        $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
+        $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useAPV) { "apv ($apvPixFmt)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
+        $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useAPV) { "_apv" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
         $containerFlags = Get-ContainerFlags $container
         $LogFile = Join-Path $OutputDir "av_encode_log_$encoderName.txt"
 
@@ -5512,6 +5520,7 @@ if ($avProfileAuto -and $loadFile) {
     $useDNxHR  = ($ENCODER -eq "dnxhr")
     $useProRes = ($ENCODER -eq "prores")
     $useHWEnc  = ($ENCODER -eq "hwenc")
+    $useAPV    = ($ENCODER -eq "apv")
     $av1Impl   = if ($AV1_IMPL) { $AV1_IMPL } else { "libsvtav1" }
     $container = $CONTAINER
     $scaleWidth = if ($SCALE_WIDTH) { [int]$SCALE_WIDTH } else { $null }
@@ -5537,6 +5546,10 @@ if ($avProfileAuto -and $loadFile) {
     $vbrBufsize = $VBR_BUFSIZE
     $dnxhrProfile = if ($DNXHR_PROFILE) { $DNXHR_PROFILE } else { "sq" }
     $proresProfile = if ($PRORES_PROFILE) { $PRORES_PROFILE } else { "hq" }
+    $apvPixFmt = if ($APV_PIXFMT) { $APV_PIXFMT } else { "422_10" }
+    $apvPreset = if ($APV_PRESET) { $APV_PRESET } else { "medium" }
+    $apvQp = if ($APV_QP) { $APV_QP } else { "32" }
+    $apvExtra = $APV_EXTRA
     $x264ProfileGlobal = if ($X264_PROFILE) { $X264_PROFILE } else { "auto" }
     $forceLogDetection = ($FORCE_LOG_DETECTION -eq "1")
     $interactiveMode = ($INTERACTIVE_MODE -eq "1")
@@ -5546,8 +5559,8 @@ if ($avProfileAuto -and $loadFile) {
     $hwEncName   = $hwEncCodec
     $hwForce     = ($HW_FORCE -eq "1")
 
-    $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
-    $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
+    $encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useAPV) { "apv ($apvPixFmt)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
+    $outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useAPV) { "_apv" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
     $containerFlags = Get-ContainerFlags $container
     $LogFile = Join-Path $OutputDir "av_encode_log_$encoderName.txt"
 
@@ -5568,13 +5581,15 @@ Write-Host "║  3-AV1      codec viitor, compresie max  ║" -ForegroundColor C
 Write-Host "║  4-DNxHR    Avid mezzanine, lossless     ║" -ForegroundColor Cyan
 Write-Host "║  5-ProRes   Apple profesional (mov)       ║" -ForegroundColor Cyan
 Write-Host "║  6-HW Encode  GPU accelerat (NVENC/QSV)  ║" -ForegroundColor Cyan
+Write-Host "║  7-APV      Samsung pro intra-frame      ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
-$encChoice = Read-Host "Alege 1-6 [implicit: 1]"
+$encChoice = Read-Host "Alege 1-7 [implicit: 1]"
 $useX264  = ($encChoice -eq "2")
 $useAV1   = ($encChoice -eq "3")
 $useDNxHR = ($encChoice -eq "4")
 $useProRes = ($encChoice -eq "5")
 $useHWEnc  = ($encChoice -eq "6")
+$useAPV    = ($encChoice -eq "7")
 $av1Impl  = "libsvtav1"
 if ($useAV1) {
     Write-Host "  1-libsvtav1 rapid [implicit]  2-libaom-av1 calitate maxima" -ForegroundColor Cyan
@@ -5631,6 +5646,38 @@ if ($useProRes) {
         default    { "ProRes HQ (~220 Mbps)" }
     }
     Write-Host "  Profil: $proresLabel" -ForegroundColor Green
+}
+$apvPixFmt = "422_10"; $apvPreset = "medium"; $apvQp = "32"; $apvExtra = ""
+if ($useAPV) {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  APV — profil / pixel format         ║" -ForegroundColor Cyan
+    Write-Host "║  1-4:2:2 10-bit (422-10) [implicit]  ║" -ForegroundColor White
+    Write-Host "║  2-4:2:2 12-bit (422-12)             ║" -ForegroundColor White
+    Write-Host "║  3-4:4:4 10-bit (444-10) grading     ║" -ForegroundColor White
+    Write-Host "║  4-4:4:4 12-bit (444-12) grading     ║" -ForegroundColor White
+    Write-Host "║  5-4:4:4 + alpha 10-bit (4444-10)    ║" -ForegroundColor White
+    Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+    $apvPfChoice = Read-Host "Alege 1-5 [implicit: 1]"
+    $apvPixFmt = switch ($apvPfChoice) {
+        "2" { "422_12" } "3" { "444_10" } "4" { "444_12" } "5" { "4444_10" } default { "422_10" }
+    }
+    Write-Host "  Profil: APV $apvPixFmt" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Preset viteza: 1-fastest  2-fast  3-medium [impl]  4-slow  5-placebo" -ForegroundColor Cyan
+    $apvSpChoice = Read-Host "  Alege 1-5 [implicit: 3]"
+    $apvPreset = switch ($apvSpChoice) {
+        "1" { "fastest" } "2" { "fast" } "4" { "slow" } "5" { "placebo" } default { "medium" }
+    }
+    Write-Host "  Preset: $apvPreset" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  QP — calitate (0-63; mai mic = mai bun; implicit 32)" -ForegroundColor Cyan
+    $apvQpIn = Read-Host "  Introdu QP [implicit: 32]"
+    if ($apvQpIn -match '^\d+$' -and [int]$apvQpIn -ge 0 -and [int]$apvQpIn -le 63) { $apvQp = $apvQpIn } else { $apvQp = "32" }
+    Write-Host "  QP: $apvQp" -ForegroundColor Green
+    Write-Host ""
+    $apvExtra = Read-Host "  Parametri extra oapv (optional, ex: key=value:key=value) [Enter=niciunul]"
+    if ($apvExtra) { Write-Host "  Extra: -oapv-params $apvExtra" -ForegroundColor Green }
 }
 $hwEncCodec = ""; $hwEncName = ""; $hwEncPreset = ""; $hwEncQP = ""
 if ($useHWEnc) {
@@ -5732,7 +5779,15 @@ if ($useHWEnc) {
 }
 
 # ── Runtime checks ──────────────────────────────────────────────────
-$rtEncoder = if ($useX264) { "libx264" } elseif ($useAV1) { $av1Impl } elseif ($useDNxHR) { "dnxhd" } elseif ($useProRes) { "prores_ks" } elseif ($useHWEnc) { $hwEncCodec } else { "libx265" }
+# APV: numele encoderului difera intre builduri (liboapv recent / libopenapv vechi)
+$apvEncoder = ""
+if ($useAPV) {
+    $apvEncList = & ffmpeg -hide_banner -encoders 2>$null | Out-String
+    if     ($apvEncList -match '\bliboapv\b')     { $apvEncoder = "liboapv" }
+    elseif ($apvEncList -match '\blibopenapv\b')  { $apvEncoder = "libopenapv" }
+    else   { $apvEncoder = "liboapv" }  # fallback → Test-EncoderAvailable da eroarea clara
+}
+$rtEncoder = if ($useX264) { "libx264" } elseif ($useAV1) { $av1Impl } elseif ($useDNxHR) { "dnxhd" } elseif ($useProRes) { "prores_ks" } elseif ($useAPV) { $apvEncoder } elseif ($useHWEnc) { $hwEncCodec } else { "libx265" }
 if (-not $useHWEnc) {
     if (-not (Test-EncoderAvailable $rtEncoder)) {
         Write-Host "[EROARE] $rtEncoder nu este disponibil in ffmpeg!" -ForegroundColor Red
@@ -5744,8 +5799,8 @@ if (-not $useHWEnc) {
     Write-Host "  [OK] $hwEncCodec detectat" -ForegroundColor Green
 }
 
-$encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
-$outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
+$encoderName = if ($useX264) { "libx264" } elseif ($useAV1) { "av1 ($av1Impl)" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores ($proresProfile)" } elseif ($useAPV) { "apv ($apvPixFmt)" } elseif ($useHWEnc) { $hwEncName } else { "libx265" }
+$outSuffix   = if ($useX264) { "_x264" } elseif ($useAV1) { "_av1" } elseif ($useDNxHR) { "_dnxhr" } elseif ($useProRes) { "_prores" } elseif ($useAPV) { "_apv" } elseif ($useHWEnc) { "_hwenc" } else { "_x265" }
 Write-Host "  Encoder: $encoderName" -ForegroundColor Green
 
 $x264ProfileGlobal = "auto"
@@ -5769,6 +5824,15 @@ if ($useProRes) {
     Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
     $contChoice = Read-Host "Alege 1 sau 2 [implicit: 1]"
     $container  = if ($contChoice -eq "2") { "mxf" } else { "mov" }
+} elseif ($useAPV) {
+    Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  Container APV                           ║" -ForegroundColor Cyan
+    Write-Host "║  1-mp4  ISOBMFF [implicit]               ║" -ForegroundColor White
+    Write-Host "║  2-mov  QuickTime / editare              ║" -ForegroundColor White
+    Write-Host "║  3-mkv  flexibil                         ║" -ForegroundColor White
+    Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+    $contChoice = Read-Host "Alege 1-3 [implicit: 1]"
+    $container  = switch ($contChoice) { "2"{"mov"} "3"{"mkv"} default{"mp4"} }
 } elseif ($useAV1) {
     Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  1-mp4  compatibil maxim                 ║" -ForegroundColor Cyan
@@ -5899,7 +5963,7 @@ if ($vfPreset) {
 # DNxHR/ProRes/HW: bitrate fix sau QP — skip CRF/Preset/Tune/Extra
 $encMode = "1"; $customCrf = ""; $vbrTarget = ""; $vbrMaxrate = ""; $vbrBufsize = ""
 $selectedPreset = "slow"; $selectedTune = ""; $extraParams = ""
-if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc) {
+if (-not $useDNxHR -and -not $useProRes -and -not $useAPV -and -not $useHWEnc) {
 
 Write-Host ""
 $isHwActive = $useHWEnc
@@ -6049,7 +6113,7 @@ if ($extraParams) {
     Write-Host "  Fara parametri extra." -ForegroundColor White
 }
 
-} # end if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc)
+} # end if (-not $useDNxHR -and -not $useProRes -and -not $useAPV -and -not $useHWEnc)
 
 # ── Audio output ──────────────────────────────────────────────────────
 Write-Host ""
@@ -6108,9 +6172,11 @@ switch ($audioChoice) {
     default { Write-Host "  Audio: AAC 192k / 5.1 384k / 7.1 768k" -ForegroundColor Green }
 }
 
-# FLAC + mp4/mov avertisment (nu se aplica DNxHR — FLAC compatibil cu mov/mxf)
-if ($audioCodec -eq "flac" -and $container -ne "mkv" -and -not $useDNxHR) {
-    Write-Host "`n  ATENTIE: FLAC nu e compatibil cu $container." -ForegroundColor Red
+# FLAC incompatibil cu mov (ffmpeg: "flac only supported in MP4"); mp4/mkv OK.
+# mxf e gestionat de regula MXF=PCM de mai jos. Independent de encoder
+# (vechea scutire -not $useDNxHR era gresita: FLAC pica si pe DNxHR/ProRes mov).
+if ($audioCodec -eq "flac" -and $container -eq "mov") {
+    Write-Host "`n  ATENTIE: FLAC nu e compatibil cu .mov (doar mp4 / mkv)." -ForegroundColor Red
     Write-Host "  1-Schimba la MKV [recomandat]  2-Schimba audio la AAC 192k" -ForegroundColor Yellow
     $flacFix = Read-Host "  Alege [implicit: 1]"
     if ($flacFix -eq "2") {
@@ -6228,7 +6294,7 @@ if ($container -eq "webm" -and $audioCopy) {
 
 # ── Force LOG detection (optional) ──────────────────────────────────
 $forceLogDetection = $false
-if (-not $useDNxHR -and -not $useProRes -and -not $useHWEnc) {
+if (-not $useDNxHR -and -not $useProRes -and -not $useAPV -and -not $useHWEnc) {
     Write-Host ""
     Write-Host "Force LOG detection: 1-Nu [implicit]  2-Da (toate fisierele primesc dialog LOG)" -ForegroundColor Cyan
     $fldChoice = Read-Host "Alege [implicit: 1]"
@@ -6268,7 +6334,7 @@ if ($saveProf -ieq "d") {
             }
         }
         if ($profFile) {
-        $encShort = if ($useX264) { "libx264" } elseif ($useAV1) { "av1" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores" } elseif ($useHWEnc) { "hwenc" } else { "libx265" }
+        $encShort = if ($useX264) { "libx264" } elseif ($useAV1) { "av1" } elseif ($useDNxHR) { "dnxhr" } elseif ($useProRes) { "prores" } elseif ($useAPV) { "apv" } elseif ($useHWEnc) { "hwenc" } else { "libx265" }
         $vfSave = if ($vfIsVidstab) { "vidstab" } elseif ($vfPreset) { $vfPreset } else { "" }
         $logProfileSave = if ($script:LOG_PROFILE) { $script:LOG_PROFILE } else { "" }
         $lutPathSave = if ($script:LUT_PATH) { $script:LUT_PATH } else { "" }
@@ -6279,6 +6345,10 @@ if ($saveProf -ieq "d") {
             "AV1_IMPL=$av1Impl"
             "DNXHR_PROFILE=$dnxhrProfile"
             "PRORES_PROFILE=$proresProfile"
+            "APV_PIXFMT=$apvPixFmt"
+            "APV_PRESET=$apvPreset"
+            "APV_QP=$apvQp"
+            "APV_EXTRA=$apvExtra"
             "X264_PROFILE=$x264ProfileGlobal"
             "HW_ENC_CODEC=$hwEncCodec"
             "HW_ENC_PRESET=$hwEncPreset"
@@ -7688,6 +7758,41 @@ foreach ($f in $inputFiles) {
 
         $ffArgs = @("-threads","0","-i",$f.FullName) + $dnxMapFlags +
                   @("-c:v","dnxhd","-profile:v",$dnxhrProfFlag,"-pix_fmt",$dnxhrPixFmt) +
+                  $videoFilter + $fpsFlag + $audioParams + $loudnormFlag +
+                  (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
+                  $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
+
+    } elseif ($useAPV) {
+        # ── APV per-file ─────────────────────────────────────────────
+        # APV (10/12-bit) pastreaza Log intact; pixfmt → profil (33/44/55/66/77).
+        if ($logInfo.logProfile) {
+            $profileLabel = Get-LogProfileLabel $logInfo.logProfile
+            Write-Host "  LOG detectat: $profileLabel — APV pastreaza profilul Log intact (10/12-bit)." -ForegroundColor Green
+        }
+        $apvPixFmtFf = switch ($apvPixFmt) {
+            "422_12" { "yuv422p12le" } "444_10" { "yuv444p10le" } "444_12" { "yuv444p12le" } "4444_10" { "yuva444p10le" } default { "yuv422p10le" }
+        }
+        # DV / HDR10+ — APV nu transporta RPU DV sau HDR10+; iese baza HDR10 statica.
+        if ($logInfo.isDV -and $si.isHDRPlus) {
+            Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — APV NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
+            Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($logInfo.isDV) {
+            Write-Host "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+            Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
+        } elseif ($si.isHDRPlus) {
+            Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+        }
+        $apvExtraArg = if ($apvExtra) { @("-oapv-params",$apvExtra) } else { @() }
+        Write-Host "  APV $apvPixFmt | Preset: $apvPreset | QP: $apvQp | PixFmt: $apvPixFmtFf | Container: $container" -ForegroundColor White
+        "  APV $apvPixFmt | Preset: $apvPreset | QP: $apvQp | Container: $container" | Out-File $LogFile -Append -Encoding UTF8
+        $apvMapFlags = @("-map","0:v:0","-map","0:a?","-map","0:s?","-map_metadata","0","-map_chapters","0")
+
+        $ffArgs = @("-threads","0","-i",$f.FullName) + $apvMapFlags +
+                  @("-c:v",$apvEncoder,"-preset",$apvPreset,"-qp",$apvQp) + $apvExtraArg +
+                  @("-pix_fmt",$apvPixFmtFf) +
                   $videoFilter + $fpsFlag + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                   $containerFlags + @("-progress",$progFile,"-nostats",$outFile)

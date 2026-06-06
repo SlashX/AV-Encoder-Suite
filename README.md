@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v64** — 115 bugs fixed · 236+ features · ~42 000 LoC · 132 files
+**v65** — 121 bugs fixed · 237+ features · ~42 000 LoC · 134 files
 
 ---
 
@@ -84,9 +84,9 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **libaom-av1** | 10 | ✅ | fallback HDR10 | — | ✅ | ✅ |
 | **DNxHR** | 8/10 | ✅ preserve¹ | — | — | ✅ preserve¹ | ✅¹ |
 | **ProRes** KS | 10/12 | ✅ preserve | — | — | ✅ preserve | ✅ |
-| **APV** (FF 8.1+) | 10 / 4:2:2 / 4:4:4 | ✅ | — | — | — | ✅ |
+| **APV** (FF 8.1+) | 10/12 · 4:2:2/4:4:4 (+alpha) | ✅ preserve | — | — | ✅ preserve | ✅ |
 
-¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lose wide gamut on LOG, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU or HDR10+ dynamic metadata → v64 adds honest per-source warnings (DV / HDR10+ → clean HDR10 base; use x265/AV1 to keep DV). ProRes 4444 XQ = native XQ profile (v64). DNxHR MXF audio = PCM only (v64).
+¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lose wide gamut on LOG, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU or HDR10+ dynamic metadata → honest per-source warnings (DV / HDR10+ → clean HDR10 base; use x265/AV1 to keep DV). ProRes 4444 XQ = native XQ profile (v64). DNxHR MXF audio = PCM only (v64). **APV** (v65) = `liboapv`/`libopenapv` auto-detect, independent profile/preset/QP knobs (x265-style), mp4/mov/mkv; full bash + PowerShell parity.
 
 DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` AV1) → re-encode HDR10 base → post-encode RPU inject → re-mux audio.
 
@@ -382,4 +382,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v64** — 115 bugs fixed · 236+ features · ~42 000 LoC · 132 files
+Current: **v65** — 121 bugs fixed · 237+ features · ~42 000 LoC · 134 files
