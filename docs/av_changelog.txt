@@ -3,9 +3,42 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v66 | 123 bug-uri fixate | 237+ features
-  136 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 90 teste [83 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
+  TOTAL: v67 | 124 bug-uri fixate | 238+ features
+  138 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 92 teste [85 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v67 — Selectie audio per-pista (encode / copy / skip)
+═══════════════════════════════════════════════════════════════
+
+  ADD Selectie audio per-pista pentru fisierele cu mai multe piste audio.
+        Cand un fisier are 2+ piste (ex. o coloana 5.1 + un comentariu + alta
+        limba), suita iti arata lista lor si te lasa sa alegi, pentru fiecare:
+        re-encodeaza / pastreaza asa cum e (copy) / scoate-o din rezultat (skip).
+        Bitrate-ul si downmix-ul se calculeaza per pista (dupa canalele EI:
+        5.1, 7.1 etc.). Fisierele cu o singura pista raman exact ca pana acum
+        (fara intrebare in plus). Implicit: prima pista re-encodata, restul
+        copiate — adica zero schimbare daca nu intri in selectie.
+        Disponibil atat la "Encode video + audio" cat si la "Encode doar audio".
+
+  ADD Normalizarea volumului (loudnorm) se aplica acum pe prima pista
+        re-encodata, nu fortat pe prima pista a fisierului. Asta inseamna ca
+        daca alegi sa pastrezi prima pista neatinsa si sa re-encodezi alta,
+        normalizarea merge corect pe pista potrivita.
+
+  ADD Variabila de mediu AV_AUDIO_TRACKS pentru scripting / automatizare
+        (CI): alegi non-interactiv ce piste se re-encodeaza (ex. "0,2" sau
+        "all"); restul se copiaza. Fara ea, comportamentul ramane neschimbat.
+
+  FIX Pe Windows, selectia per-pista (din versiuni anterioare, doar PowerShell)
+        eticheta gresit pistele cand una din mijloc era scoasa (skip) — pista
+        urmatoare primea setarile gresite. Acum indexarea e corecta dupa orice
+        combinatie de pastrare / scoatere.
+
+  Note: paritate completa bash ↔ PowerShell. Validat empiric cu FFmpeg pe
+        fisiere cu mai multe piste (re-encode + copy + skip simultan,
+        downmix per pista, normalizare pe pista corecta) pe toate encoderele.
 
 
 ═══════════════════════════════════════════════════════════════

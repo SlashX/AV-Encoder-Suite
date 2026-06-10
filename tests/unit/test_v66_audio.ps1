@@ -7,18 +7,19 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$SRC
 $COMMON = Get-Content (Join-Path $SRC "av_common.sh") -Raw
 $ENC    = Get-Content (Join-Path $SRC "av_encode.ps1") -Raw
 
-# ── 1. bash — ordine copy-first ───────────────────────────────────────
-Assert-Match $COMMON ([regex]::Escape('-c:a copy -c:a:0 aac -b:a:0 $br'))     "bash: aac copy-first"
-Assert-Match $COMMON ([regex]::Escape('-c:a copy -c:a:0 libopus -b:a:0 $br')) "bash: opus copy-first"
-Assert-Match $COMMON ([regex]::Escape('-c:a copy -c:a:0 ac3 -b:a:0 $br'))     "bash: ac3 copy-first"
+# ── 1. bash — copy-first (v67: get_audio_params deleaga la build_track_audio_args) ──
+Assert-Match $COMMON ([regex]::Escape('-c:a copy $(build_track_audio_args "$codec" 0 "$channels" "$br")')) "bash: get_audio_params deleaga la helper"
+Assert-Match $COMMON ([regex]::Escape('-c:a:$idx aac -b:a:$idx $br'))      "bash: helper aac"
+Assert-Match $COMMON ([regex]::Escape('-c:a:$idx libopus -b:a:$idx $br'))  "bash: helper opus"
+Assert-Match $COMMON ([regex]::Escape('-c:a:$idx ac3 -b:a:$idx $br'))      "bash: helper ac3"
 Assert-Eq $false ([bool]($COMMON -match ([regex]::Escape('-b:a:0 $br $downmix_flag -c:a copy')))) "bash: NU mai e vechea ordine"
-Assert-Match $COMMON ([regex]::Escape('-filter:a:0 loudnorm=I=-24'))          "bash: loudnorm scopat la a:0"
+Assert-Match $COMMON ([regex]::Escape('-filter:a:$lt loudnorm=I=-24'))     "bash: loudnorm scopat la pista re-encodata"
 
 # ── 2. PS1 — copy-first + loudnorm a:0 ────────────────────────────────
 Assert-Match $ENC ([regex]::Escape('@("-c:a","copy","-c:a:0","aac","-b:a:0",$abr)'))     "PS1: aac copy-first"
 Assert-Match $ENC ([regex]::Escape('@("-c:a","copy","-c:a:0","libopus","-b:a:0",$abr)')) "PS1: opus copy-first"
 Assert-Match $ENC ([regex]::Escape('@("-c:a","copy","-c:a:0","ac3","-b:a:0",$abr)'))     "PS1: ac3 copy-first"
-Assert-Match $ENC ([regex]::Escape('@("-filter:a:0","loudnorm=I=-24'))                   "PS1: loudnorm scopat la a:0"
+Assert-Match $ENC ([regex]::Escape('@("-filter:a:$audioLoudnormTrack","loudnorm=I=-24')) "PS1: loudnorm scopat la pista re-encodata"
 Assert-Eq $false ([bool]($ENC -match ([regex]::Escape('@("-c:a:0","aac","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")')))) "PS1: NU mai e vechea ordine"
 # ── 2b. PS1 — flux audio-only standalone ($eaAP, oglinda av_encoder_audio.sh) ──
 #   E mirror-ul PS1 al av_encoder_audio.sh (meniu optiunea 2). Acelasi copy-first.

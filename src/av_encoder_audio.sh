@@ -357,9 +357,19 @@ for file in "${FILES[@]}"; do
     _src_codec=$(detect_source_codec "$file")
     _audio_codec_tag=$(codec_tag_for_container "$_src_codec" "$CONTAINER")
 
+    # v67: selectie audio per-pista (>1 pista). Refolosim handle_multi_audio_dialog din
+    # av_common.sh — poate rescrie AUDIO_PARAMS si adauga negative maps in MAP_FLAGS (skip).
+    # Construim AUDIO_CODEC_ARG in formatul "codec:br" asteptat (flac→nivel, pcm→fmt).
+    case "$AUDIO_CODEC" in
+        flac) AUDIO_CODEC_ARG="flac:$AUDIO_FLAC_LEVEL" ;;
+        *)    AUDIO_CODEC_ARG="$AUDIO_CODEC:$AUDIO_BITRATE" ;;
+    esac
+    MAP_FLAGS="-map 0:v -map 0:a? -map 0:s? -map 0:t?"
+    handle_multi_audio_dialog "$file"
+
     # shellcheck disable=SC2086
     ffmpeg -i "$file" \
-        -map 0:v -map 0:a? -map 0:s? -map 0:t? \
+        $MAP_FLAGS \
         -map_metadata 0 -map_chapters 0 \
         -c:v copy \
         $AUDIO_PARAMS \

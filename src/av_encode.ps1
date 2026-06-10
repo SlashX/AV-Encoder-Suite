@@ -1962,6 +1962,31 @@ function Get-CodecTagForContainer {
     return @()
 }
 
+# v67: args de re-encode pentru O pista audio (output index $Idx), FARA prefix
+# `-c:a copy` (apelantul il pune o singura data INAINTE — copy-first v66). Mirror PS1
+# al build_track_audio_args (bash). Sursa unica scaling bitrate per-canale + downmix.
+#   $BaseBr: bitrate (aac/opus/eac3/ac3) | nivel flac | format pcm (ex. 16le)
+function Get-TrackAudioArgs {
+    param([string]$Codec, [int]$Idx, [int]$Channels, [string]$BaseBr)
+    $br = $BaseBr; $dm = @()
+    if ($env:AV_DOWNMIX_STEREO -eq "1" -and $Channels -gt 2) { $Channels = 2; $dm = @("-ac:a:$Idx","2") }
+    switch ($Codec) {
+        "aac"  { if ($br -eq "192k") { if ($Channels -gt 6) { $br = "768k" } elseif ($Channels -gt 2) { $br = "384k" } }
+                 return @("-c:a:$Idx","aac","-b:a:$Idx",$br) + $dm }
+        "opus" { if ($br -eq "128k") { if ($Channels -gt 6) { $br = "512k" } elseif ($Channels -gt 2) { $br = "256k" } }
+                 return @("-c:a:$Idx","libopus","-b:a:$Idx",$br) + $dm }
+        "flac" { return @("-c:a:$Idx","flac","-compression_level",$br) + $dm }
+        "eac3" { if ($br -eq "224k") { if ($Channels -gt 6) { $br = "1024k" } elseif ($Channels -gt 2) { $br = "640k" } }
+                 return @("-c:a:$Idx","eac3","-b:a:$Idx",$br) + $dm }
+        "ac3"  { if ($br -eq "224k" -and $Channels -gt 2) { $br = "448k" }
+                 if ($dm.Count -gt 0) { return @("-c:a:$Idx","ac3","-b:a:$Idx",$br) + $dm }
+                 elseif ($Channels -gt 6) { return @("-c:a:$Idx","ac3","-b:a:$Idx",$br,"-ac:a:$Idx","6") }
+                 else { return @("-c:a:$Idx","ac3","-b:a:$Idx",$br) } }
+        "pcm"  { return @("-c:a:$Idx","pcm_s${BaseBr}") + $dm }
+        default { return @("-c:a:$Idx","aac","-b:a:$Idx","192k") + $dm }
+    }
+}
+
 # FIX: PGS/DVDSUB incompatibile cu mp4/mov — returneaza -sn (omite) nu -c:s mov_text
 function Get-SubtitleCodec {
     param([string]$file, [string]$container)
@@ -4714,6 +4739,58 @@ if ($mainChoice -eq "2") {
         }
         Write-Host "  Audio: $eaCodec $abr | Canale: $eaChN" -ForegroundColor White
 
+        # v67: selectie audio per-pista (>1 pista) — env AV_AUDIO_TRACKS sau dialog.
+        # Override $eaAP (copy-first + scaling per-canale) + $eaSkipMaps (negative maps).
+        $eaSkipMaps = @()
+        $eaTrackCount = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $f.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
+        if ($eaTrackCount -gt 1) {
+            $eaSel = @{}; $eaUseSel = $false
+            if ($env:AV_AUDIO_TRACKS) {
+                for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "C" }
+                if ($env:AV_AUDIO_TRACKS.ToLower() -eq "all") { for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "E" } }
+                else { foreach ($t in ($env:AV_AUDIO_TRACKS -split ',')) { if ($t -match '^\d+$' -and [int]$t -lt $eaTrackCount) { $eaSel[[int]$t] = "E" } } }
+                $eaUseSel = $true
+            } else {
+                Write-Host "  ── $eaTrackCount piste audio:" -ForegroundColor Cyan
+                $eaAtList = & ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels:stream_tags=language -of csv=p=0 $f.FullName 2>$null
+                $eaI = 0
+                foreach ($ln in ($eaAtList -split "`n" | Where-Object { $_ })) {
+                    $p = $ln -split ','
+                    Write-Host ("     a:{0}  {1}  {2}ch  {3}" -f $eaI, $(if ($p.Count -gt 1) { $p[1] } else { '?' }), $(if ($p.Count -gt 2) { $p[2] } else { '?' }), $(if ($p.Count -gt 3 -and $p[3]) { $p[3] } else { 'und' })) -ForegroundColor White
+                    $eaI++
+                }
+                Write-Host "  1) Track 0 re-encode, restul copy [impl]   2) Selecteaza (E/C/S)" -ForegroundColor Cyan
+                $eaMac = Read-Host "  Alege [implicit: 1]"
+                if ($eaMac -eq "2") {
+                    for ($ai = 0; $ai -lt $eaTrackCount; $ai++) {
+                        $def = if ($ai -eq 0) { "E" } else { "C" }
+                        $cc = Read-Host "  Track $ai (E=encode/C=copy/S=skip) [implicit: $def]"
+                        if (-not $cc) { $cc = $def }
+                        $cc = $cc.ToUpper()
+                        if ($cc -in @("E","C","S")) { $eaSel[$ai] = $cc } else { $eaSel[$ai] = $def }
+                    }
+                    $eaUseSel = $true
+                }
+            }
+            if ($eaUseSel) {
+                $eaBrArg = if ($eaCodec -eq "flac") { $eaFlvl } elseif ($eaCodec -eq "pcm") { $eaPcmDepth } else { $eaBr }
+                $eaAP = @("-c:a","copy"); $skb = 0
+                for ($ai = 0; $ai -lt $eaTrackCount; $ai++) {
+                    switch ($eaSel[$ai]) {
+                        "S" { $eaSkipMaps += @("-map","-0:a:$ai"); $skb++; Write-Host "    Track $ai → SKIP" -ForegroundColor DarkYellow }
+                        "E" {
+                            $oIdx = $ai - $skb
+                            $tc = Get-FFprobeValue $f.FullName "a:$ai" "channels"
+                            $tcN = if ($tc -match '^\d+$') { [int]$tc } else { 2 }
+                            $eaAP += (Get-TrackAudioArgs $eaCodec $oIdx $tcN $eaBrArg)
+                            Write-Host "    Track $ai → re-encode ($eaCodec) [out a:$oIdx]" -ForegroundColor Green
+                        }
+                        default { Write-Host "    Track $ai → copy" -ForegroundColor White }
+                    }
+                }
+            }
+        }
+
         # Avertizari metadata TrueHD/DTS
         $eaAudioCodecs = & ffprobe -v error -select_streams a `
             -show_entries stream=codec_name `
@@ -4740,9 +4817,10 @@ if ($mainChoice -eq "2") {
         # v56: mapare explicita (paritate cu bash av_encoder_audio.sh) — video copy +
         # audio optional (0:a? → surse video-only nu dau eroare) + subs/attach.
         # NU mapeaza track-uri de date (0:d) — evita incompatibilitati mp4/mov.
-        $eaArgs = @("-i",$f.FullName,"-map","0:v","-map","0:a?","-map","0:s?","-map","0:t?",
-                     "-map_metadata","0","-map_chapters","0",
-                     "-c:v","copy") + $eaAP + $eaSubArgs + $eaCodecTag +
+        # v67: $eaSkipMaps (negative maps pt pistele S=skip) imediat dupa -map 0:a?
+        $eaArgs = @("-i",$f.FullName,"-map","0:v","-map","0:a?","-map","0:s?","-map","0:t?") +
+                  $eaSkipMaps +
+                  @("-map_metadata","0","-map_chapters","0","-c:v","copy") + $eaAP + $eaSubArgs + $eaCodecTag +
                   $eaFlags + @("-nostats",$outFile)
         & ffmpeg @eaArgs 2>>$eaLog
 
@@ -6840,71 +6918,85 @@ foreach ($f in $inputFiles) {
     $audioTrackCount = (& ffprobe -v error -select_streams a `
         -show_entries stream=index -of csv=p=0 $f.FullName 2>$null |
         Where-Object { $_ -match '^\d' }).Count
+    # v67: pista pe care se aplica loudnorm (prima re-encodata). Default 0 (track 0).
+    $audioLoudnormTrack = 0
     if ($audioTrackCount -gt 1 -and -not $audioCopy) {
-        Write-Host ""
-        Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-        Write-Host ("  ║  {0} TRACK-URI AUDIO DETECTATE                ║" -f $audioTrackCount) -ForegroundColor Cyan
-        Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
-        # List all audio tracks
-        $atList = & ffprobe -v error -select_streams a `
-            -show_entries stream=index,codec_name,channels,bit_rate:stream_tags=language `
-            -of csv=p=0 $f.FullName 2>$null
-        $atIdx = 0
-        foreach ($atLine in ($atList -split "`n" | Where-Object { $_ })) {
-            $atParts = $atLine -split ','
-            $atCodec = if ($atParts.Count -gt 1) { $atParts[1] } else { "?" }
-            $atCh    = if ($atParts.Count -gt 2) { $atParts[2] } else { "?" }
-            $atBr    = if ($atParts.Count -gt 3 -and $atParts[3] -match '^\d+$') { "$([int]([long]$atParts[3]/1000))k" } else { "N/A" }
-            $atLang  = if ($atParts.Count -gt 4 -and $atParts[4]) { $atParts[4] } else { "und" }
-            Write-Host ("  ║  Track {0}: {1} | {2}ch | {3} | {4,-14}║" -f $atIdx, $atCodec, $atCh, $atBr, $atLang) -ForegroundColor White
-            $atIdx++
-        }
-        Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
-        Write-Host "  ║  1) Track 0 re-encode, restul copy [impl]   ║" -ForegroundColor White
-        Write-Host "  ║  2) Selecteaza track-uri (encode/copy/skip)  ║" -ForegroundColor White
-        Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-        $multiAudioChoice = Read-Host "  Alege [implicit: 1]"
-        if ($multiAudioChoice -eq "2") {
-            $customAudioParams = @()
-            $skipMaps = @()
-            for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
-                $aiChoice = Read-Host "  Track $ai (E=encode, C=copy, S=skip) [implicit: $(if ($ai -eq 0) {'E'} else {'C'})]"
-                if (-not $aiChoice) { $aiChoice = if ($ai -eq 0) { "E" } else { "C" } }
-                switch ($aiChoice.ToUpper()) {
-                    "E" {
-                        switch ($audioCodec) {
-                            "aac"  { $customAudioParams += @("-c:a:$ai","aac","-b:a:$ai",$audioBitrate) }
-                            "opus" { $customAudioParams += @("-c:a:$ai","libopus","-b:a:$ai",$audioBitrate) }
-                            "flac" { $customAudioParams += @("-c:a:$ai","flac") }
-                            "eac3" { $customAudioParams += @("-c:a:$ai","eac3","-b:a:$ai",$audioBitrate) }
-                            "ac3"  { $customAudioParams += @("-c:a:$ai","ac3","-b:a:$ai",$audioBitrate) }
-                            "pcm"  { $customAudioParams += @("-c:a:$ai","pcm_s${pcmDepth}") }
-                            default { $customAudioParams += @("-c:a:$ai","aac","-b:a:$ai","192k") }
-                        }
-                        Write-Host "    Track $ai → re-encode ($audioCodec)" -ForegroundColor Green
-                    }
-                    "S" {
-                        # Exclude track from output with negative map
-                        $skipMaps += @("-map","-0:a:$ai")
-                        Write-Host "    Track $ai → SKIP (exclus din output)" -ForegroundColor DarkYellow
-                    }
-                    default {
-                        $customAudioParams += @("-c:a:$ai","copy")
-                        Write-Host "    Track $ai → copy" -ForegroundColor White
-                    }
+        # v67: determina selectia — env AV_AUDIO_TRACKS (CI: lista encode, rest copy) sau dialog
+        $sel = @{}; $useSelective = $false
+        if ($env:AV_AUDIO_TRACKS) {
+            for ($ai = 0; $ai -lt $audioTrackCount; $ai++) { $sel[$ai] = "C" }
+            if ($env:AV_AUDIO_TRACKS.ToLower() -eq "all") {
+                for ($ai = 0; $ai -lt $audioTrackCount; $ai++) { $sel[$ai] = "E" }
+            } else {
+                foreach ($t in ($env:AV_AUDIO_TRACKS -split ',')) {
+                    if ($t -match '^\d+$' -and [int]$t -lt $audioTrackCount) { $sel[[int]$t] = "E" }
                 }
             }
-            if ($customAudioParams.Count -gt 0 -or $skipMaps.Count -gt 0) {
-                $audioParams = $customAudioParams
-                # Negative maps must be added to mapFlags, not audioParams
-                if ($skipMaps.Count -gt 0) { $mapFlags = $mapFlags + $skipMaps }
+            $useSelective = $true
+        } else {
+            Write-Host ""
+            Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+            Write-Host ("  ║  {0} TRACK-URI AUDIO — selectie per-pista     ║" -f $audioTrackCount) -ForegroundColor Cyan
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+            $atList = & ffprobe -v error -select_streams a `
+                -show_entries stream=index,codec_name,channels,bit_rate:stream_tags=language `
+                -of csv=p=0 $f.FullName 2>$null
+            $atIdx = 0
+            foreach ($atLine in ($atList -split "`n" | Where-Object { $_ })) {
+                $atParts = $atLine -split ','
+                $atCodec = if ($atParts.Count -gt 1) { $atParts[1] } else { "?" }
+                $atCh    = if ($atParts.Count -gt 2) { $atParts[2] } else { "?" }
+                $atBr    = if ($atParts.Count -gt 3 -and $atParts[3] -match '^\d+$') { "$([int]([long]$atParts[3]/1000))k" } else { "N/A" }
+                $atLang  = if ($atParts.Count -gt 4 -and $atParts[4]) { $atParts[4] } else { "und" }
+                Write-Host ("  ║  Track {0}: {1} | {2}ch | {3} | {4,-14}║" -f $atIdx, $atCodec, $atCh, $atBr, $atLang) -ForegroundColor White
+                $atIdx++
             }
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+            Write-Host "  ║  1) Track 0 re-encode, restul copy [impl]   ║" -ForegroundColor White
+            Write-Host "  ║  2) Selecteaza track-uri (encode/copy/skip)  ║" -ForegroundColor White
+            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+            $multiAudioChoice = Read-Host "  Alege [implicit: 1]"
+            if ($multiAudioChoice -eq "2") {
+                for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
+                    $def = if ($ai -eq 0) { "E" } else { "C" }
+                    $aiChoice = Read-Host "  Track $ai (E=encode, C=copy, S=skip) [implicit: $def]"
+                    if (-not $aiChoice) { $aiChoice = $def }
+                    $c = $aiChoice.ToUpper()
+                    if ($c -in @("E","C","S")) { $sel[$ai] = $c } else { $sel[$ai] = $def }
+                }
+                $useSelective = $true
+            }
+        }
+        if ($useSelective) {
+            # v67: copy-first (toate copy), apoi override pe pistele E. Index OUTPUT =
+            # index_input - nr_skip-uri_inainte (negative-map compacteaza streamurile) — fixeaza
+            # bug-ul v33 care folosea index input cu -c:a:N → mismatch dupa skip in mijloc.
+            $brArg = if ($audioCodec -eq "flac") { $audioFlacLevel } elseif ($audioCodec -eq "pcm") { $pcmDepth } else { $audioBitrate }
+            $customAudioParams = @("-c:a","copy"); $skipMaps = @(); $skipsBefore = 0; $firstE = -1
+            for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
+                switch ($sel[$ai]) {
+                    "S" { $skipMaps += @("-map","-0:a:$ai"); $skipsBefore++; Write-Host "    Track $ai → SKIP (exclus)" -ForegroundColor DarkYellow }
+                    "E" {
+                        $outIdx = $ai - $skipsBefore
+                        $tch = Get-FFprobeValue $f.FullName "a:$ai" "channels"
+                        $tchN = if ($tch -match '^\d+$') { [int]$tch } else { 2 }
+                        $customAudioParams += (Get-TrackAudioArgs $audioCodec $outIdx $tchN $brArg)
+                        if ($firstE -lt 0) { $firstE = $outIdx }
+                        Write-Host "    Track $ai → re-encode ($audioCodec) [out a:$outIdx]" -ForegroundColor Green
+                    }
+                    default { Write-Host "    Track $ai → copy" -ForegroundColor White }
+                }
+            }
+            $audioParams = $customAudioParams
+            if ($skipMaps.Count -gt 0) { $mapFlags = $mapFlags + $skipMaps }
+            $audioLoudnormTrack = $firstE   # -1 daca nicio pista re-encodata → loudnorm skip
         }
     }
 
     # Loudnorm (normalizare audio EBU R128) — 2-pass
     $loudnormFlag = @()
-    if ($audioNormalize -and -not $audioCopy) {
+    # v67: -1 = nicio pista re-encodata (selectie per-pista cu a:0 copy/skip) → loudnorm skip
+    if ($audioNormalize -and -not $audioCopy -and $audioLoudnormTrack -ge 0) {
         Write-Host "  Loudnorm: analiza volum EBU R128..." -ForegroundColor Cyan
         Write-Host -NoNewline "  Loudnorm: pass 1/2 — analiza in curs...  "
         $lnOutput = & ffmpeg -i $f.FullName -af "loudnorm=I=-24:TP=-2.0:LRA=7:print_format=json" -f null NUL 2>&1 | Out-String
@@ -6914,10 +7006,10 @@ foreach ($f in $inputFiles) {
         if ($lnOutput -match '"input_lra"\s*:\s*"([^"]+)"') { $m_lra = $Matches[1] }
         if ($lnOutput -match '"input_thresh"\s*:\s*"([^"]+)"') { $m_thresh = $Matches[1] }
         if ($m_i) {
-            # v66: -filter:a:0 (NU -af) — scopat la track 0 (re-encodat); pe multi-track
-            # -af ar lovi track-urile copiate (a:1+) → "filtering and streamcopy" error.
-            $loudnormFlag = @("-filter:a:0","loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true")
-            Write-Host "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB" -ForegroundColor Green
+            # v66/v67: -filter:a:N (NU -af) — scopat la PRIMA pista re-encodata ($audioLoudnormTrack);
+            # pe multi-track -af ar lovi track-urile copiate → "filtering and streamcopy" error.
+            $loudnormFlag = @("-filter:a:$audioLoudnormTrack","loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true")
+            Write-Host "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | pista a:$audioLoudnormTrack" -ForegroundColor Green
         } else {
             Write-Host "  Loudnorm: analiza esuata — skip normalizare" -ForegroundColor Yellow
         }

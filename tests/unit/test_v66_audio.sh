@@ -11,18 +11,20 @@ command -v ffmpeg >/dev/null 2>&1 || export PATH="$SCRIPT_DIR:$PATH"
 COMMON="$(cat "$SCRIPT_DIR/av_common.sh")"
 ENC_PS1="$(cat "$SCRIPT_DIR/av_encode.ps1")"
 
-# ── 1. bash — ordine copy-first in get_audio_params (toate codec-urile) ──
-assert_contains "$COMMON" '-c:a copy -c:a:0 aac -b:a:0 $br'      "bash: aac copy-first"
-assert_contains "$COMMON" '-c:a copy -c:a:0 libopus -b:a:0 $br'  "bash: opus copy-first"
-assert_contains "$COMMON" '-c:a copy -c:a:0 flac -compression_level $br' "bash: flac copy-first"
-assert_contains "$COMMON" '-c:a copy -c:a:0 eac3 -b:a:0 $br'     "bash: eac3 copy-first"
-assert_contains "$COMMON" '-c:a copy -c:a:0 ac3 -b:a:0 $br'      "bash: ac3 copy-first"
-assert_contains "$COMMON" '-c:a copy -c:a:0 $pcm_fmt'            "bash: pcm copy-first"
+# ── 1. bash — copy-first (v67: get_audio_params deleaga la build_track_audio_args) ──
+assert_contains "$COMMON" '-c:a copy $(build_track_audio_args "$codec" 0 "$channels" "$br")' "bash: get_audio_params copy-first + deleaga la helper"
+# build_track_audio_args = sursa unica per-codec (FARA prefix copy — apelantul il pune INAINTE)
+assert_contains "$COMMON" '-c:a:$idx aac -b:a:$idx $br'          "bash: helper aac"
+assert_contains "$COMMON" '-c:a:$idx libopus -b:a:$idx $br'      "bash: helper opus"
+assert_contains "$COMMON" '-c:a:$idx flac -compression_level $br' "bash: helper flac"
+assert_contains "$COMMON" '-c:a:$idx eac3 -b:a:$idx $br'         "bash: helper eac3"
+assert_contains "$COMMON" '-c:a:$idx ac3 -b:a:$idx $br'          "bash: helper ac3"
+assert_contains "$COMMON" '-c:a:$idx pcm_s${br}'                 "bash: helper pcm"
 assert_not_contains "$COMMON" '-b:a:0 $br $downmix_flag -c:a copy' "bash: NU mai e vechea ordine (copy last)"
 
-# ── 2. bash — loudnorm scopat la a:0 + log pe stderr (anti-poluare captura) ──
-assert_contains "$COMMON" '-filter:a:0 loudnorm=I=-24'          "bash: loudnorm scopat la a:0 (nu -af)"
-assert_contains "$COMMON" 'Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | LRA=${m_lra}" >&2' "bash: log loudnorm pe stderr"
+# ── 2. bash — loudnorm scopat la pista re-encodata + log pe stderr (anti-poluare captura) ──
+assert_contains "$COMMON" '-filter:a:$lt loudnorm=I=-24'        "bash: loudnorm scopat la pista re-encodata (nu -af)"
+assert_contains "$COMMON" 'Loudnorm: analiza volum EBU R128..." >&2' "bash: log loudnorm pe stderr"
 assert_contains "$COMMON" '_warn_audio_metadata "$file" >&2'    "bash: warn metadata pe stderr (nu polueaza AUDIO_PARAMS)"
 
 # ── 2b. bash — av_encoder_audio.sh (flux audio-only standalone) ───────
@@ -44,7 +46,7 @@ assert_contains "$ENC_PS1" '@("-c:a","copy","-c:a:0","aac","-b:a:0",$abr)'     "
 assert_contains "$ENC_PS1" '@("-c:a","copy","-c:a:0","libopus","-b:a:0",$abr)' "PS1: opus copy-first"
 assert_contains "$ENC_PS1" '@("-c:a","copy","-c:a:0","ac3","-b:a:0",$abr)'     "PS1: ac3 copy-first"
 assert_contains "$ENC_PS1" '@("-c:a","copy","-c:a:0","pcm_s'                   "PS1: pcm copy-first"
-assert_contains "$ENC_PS1" '@("-filter:a:0","loudnorm=I=-24'                   "PS1: loudnorm scopat la a:0"
+assert_contains "$ENC_PS1" '@("-filter:a:$audioLoudnormTrack","loudnorm=I=-24' "PS1: loudnorm scopat la pista re-encodata"
 assert_not_contains "$ENC_PS1" '@("-c:a:0","aac","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")' "PS1: NU mai e vechea ordine"
 
 # ── 4. Functional — re-encode chiar produce codecul ales (regresia critica) ──
@@ -62,7 +64,7 @@ if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
         # (a) sursa aac + ales opus → output OPUS (nu aac) — dovada fix-ului
         AUDIO_CODEC_ARG="opus:128k"; CONTAINER="mkv"
         ap=$(get_audio_params "$s2")
-        assert_eq "-c:a copy -c:a:0 libopus -b:a:0 128k " "$ap" "functional: get_audio_params opus = copy-first"
+        assert_eq "-c:a copy -c:a:0 libopus -b:a:0 128k" "$ap" "functional: get_audio_params opus = copy-first"
         # shellcheck disable=SC2086
         ffmpeg -v error -y -i "$s2" -map 0:v:0 -map 0:a:0 -c:v copy $ap "$tmpd/o.mkv" 2>/dev/null
         assert_eq "opus" "$(cn "$tmpd/o.mkv")" "functional: aac→opus chiar produce OPUS (regresia)"

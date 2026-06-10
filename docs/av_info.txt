@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v66
+  Documentatie Setup & Utilizare — v67
 ═══════════════════════════════════════════════════════════════
 
 
@@ -623,24 +623,33 @@ CUPRINS
   LOUDNORM (v23, EBU R128 2-pass):
     Meniu separat dupa Audio output. Target -24 LUFS, True Peak -2.0 dB,
     LRA 7 LU. Pass 1 analiza → Pass 2 aplicare cu linear=true.
-    Nu se aplica daca audio = copy.
+    Nu se aplica daca audio = copy. v67: se aplica pe PRIMA pista re-encodata
+    (nu fortat pe track 0) — daca pastrezi track 0 si re-encodezi altul,
+    normalizarea merge pe pista potrivita.
 
-  MULTI-AUDIO SELECTIV (v33, PS1 only):
-    Cand sursa are >1 track audio si nu e audio copy, dialog per-file:
-      1) Track 0 encode + restul copy [implicit]
-      2) Selecteaza per track: E=encode, C=copy, S=skip
+  SELECTIE AUDIO PER-PISTA (v67, bash + PowerShell):
+    Cand sursa are >1 pista audio si nu e audio copy, dialog per-fisier care
+    arata lista pistelor (codec / canale / limba) si ofera:
+      1) Track 0 re-encode, restul copy [implicit] — comportamentul clasic
+      2) Selecteaza per pista: E=encode / C=copy / S=skip (scoate din output)
+    Bitrate + downmix se calculeaza per pista (dupa canalele EI). Fisierele cu
+    o singura pista nu primesc dialog (zero schimbare). Disponibil la "Encode
+    video + audio" SI la "Encode doar audio".
+    Bypass non-interactiv (CI): AV_AUDIO_TRACKS="0,2" (piste de re-encodat,
+    restul copy) sau AV_AUDIO_TRACKS=all. Fara variabila → default (track 0).
 
   SURROUND AUTO-DETECT:
     >2 canale (5.1): AAC 384k, Opus 256k, E-AC3 640k.
     >6 canale (7.1): AAC 768k, Opus 512k, E-AC3 1024k.
-    Custom: bitrate ramane cel introdus.
+    Custom: bitrate ramane cel introdus. v67: aplicat per pista la selectia
+    per-pista (fiecare pista isi primeste bitrate-ul dupa canalele ei).
 
   AVERTIZARI METADATA (per fisier, in log, nu blocheaza):
     TrueHD + re-encode → pierdere metadata Atmos.
     DTS-HD MA / DTS:X + re-encode → pierdere metadata lossless/spatiala
                                     (ffmpeg nu poate encoda DTS-HD — Xperi).
 
-  Primul track audio se re-encodeaza; restul -c:a copy.
+  Implicit: prima pista audio se re-encodeaza; restul -c:a copy (lossless).
 
 
   ─── 7.10. Compatibilitate container (date reale ffmpeg 8.1) ───

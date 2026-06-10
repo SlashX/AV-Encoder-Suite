@@ -917,6 +917,55 @@ _show_progress_labeled() {
 # ══════════════════════════════════════════════════════════════════════
 # AUDIO PARAMS
 # ══════════════════════════════════════════════════════════════════════
+
+# v67: args de re-encode pentru O pista audio (output index <idx>), FARA prefix
+# `-c:a copy` (acela il pune apelantul, o singura data, INAINTE — regula copy-first v66).
+# Sursa UNICA pentru scaling bitrate per-canale + downmix (folosit de get_audio_params
+# pe pista 0 SI de handle_multi_audio_dialog pe pistele selectate).
+#   codec   : aac|opus|flac|eac3|ac3|pcm
+#   idx     : index OUTPUT al pistei (poate diferi de input cand exista skip-uri)
+#   channels: canalele pistei (din ffprobe pe pista respectiva)
+#   base_br : bitrate-ul ales (sau nivel flac / format pcm ex. 16le)
+build_track_audio_args() {
+    local codec="$1" idx="$2" channels="$3" base_br="$4"
+    local br="$base_br" dm=""
+    # AV_DOWNMIX_STEREO: forteaza stereo pe ORICE pista re-encodata (>2ch) INAINTE de
+    # auto-scale bitrate (channels devine 2 → bitrate-ul ramane cel de baza, stereo).
+    if [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$channels" -gt 2 ]; then
+        channels=2; dm=" -ac:a:$idx 2"
+    fi
+    case "$codec" in
+        aac)
+            if [[ "$br" == "192k" ]]; then
+                [ "$channels" -gt 6 ] && br="768k" || { [ "$channels" -gt 2 ] && br="384k"; }
+            fi
+            echo "-c:a:$idx aac -b:a:$idx $br$dm" ;;
+        opus)
+            if [[ "$br" == "128k" ]]; then
+                [ "$channels" -gt 6 ] && br="512k" || { [ "$channels" -gt 2 ] && br="256k"; }
+            fi
+            echo "-c:a:$idx libopus -b:a:$idx $br$dm" ;;
+        flac) echo "-c:a:$idx flac -compression_level $br$dm" ;;
+        eac3)
+            if [[ "$br" == "224k" ]]; then
+                [ "$channels" -gt 6 ] && br="1024k" || { [ "$channels" -gt 2 ] && br="640k"; }
+            fi
+            echo "-c:a:$idx eac3 -b:a:$idx $br$dm" ;;
+        ac3)
+            # AC3 spec: max 5.1 / 640k. 7.1 → downmix 5.1 (cand nu e deja stereo via $dm).
+            [[ "$br" == "224k" ]] && [ "$channels" -gt 2 ] && br="448k"
+            if [[ -n "$dm" ]]; then
+                echo "-c:a:$idx ac3 -b:a:$idx $br$dm"
+            elif [ "$channels" -gt 6 ]; then
+                echo "-c:a:$idx ac3 -b:a:$idx $br -ac:a:$idx 6"
+            else
+                echo "-c:a:$idx ac3 -b:a:$idx $br"
+            fi ;;
+        pcm) echo "-c:a:$idx pcm_s${br}$dm" ;;
+        *)   echo "-c:a:$idx aac -b:a:$idx 192k$dm" ;;
+    esac
+}
+
 get_audio_params() {
     local file="${1:-}"
     if [[ "$AUDIO_CODEC_ARG" == "copy" ]]; then
@@ -937,62 +986,19 @@ get_audio_params() {
             -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
         [[ "$ch_raw" =~ ^[0-9]+$ ]] && channels=$ch_raw
     fi
-    # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix (5.1/7.1 → 2.0) cu matricea
-    # default ffmpeg. Util pentru output portable / mobile / car audio.
-    # Override channel count INAINTE de auto-scale bitrate (stereo bitrate normal).
-    local downmix_flag=""
+    # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix (5.1/7.1 → 2.0). Doar log aici;
+    # flag-ul efectiv (`-ac:a:0 2`) + scaling-ul il aplica build_track_audio_args.
     if [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$channels" -gt 2 ]; then
         log "  AV_DOWNMIX_STEREO=1 → downmix ${channels}ch → 2.0" >&2
-        channels=2
-        downmix_flag="-ac:a:0 2"
     fi
     # v66: log-urile din aceasta functie merg pe stderr (>&2) — stdout-ul e CAPTURAT
     # in AUDIO_PARAMS=$(get_audio_params); `log` (tee) ar polua altfel sirul de params.
     [[ -n "$file" ]] && _warn_audio_metadata "$file" >&2
-    # CRITIC (v66): `-c:a copy` trebuie sa fie PRIMUL, apoi `-c:a:0 <codec>`.
-    # ffmpeg aplica optiunile `-c` in ORDINE — ultimul specificator care prinde
-    # un stream castiga. Daca `-c:a copy` e ULTIMUL, prinde si a:0 (a ⊇ a:0) si
-    # suprascrie `-c:a:0 <codec>` → track 0 e COPIAT, nu re-encodat (bug vechi:
-    # alegi Opus, primesti AAC). Ordinea corecta: copiaza tot audio-ul, apoi
-    # override specific pe a:0. NU inversa.
-    case "$codec" in
-        aac)
-            if [[ "$br" == "192k" ]]; then
-                [ "$channels" -gt 6 ] && br="768k" || { [ "$channels" -gt 2 ] && br="384k"; }
-            fi; echo "-c:a copy -c:a:0 aac -b:a:0 $br $downmix_flag" ;;
-        opus)
-            if [[ "$br" == "128k" ]]; then
-                [ "$channels" -gt 6 ] && br="512k" || { [ "$channels" -gt 2 ] && br="256k"; }
-            fi; echo "-c:a copy -c:a:0 libopus -b:a:0 $br $downmix_flag" ;;
-        flac) echo "-c:a copy -c:a:0 flac -compression_level $br $downmix_flag" ;;
-        eac3)
-            if [[ "$br" == "224k" ]]; then
-                [ "$channels" -gt 6 ] && br="1024k" || { [ "$channels" -gt 2 ] && br="640k"; }
-            fi; echo "-c:a copy -c:a:0 eac3 -b:a:0 $br $downmix_flag" ;;
-        ac3)
-            # v53: legacy AC3 (Dolby Digital) — TV-uri pre-2010 fara E-AC3.
-            # AC3 max 5.1 ch / 640k bitrate spec (7.1 nesuportat — fallback 5.1)
-            if [[ "$br" == "224k" ]]; then
-                [ "$channels" -gt 2 ] && br="448k"
-            fi
-            # AC3 spec limit: 640k absolut, 5.1 max
-            local ac3_ch="$channels"
-            [ "$ac3_ch" -gt 6 ] && { ac3_ch=6; log "  ATENTIE: AC3 nu suporta >5.1 — downmix la 5.1" >&2; }
-            # v66: AV_DOWNMIX_STEREO ($downmix_flag) are prioritate (stereo, channels deja 2)
-            # — ramura AC3 il omitea (paritate cu PS1 main flow + av_encoder_audio.sh).
-            if [[ -n "$downmix_flag" ]]; then
-                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br $downmix_flag"
-            elif [ "$ac3_ch" -lt "$channels" ]; then
-                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br -ac:a:0 $ac3_ch"
-            else
-                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br"
-            fi
-            ;;
-        pcm)
-            local pcm_fmt="pcm_s${br}"
-            echo "-c:a copy -c:a:0 $pcm_fmt $downmix_flag" ;;
-        *) echo "-c:a copy -c:a:0 aac -b:a:0 192k $downmix_flag" ;;
-    esac
+    # v67: per-codec args delegate la build_track_audio_args (sursa unica scaling/downmix),
+    # pe pista 0. CRITIC (v66): `-c:a copy` PRIMUL (toate copy), apoi override pe a:0 —
+    # ffmpeg aplica `-c` in ordine, ultimul care prinde streamul castiga; copy ULTIMUL ar
+    # suprascrie a:0 → track 0 COPIAT nu re-encodat. NU inversa.
+    echo "-c:a copy $(build_track_audio_args "$codec" 0 "$channels" "$br")"
 }
 
 _warn_audio_metadata() {
@@ -1012,6 +1018,92 @@ _warn_audio_metadata() {
             log "  ⚠ ATENTIE: Sursa contine DTS — metadata pierduta la re-encode."
         fi
     fi
+}
+
+# v67: dialog selectie audio per-pista (cand sursa are >1 pista audio si NU e copy total).
+# Poate REscrie AUDIO_PARAMS, adauga negative maps in MAP_FLAGS (skip/drop) si seteaza
+# AUDIO_LOUDNORM_TRACK (index OUTPUT al primei piste re-encodate, pt loudnorm). NU e
+# capturat via $(...) → poate folosi echo/read/log pe terminal direct.
+# Default (1 pista / non-interactiv fara AV_AUDIO_TRACKS / optiunea 1): lasa AUDIO_PARAMS
+# neschimbat (= track 0 re-encode, restul copy, deja produs de get_audio_params).
+# Bypass CI: AV_AUDIO_TRACKS=0 (default) | all | lista "0,2" (piste de ENCODAT; restul copy).
+handle_multi_audio_dialog() {
+    local file="$1"
+    AUDIO_LOUDNORM_TRACK=0          # default: pista 0 (cea re-encodata de get_audio_params)
+    AUDIO_PERTRACK_CUSTOM=0         # flag: 1 cand userul a rescris selectia (dezactiveaza smart-copy)
+    [[ "$AUDIO_CODEC_ARG" == "copy" ]] && return 0
+    local codec="${AUDIO_CODEC_ARG%%:*}" base_br="${AUDIO_CODEC_ARG#*:}"
+    # numar piste audio (o linie/index per pista; multi-field csv NU se foloseste aici)
+    local ntracks; ntracks=$(ffprobe -v error -select_streams a \
+        -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
+    [[ "$ntracks" =~ ^[0-9]+$ ]] || ntracks=0
+    [ "$ntracks" -le 1 ] && return 0
+
+    local -a sel=(); local i
+    if [[ -n "${AV_AUDIO_TRACKS:-}" ]]; then
+        # non-interactiv: lista de piste de ENCODAT (rest copy). "all" / "0" / "0,2"
+        for ((i=0;i<ntracks;i++)); do sel[i]="C"; done
+        if [[ "${AV_AUDIO_TRACKS,,}" == "all" ]]; then
+            for ((i=0;i<ntracks;i++)); do sel[i]="E"; done
+        else
+            local t; local -a _tl; IFS=',' read -ra _tl <<< "$AV_AUDIO_TRACKS"
+            for t in "${_tl[@]}"; do [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -lt "$ntracks" ] && sel[t]="E"; done
+        fi
+    elif [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+        return 0                    # non-interactiv fara env → default
+    else
+        # interactiv: lista piste + dialog
+        log ""
+        echo "  ╔══════════════════════════════════════════════════╗"
+        echo "  ║  $ntracks PISTE AUDIO — selectie per-pista          "
+        echo "  ╠══════════════════════════════════════════════════╣"
+        local atinfo; atinfo=$(ffprobe -v error -select_streams a \
+            -show_entries stream=codec_name,channels:stream_tags=language \
+            -of csv=p=0 "$file" 2>/dev/null)
+        local idx=0 line c_codec c_ch c_lang
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            IFS=',' read -r c_codec c_ch c_lang <<< "$line"
+            echo "  ║  a:$idx  ${c_codec:-?}  ${c_ch:-?}ch  ${c_lang:-und}"
+            idx=$((idx+1))
+        done <<< "$atinfo"
+        echo "  ╠══════════════════════════════════════════════════╣"
+        echo "  ║  1) Track 0 re-encode, restul copy  [implicit]    "
+        echo "  ║  2) Selecteaza per pista (E=encode/C=copy/S=skip) "
+        echo "  ╚══════════════════════════════════════════════════╝"
+        local mac; read -p "  Alege [implicit: 1]: " mac
+        [[ "${mac:-1}" != "2" ]] && return 0
+        for ((i=0;i<ntracks;i++)); do
+            local def; [ "$i" -eq 0 ] && def="E" || def="C"
+            local ch; read -p "  Track $i (E=encode/C=copy/S=skip) [implicit: $def]: " ch
+            ch="${ch:-$def}"; ch="${ch^^}"
+            case "$ch" in E|C|S) sel[i]="$ch" ;; *) sel[i]="$def" ;; esac
+        done
+    fi
+
+    # construieste AUDIO_PARAMS + negative skip maps din selectie.
+    # Index OUTPUT = index_input - nr_skip-uri_inainte (negative-map compacteaza streamurile).
+    local ap="-c:a copy" skipmaps="" skips_before=0 outidx tch first_e=-1
+    for ((i=0;i<ntracks;i++)); do
+        case "${sel[i]:-C}" in
+            S) skipmaps+=" -map -0:a:$i"; skips_before=$((skips_before+1)) ;;
+            E)
+                outidx=$((i - skips_before))
+                tch=$(ffprobe -v error -select_streams "a:$i" -show_entries stream=channels \
+                    -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+                [[ "$tch" =~ ^[0-9]+$ ]] || tch=2
+                ap+=" $(build_track_audio_args "$codec" "$outidx" "$tch" "$base_br")"
+                [ "$first_e" -lt 0 ] && first_e=$outidx
+                ;;
+            C) : ;;                 # base `-c:a copy` deja le acopera
+        esac
+    done
+    AUDIO_PARAMS="$ap"
+    [[ -n "$skipmaps" ]] && MAP_FLAGS="$MAP_FLAGS$skipmaps"
+    AUDIO_LOUDNORM_TRACK="$first_e" # -1 daca nicio pista re-encodata → loudnorm skip
+    AUDIO_PERTRACK_CUSTOM=1
+    log "  Audio per-pista: $AUDIO_PARAMS${skipmaps:+ | skip:$skipmaps}"
+    return 0
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2796,6 +2888,11 @@ _apply_vidstab() {
 get_loudnorm_filter() {
     local file="$1"
     [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] && { echo ""; return; }
+    # v67: scopat la PRIMA pista re-encodata (AUDIO_LOUDNORM_TRACK), nu hardcodat a:0 —
+    # cu selectie per-pista, a:0 poate fi copy/skip; loudnorm trebuie pe o pista encodata.
+    # -1 = nicio pista re-encodata → skip (altfel filtru pe stream copiat → eroare ffmpeg).
+    local lt="${AUDIO_LOUDNORM_TRACK:-0}"
+    if [[ ! "$lt" =~ ^[0-9]+$ ]]; then log "  Loudnorm: nicio pista re-encodata — skip" >&2; echo ""; return; fi
     # v66: log → stderr (>&2). stdout-ul functiei e CAPTURAT in LOUDNORM_FILTER=$(...);
     # `log` foloseste tee (scrie pe stdout) → fara >&2, mesajele poluau filtrul →
     # ffmpeg primea "Loudnorm:" ca nume de output ("Unable to choose output format").
@@ -2805,11 +2902,11 @@ get_loudnorm_filter() {
     m_i=$(echo "$analysis" | grep '"input_i"' | sed 's/.*: "//;s/".*//'); m_tp=$(echo "$analysis" | grep '"input_tp"' | sed 's/.*: "//;s/".*//')
     m_lra=$(echo "$analysis" | grep '"input_lra"' | sed 's/.*: "//;s/".*//'); m_thresh=$(echo "$analysis" | grep '"input_thresh"' | sed 's/.*: "//;s/".*//')
     if [[ -z "$m_i" ]]; then log "  Loudnorm: analiza esuata — skip" >&2; echo ""; return; fi
-    log "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | LRA=${m_lra}" >&2
-    # v66: -filter:a:0 (NU -af) — scopat la track 0 (cel re-encodat). Cu -af (tot
-    # audio), pe surse multi-track filtrul ar lovi track-urile copiate (a:1+) →
-    # "filtering and streamcopy cannot be used together". Track 0 e singurul re-encodat.
-    echo "-filter:a:0 loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true"
+    log "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | LRA=${m_lra} | pista a:$lt" >&2
+    # v66: -filter:a:N (NU -af) — scopat la pista re-encodata. Cu -af (tot audio), pe
+    # surse multi-track filtrul ar lovi track-urile copiate (a:1+) → "filtering and
+    # streamcopy cannot be used together".
+    echo "-filter:a:$lt loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true"
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -5099,11 +5196,17 @@ run_encode_loop() {
         # gateaza pe ramura LOG → nu sufera; x264 le pune in builder-ul general.
         LOG_VIDEO_FILTER=""; LOG_COLOR_FLAGS=""; LOG_PIX_FMT=""
         LOG_EXTRA_X265=""; LOG_EXTRA_X264=""
+        # v67: state selectie audio per-pista (handle_multi_audio_dialog le seteaza oricum
+        # per fisier, dar resetam defensiv per regula — previne leak intre iteratii)
+        AUDIO_LOUDNORM_TRACK=0; AUDIO_PERTRACK_CUSTOM=0
         cleanup_2pass_state
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
         CRF=$(get_adaptive_crf "${ENCODER_TYPE:-x265}" "$WIDTH")
         AUDIO_PARAMS=$(get_audio_params "$file")
+        # v67: selectie audio per-pista (>1 pista) — poate rescrie AUDIO_PARAMS + adauga
+        # negative maps in MAP_FLAGS (skip) + seteaza AUDIO_LOUDNORM_TRACK. Default = neschimbat.
+        handle_multi_audio_dialog "$file"
         SUB_CODEC=$(get_subtitle_codec "$file")
         VIDEO_FILTER=$(build_video_filters "$WIDTH" "$SRC_FPS_DEC")
         [[ "$VIDEO_FILTER" == *"scale="* ]] && log "  Resize: ${WIDTH}px → ${SCALE_WIDTH}px"
@@ -5132,6 +5235,7 @@ run_encode_loop() {
         if [[ -n "$_tgt_codec" && "$_src_codec" == "$_tgt_codec" ]] \
            && [[ -z "$VIDEO_FILTER" ]] \
            && [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] \
+           && [[ "${AUDIO_PERTRACK_CUSTOM:-0}" != "1" ]] \
            && [[ "${IS_LOG:-0}" != "1" ]] \
            && [[ -z "${HDR_PLUS:-}" ]] && [[ -z "${DOVI:-}" ]] \
            && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]] \
