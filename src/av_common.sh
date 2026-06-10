@@ -924,7 +924,7 @@ get_audio_params() {
             local ac; ac=$(ffprobe -v error -select_streams a -show_entries stream=codec_name \
                 -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
             if echo "$ac" | grep -qi "truehd\|dts\b\|dtshd\|dts_hd"; then
-                log "  ATENTIE: Audio TrueHD/DTS-HD detectat — incompatibil cu $CONTAINER la copy."
+                log "  ATENTIE: Audio TrueHD/DTS-HD detectat — incompatibil cu $CONTAINER la copy." >&2
             fi
         fi
         echo "-c:a copy"; return
@@ -942,25 +942,33 @@ get_audio_params() {
     # Override channel count INAINTE de auto-scale bitrate (stereo bitrate normal).
     local downmix_flag=""
     if [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$channels" -gt 2 ]; then
-        log "  AV_DOWNMIX_STEREO=1 → downmix ${channels}ch → 2.0"
+        log "  AV_DOWNMIX_STEREO=1 → downmix ${channels}ch → 2.0" >&2
         channels=2
         downmix_flag="-ac:a:0 2"
     fi
-    [[ -n "$file" ]] && _warn_audio_metadata "$file"
+    # v66: log-urile din aceasta functie merg pe stderr (>&2) — stdout-ul e CAPTURAT
+    # in AUDIO_PARAMS=$(get_audio_params); `log` (tee) ar polua altfel sirul de params.
+    [[ -n "$file" ]] && _warn_audio_metadata "$file" >&2
+    # CRITIC (v66): `-c:a copy` trebuie sa fie PRIMUL, apoi `-c:a:0 <codec>`.
+    # ffmpeg aplica optiunile `-c` in ORDINE — ultimul specificator care prinde
+    # un stream castiga. Daca `-c:a copy` e ULTIMUL, prinde si a:0 (a ⊇ a:0) si
+    # suprascrie `-c:a:0 <codec>` → track 0 e COPIAT, nu re-encodat (bug vechi:
+    # alegi Opus, primesti AAC). Ordinea corecta: copiaza tot audio-ul, apoi
+    # override specific pe a:0. NU inversa.
     case "$codec" in
         aac)
             if [[ "$br" == "192k" ]]; then
                 [ "$channels" -gt 6 ] && br="768k" || { [ "$channels" -gt 2 ] && br="384k"; }
-            fi; echo "-c:a:0 aac -b:a:0 $br $downmix_flag -c:a copy" ;;
+            fi; echo "-c:a copy -c:a:0 aac -b:a:0 $br $downmix_flag" ;;
         opus)
             if [[ "$br" == "128k" ]]; then
                 [ "$channels" -gt 6 ] && br="512k" || { [ "$channels" -gt 2 ] && br="256k"; }
-            fi; echo "-c:a:0 libopus -b:a:0 $br $downmix_flag -c:a copy" ;;
-        flac) echo "-c:a:0 flac -compression_level $br $downmix_flag -c:a copy" ;;
+            fi; echo "-c:a copy -c:a:0 libopus -b:a:0 $br $downmix_flag" ;;
+        flac) echo "-c:a copy -c:a:0 flac -compression_level $br $downmix_flag" ;;
         eac3)
             if [[ "$br" == "224k" ]]; then
                 [ "$channels" -gt 6 ] && br="1024k" || { [ "$channels" -gt 2 ] && br="640k"; }
-            fi; echo "-c:a:0 eac3 -b:a:0 $br $downmix_flag -c:a copy" ;;
+            fi; echo "-c:a copy -c:a:0 eac3 -b:a:0 $br $downmix_flag" ;;
         ac3)
             # v53: legacy AC3 (Dolby Digital) — TV-uri pre-2010 fara E-AC3.
             # AC3 max 5.1 ch / 640k bitrate spec (7.1 nesuportat — fallback 5.1)
@@ -969,17 +977,21 @@ get_audio_params() {
             fi
             # AC3 spec limit: 640k absolut, 5.1 max
             local ac3_ch="$channels"
-            [ "$ac3_ch" -gt 6 ] && { ac3_ch=6; log "  ATENTIE: AC3 nu suporta >5.1 — downmix la 5.1"; }
-            if [ "$ac3_ch" -lt "$channels" ]; then
-                echo "-c:a:0 ac3 -b:a:0 $br -ac:a:0 $ac3_ch -c:a copy"
+            [ "$ac3_ch" -gt 6 ] && { ac3_ch=6; log "  ATENTIE: AC3 nu suporta >5.1 — downmix la 5.1" >&2; }
+            # v66: AV_DOWNMIX_STEREO ($downmix_flag) are prioritate (stereo, channels deja 2)
+            # — ramura AC3 il omitea (paritate cu PS1 main flow + av_encoder_audio.sh).
+            if [[ -n "$downmix_flag" ]]; then
+                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br $downmix_flag"
+            elif [ "$ac3_ch" -lt "$channels" ]; then
+                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br -ac:a:0 $ac3_ch"
             else
-                echo "-c:a:0 ac3 -b:a:0 $br -c:a copy"
+                echo "-c:a copy -c:a:0 ac3 -b:a:0 $br"
             fi
             ;;
         pcm)
             local pcm_fmt="pcm_s${br}"
-            echo "-c:a:0 $pcm_fmt $downmix_flag -c:a copy" ;;
-        *) echo "-c:a:0 aac -b:a:0 192k $downmix_flag -c:a copy" ;;
+            echo "-c:a copy -c:a:0 $pcm_fmt $downmix_flag" ;;
+        *) echo "-c:a copy -c:a:0 aac -b:a:0 192k $downmix_flag" ;;
     esac
 }
 
@@ -2784,14 +2796,20 @@ _apply_vidstab() {
 get_loudnorm_filter() {
     local file="$1"
     [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] && { echo ""; return; }
-    log "  Loudnorm: analiza volum EBU R128..."
+    # v66: log → stderr (>&2). stdout-ul functiei e CAPTURAT in LOUDNORM_FILTER=$(...);
+    # `log` foloseste tee (scrie pe stdout) → fara >&2, mesajele poluau filtrul →
+    # ffmpeg primea "Loudnorm:" ca nume de output ("Unable to choose output format").
+    log "  Loudnorm: analiza volum EBU R128..." >&2
     local analysis m_i m_tp m_lra m_thresh
     analysis=$(ffmpeg -i "$file" -af "loudnorm=I=-24:TP=-2.0:LRA=7:print_format=json" -f null - 2>&1 | grep -A 20 '"input_i"')
     m_i=$(echo "$analysis" | grep '"input_i"' | sed 's/.*: "//;s/".*//'); m_tp=$(echo "$analysis" | grep '"input_tp"' | sed 's/.*: "//;s/".*//')
     m_lra=$(echo "$analysis" | grep '"input_lra"' | sed 's/.*: "//;s/".*//'); m_thresh=$(echo "$analysis" | grep '"input_thresh"' | sed 's/.*: "//;s/".*//')
-    if [[ -z "$m_i" ]]; then log "  Loudnorm: analiza esuata — skip"; echo ""; return; fi
-    log "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | LRA=${m_lra}"
-    echo "-af loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true"
+    if [[ -z "$m_i" ]]; then log "  Loudnorm: analiza esuata — skip" >&2; echo ""; return; fi
+    log "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB | LRA=${m_lra}" >&2
+    # v66: -filter:a:0 (NU -af) — scopat la track 0 (cel re-encodat). Cu -af (tot
+    # audio), pe surse multi-track filtrul ar lovi track-urile copiate (a:1+) →
+    # "filtering and streamcopy cannot be used together". Track 0 e singurul re-encodat.
+    echo "-filter:a:0 loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true"
 }
 
 # ══════════════════════════════════════════════════════════════════════

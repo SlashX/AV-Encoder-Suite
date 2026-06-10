@@ -3,9 +3,38 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v65 | 121 bug-uri fixate | 237+ features
-  134 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 88 teste [81 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
+  TOTAL: v66 | 123 bug-uri fixate | 237+ features
+  136 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 90 teste [83 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v66 — Re-encodare audio reparata + normalizare volum
+═══════════════════════════════════════════════════════════════
+
+  FIX Re-encodarea audio nu functiona cand alegeai alt codec decat cel al
+        sursei. Daca sursa avea AAC si alegeai Opus (sau E-AC3, AC3, FLAC),
+        suita copia de fapt pista originala neschimbata in loc s-o
+        converteasca — alegeai Opus, dar primeai tot AAC. Cauza era ordinea
+        interna a optiunilor trimise catre FFmpeg (instructiunea de "copiaza"
+        anula din greseala conversia primei piste). Acum re-encodarea
+        produce exact codecul ales, cu bitrate-ul corect (inclusiv scalarea
+        automata pe 5.1 / 7.1 si downmix-ul). A trecut neobservat fiindca
+        audio-ul implicit e AAC si majoritatea surselor sunt tot AAC — caz
+        in care copierea arata identic cu re-encodarea.
+
+  FIX Normalizarea volumului (loudnorm, EBU R128) nu pornea pe Termux /
+        Linux / macOS — encodarea se oprea cu o eroare la inceput. Acum
+        functioneaza corect. Pe fisiere cu mai multe piste audio,
+        normalizarea se aplica doar pistei principale (cea re-encodata),
+        iar restul pistelor raman intacte.
+
+  Note: afecteaza atat encode-ul video+audio cat si tool-ul "doar audio"
+        (optiunea 2 din meniu). Comportamentul pe mai multe piste e
+        neschimbat: prima pista se re-encodeaza, restul se copiaza.
+        Paritate completa bash ↔ PowerShell, toate validate empiric cu
+        FFmpeg pe clipuri reale (AAC→Opus, AAC→E-AC3, scalare 5.1/7.1,
+        downmix AC3 7.1→5.1, normalizare volum, fisiere cu mai multe piste).
 
 
 ═══════════════════════════════════════════════════════════════

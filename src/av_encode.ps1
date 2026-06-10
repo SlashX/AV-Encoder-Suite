@@ -4700,13 +4700,17 @@ if ($mainChoice -eq "2") {
             }
         }
 
+        # CRITIC (v66): "-c:a","copy" PRIMUL, apoi "-c:a:0",<codec>. ffmpeg aplica
+        # `-c` in ordine — ultimul specificator care prinde streamul castiga; daca
+        # `-c:a copy` e ultimul, suprascrie `-c:a:0` → track 0 COPIAT, nu re-encodat
+        # (alegi Opus, primesti AAC). NU inversa.
         $eaAP = switch ($eaCodec) {
-            "aac"  { @("-c:a:0","aac","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
-            "opus" { @("-c:a:0","libopus","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
-            "flac" { @("-c:a:0","flac","-compression_level",$eaFlvl) + $eaDownmix + @("-c:a","copy") }
-            "eac3" { @("-c:a:0","eac3","-b:a:0",$abr) + $eaDownmix + @("-c:a","copy") }
-            "ac3"  { @("-c:a:0","ac3","-b:a:0",$abr) + $eaDownmix + $ac3DownmixFlag + @("-c:a","copy") }
-            "pcm"  { @("-c:a:0","pcm_s${eaPcmDepth}") + $eaDownmix + @("-c:a","copy") }
+            "aac"  { @("-c:a","copy","-c:a:0","aac","-b:a:0",$abr) + $eaDownmix }
+            "opus" { @("-c:a","copy","-c:a:0","libopus","-b:a:0",$abr) + $eaDownmix }
+            "flac" { @("-c:a","copy","-c:a:0","flac","-compression_level",$eaFlvl) + $eaDownmix }
+            "eac3" { @("-c:a","copy","-c:a:0","eac3","-b:a:0",$abr) + $eaDownmix }
+            "ac3"  { @("-c:a","copy","-c:a:0","ac3","-b:a:0",$abr) + $eaDownmix + $ac3DownmixFlag }
+            "pcm"  { @("-c:a","copy","-c:a:0","pcm_s${eaPcmDepth}") + $eaDownmix }
         }
         Write-Host "  Audio: $eaCodec $abr | Canale: $eaChN" -ForegroundColor White
 
@@ -6757,6 +6761,10 @@ foreach ($f in $inputFiles) {
             $downmixFlag = @("-ac:a:0","2")
         }
 
+        # CRITIC (v66): "-c:a","copy" PRIMUL, apoi "-c:a:0",<codec>. ffmpeg aplica
+        # `-c` in ordine — ultimul specificator care prinde streamul castiga; daca
+        # `-c:a copy` e ultimul, suprascrie `-c:a:0` → track 0 COPIAT, nu re-encodat
+        # (alegi Opus, primesti AAC). NU inversa.
         switch ($audioCodec) {
             "aac" {
                 $abr = $audioBitrate
@@ -6764,7 +6772,7 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "768k" }
                     elseif ($srcCh -gt 2) { $abr = "384k" }
                 }
-                $audioParams = @("-c:a:0","aac","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","aac","-b:a:0",$abr) + $downmixFlag
             }
             "opus" {
                 $abr = $audioBitrate
@@ -6772,10 +6780,10 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "512k" }
                     elseif ($srcCh -gt 2) { $abr = "256k" }
                 }
-                $audioParams = @("-c:a:0","libopus","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","libopus","-b:a:0",$abr) + $downmixFlag
             }
             "flac" {
-                $audioParams = @("-c:a:0","flac","-compression_level",$audioFlacLevel) + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","flac","-compression_level",$audioFlacLevel) + $downmixFlag
             }
             "eac3" {
                 $abr = $audioBitrate
@@ -6783,7 +6791,7 @@ foreach ($f in $inputFiles) {
                     if ($srcCh -gt 6) { $abr = "1024k" }
                     elseif ($srcCh -gt 2) { $abr = "640k" }
                 }
-                $audioParams = @("-c:a:0","eac3","-b:a:0",$abr) + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","eac3","-b:a:0",$abr) + $downmixFlag
             }
             "ac3" {
                 # v53: AC3 — auto-scale + force downmix la 5.1 daca sursa 7.1
@@ -6796,13 +6804,13 @@ foreach ($f in $inputFiles) {
                     $ac3ForceDownmix = @("-ac:a:0","6")
                     Write-Host "  AC3: sursa ${srcCh}ch → downmix la 5.1 (AC3 nu suporta >5.1)" -ForegroundColor Yellow
                 }
-                $audioParams = @("-c:a:0","ac3","-b:a:0",$abr) + $downmixFlag + $ac3ForceDownmix + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","ac3","-b:a:0",$abr) + $downmixFlag + $ac3ForceDownmix
             }
             "pcm" {
-                $audioParams = @("-c:a:0","pcm_s${pcmDepth}") + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","pcm_s${pcmDepth}") + $downmixFlag
             }
             default {
-                $audioParams = @("-c:a:0","aac","-b:a:0","192k") + $downmixFlag + @("-c:a","copy")
+                $audioParams = @("-c:a","copy","-c:a:0","aac","-b:a:0","192k") + $downmixFlag
             }
         }
 
@@ -6906,7 +6914,9 @@ foreach ($f in $inputFiles) {
         if ($lnOutput -match '"input_lra"\s*:\s*"([^"]+)"') { $m_lra = $Matches[1] }
         if ($lnOutput -match '"input_thresh"\s*:\s*"([^"]+)"') { $m_thresh = $Matches[1] }
         if ($m_i) {
-            $loudnormFlag = @("-af","loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true")
+            # v66: -filter:a:0 (NU -af) — scopat la track 0 (re-encodat); pe multi-track
+            # -af ar lovi track-urile copiate (a:1+) → "filtering and streamcopy" error.
+            $loudnormFlag = @("-filter:a:0","loudnorm=I=-24:TP=-2.0:LRA=7:measured_I=${m_i}:measured_TP=${m_tp}:measured_LRA=${m_lra}:measured_thresh=${m_thresh}:linear=true")
             Write-Host "  Loudnorm: I=${m_i} LUFS | TP=${m_tp} dB" -ForegroundColor Green
         } else {
             Write-Host "  Loudnorm: analiza esuata — skip normalizare" -ForegroundColor Yellow

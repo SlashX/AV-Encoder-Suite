@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v65
+  Documentatie Setup & Utilizare — v66
 ═══════════════════════════════════════════════════════════════
 
 

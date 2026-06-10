@@ -238,6 +238,10 @@ for file in "${FILES[@]}"; do
     fi
 
     # Build audio params
+    # CRITIC (v66): `-c:a copy` PRIMUL, apoi `-c:a:0 <codec>` — la fel ca
+    # get_audio_params (av_common.sh). ffmpeg aplica `-c` in ordine; daca
+    # `-c:a copy` e ULTIMUL, prinde si a:0 si suprascrie `-c:a:0 <codec>` →
+    # track 0 COPIAT, nu re-encodat (alegi Opus, primesti AAC).
     case "$AUDIO_CODEC" in
         aac)
             A_BR="$AUDIO_BITRATE"
@@ -245,7 +249,7 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="768k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="384k"
             fi
-            AUDIO_PARAMS="-c:a:0 aac -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+            AUDIO_PARAMS="-c:a copy -c:a:0 aac -b:a:0 $A_BR $DOWNMIX_FLAG"
             ;;
         opus)
             A_BR="$AUDIO_BITRATE"
@@ -253,10 +257,10 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="512k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="256k"
             fi
-            AUDIO_PARAMS="-c:a:0 libopus -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+            AUDIO_PARAMS="-c:a copy -c:a:0 libopus -b:a:0 $A_BR $DOWNMIX_FLAG"
             ;;
         flac)
-            AUDIO_PARAMS="-c:a:0 flac -compression_level $AUDIO_FLAC_LEVEL $DOWNMIX_FLAG -c:a copy"
+            AUDIO_PARAMS="-c:a copy -c:a:0 flac -compression_level $AUDIO_FLAC_LEVEL $DOWNMIX_FLAG"
             ;;
         eac3)
             A_BR="$AUDIO_BITRATE"
@@ -264,17 +268,20 @@ for file in "${FILES[@]}"; do
                 [ "$SRC_CHANNELS" -gt 6 ] && A_BR="1024k"
                 [ "$SRC_CHANNELS" -gt 2 ] && [ "$SRC_CHANNELS" -le 6 ] && A_BR="640k"
             fi
-            AUDIO_PARAMS="-c:a:0 eac3 -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+            AUDIO_PARAMS="-c:a copy -c:a:0 eac3 -b:a:0 $A_BR $DOWNMIX_FLAG"
             ;;
         ac3)
             # v53: AC3 — Dolby Digital legacy (TV-uri pre-2010, console PS3-PS4)
             # AC3 nu suporta peste 5.1 → force downmix la 5.1 cand sursa e 7.1
+            # v66: FARA `local` — suntem la nivel de script (in for-loop, nu functie);
+            # `local` arunca "can only be used in a function" si lasa varul nesetat
+            # → detectia 7.1 si downmix-ul AC3 esuau.
             A_BR="$AUDIO_BITRATE"
-            local ac3_ch="$SRC_CHANNELS"
+            ac3_ch="$SRC_CHANNELS"
             if [[ "$A_BR" == "224k" ]]; then
                 [ "$SRC_CHANNELS" -gt 2 ] && A_BR="448k"
             fi
-            local AC3_FORCE_DOWNMIX=""
+            AC3_FORCE_DOWNMIX=""
             if [ "$ac3_ch" -gt 6 ]; then
                 ac3_ch=6
                 AC3_FORCE_DOWNMIX="-ac:a:0 6"
@@ -282,13 +289,13 @@ for file in "${FILES[@]}"; do
             fi
             # Daca AV_DOWNMIX_STEREO activ, $DOWNMIX_FLAG are prioritate (stereo)
             if [[ -n "$DOWNMIX_FLAG" ]]; then
-                AUDIO_PARAMS="-c:a:0 ac3 -b:a:0 $A_BR $DOWNMIX_FLAG -c:a copy"
+                AUDIO_PARAMS="-c:a copy -c:a:0 ac3 -b:a:0 $A_BR $DOWNMIX_FLAG"
             else
-                AUDIO_PARAMS="-c:a:0 ac3 -b:a:0 $A_BR $AC3_FORCE_DOWNMIX -c:a copy"
+                AUDIO_PARAMS="-c:a copy -c:a:0 ac3 -b:a:0 $A_BR $AC3_FORCE_DOWNMIX"
             fi
             ;;
         pcm)
-            AUDIO_PARAMS="-c:a:0 pcm_s${AUDIO_BITRATE} $DOWNMIX_FLAG -c:a copy"
+            AUDIO_PARAMS="-c:a copy -c:a:0 pcm_s${AUDIO_BITRATE} $DOWNMIX_FLAG"
             ;;
     esac
 
