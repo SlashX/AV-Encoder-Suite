@@ -1030,8 +1030,12 @@ _warn_audio_metadata() {
 handle_multi_audio_dialog() {
     local file="$1"
     AUDIO_LOUDNORM_TRACK=0          # default: pista 0 (cea re-encodata de get_audio_params)
-    AUDIO_PERTRACK_CUSTOM=0         # flag: 1 cand userul a rescris selectia (dezactiveaza smart-copy)
-    [[ "$AUDIO_CODEC_ARG" == "copy" ]] && return 0
+    AUDIO_PERTRACK_CUSTOM=0         # flag: 1 cand userul a rescris selectia per-pista (informational;
+                                    # v68: smart-copy onoreaza per-pista via do_stream_copy 4th arg, nu mai e gardat)
+    # v68: indecsi INPUT audio re-encodati (E) / sariti (S) — pt avertismentul de
+    # compat container pe pistele COPIATE. Default: track 0 re-encodat, restul copy.
+    AUDIO_REENCODED_INPUTS="0"; AUDIO_SKIPPED_INPUTS=""
+    [[ "$AUDIO_CODEC_ARG" == "copy" ]] && { AUDIO_REENCODED_INPUTS=""; return 0; }
     local codec="${AUDIO_CODEC_ARG%%:*}" base_br="${AUDIO_CODEC_ARG#*:}"
     # numar piste audio (o linie/index per pista; multi-field csv NU se foloseste aici)
     local ntracks; ntracks=$(ffprobe -v error -select_streams a \
@@ -1040,14 +1044,21 @@ handle_multi_audio_dialog() {
     [ "$ntracks" -le 1 ] && return 0
 
     local -a sel=(); local i
-    if [[ -n "${AV_AUDIO_TRACKS:-}" ]]; then
-        # non-interactiv: lista de piste de ENCODAT (rest copy). "all" / "0" / "0,2"
+    if [[ -n "${AV_AUDIO_TRACKS:-}" || -n "${AV_AUDIO_DROP:-}" ]]; then
+        # non-interactiv: AV_AUDIO_TRACKS = piste de ENCODAT (rest copy); "all"/"0"/"0,2".
+        # v68: AV_AUDIO_DROP = piste de SKIP (scoase din output); are prioritate peste E/C.
         for ((i=0;i<ntracks;i++)); do sel[i]="C"; done
         if [[ "${AV_AUDIO_TRACKS,,}" == "all" ]]; then
             for ((i=0;i<ntracks;i++)); do sel[i]="E"; done
-        else
+        elif [[ -n "${AV_AUDIO_TRACKS:-}" ]]; then
             local t; local -a _tl; IFS=',' read -ra _tl <<< "$AV_AUDIO_TRACKS"
             for t in "${_tl[@]}"; do [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -lt "$ntracks" ] && sel[t]="E"; done
+        else
+            sel[0]="E"          # doar AV_AUDIO_DROP setat → default (track 0 encode, rest copy)
+        fi
+        if [[ -n "${AV_AUDIO_DROP:-}" ]]; then
+            local d; local -a _dl; IFS=',' read -ra _dl <<< "$AV_AUDIO_DROP"
+            for d in "${_dl[@]}"; do [[ "$d" =~ ^[0-9]+$ ]] && [ "$d" -lt "$ntracks" ] && sel[d]="S"; done
         fi
     elif [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
         return 0                    # non-interactiv fara env → default
@@ -1083,10 +1094,10 @@ handle_multi_audio_dialog() {
 
     # construieste AUDIO_PARAMS + negative skip maps din selectie.
     # Index OUTPUT = index_input - nr_skip-uri_inainte (negative-map compacteaza streamurile).
-    local ap="-c:a copy" skipmaps="" skips_before=0 outidx tch first_e=-1
+    local ap="-c:a copy" skipmaps="" skips_before=0 outidx tch first_e=-1 reenc="" skipd=""
     for ((i=0;i<ntracks;i++)); do
         case "${sel[i]:-C}" in
-            S) skipmaps+=" -map -0:a:$i"; skips_before=$((skips_before+1)) ;;
+            S) skipmaps+=" -map -0:a:$i"; skips_before=$((skips_before+1)); skipd+=" $i" ;;
             E)
                 outidx=$((i - skips_before))
                 tch=$(ffprobe -v error -select_streams "a:$i" -show_entries stream=channels \
@@ -1094,6 +1105,7 @@ handle_multi_audio_dialog() {
                 [[ "$tch" =~ ^[0-9]+$ ]] || tch=2
                 ap+=" $(build_track_audio_args "$codec" "$outidx" "$tch" "$base_br")"
                 [ "$first_e" -lt 0 ] && first_e=$outidx
+                reenc+=" $i"
                 ;;
             C) : ;;                 # base `-c:a copy` deja le acopera
         esac
@@ -1102,7 +1114,39 @@ handle_multi_audio_dialog() {
     [[ -n "$skipmaps" ]] && MAP_FLAGS="$MAP_FLAGS$skipmaps"
     AUDIO_LOUDNORM_TRACK="$first_e" # -1 daca nicio pista re-encodata → loudnorm skip
     AUDIO_PERTRACK_CUSTOM=1
+    AUDIO_REENCODED_INPUTS="${reenc# }"; AUDIO_SKIPPED_INPUTS="${skipd# }"
     log "  Audio per-pista: $AUDIO_PARAMS${skipmaps:+ | skip:$skipmaps}"
+    return 0
+}
+
+# v68: avertizeaza daca o pista audio COPIATA (nu re-encodata, nu skip) are un codec
+# incompatibil cu containerul → la copy ffmpeg ar pierde-o / ar esua. Read-only (doar warn):
+# refoloseste `remux_stream_compat` (matricea din av_mux). Pe MKV nimic nu se avertizeaza.
+# Foloseste AUDIO_REENCODED_INPUTS / AUDIO_SKIPPED_INPUTS (indecsi INPUT, din dialog).
+warn_incompat_audio_copies() {
+    local file="$1" container="${2:-$CONTAINER}"
+    [[ "${container,,}" == "mkv" ]] && return 0   # MKV accepta orice audio la copy
+    # v68: arg 3/4 optionale = set-uri INPUT re-encodate / skip (explicit, pt fluxuri
+    # all-track ca trim/concat/burnin: pasezi "" = tot audio copiat). Default = globalele
+    # din encode flow (AUDIO_REENCODED_INPUTS/AUDIO_SKIPPED_INPUTS).
+    local reenc=" ${3-${AUDIO_REENCODED_INPUTS:-0}} " skipd=" ${4-${AUDIO_SKIPPED_INPUTS:-}} "
+    local info; info=$(ffprobe -v error -select_streams a \
+        -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
+    local i=0 acodec verdict
+    while IFS= read -r acodec; do
+        acodec="${acodec%%,*}"; acodec="$(echo "$acodec" | tr -d '\r')"
+        [[ -z "$acodec" ]] && continue
+        # sarit daca pista i e re-encodata sau skip (nu se copiaza)
+        if [[ "$reenc" != *" $i "* ]] && [[ "$skipd" != *" $i "* ]]; then
+            verdict=$(remux_stream_compat "$acodec" audio "$container")
+            if [[ "$verdict" != "copy" ]]; then
+                log "  ⚠ ATENTIE: pista a:$i ($acodec) e incompatibila cu containerul .$container la copy —"
+                log "    ffmpeg o va pierde sau va esua. Solutii: foloseste container MKV, sau re-encodeaza"
+                log "    pista (in dialogul per-pista alege E pentru ea, ori AV_AUDIO_TRACKS)."
+            fi
+        fi
+        i=$((i+1))
+    done <<< "$info"
     return 0
 }
 
@@ -2108,10 +2152,15 @@ remux_container_with_tag() {
 # Return: 0=OK, non-zero=eroare
 # ══════════════════════════════════════════════════════════════════════
 do_stream_copy() {
-    local file="$1" output="$2" map_flags="$3"
+    local file="$1" output="$2" map_flags="$3" audio_override="${4:-}"
     START_TIME=$(date +%s)
     local sc_audio sc_sub sc_cflags sc_pf sc_pid
-    sc_audio=$(get_audio_params "$file"); sc_sub=$(get_subtitle_codec "$file")
+    # v68: al 4-lea arg optional = audio-params deja calculate (per-pista din
+    # handle_multi_audio_dialog). Default (fara arg) = recalcul get_audio_params
+    # (back-compat pt ceilalti apelanti). Smart-copy il paseaza ca sa onoreze
+    # selectia per-pista (paritate cu PS1 Invoke-StreamCopy).
+    if [[ -n "$audio_override" ]]; then sc_audio="$audio_override"; else sc_audio=$(get_audio_params "$file"); fi
+    sc_sub=$(get_subtitle_codec "$file")
     sc_cflags=$(get_container_flags); sc_pf=$(mktemp); PROGRESS_FILE="$sc_pf"
     # shellcheck disable=SC2086
     ffmpeg -threads "$THREADS" -i "$file" $map_flags \
@@ -5199,6 +5248,7 @@ run_encode_loop() {
         # v67: state selectie audio per-pista (handle_multi_audio_dialog le seteaza oricum
         # per fisier, dar resetam defensiv per regula — previne leak intre iteratii)
         AUDIO_LOUDNORM_TRACK=0; AUDIO_PERTRACK_CUSTOM=0
+        AUDIO_REENCODED_INPUTS="0"; AUDIO_SKIPPED_INPUTS=""   # v68
         cleanup_2pass_state
         handle_dji_full "$file" "$enc_suffix"
         detect_source_info "$file"
@@ -5207,6 +5257,8 @@ run_encode_loop() {
         # v67: selectie audio per-pista (>1 pista) — poate rescrie AUDIO_PARAMS + adauga
         # negative maps in MAP_FLAGS (skip) + seteaza AUDIO_LOUDNORM_TRACK. Default = neschimbat.
         handle_multi_audio_dialog "$file"
+        # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
+        warn_incompat_audio_copies "$file"
         SUB_CODEC=$(get_subtitle_codec "$file")
         VIDEO_FILTER=$(build_video_filters "$WIDTH" "$SRC_FPS_DEC")
         [[ "$VIDEO_FILTER" == *"scale="* ]] && log "  Resize: ${WIDTH}px → ${SCALE_WIDTH}px"
@@ -5235,7 +5287,6 @@ run_encode_loop() {
         if [[ -n "$_tgt_codec" && "$_src_codec" == "$_tgt_codec" ]] \
            && [[ -z "$VIDEO_FILTER" ]] \
            && [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] \
-           && [[ "${AUDIO_PERTRACK_CUSTOM:-0}" != "1" ]] \
            && [[ "${IS_LOG:-0}" != "1" ]] \
            && [[ -z "${HDR_PLUS:-}" ]] && [[ -z "${DOVI:-}" ]] \
            && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]] \
@@ -5246,12 +5297,15 @@ run_encode_loop() {
                 -show_entries stream=bit_rate -of default=nw=1:nk=1 "$file" 2>/dev/null)
             [[ "$_src_br" =~ ^[0-9]+$ ]] && _br_str=" (bitrate sursa ~$((_src_br/1000)) kbps)"
             log ""
-            log "  ⚡ SMART COPY: source este deja $_src_codec, identic cu target ($ENCODER_NAME)$_br_str."
-            log "    Re-encode redundant — pierde calitate fără beneficiu real de compresie."
-            read -p "  Stream copy total in loc de re-encode? (D/n) [default: D]: " _smart_ch
+            log "  ⚡ SMART COPY: video e deja $_src_codec, identic cu target ($ENCODER_NAME)$_br_str."
+            log "    Re-encode video redundant (pierde calitate). Audio-ul urmeaza alegerea ta (nu se pierde)."
+            read -p "  Copiaza video 1:1 + aplica audio ales, fara re-encode video? (D/n) [default: D]: " _smart_ch
             if [[ "${_smart_ch,,}" != "n" ]]; then
-                log "  → Smart stream copy aplicat"
-                do_stream_copy "$file" "$output" "$MAP_FLAGS"
+                log "  → Video copy + audio aplicat (fara re-encode video)"
+                # v68: paseaza AUDIO_PARAMS (per-pista, daca exista) + MAP_FLAGS (cu skip maps)
+                # → onoreaza selectia per-pista la smart-copy (paritate cu PS1). Garda
+                # AUDIO_PERTRACK_CUSTOM scoasa: do_stream_copy foloseste acum audio-ul corect.
+                do_stream_copy "$file" "$output" "$MAP_FLAGS" "$AUDIO_PARAMS"
                 local _sc_rc=$?
                 if [ $_sc_rc -ne 0 ]; then
                     TOTAL_ERRORS=$((TOTAL_ERRORS+1))

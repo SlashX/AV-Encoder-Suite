@@ -732,6 +732,8 @@ function Invoke-ConcatFlow {
         }
         Write-ConcatTxtUtf8NoBom $concatTxt $lines
         Write-Host "  Concat stream copy..." -ForegroundColor Green
+        # v68: audio copiat in containerul ales → avertizeaza pistele incompatibile (per sursa)
+        foreach ($s in $selected) { Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @() }
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt,
             "-map","0","-map_metadata","0","-c","copy",
             "-avoid_negative_ts","make_zero",$outPath)
@@ -747,7 +749,11 @@ function Invoke-ConcatFlow {
         $ac = Read-Host "  Alege"
         $aArgs = @("-c:a","aac","-b:a","192k")
         if ($ac -eq "2") { $aArgs = @("-c:a","eac3","-b:a","224k") }
-        if ($ac -eq "3") { $aArgs = @("-c:a","copy") }
+        if ($ac -eq "3") {
+            $aArgs = @("-c:a","copy")
+            # v68: aopt=copy → audio copiat in containerul ales; avertizeaza incompatibilitatile
+            foreach ($s in $selected) { Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @() }
+        }
 
         # v60: HDR detect agregat pe setul de fisiere (concat = N->1).
         # Get-PipelineHdrMode returneaza sdr|hdr10|hdr10plus|hlg|dv|mixed
@@ -1985,6 +1991,70 @@ function Get-TrackAudioArgs {
         "pcm"  { return @("-c:a:$Idx","pcm_s${BaseBr}") + $dm }
         default { return @("-c:a:$Idx","aac","-b:a:$Idx","192k") + $dm }
     }
+}
+
+# v68: compat codec audio vs container la COPY (mirror al matricei remux_stream_compat
+# audio din av_common.sh/av_mux). Returneaza "copy" (ok) sau "drop" (incompatibil).
+function Get-AudioCopyCompat {
+    param([string]$Codec, [string]$Container)
+    $c = $Codec.ToLowerInvariant(); $t = $Container.ToLowerInvariant()
+    if ($t -eq "mkv") { return "copy" }
+    switch ($t) {
+        "mp4"  { if ($c -in @("aac","ac3","eac3","mp3","opus","alac","flac")) { return "copy" } else { return "drop" } }
+        "mov"  { if ($c -in @("aac","ac3","mp3","alac","pcm_s16be","pcm_s24be","pcm_s16le","pcm_s24le")) { return "copy" } else { return "drop" } }
+        "webm" { if ($c -in @("opus","vorbis")) { return "copy" } else { return "drop" } }
+        default { return "drop" }
+    }
+}
+
+# v68: avertizeaza daca o pista audio COPIATA (nu re-encodata, nu skip) e incompatibila
+# cu containerul → la copy ffmpeg ar pierde-o / ar esua. Read-only (doar warn). Mirror bash
+# warn_incompat_audio_copies. $ReencInputs/$SkipInputs = indecsi INPUT audio (0-based).
+function Show-IncompatAudioCopyWarnings {
+    param([string]$File, [string]$Container, [int[]]$ReencInputs = @(0), [int[]]$SkipInputs = @())
+    if ($Container.ToLowerInvariant() -eq "mkv") { return }
+    $codecs = @(& ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 $File 2>$null)
+    $i = 0
+    foreach ($line in $codecs) {
+        if (-not $line) { continue }
+        $ac = (($line -split ',')[0]).Trim()
+        if ($ac) {
+            if (($ReencInputs -notcontains $i) -and ($SkipInputs -notcontains $i)) {
+                if ((Get-AudioCopyCompat $ac $Container) -ne "copy") {
+                    Write-Host "  ⚠ ATENTIE: pista a:$i ($ac) e incompatibila cu containerul .$Container la copy —" -ForegroundColor Yellow
+                    Write-Host "    ffmpeg o va pierde sau va esua. Foloseste MKV, sau re-encodeaza pista (alege E in dialog / AV_AUDIO_TRACKS)." -ForegroundColor Yellow
+                }
+            }
+        }
+        $i++
+    }
+}
+
+# v68 (DRY): builder partajat al parametrilor audio din selectia per-pista ($Sel: idx→E/C/S).
+# Mirror PS1 al buclei de build din handle_multi_audio_dialog (bash). Centralizeaza logica
+# predispusa la drift: copy-first + index OUTPUT recalculat dupa skip + tracking reenc/skip.
+# Folosit de fluxul principal (meniu 1) SI de audio-only (meniu 2). Returneaza hashtable.
+function Build-AudioSelectionParams {
+    param([hashtable]$Sel, [string]$Codec, [string]$BaseBr, [string]$File, [int]$TrackCount)
+    $params = @("-c:a","copy"); $skipMaps = @(); $skipsBefore = 0; $firstE = -1
+    $reenc = @(); $skip = @()
+    for ($ai = 0; $ai -lt $TrackCount; $ai++) {
+        switch ($Sel[$ai]) {
+            "S" { $skipMaps += @("-map","-0:a:$ai"); $skipsBefore++; $skip += $ai
+                  Write-Host "    Track $ai → SKIP (exclus)" -ForegroundColor DarkYellow }
+            "E" {
+                $outIdx = $ai - $skipsBefore
+                $tch = Get-FFprobeValue $File "a:$ai" "channels"
+                $tchN = if ($tch -match '^\d+$') { [int]$tch } else { 2 }
+                $params += (Get-TrackAudioArgs $Codec $outIdx $tchN $BaseBr)
+                if ($firstE -lt 0) { $firstE = $outIdx }
+                $reenc += $ai
+                Write-Host "    Track $ai → re-encode ($Codec) [out a:$outIdx]" -ForegroundColor Green
+            }
+            default { Write-Host "    Track $ai → copy" -ForegroundColor White }   # C: base -c:a copy acopera
+        }
+    }
+    return @{ AudioParams = $params; SkipMaps = $skipMaps; LoudnormTrack = $firstE; ReencInputs = $reenc; SkipInputs = $skip }
 }
 
 # FIX: PGS/DVDSUB incompatibile cu mp4/mov — returneaza -sn (omite) nu -c:s mov_text
@@ -4742,13 +4812,16 @@ if ($mainChoice -eq "2") {
         # v67: selectie audio per-pista (>1 pista) — env AV_AUDIO_TRACKS sau dialog.
         # Override $eaAP (copy-first + scaling per-canale) + $eaSkipMaps (negative maps).
         $eaSkipMaps = @()
+        $eaReenc = @(0); $eaSkip = @()   # v68: indecsi INPUT re-encodati / sariti (compat warn)
         $eaTrackCount = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $f.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
         if ($eaTrackCount -gt 1) {
             $eaSel = @{}; $eaUseSel = $false
-            if ($env:AV_AUDIO_TRACKS) {
+            if ($env:AV_AUDIO_TRACKS -or $env:AV_AUDIO_DROP) {
                 for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "C" }
-                if ($env:AV_AUDIO_TRACKS.ToLower() -eq "all") { for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "E" } }
-                else { foreach ($t in ($env:AV_AUDIO_TRACKS -split ',')) { if ($t -match '^\d+$' -and [int]$t -lt $eaTrackCount) { $eaSel[[int]$t] = "E" } } }
+                if ($env:AV_AUDIO_TRACKS -and $env:AV_AUDIO_TRACKS.ToLower() -eq "all") { for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "E" } }
+                elseif ($env:AV_AUDIO_TRACKS) { foreach ($t in ($env:AV_AUDIO_TRACKS -split ',')) { if ($t -match '^\d+$' -and [int]$t -lt $eaTrackCount) { $eaSel[[int]$t] = "E" } } }
+                else { $eaSel[0] = "E" }   # doar AV_AUDIO_DROP → default (track 0 encode, rest copy)
+                if ($env:AV_AUDIO_DROP) { foreach ($d in ($env:AV_AUDIO_DROP -split ',')) { if ($d -match '^\d+$' -and [int]$d -lt $eaTrackCount) { $eaSel[[int]$d] = "S" } } }
                 $eaUseSel = $true
             } else {
                 Write-Host "  ── $eaTrackCount piste audio:" -ForegroundColor Cyan
@@ -4773,23 +4846,16 @@ if ($mainChoice -eq "2") {
                 }
             }
             if ($eaUseSel) {
+                # v68 (DRY): acelasi builder partajat ca fluxul principal
                 $eaBrArg = if ($eaCodec -eq "flac") { $eaFlvl } elseif ($eaCodec -eq "pcm") { $eaPcmDepth } else { $eaBr }
-                $eaAP = @("-c:a","copy"); $skb = 0
-                for ($ai = 0; $ai -lt $eaTrackCount; $ai++) {
-                    switch ($eaSel[$ai]) {
-                        "S" { $eaSkipMaps += @("-map","-0:a:$ai"); $skb++; Write-Host "    Track $ai → SKIP" -ForegroundColor DarkYellow }
-                        "E" {
-                            $oIdx = $ai - $skb
-                            $tc = Get-FFprobeValue $f.FullName "a:$ai" "channels"
-                            $tcN = if ($tc -match '^\d+$') { [int]$tc } else { 2 }
-                            $eaAP += (Get-TrackAudioArgs $eaCodec $oIdx $tcN $eaBrArg)
-                            Write-Host "    Track $ai → re-encode ($eaCodec) [out a:$oIdx]" -ForegroundColor Green
-                        }
-                        default { Write-Host "    Track $ai → copy" -ForegroundColor White }
-                    }
-                }
+                $r = Build-AudioSelectionParams $eaSel $eaCodec $eaBrArg $f.FullName $eaTrackCount
+                $eaAP = $r.AudioParams
+                $eaSkipMaps = $r.SkipMaps
+                $eaReenc = $r.ReencInputs; $eaSkip = $r.SkipInputs
             }
         }
+        # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
+        Show-IncompatAudioCopyWarnings -File $f.FullName -Container $eaContainer -ReencInputs $eaReenc -SkipInputs $eaSkip
 
         # Avertizari metadata TrueHD/DTS
         $eaAudioCodecs = & ffprobe -v error -select_streams a `
@@ -6920,16 +6986,26 @@ foreach ($f in $inputFiles) {
         Where-Object { $_ -match '^\d' }).Count
     # v67: pista pe care se aplica loudnorm (prima re-encodata). Default 0 (track 0).
     $audioLoudnormTrack = 0
+    # v68: indecsi INPUT audio re-encodati / sariti (pt avertisment compat container la copy).
+    # Default: track 0 re-encodat, restul copy. Copy total → niciunul re-encodat.
+    $reencInputs = if ($audioCopy) { @() } else { @(0) }; $skipInputs = @()
     if ($audioTrackCount -gt 1 -and -not $audioCopy) {
         # v67: determina selectia — env AV_AUDIO_TRACKS (CI: lista encode, rest copy) sau dialog
         $sel = @{}; $useSelective = $false
-        if ($env:AV_AUDIO_TRACKS) {
+        if ($env:AV_AUDIO_TRACKS -or $env:AV_AUDIO_DROP) {
             for ($ai = 0; $ai -lt $audioTrackCount; $ai++) { $sel[$ai] = "C" }
-            if ($env:AV_AUDIO_TRACKS.ToLower() -eq "all") {
+            if ($env:AV_AUDIO_TRACKS -and $env:AV_AUDIO_TRACKS.ToLower() -eq "all") {
                 for ($ai = 0; $ai -lt $audioTrackCount; $ai++) { $sel[$ai] = "E" }
-            } else {
+            } elseif ($env:AV_AUDIO_TRACKS) {
                 foreach ($t in ($env:AV_AUDIO_TRACKS -split ',')) {
                     if ($t -match '^\d+$' -and [int]$t -lt $audioTrackCount) { $sel[[int]$t] = "E" }
+                }
+            } else {
+                $sel[0] = "E"   # doar AV_AUDIO_DROP → default (track 0 encode, rest copy)
+            }
+            if ($env:AV_AUDIO_DROP) {   # v68: AV_AUDIO_DROP → S (skip), prioritate peste E/C
+                foreach ($d in ($env:AV_AUDIO_DROP -split ',')) {
+                    if ($d -match '^\d+$' -and [int]$d -lt $audioTrackCount) { $sel[[int]$d] = "S" }
                 }
             }
             $useSelective = $true
@@ -6968,30 +7044,17 @@ foreach ($f in $inputFiles) {
             }
         }
         if ($useSelective) {
-            # v67: copy-first (toate copy), apoi override pe pistele E. Index OUTPUT =
-            # index_input - nr_skip-uri_inainte (negative-map compacteaza streamurile) — fixeaza
-            # bug-ul v33 care folosea index input cu -c:a:N → mismatch dupa skip in mijloc.
+            # v68 (DRY): builder partajat (copy-first + index OUTPUT dupa skip + reenc/skip tracking)
             $brArg = if ($audioCodec -eq "flac") { $audioFlacLevel } elseif ($audioCodec -eq "pcm") { $pcmDepth } else { $audioBitrate }
-            $customAudioParams = @("-c:a","copy"); $skipMaps = @(); $skipsBefore = 0; $firstE = -1
-            for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
-                switch ($sel[$ai]) {
-                    "S" { $skipMaps += @("-map","-0:a:$ai"); $skipsBefore++; Write-Host "    Track $ai → SKIP (exclus)" -ForegroundColor DarkYellow }
-                    "E" {
-                        $outIdx = $ai - $skipsBefore
-                        $tch = Get-FFprobeValue $f.FullName "a:$ai" "channels"
-                        $tchN = if ($tch -match '^\d+$') { [int]$tch } else { 2 }
-                        $customAudioParams += (Get-TrackAudioArgs $audioCodec $outIdx $tchN $brArg)
-                        if ($firstE -lt 0) { $firstE = $outIdx }
-                        Write-Host "    Track $ai → re-encode ($audioCodec) [out a:$outIdx]" -ForegroundColor Green
-                    }
-                    default { Write-Host "    Track $ai → copy" -ForegroundColor White }
-                }
-            }
-            $audioParams = $customAudioParams
-            if ($skipMaps.Count -gt 0) { $mapFlags = $mapFlags + $skipMaps }
-            $audioLoudnormTrack = $firstE   # -1 daca nicio pista re-encodata → loudnorm skip
+            $r = Build-AudioSelectionParams $sel $audioCodec $brArg $f.FullName $audioTrackCount
+            $audioParams = $r.AudioParams
+            if ($r.SkipMaps.Count -gt 0) { $mapFlags = $mapFlags + $r.SkipMaps }
+            $audioLoudnormTrack = $r.LoudnormTrack   # -1 daca nicio pista re-encodata → loudnorm skip
+            $reencInputs = $r.ReencInputs; $skipInputs = $r.SkipInputs
         }
     }
+    # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
+    Show-IncompatAudioCopyWarnings -File $f.FullName -Container $container -ReencInputs $reencInputs -SkipInputs $skipInputs
 
     # Loudnorm (normalizare audio EBU R128) — 2-pass
     $loudnormFlag = @()
@@ -7095,11 +7158,11 @@ foreach ($f in $inputFiles) {
         $srcBr = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
         $brStr = if ($srcBr -match '^\d+$') { " (bitrate sursa ~$([int]([int]$srcBr/1000)) kbps)" } else { "" }
         Write-Host ""
-        Write-Host "  SMART COPY: source este deja $($si.codec), identic cu target ($rtEncoder)$brStr." -ForegroundColor Cyan
-        Write-Host "    Re-encode redundant — pierde calitate fara beneficiu real de compresie." -ForegroundColor Cyan
-        $smartCh = Read-Host "  Stream copy total in loc de re-encode? (D/n) [default: D]"
+        Write-Host "  SMART COPY: video e deja $($si.codec), identic cu target ($rtEncoder)$brStr." -ForegroundColor Cyan
+        Write-Host "    Re-encode video redundant (pierde calitate). Audio-ul urmeaza alegerea ta (nu se pierde)." -ForegroundColor Cyan
+        $smartCh = Read-Host "  Copiaza video 1:1 + aplica audio ales, fara re-encode video? (D/n) [default: D]"
         if ($smartCh -ine "n") {
-            Write-Host "  -> Smart stream copy aplicat" -ForegroundColor Green
+            Write-Host "  -> Video copy + audio aplicat (fara re-encode video)" -ForegroundColor Green
             $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
             if (-not $scOk) { $totalErrors++ }
             continue

@@ -17,7 +17,9 @@ ENC_PS1="$(cat "$SCRIPT_DIR/av_encode.ps1")"
 assert_contains "$COMMON" 'build_track_audio_args() {'        "bash: helper build_track_audio_args definit"
 assert_contains "$COMMON" 'handle_multi_audio_dialog() {'     "bash: handle_multi_audio_dialog definit"
 assert_contains "$COMMON" 'handle_multi_audio_dialog "$file"' "bash: dialog apelat (run loop / encoder)"
-assert_contains "$COMMON" 'AUDIO_PERTRACK_CUSTOM:-0}" != "1"' "bash: smart-copy gardat de selectia per-pista"
+# v68: garda smart-copy AUDIO_PERTRACK_CUSTOM SCOASA — smart-copy onoreaza acum per-pista
+# via do_stream_copy 4th arg (paritate cu PS1). AUDIO_PERTRACK_CUSTOM ramane setat (informational).
+assert_contains "$COMMON" 'do_stream_copy "$file" "$output" "$MAP_FLAGS" "$AUDIO_PARAMS"' "bash: smart-copy paseaza AUDIO_PARAMS per-pista (v68 paritate)"
 assert_contains "$COMMON" 'AUDIO_LOUDNORM_TRACK=0; AUDIO_PERTRACK_CUSTOM=0' "bash: reset defensiv state per-pista"
 assert_contains "$COMMON" '-map -0:a:$i'                      "bash: negative map pt skip"
 assert_contains "$COMMON" 'AV_AUDIO_TRACKS'                   "bash: bypass non-interactiv AV_AUDIO_TRACKS"
@@ -29,9 +31,11 @@ assert_contains "$AENC" 'MAP_FLAGS="-map 0:v -map 0:a? -map 0:s? -map 0:t?"' "av
 
 # ── 2. PS1 source-level — helper + upgrade flux principal + audio-only ─
 assert_contains "$ENC_PS1" 'function Get-TrackAudioArgs'      "PS1: helper Get-TrackAudioArgs definit"
-assert_contains "$ENC_PS1" 'Get-TrackAudioArgs $audioCodec $outIdx' "PS1 main: helper folosit (scaling per-pista)"
-assert_contains "$ENC_PS1" 'Get-TrackAudioArgs $eaCodec $oIdx' "PS1 audio-only: helper folosit"
-assert_contains "$ENC_PS1" '$outIdx = $ai - $skipsBefore'     "PS1 main: index output recalculat dupa skip (fix v33)"
+# v68 DRY: builder partajat Build-AudioSelectionParams (ambele fluxuri PS1 il apeleaza)
+assert_contains "$ENC_PS1" 'Build-AudioSelectionParams $sel $audioCodec' "PS1 main: foloseste builder-ul partajat"
+assert_contains "$ENC_PS1" 'Build-AudioSelectionParams $eaSel $eaCodec'  "PS1 audio-only: foloseste builder-ul partajat"
+assert_contains "$ENC_PS1" 'Get-TrackAudioArgs $Codec $outIdx' "PS1 builder: helper folosit cu scaling per-pista"
+assert_contains "$ENC_PS1" '$outIdx = $ai - $skipsBefore'     "PS1 builder: index output recalculat dupa skip (fix v33)"
 assert_contains "$ENC_PS1" '$audioLoudnormTrack'              "PS1: loudnorm pe prima pista re-encodata"
 assert_contains "$ENC_PS1" '$env:AV_AUDIO_TRACKS'             "PS1: bypass AV_AUDIO_TRACKS"
 

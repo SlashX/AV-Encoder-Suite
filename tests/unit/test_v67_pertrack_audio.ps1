@@ -6,13 +6,15 @@ $SRC  = Join-Path $ROOT 'src'
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$SRC;$env:PATH" }
 $ENC = Get-Content (Join-Path $SRC "av_encode.ps1") -Raw
 
-# ── 1. PS1 source-level — helper + upgrade flux principal + flux audio-only ──
+# ── 1. PS1 source-level — helper + builder DRY (v68) + ambele fluxuri ──
 Assert-Match $ENC ([regex]::Escape('function Get-TrackAudioArgs'))                 "PS1: helper Get-TrackAudioArgs definit"
-Assert-Match $ENC ([regex]::Escape('Get-TrackAudioArgs $audioCodec $outIdx $tchN $brArg')) "PS1 main: helper folosit cu scaling per-pista"
-Assert-Match $ENC ([regex]::Escape('Get-TrackAudioArgs $eaCodec $oIdx $tcN $eaBrArg'))      "PS1 audio-only: helper folosit"
-Assert-Match $ENC ([regex]::Escape('$outIdx = $ai - $skipsBefore'))                "PS1 main: index output recalculat dupa skip (fix bug v33)"
-Assert-Match $ENC ([regex]::Escape('$oIdx = $ai - $skb'))                          "PS1 audio-only: index output recalculat dupa skip"
-Assert-Match $ENC ([regex]::Escape('$audioLoudnormTrack = $firstE'))               "PS1 main: loudnorm pe prima pista re-encodata"
+# v68 DRY: builder partajat Build-AudioSelectionParams (mirror al buclei bash); ambele fluxuri il apeleaza
+Assert-Match $ENC ([regex]::Escape('function Build-AudioSelectionParams'))         "PS1: builder partajat Build-AudioSelectionParams definit"
+Assert-Match $ENC ([regex]::Escape('Build-AudioSelectionParams $sel $audioCodec'))    "PS1 main: foloseste builder-ul partajat"
+Assert-Match $ENC ([regex]::Escape('Build-AudioSelectionParams $eaSel $eaCodec'))     "PS1 audio-only: foloseste builder-ul partajat"
+Assert-Match $ENC ([regex]::Escape('Get-TrackAudioArgs $Codec $outIdx $tchN $BaseBr')) "PS1 builder: helper folosit cu scaling per-pista"
+Assert-Match $ENC ([regex]::Escape('$outIdx = $ai - $skipsBefore'))                "PS1 builder: index output recalculat dupa skip (fix bug v33)"
+Assert-Match $ENC ([regex]::Escape('$audioLoudnormTrack = $r.LoudnormTrack'))      "PS1 main: loudnorm pe prima pista re-encodata"
 Assert-Match $ENC ([regex]::Escape('-filter:a:$audioLoudnormTrack'))               "PS1 main: loudnorm scopat dinamic"
 Assert-Match $ENC ([regex]::Escape('$env:AV_AUDIO_TRACKS'))                         "PS1: bypass non-interactiv AV_AUDIO_TRACKS"
 Assert-Match $ENC ([regex]::Escape('$eaSkipMaps'))                                 "PS1 audio-only: negative skip maps"

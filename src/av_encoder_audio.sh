@@ -366,6 +366,8 @@ for file in "${FILES[@]}"; do
     esac
     MAP_FLAGS="-map 0:v -map 0:a? -map 0:s? -map 0:t?"
     handle_multi_audio_dialog "$file"
+    # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
+    warn_incompat_audio_copies "$file"
 
     # shellcheck disable=SC2086
     ffmpeg -i "$file" \

@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v67
+  Documentatie Setup & Utilizare — v68
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  118 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
-  3 Python engines + 65 test_* scripts + 7 infra).
+  142 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
+  3 Python engines + 89 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -635,8 +635,19 @@ CUPRINS
     Bitrate + downmix se calculeaza per pista (dupa canalele EI). Fisierele cu
     o singura pista nu primesc dialog (zero schimbare). Disponibil la "Encode
     video + audio" SI la "Encode doar audio".
-    Bypass non-interactiv (CI): AV_AUDIO_TRACKS="0,2" (piste de re-encodat,
-    restul copy) sau AV_AUDIO_TRACKS=all. Fara variabila → default (track 0).
+    Bypass non-interactiv (CI):
+      AV_AUDIO_TRACKS="0,2" — piste de re-encodat (restul copy); sau =all.
+      AV_AUDIO_DROP="1,3" (v68) — piste de scos (skip) din output. Combinabil
+        cu AV_AUDIO_TRACKS. Doar AV_AUDIO_DROP setat → track 0 encode + drop.
+    Fara variabile → default (track 0 encode, restul copy).
+
+  AVERTISMENT COMPAT CONTAINER (v68):
+    Cand o pista audio PASTRATA (copy) are un codec incompatibil cu containerul
+    de iesire (ex. E-AC3 / TrueHD / DTS in .mov; non-Opus in .webm), suita te
+    anunta clar inainte de encode — ffmpeg ar fi esuat sau ar fi pierdut pista.
+    Solutii sugerate: container MKV (accepta orice), sau re-encodeaza pista (E).
+    Activ la Encode, Audio-only si Concat. Trim/Burn-in pastreaza containerul
+    sursei → mereu compatibile (nu necesita avertisment).
 
   SURROUND AUTO-DETECT:
     >2 canale (5.1): AAC 384k, Opus 256k, E-AC3 640k.

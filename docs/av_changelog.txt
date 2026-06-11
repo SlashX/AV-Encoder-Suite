@@ -3,9 +3,42 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v67 | 124 bug-uri fixate | 238+ features
-  138 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 92 teste [85 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
+  TOTAL: v68 | 124 bug-uri fixate | 240+ features
+  142 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 96 teste [89 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v68 — Audio: avertismente de compatibilitate, control extins, smart copy fidel
+═══════════════════════════════════════════════════════════════
+
+  ADD Avertisment cand o pista audio pastrata (copy) nu incape in containerul
+        ales. Pe fisierele cu mai multe piste, daca o pista pe care o pastrezi
+        neatinsa (ex. un comentariu in alt codec) nu e compatibila cu
+        containerul de iesire (ex. .mov / .mp4), suita te anunta clar inainte
+        — in loc sa esueze cu o eroare criptica. Iti spune ce sa faci:
+        foloseste container MKV, sau re-encodeaza pista respectiva.
+        Acelasi avertisment apare acum si la Concat (cand lipesti mai multe
+        fisiere intr-un container ales).
+
+  ADD Variabila AV_AUDIO_DROP pentru scripting / automatizare: alegi
+        non-interactiv ce piste audio sa fie scoase din rezultat (ex. "1,3").
+        Se combina cu AV_AUDIO_TRACKS (ce piste se re-encodeaza); restul se
+        copiaza.
+
+  UPDATE "Smart copy" (cand video-ul e deja in formatul tinta) e acum mai
+        clar SI mai fidel: explica faptul ca video-ul se copiaza 1:1 (fara
+        re-encode), iar audio-ul urmeaza exact alegerea ta (nu se pierde).
+        In plus, pe Termux / Linux / macOS respecta acum si selectia audio
+        per-pista (re-encode / pastreaza / scoate) — inainte trecea printr-un
+        re-encode video redundant pe aceste platforme; acum e la fel de rapida
+        ca pe Windows (paritate completa).
+
+  Note: uneltele de Mux gestionau deja corect aceste cazuri (sar pistele
+        incompatibile). Trim si Burn-in pastreaza containerul sursei, deci nu
+        sunt afectate de avertisment. Paritate bash ↔ PowerShell. (Sub capota:
+        logica de selectie audio per-pista din PowerShell a fost consolidata
+        intr-un singur loc.)
 
 
 ═══════════════════════════════════════════════════════════════

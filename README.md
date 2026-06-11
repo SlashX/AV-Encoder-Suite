@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v67** — 124 bugs fixed · 238+ features · ~42 000 LoC · 138 files
+**v68** — 124 bugs fixed · 240+ features · ~42 000 LoC · 142 files
 
 ---
 
@@ -24,7 +24,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
 - **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
 - **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output, with opt-in **measured** MaxCLL/MaxFALL (v63)
-- **Per-track audio control** (v67) — on multi-track files, choose per track: re-encode / copy lossless / drop, with bitrate + downmix computed per track's channel count; correct multi-codec re-encode order so a chosen codec actually applies (v66); `AV_AUDIO_TRACKS` env for non-interactive selection. Single-track files are untouched
+- **Per-track audio control** (v67–v68) — on multi-track files, choose per track: re-encode / copy lossless / drop, with bitrate + downmix computed per track's channel count; correct multi-codec re-encode order so a chosen codec actually applies (v66); `AV_AUDIO_TRACKS` / `AV_AUDIO_DROP` env for non-interactive selection; **container-compat warnings** when a copied track can't fit the target container (encode + concat); smart stream-copy keeps your per-track audio choice on every platform. Single-track files are untouched
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
@@ -55,7 +55,7 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **Video** | HEVC · H.264 · AV1 (SVT-AV1 / libaom) · DNxHR · ProRes · APV |
 | **HW backends** | NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec |
 | **HDR** | HDR10 · HDR10+ · Dolby Vision (P5/P7/P8.1 HEVC + P10 AV1) · HLG · LOG |
-| **Audio encode** | AAC · Opus · FLAC · E-AC3 · AC3 · LPCM · per-track encode/copy/skip on multi-track files (v67) |
+| **Audio encode** | AAC · Opus · FLAC · E-AC3 · AC3 · LPCM · per-track encode/copy/skip + container-compat warnings (v67–v68) |
 | **Audio passthrough** | TrueHD · DTS · DTS-HD (auto stream copy; AC3 source copies too) |
 | **Telemetry** | DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 |
 | **Workflows** | Encode · Audio-only · Trim & Concat · Remux · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
@@ -383,4 +383,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v67** — 124 bugs fixed · 238+ features · ~42 000 LoC · 138 files
+Current: **v68** — 124 bugs fixed · 240+ features · ~42 000 LoC · 142 files

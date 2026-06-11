@@ -797,6 +797,9 @@ trimconcat_flow_concat() {
             echo "file '${esc}'" >> "$concat_txt"
         done
         echo "  Concat stream copy..."
+        # v68: audio copiat in containerul ales → avertizeaza pistele incompatibile
+        # (codec audio nesuportat de container la copy). Per sursa (concat = N→1).
+        for _cf in "${selected[@]}"; do warn_incompat_audio_copies "$_cf" "$container" ""; done
         run_ffmpeg_with_progress "Concat (copy)" "$total_s" \
             -y -f concat -safe 0 -i "$concat_txt" \
             -map 0 -map_metadata 0 -c copy \
@@ -814,6 +817,10 @@ trimconcat_flow_concat() {
         local aopt=(-c:a aac -b:a 192k)
         [[ "$ac" == "2" ]] && aopt=(-c:a eac3 -b:a 224k)
         [[ "$ac" == "3" ]] && aopt=(-c:a copy)
+        # v68: aopt=copy → audio copiat in containerul ales; avertizeaza incompatibilitatile
+        if [[ "${aopt[*]}" == "-c:a copy" ]]; then
+            for _cf in "${selected[@]}"; do warn_incompat_audio_copies "$_cf" "$container" ""; done
+        fi
 
         # v60: HDR detect agregat pe setul de fisiere (concat = N→1).
         # detect_pipeline_hdr_mode returneaza sdr|hdr10|hdr10plus|hlg|dv|mixed
