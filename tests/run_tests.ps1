@@ -52,8 +52,16 @@ foreach ($t in $tests) {
     $rc = $LASTEXITCODE
     switch ($rc) {
         0 {
-            Write-Host "  + $rel" -ForegroundColor Green
-            $passed++
+            # v69: PASS cu 0 asertiuni = no-op silentios (dependinta AST tranzitiva
+            # lipsa / guard care sare tot) → tratat ca FAIL, nu fals-verde
+            if (Select-String -LiteralPath $log -SimpleMatch -Pattern '(0 assertions)' -Quiet -ErrorAction SilentlyContinue) {
+                Write-Host "  X $rel (0 asertiuni — no-op?)" -ForegroundColor Red
+                $failed++
+                $failedNames.Add("$rel (0 asertiuni)") | Out-Null
+            } else {
+                Write-Host "  + $rel" -ForegroundColor Green
+                $passed++
+            }
         }
         77 {
             $skipLine = (Get-Content -LiteralPath $log -ErrorAction SilentlyContinue | Where-Object { $_ -match '^SKIP ' } | Select-Object -First 1)

@@ -83,6 +83,21 @@ fi
 ensure_temp_dir() { mkdir -p "$AV_TEMP_DIR" 2>/dev/null; }
 
 # ══════════════════════════════════════════════════════════════════════
+# v69: Nume binare externe + engine-uri — SURSA UNICA (env-overridable).
+# Daca upstream redenumeste un binar, schimba AICI (sau prin env, inclusiv
+# cu cale absoluta — `command -v` accepta ambele). Executia in cod se face
+# EXCLUSIV prin aceste variabile, niciodata prin nume hardcodat.
+# ══════════════════════════════════════════════════════════════════════
+AV_TOOL_DOVI="${AV_TOOL_DOVI:-dovi_tool}"                       # quietvoid (HEVC DV)
+AV_TOOL_HDR10PLUS="${AV_TOOL_HDR10PLUS:-hdr10plus_tool}"        # quietvoid (HEVC HDR10+)
+AV_TOOL_AV1DOVI="${AV_TOOL_AV1DOVI:-av1dovi_tool}"              # sven-pke fork (AV1 DV)
+AV_TOOL_AV1HDR10PLUS="${AV_TOOL_AV1HDR10PLUS:-av1hdr10plus_tool}" # sven-pke fork (AV1 HDR10+)
+AV_TOOL_EXIFTOOL="${AV_TOOL_EXIFTOOL:-exiftool}"                # telemetrie (DJI/QuickTime)
+AV_TOOL_OAPV_DEC="${AV_TOOL_OAPV_DEC:-oapv_app_dec}"            # decoder referinta OpenAPV (optional)
+AV_TOOL_SVTAV1ENCAPP="${AV_TOOL_SVTAV1ENCAPP:-SvtAv1EncApp}"    # SVT-AV1 standalone (doar caps-probe)
+AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
+
+# ══════════════════════════════════════════════════════════════════════
 # Cross-platform wrappers (v41) — abstractizeaza GNU vs BSD coreutils
 # ══════════════════════════════════════════════════════════════════════
 
@@ -354,6 +369,16 @@ detect_source_info() {
     HDR_PLUS=$(ffprobe -v error -read_intervals 0%+#5 -show_frames \
         -select_streams v:0 -show_entries frame_side_data=side_data_type \
         "$file" 2>/dev/null | grep -m1 "HDR10+")
+
+    # v69: HDR10+ pe surse APV — decoderul ffmpeg IGNORA T.35 (nu apare in
+    # frame_side_data) → probe prin engine-ul apv_hdr10plus.py (primele 3 AU).
+    if [[ -z "$HDR_PLUS" ]]; then
+        local _apv_vc
+        _apv_vc=$(detect_source_codec "$file")
+        if [[ "$_apv_vc" == "apv" ]]; then
+            [[ "$(_apv_hdr10plus_probe "$file")" == "hdr10plus" ]] && HDR_PLUS="HDR10+ (APV T.35)"
+        fi
+    fi
 
     DOVI=$(ffprobe -v error -show_entries stream=codec_tag_string \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | \
@@ -1183,15 +1208,15 @@ tool_for_extract() {
     case "$codec" in
         av1)
             case "$kind" in
-                dovi)      echo "av1dovi_tool" ;;
-                hdr10plus) echo "av1hdr10plus_tool" ;;
+                dovi)      echo "$AV_TOOL_AV1DOVI" ;;
+                hdr10plus) echo "$AV_TOOL_AV1HDR10PLUS" ;;
                 *)         echo ""; return 1 ;;
             esac
             ;;
         *)
             case "$kind" in
-                dovi)      echo "dovi_tool" ;;
-                hdr10plus) echo "hdr10plus_tool" ;;
+                dovi)      echo "$AV_TOOL_DOVI" ;;
+                hdr10plus) echo "$AV_TOOL_HDR10PLUS" ;;
                 *)         echo ""; return 1 ;;
             esac
             ;;
@@ -1213,8 +1238,8 @@ SVTAV1_HDR10PLUS_CAPS=""
 _check_svtav1_hdr10plus_caps() {
     if [[ -z "$SVTAV1_HDR10PLUS_CAPS" ]]; then
         local out=""
-        if command -v SvtAv1EncApp &>/dev/null; then
-            out=$(SvtAv1EncApp --help 2>&1; SvtAv1EncApp --enc-mode help 2>&1)
+        if command -v "$AV_TOOL_SVTAV1ENCAPP" &>/dev/null; then
+            out=$("$AV_TOOL_SVTAV1ENCAPP" --help 2>&1; "$AV_TOOL_SVTAV1ENCAPP" --enc-mode help 2>&1)
         fi
         # Fallback: ffmpeg -h encoder=libsvtav1 (afiseaza optiuni cunoscute)
         if [[ -z "$out" ]] || ! echo "$out" | grep -qi "hdr10plus"; then
@@ -1231,7 +1256,7 @@ _check_svtav1_hdr10plus_caps() {
 
 _check_av1_dovi_tool() {
     if [[ -z "$AV1_DOVI_TOOL_AVAILABLE" ]]; then
-        if command -v av1dovi_tool &>/dev/null; then
+        if command -v "$AV_TOOL_AV1DOVI" &>/dev/null; then
             AV1_DOVI_TOOL_AVAILABLE=1
         else
             AV1_DOVI_TOOL_AVAILABLE=0
@@ -1242,7 +1267,7 @@ _check_av1_dovi_tool() {
 
 _check_av1_hdr10plus_tool() {
     if [[ -z "$AV1_HDR10PLUS_TOOL_AVAILABLE" ]]; then
-        if command -v av1hdr10plus_tool &>/dev/null; then
+        if command -v "$AV_TOOL_AV1HDR10PLUS" &>/dev/null; then
             AV1_HDR10PLUS_TOOL_AVAILABLE=1
         else
             AV1_HDR10PLUS_TOOL_AVAILABLE=0
@@ -1263,6 +1288,7 @@ _check_dovi_tool_for() {
 _check_hdr10plus_tool_for() {
     case "${1:-hevc}" in
         av1) _check_av1_hdr10plus_tool ;;
+        apv) _apv_hdr10plus_engine_py >/dev/null 2>&1 ;;   # v69: engine propriu
         *)   _check_hdr10plus_tool ;;
     esac
 }
@@ -1275,7 +1301,7 @@ HDR10PLUS_TOOL_AVAILABLE=""
 
 _check_hdr10plus_tool() {
     if [[ -z "$HDR10PLUS_TOOL_AVAILABLE" ]]; then
-        if command -v hdr10plus_tool &>/dev/null; then
+        if command -v "$AV_TOOL_HDR10PLUS" &>/dev/null; then
             HDR10PLUS_TOOL_AVAILABLE=1
         else
             HDR10PLUS_TOOL_AVAILABLE=0
@@ -1293,6 +1319,22 @@ extract_hdr10plus_metadata() {
     json_file=$(av_mktemp_ext json)
     # Detectam codec-ul sursa pentru a alege bitstream filter-ul corect + tool
     src_codec=$(detect_source_codec "$file")
+    # v69: sursa APV → engine propriu (hdr10plus_tool/av1hdr10plus_tool nu cunosc APV)
+    if [[ "$src_codec" == "apv" ]]; then
+        echo "  HDR10+: Extrag metadata dinamica (codec=apv, engine=${AV_ENGINE_APV_HDR10PLUS##*/})..." | tee -a "${LOG_FILE:-/dev/null}" >&2
+        local _apv_json
+        if _apv_json=$(_apv_hdr10plus_extract "$file"); then
+            local _apv_count
+            _apv_count=$(grep -o '"SequenceFrameIndex"' "$_apv_json" 2>/dev/null | wc -l | tr -d '[:space:]')
+            echo "  HDR10+: Metadata extrasa ($_apv_count scene descriptors)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+            rm -f "$json_file"
+            echo "$_apv_json"
+            return 0
+        fi
+        echo "  HDR10+: Extractie esuata — fallback la HDR10 static" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        rm -f "$json_file"
+        return 1
+    fi
     hp_tool=$(tool_for_extract "$src_codec" hdr10plus)
     # Log pe stderr (nu stdout) — stdout e rezervat pentru calea JSON
     echo "  HDR10+: Extrag metadata dinamica (codec=$src_codec, tool=$hp_tool)..." | tee -a "${LOG_FILE:-/dev/null}" >&2
@@ -1354,7 +1396,7 @@ handle_hdr10plus_dialog() {
                 return 1
             fi
         else
-            local _need_hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _need_hp="av1hdr10plus_tool"
+            local _need_hp="$AV_TOOL_HDR10PLUS"; [[ "$src_codec" == "av1" ]] && _need_hp="$AV_TOOL_AV1HDR10PLUS"
             log "  HDR10+: $_need_hp indisponibil — encode HDR10 static (DV RPU pastrat)"
             return 1
         fi
@@ -1382,10 +1424,10 @@ handle_hdr10plus_dialog() {
             echo "  ║     → $triple_label"
         else
             echo "  ╠══════════════════════════════════════════════╣"
-            local _need_tool="dovi_tool"
+            local _need_tool="$AV_TOOL_DOVI"
             local _hint="dovi_parser.sh"
             if [[ "$target_codec" == "av1" ]]; then
-                _need_tool="av1dovi_tool"; _hint="av1dovi_parser.sh"
+                _need_tool="$AV_TOOL_AV1DOVI"; _hint="av1dovi_parser.sh"
             fi
             echo "  ║  $_need_tool NU este instalat.            "
             echo "  ║  Fara el, Triple-layer NU este disponibil.   ║"
@@ -1435,10 +1477,10 @@ handle_hdr10plus_dialog() {
         esac
     else
         # v45: tool-ul lipsa e pt source-codec (extract), nu target-codec
-        local _need_hp="hdr10plus_tool"
+        local _need_hp="$AV_TOOL_HDR10PLUS"
         local _hint_hp="hdr10plus_parser.sh"
         if [[ "$src_codec" == "av1" ]]; then
-            _need_hp="av1hdr10plus_tool"; _hint_hp="av1hdr10plus_parser.sh"
+            _need_hp="$AV_TOOL_AV1HDR10PLUS"; _hint_hp="av1hdr10plus_parser.sh"
         fi
         echo "  ║  $_need_hp NU este instalat (necesar pt sursa $src_codec)"
         echo "  ║  Fara el, metadata dinamica se pierde.       ║"
@@ -1464,7 +1506,7 @@ DOVI_TOOL_AVAILABLE=""
 
 _check_dovi_tool() {
     if [[ -z "$DOVI_TOOL_AVAILABLE" ]]; then
-        if command -v dovi_tool &>/dev/null; then
+        if command -v "$AV_TOOL_DOVI" &>/dev/null; then
             DOVI_TOOL_AVAILABLE=1
         else
             DOVI_TOOL_AVAILABLE=0
@@ -1593,6 +1635,123 @@ _detect_dji_dlogm() {
     fi
     rm -f "$dump"
     echo "unknown"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v69: APV HDR10+ — inject/extract T.35 (ST 2094-40) via engine partajat
+# src/apv_hdr10plus.py. APV (RFC 9924) suporta nativ metadata ITU-T T.35
+# (PBU type 66, payload type 4), dar ffmpeg nu o scrie (liboapv nu emite
+# metadata PBU) si nu o expune (decoderul nativ ignora T.35) → engine-ul
+# opereaza pe bitstream-ul brut (`ffmpeg -c copy -f apv`).
+# ══════════════════════════════════════════════════════════════════════
+
+# Echo calea python daca python3 + engine-ul exista; rc=1 altfel (soft-fail).
+_apv_hdr10plus_engine_py() {
+    [[ -f "$AV_ENGINE_APV_HDR10PLUS" ]] || return 1
+    _av_python
+}
+
+# Probe usor (detect_source_info / av_check): demux primele 3 AU-uri →
+# engine probe. Echo: hdr10plus | none. Soft-fail → none.
+_apv_hdr10plus_probe() {
+    local file="$1" py raw out=""
+    py=$(_apv_hdr10plus_engine_py) || { echo "none"; return 0; }
+    raw=$(av_mktemp_ext apv)
+    if ffmpeg -y -v error -i "$file" -map 0:v:0 -c:v copy -frames:v 3 -f apv "$raw" 2>/dev/null && [[ -s "$raw" ]]; then
+        out=$("$py" "$AV_ENGINE_APV_HDR10PLUS" probe -i "$raw" 2>/dev/null)
+    fi
+    rm -f "$raw"
+    case "$out" in hdr10plus*) echo "hdr10plus" ;; *) echo "none" ;; esac
+}
+
+# Extract JSON HDR10+ dintr-o sursa APV (orice container) → cale JSON pe stdout.
+_apv_hdr10plus_extract() {
+    local file="$1" py raw json_file
+    py=$(_apv_hdr10plus_engine_py) || return 1
+    raw=$(av_mktemp_ext apv); json_file=$(av_mktemp_ext json)
+    if ffmpeg -y -v error -i "$file" -map 0:v:0 -c:v copy -f apv "$raw" 2>/dev/null && [[ -s "$raw" ]]; then
+        if "$py" "$AV_ENGINE_APV_HDR10PLUS" extract -i "$raw" -o "$json_file" 2>>"${LOG_FILE:-/dev/null}" && [[ -s "$json_file" ]]; then
+            rm -f "$raw"
+            echo "$json_file"
+            return 0
+        fi
+    fi
+    rm -f "$raw" "$json_file"
+    return 1
+}
+
+# Post-encode: injecteaza HDR10+ (T.35 per frame) + MDCV/CLL static in
+# output-ul APV, in-place. Demux raw → engine inject → re-mux video +
+# audio/subs/attach din output. -framerate EXPLICIT la re-mux: raw APV nu
+# poarta timing → fara el demuxerul presupune un default gresit (validat).
+# rc=0 doar cu verificare probe post-remux reusita.
+_apv_hdr10plus_inject_output() {
+    local output="$1" json="$2" src_file="$3"
+    local py raw injected final fps cont_flags
+    py=$(_apv_hdr10plus_engine_py) || {
+        log "  APV HDR10+: ⚠ python3/engine indisponibil — output ramane HDR10 static"
+        return 1
+    }
+    log "  APV HDR10+: Injectez metadata dinamica T.35 in bitstream..."
+    fps=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate \
+        -of default=noprint_wrappers=1:nokey=1 "$output" 2>/dev/null | head -1 | tr -d '\r')
+    [[ -z "$fps" || "$fps" == "0/0" ]] && fps=30
+    raw=$(av_mktemp_ext apv)
+    local _dmx_rc=0
+    ffmpeg -y -v error -i "$output" -map 0:v:0 -c:v copy -f apv "$raw" 2>>"${LOG_FILE:-/dev/null}" || _dmx_rc=$?
+    if [ "$_dmx_rc" -ne 0 ] || [[ ! -s "$raw" ]]; then
+        log "  APV HDR10+: ⚠ demux raw esuat — output ramane HDR10 static"
+        rm -f "$raw"; return 1
+    fi
+    # MDCV/CLL statice din sursa (bonus: ffprobe le vede direct din bitstream —
+    # decoderul nativ apv CITESTE MDCV/CLL, doar T.35 e ignorat)
+    local static_args=()
+    hdr10_static_resolve "$src_file"
+    [[ -n "${HDR10_MASTER_DISPLAY_X265:-}" ]] && static_args+=(--master-display "$HDR10_MASTER_DISPLAY_X265")
+    [[ -n "${HDR10_MAX_CLL:-}" ]] && static_args+=(--max-cll "$HDR10_MAX_CLL")
+    injected=$(av_mktemp_ext apv)
+    local _inj_rc=0
+    "$py" "$AV_ENGINE_APV_HDR10PLUS" inject -i "$raw" -j "$json" -o "$injected" \
+        "${static_args[@]}" >>"${LOG_FILE:-/dev/null}" 2>&1 || _inj_rc=$?
+    rm -f "$raw"
+    if [ "$_inj_rc" -ne 0 ] || [[ ! -s "$injected" ]]; then
+        log "  APV HDR10+: ⚠ inject esuat (vezi log) — output ramane HDR10 static"
+        rm -f "$injected"; return 1
+    fi
+    final=$(av_mktemp_ext "$CONTAINER")
+    cont_flags=$(get_container_flags)
+    local _mux_rc=0
+    # -f apv FORTAT: probe-ul demuxerului cere primul PBU = frame/au_info, dar noi
+    # punem metadata INAINTE (necesar decoderului) → fara -f apv probe-ul pica.
+    # shellcheck disable=SC2086
+    ffmpeg -y -v error -f apv -framerate "$fps" -i "$injected" -i "$output" \
+        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? -c copy $cont_flags "$final" 2>>"${LOG_FILE:-/dev/null}" || _mux_rc=$?
+    rm -f "$injected"
+    if [ "$_mux_rc" -eq 0 ] && [[ -s "$final" ]]; then
+        mv -f "$final" "$output"
+        if [[ "$(_apv_hdr10plus_probe "$output")" == "hdr10plus" ]]; then
+            log "  APV HDR10+: ✓ T.35 per frame + MDCV/CLL injectate (verificat post-remux)"
+            # Plasa de siguranta OPTIONALA: decode-check cu decoderul de REFERINTA
+            # OpenAPV (instalabil cu tools/openapv_validator.sh) pe primele 3 AU.
+            # Tacut cand binarul lipseste; warn onest (fara fail) cand respinge.
+            if command -v "$AV_TOOL_OAPV_DEC" >/dev/null 2>&1; then
+                local _vref; _vref=$(av_mktemp_ext apv)
+                if ffmpeg -y -v error -i "$output" -map 0:v:0 -c:v copy -frames:v 3 -f apv "$_vref" 2>/dev/null \
+                   && "$AV_TOOL_OAPV_DEC" -i "$_vref" >/dev/null 2>&1; then
+                    log "  APV HDR10+: ✓ acceptat si de decoderul de referinta OpenAPV"
+                else
+                    log "  APV HDR10+: ⚠ ${AV_TOOL_OAPV_DEC} (referinta) a respins fisierul — verifica manual"
+                fi
+                rm -f "$_vref"
+            fi
+            return 0
+        fi
+        log "  APV HDR10+: ⚠ metadata nedetectata post-remux — posibil pierduta"
+        return 1
+    fi
+    log "  APV HDR10+: ⚠ re-mux esuat — output ramane HDR10 static"
+    rm -f "$final"
+    return 1
 }
 
 # v56: repara trailing byte-ul T.35 (0x80) pe care av1dovi_tool inject-rpu il
@@ -5236,6 +5395,9 @@ run_encode_loop() {
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"
         HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+        # v69: APV HDR10+ state (setat de av_encoder_apv encoder_setup_file)
+        [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"
+        APV_HDR10PLUS_JSON=""; APV_HDR10PLUS_INJECT=0
         HW_HDR_MODE=""
         HLG_DIALOG_MODE=""
         HDR10_MEASURE_CLL="${HDR10_MEASURE_CLL_BASE:-0}"   # v63: revine la baza env/profil per fisier
@@ -5358,6 +5520,7 @@ run_encode_loop() {
             [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
             [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
             TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+            [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"; APV_HDR10PLUS_JSON=""; APV_HDR10PLUS_INJECT=0
             TOTAL_ERRORS=$((TOTAL_ERRORS+1)); rm -f "$output"; continue
         fi
         rm -f "$_enc_err"
@@ -5399,9 +5562,26 @@ run_encode_loop() {
                     final_temp=$(av_mktemp_ext "$CONTAINER")
                     local cont_flags
                     cont_flags=$(get_container_flags)
-                    ffmpeg -v error -i "$injected_temp" -i "$output" \
-                        -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-                        -c copy $cont_flags "$final_temp" 2>>"$LOG_FILE"
+                    # v69 audit FIX: HEVC annexb brut nu are PTS pe B-frames →
+                    # muxerul matroska refuza (output gol). Tinta mkv pe HEVC →
+                    # pas intermediar MP4, apoi MP4→MKV. AV1/IVF neafectat.
+                    if [[ "$_tl_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then
+                        local _tl_step1 _tl_rc=1
+                        _tl_step1=$(av_mktemp_ext mp4)
+                        if ffmpeg -v error -y -i "$injected_temp" -i "$output" \
+                              -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+                              -c copy "$_tl_step1" 2>>"$LOG_FILE" && [ -s "$_tl_step1" ]; then
+                            ffmpeg -v error -y -i "$_tl_step1" -c copy "$final_temp" 2>>"$LOG_FILE"
+                            _tl_rc=$?
+                        fi
+                        rm -f "$_tl_step1"
+                        [ "$_tl_rc" -ne 0 ] && rm -f "$final_temp"
+                        test "$_tl_rc" -eq 0
+                    else
+                        ffmpeg -v error -i "$injected_temp" -i "$output" \
+                            -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+                            -c copy $cont_flags "$final_temp" 2>>"$LOG_FILE"
+                    fi
                     if [ $? -eq 0 ] && [ -s "$final_temp" ]; then
                         mv -f "$final_temp" "$output"
                         # v56: guard onest AV1 — inject-rpu produce metadata T.35 pe care ffmpeg
@@ -5427,6 +5607,14 @@ run_encode_loop() {
         [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+
+        # ── v69: APV HDR10+ — injecteaza T.35 + MDCV/CLL in bitstream-ul APV ──
+        # (post-encode, ca triple-layer; state setat de av_encoder_apv)
+        if [[ "${APV_HDR10PLUS_INJECT:-0}" == "1" ]] && [[ -n "${APV_HDR10PLUS_JSON:-}" ]]; then
+            _apv_hdr10plus_inject_output "$output" "$APV_HDR10PLUS_JSON" "$file"
+        fi
+        [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"; APV_HDR10PLUS_JSON=""
+        APV_HDR10PLUS_INJECT=0
 
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0

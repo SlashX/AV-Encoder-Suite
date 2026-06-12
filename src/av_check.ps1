@@ -261,6 +261,28 @@ function Test-DjiDLogM {
     return $mode
 }
 
+# v69: HDR10+ pe APV — decoderul ffmpeg IGNORA T.35 (nu apare in frame_side_data)
+# → probe prin engine-ul partajat src/apv_hdr10plus.py (primele 3 AU-uri).
+# Return: "hdr10plus" | "none". Soft-fail (python/engine lipsa) → "none".
+# Copie standalone (mirror Invoke-ApvHdr10PlusProbe din av_encode.ps1).
+function Invoke-ApvHdr10PlusProbe {
+    param([string]$File)
+    # v69: calea engine-ului env-overridable (AV_ENGINE_APV_HDR10PLUS, mirror av_common)
+    $engine = if ($env:AV_ENGINE_APV_HDR10PLUS) { $env:AV_ENGINE_APV_HDR10PLUS } else { Join-Path $PSScriptRoot "apv_hdr10plus.py" }
+    if (-not (Test-Path $engine)) { return "none" }
+    $py = _Get-AvPython
+    if (-not $py) { return "none" }
+    $raw = Join-Path $TempBase ("apvprobe_" + [guid]::NewGuid().ToString("N") + ".apv")
+    & ffmpeg -y -v error -i $File -map 0:v:0 -c:v copy -frames:v 3 -f apv $raw 2>$null | Out-Null
+    $result = "none"
+    if ((Test-Path $raw) -and (Get-Item $raw).Length -gt 0) {
+        $out = (& $py $engine probe -i $raw 2>$null | Select-Object -First 1)
+        if ($out -match '^hdr10plus') { $result = "hdr10plus" }
+    }
+    Remove-Item $raw -Force -ErrorAction SilentlyContinue
+    return $result
+}
+
 function Get-LogProfile {
     param([string]$file, [bool]$isDji)
     $allTags = & ffprobe -v error -show_entries format_tags `
@@ -464,8 +486,21 @@ foreach ($f in $inputFiles) {
         $tipHdr = "HLG"
     }
 
+    # v69: HDR10+ pe APV — ffprobe nu expune T.35 → probe engine (primele 3 AU).
+    # Doar upgrade HDR10/SDR → HDR10+ (mirror av_check.sh).
+    $apvHdrPlus = $false
+    if ($si.codec -eq "apv" -and $tipHdr -in @("HDR10","SDR")) {
+        if ((Invoke-ApvHdr10PlusProbe -File $f.FullName) -eq "hdr10plus") {
+            $tipHdr = "HDR10+"
+            $apvHdrPlus = $true
+        }
+    }
+
     # v57: HDR rich fields (color metadata + mastering + scene count)
-    $hdr = Get-HdrRichInfo $f.FullName $tipHdr ([bool]$si.isHDRPlus)
+    $hdr = Get-HdrRichInfo $f.FullName $tipHdr ([bool]($si.isHDRPlus -or $apvHdrPlus))
+    # v69: pe APV ffprobe nu expune T.35 → count-ul de scene ar fi mereu 0
+    # (derutant). Ramane onest "N/A" (detectia vine din engine-ul propriu).
+    if ($apvHdrPlus) { $hdr.hdr10PlusScenes = "N/A" }
 
     # Encoder recommendation
     $srcCodec = $si.codec

@@ -62,8 +62,16 @@ for t in "${TESTS[@]}"; do
     rc=$?
     case $rc in
         0)
-            echo "  ${GREEN}✓${RESET} $name"
-            passed=$((passed+1))
+            # v69: PASS cu 0 asertiuni = no-op silentios (dependinta lipsa /
+            # guard care sare tot) → tratat ca FAIL, nu fals-verde
+            if grep -q '(0 assertions)' "$log"; then
+                echo "  ${RED}✗${RESET} $name ${DIM}(0 asertiuni — no-op?)${RESET}"
+                failed=$((failed+1))
+                failed_names+=("$name (0 asertiuni)")
+            else
+                echo "  ${GREEN}✓${RESET} $name"
+                passed=$((passed+1))
+            fi
             ;;
         77)
             reason=$(grep '^SKIP ' "$log" | head -1 | sed 's/^SKIP[^—]*— //')

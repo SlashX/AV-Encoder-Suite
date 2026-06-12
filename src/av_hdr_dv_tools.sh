@@ -32,6 +32,25 @@ _hdv_combine_with_original() {
     shift 3
     local vtag_args=("$@")
     local cont_flags; cont_flags=$(get_container_flags)
+    # v69 audit FIX: HEVC annexb brut (post-inject dovi_tool) NU are PTS pe
+    # B-frames → muxerul matroska refuza ("Can't write packet with unknown
+    # timestamp", output gol). -fflags +genpts / -framerate NU ajuta (validat
+    # empiric). Ruta robusta pt tinta .mkv: pas intermediar MP4 (muxerul mp4
+    # deriva timestamps), apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
+    local _mod_ext="${modified##*.}"
+    if [[ ( "$_mod_ext" == "hevc" || "$_mod_ext" == "h265" || "$_mod_ext" == "265" ) \
+          && "${output##*.}" == "mkv" ]]; then
+        local _step1; _step1=$(av_mktemp_ext mp4)
+        local _rc=1
+        if ffmpeg -v error -y -i "$modified" -i "$original" \
+              -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+              -c copy "${vtag_args[@]}" "$_step1" 2>/dev/null && [[ -s "$_step1" ]]; then
+            ffmpeg -v error -y -i "$_step1" -c copy "$output" 2>/dev/null
+            _rc=$?
+        fi
+        rm -f "$_step1"
+        return $_rc
+    fi
     # shellcheck disable=SC2086
     ffmpeg -v error -i "$modified" -i "$original" \
         -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
@@ -86,7 +105,7 @@ hdv_flow_transform_rpu() {
     echo "  Codec sursa: $src_codec"
 
     echo ""
-    echo "  Mode dovi_tool convert (filtrate dupa codec sursa: $src_codec):"
+    echo "  Mode $AV_TOOL_DOVI convert (filtrate dupa codec sursa: $src_codec):"
     local _default_choice=1
     if [[ "$src_codec" == "hevc" ]]; then
         echo "    1) Force 8.1 (removes mapping, + HDR10 base)    [-m 2]"
@@ -115,7 +134,7 @@ hdv_flow_transform_rpu() {
     esac
 
     if ! _check_dovi_tool_for "$target_codec"; then
-        local _t="dovi_tool"; [[ "$target_codec" == "av1" ]] && _t="av1dovi_tool"
+        local _t="$AV_TOOL_DOVI"; [[ "$target_codec" == "av1" ]] && _t="$AV_TOOL_AV1DOVI"
         echo "  EROARE: $_t nu este instalat. Vezi src/tools/."
         return 1
     fi
@@ -179,7 +198,7 @@ hdv_flow_transform_rpu() {
         if [[ "$target_codec" == "av1" ]] && ! verify_dv_survived "$final_out" "$target_codec"; then
             echo ""
             echo "  ⚠ AVERTISMENT: stratul Dolby Vision a fost pierdut la re-mux."
-            echo "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg"
+            echo "    Cauza: $AV_TOOL_AV1DOVI inject-rpu produce metadata T.35 pe care ffmpeg"
             echo "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)."
             echo "    Fisier generat, dar FARA DV: $final_out"
             return 1
@@ -296,12 +315,12 @@ hdv_flow_hdr10plus_to_dv() {
         return 1
     fi
     if ! _check_hdr10plus_tool_for "$src_codec"; then
-        local _hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _hp="av1hdr10plus_tool"
+        local _hp="$AV_TOOL_HDR10PLUS"; [[ "$src_codec" == "av1" ]] && _hp="$AV_TOOL_AV1HDR10PLUS"
         echo "  EROARE: $_hp nu este instalat (necesar pt sursa $src_codec)."
         return 1
     fi
     if ! _check_dovi_tool_for "$src_codec"; then
-        local _dv="dovi_tool"; [[ "$src_codec" == "av1" ]] && _dv="av1dovi_tool"
+        local _dv="$AV_TOOL_DOVI"; [[ "$src_codec" == "av1" ]] && _dv="$AV_TOOL_AV1DOVI"
         echo "  EROARE: $_dv nu este instalat (necesar pt sinteza DV RPU)."
         return 1
     fi
@@ -372,7 +391,7 @@ hdv_flow_hdr10plus_to_dv() {
         if [[ "$src_codec" == "av1" ]] && ! verify_dv_survived "$final_out" "$src_codec"; then
             echo ""
             echo "  ⚠ AVERTISMENT: stratul Dolby Vision NU a fost adaugat (pierdut la re-mux)."
-            echo "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg"
+            echo "    Cauza: $AV_TOOL_AV1DOVI inject-rpu produce metadata T.35 pe care ffmpeg"
             echo "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)."
             echo "    Output-ul pastreaza HDR10/HDR10+ original, dar FARA strat DV: $final_out"
             return 1
@@ -412,7 +431,7 @@ hdv_flow_remove_dv() {
         return 1
     fi
     if ! _check_dovi_tool_for "$src_codec"; then
-        local _t="dovi_tool"; [[ "$src_codec" == "av1" ]] && _t="av1dovi_tool"
+        local _t="$AV_TOOL_DOVI"; [[ "$src_codec" == "av1" ]] && _t="$AV_TOOL_AV1DOVI"
         echo "  EROARE: $_t nu este instalat. Vezi src/tools/."
         return 1
     fi
@@ -482,7 +501,7 @@ hdv_flow_remove_hdr10plus() {
         return 1
     fi
     if ! _check_hdr10plus_tool_for "$src_codec"; then
-        local _hp="hdr10plus_tool"; [[ "$src_codec" == "av1" ]] && _hp="av1hdr10plus_tool"
+        local _hp="$AV_TOOL_HDR10PLUS"; [[ "$src_codec" == "av1" ]] && _hp="$AV_TOOL_AV1HDR10PLUS"
         echo "  EROARE: $_hp nu este instalat. Vezi src/tools/."
         return 1
     fi
@@ -543,7 +562,7 @@ hdv_flow_plot() {
         return 1
     fi
     if ! _check_dovi_tool_for "$src_codec"; then
-        local _t="dovi_tool"; [[ "$src_codec" == "av1" ]] && _t="av1dovi_tool"
+        local _t="$AV_TOOL_DOVI"; [[ "$src_codec" == "av1" ]] && _t="$AV_TOOL_AV1DOVI"
         echo "  EROARE: $_t nu este instalat. Vezi src/tools/."
         return 1
     fi

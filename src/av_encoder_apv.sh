@@ -80,20 +80,57 @@ encoder_setup_file() {
         log "  LOG detectat: $profile_label — APV pastreaza profilul Log intact (10/12-bit)."
     fi
 
-    # ── DV / HDR10+ — metadata dinamica NU se pastreaza in mezzanine ───
-    # APV nu transporta RPU Dolby Vision sau HDR10+ (SMPTE2094-40); iese baza
-    # HDR10 statica (PQ + mastering display + MaxCLL pastrate).
-    if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
-        log "  ATENTIE: DV + HDR10+ (hibrid) detectat — APV NU pastreaza nici RPU DV, nici HDR10+."
-        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
-        log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
-    elif [[ -n "${DOVI:-}" ]]; then
-        log "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV."
-        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+    # ── DV / HDR10+ pe APV ─────────────────────────────────────────────
+    # v69: HDR10+ SE PASTREAZA — APV suporta nativ ITU-T T.35 (RFC 9924);
+    # pipeline: extract JSON (tool-urile existente per codec sursa) → encode →
+    # inject T.35 per frame + MDCV/CLL post-encode (engine apv_hdr10plus.py).
+    # DV ramane nepreservabil (nu exista profil DV pentru APV).
+    APV_HDR10PLUS_INJECT=0; APV_HDR10PLUS_JSON=""
+    if [[ -n "${DOVI:-}" ]]; then
+        log "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV (nu exista profil DV pt APV)."
         log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
-    elif [[ -n "${HDR_PLUS:-}" ]]; then
-        log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
-        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+        [[ -n "${HDR_PLUS:-}" ]] && log "    Hibrid DV+HDR10+: stratul HDR10+ POATE fi pastrat (dialogul urmator)."
+    fi
+    if [[ -n "${HDR_PLUS:-}" ]]; then
+        local _src_vc _hp_choice
+        _src_vc=$(detect_source_codec "$file")
+        if ! _check_hdr10plus_tool_for "$_src_vc" || ! _apv_hdr10plus_engine_py >/dev/null 2>&1; then
+            # tool de extract pt codec-ul sursa SAU engine-ul de inject lipsesc
+            log "  ATENTIE: HDR10+ detectat, dar tool-ul de extract ($_src_vc) sau python3/engine lipsesc."
+            log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+        else
+            case "${APV_HDR10PLUS_POLICY:-}" in
+                preserve) _hp_choice=1 ;;
+                static)   _hp_choice=2 ;;
+                skip)     _hp_choice=3 ;;
+                *)
+                    echo ""
+                    echo "  ╔══════════════════════════════════════════════╗"
+                    echo "  ║  HDR10+ DETECTAT (target APV)                 ║"
+                    echo "  ╠══════════════════════════════════════════════╣"
+                    echo "  ║  1) Pastreaza HDR10+ (T.35 in bitstream APV) ║"
+                    echo "  ║     → extract JSON + inject post-encode      ║"
+                    echo "  ║  2) HDR10 static doar (pierde metadata +)    ║"
+                    echo "  ║  3) Skip fisier                              ║"
+                    echo "  ╚══════════════════════════════════════════════╝"
+                    read -p "  Alege 1-3 [implicit: 1]: " _hp_choice
+                    _hp_choice="${_hp_choice:-1}"
+                    ;;
+            esac
+            case "$_hp_choice" in
+                2) log "  HDR10+: Re-encode ca HDR10 static (fara metadata dinamica)" ;;
+                3) log "  HDR10+: Skip fisier"; return 98 ;;
+                *)
+                    APV_HDR10PLUS_JSON=$(extract_hdr10plus_metadata "$file")
+                    if [[ -n "$APV_HDR10PLUS_JSON" ]]; then
+                        APV_HDR10PLUS_INJECT=1
+                        log "  HDR10+: Metadata pregatita — se injecteaza in APV post-encode"
+                    else
+                        log "  HDR10+: Extractie esuata — re-encode ca HDR10 static"
+                    fi
+                    ;;
+            esac
+        fi
     fi
 
     # ── Dry-run ──────────────────────────────────────────────────────

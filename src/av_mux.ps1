@@ -1187,6 +1187,32 @@ function Invoke-MuxFlow {
         return
     }
 
+    # v69 audit FIX: video elementary BRUT annexb/OBU (hevc/h264/av1 — FARA PTS
+    # pe frame-uri reordonate) → muxerul matroska/webm refuza ("unknown
+    # timestamp", output gol). Pre-wrap in MP4 temporar, apoi mux normal.
+    # IVF si containerele NU sunt afectate (poarta PTS). Mirror av_mux.sh.
+    $rawWrap = ""
+    $vExt = [System.IO.Path]::GetExtension($video).TrimStart('.').ToLowerInvariant()
+    if ($Target -in @('mkv','webm') -and $vExt -in @('hevc','h265','265','h264','264','av1')) {
+        Write-Host "  Video brut .$vExt → pas intermediar MP4 (matroska/webm cer PTS)..." -ForegroundColor DarkGray
+        $rawWrap = Join-Path $TempBase ("muxwrap_" + [guid]::NewGuid().ToString("N") + ".mp4")
+        $wTag = switch ($vc) {
+            "hevc" { @("-tag:v","hvc1") }
+            "h264" { @("-tag:v","avc1") }
+            "av1"  { @("-tag:v","av01") }
+            default { @() }
+        }
+        $wArgs = @("-v","error","-y","-i",$video,"-map","0:v:0","-c","copy") + $wTag + @($rawWrap)
+        & ffmpeg @wArgs 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $rawWrap) -and (Get-Item $rawWrap).Length -gt 0) {
+            $video = $rawWrap
+        } else {
+            Remove-Item $rawWrap -Force -ErrorAction SilentlyContinue
+            Write-Host "  EROARE: impachetarea intermediara a video-ului brut a esuat — abort." -ForegroundColor Red
+            return
+        }
+    }
+
     $audioDropIdx = New-Object System.Collections.Generic.HashSet[int]
     $audioCodec = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $pickedAudio.Count; $i++) {
@@ -1404,7 +1430,7 @@ function Invoke-MuxFlow {
 
     Write-Host ""
     Write-Host "  -> $finalOut" -ForegroundColor Cyan
-    Write-Host ("  Video:       {0} ({1})" -f [System.IO.Path]::GetFileName($video), $vc)
+    Write-Host ("  Video:       {0} ({1})" -f $videoName, $vc)
     Write-Host ("  Audio:       {0} track(s)" -f $outAudioIdx)
     Write-Host ("  Subtitle:    {0} track(s)" -f $outSubIdx)
     $chMsg = if ($chaptersInputIdx -ge 0) { "1 file" } else { "none" }
@@ -1415,8 +1441,9 @@ function Invoke-MuxFlow {
     $allArgs = @("-y","-v","warning","-nostats") + @($inArgs) + @($mapArgs) + $chaptersArgs + $codecArgs + $extraArgs + @($metaArgs) + @($attachArgs) + @($finalOut)
     & ffmpeg @allArgs
     $rc = $LASTEXITCODE
-    # Cleanup temp FFMETADATA daca a fost generat
+    # Cleanup temp FFMETADATA daca a fost generat + MP4-ul intermediar (v69)
     if ($chaptersTmpFFMeta) { Remove-Item -LiteralPath $chaptersTmpFFMeta -Force -ErrorAction SilentlyContinue }
+    if ($rawWrap) { Remove-Item -LiteralPath $rawWrap -Force -ErrorAction SilentlyContinue }
     if ($rc -ne 0 -or -not (Test-Path -LiteralPath $finalOut) -or (Get-Item -LiteralPath $finalOut).Length -eq 0) {
         Write-Host "  EROARE: mux esuat." -ForegroundColor Red
         Remove-Item -LiteralPath $finalOut -Force -ErrorAction SilentlyContinue

@@ -1303,11 +1303,11 @@ function Invoke-PipelineFlow {
                         Write-Host "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+->DV in HDR/DV tools (opt 8)." -ForegroundColor DarkGray
                     } elseif ($hdrMode -eq "hdr10plus") {
                         Write-Host ""
-                        Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita hdr10plus_tool)" -ForegroundColor Cyan
+                        Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita $(Get-ToolForExtract -Codec hevc -Kind hdr10plus))" -ForegroundColor Cyan
                         Write-Host "     1) Da [default]   2) Nu (doar HDR10 static)"
                         $hdr10pCh = Read-Host "     Alege 1-2"
                         if (-not $hdr10pCh -or $hdr10pCh -eq "1") {
-                            $toolAvail = [bool](Get-Command "hdr10plus_tool" -ErrorAction SilentlyContinue)
+                            $toolAvail = [bool](Get-Command (Get-ToolForExtract -Codec "hevc" -Kind "hdr10plus") -ErrorAction SilentlyContinue)
                             if ($toolAvail) {
                                 $hdr10pJson = Extract-Hdr10PlusMetadata $trimmedFiles[0]
                                 if ($hdr10pJson -and (Test-Path $hdr10pJson) -and (Get-Item $hdr10pJson).Length -gt 0) {
@@ -1319,7 +1319,7 @@ function Invoke-PipelineFlow {
                                     Write-Host "     /!\ Extragere HDR10+ esuata. Fallback HDR10 static." -ForegroundColor Yellow
                                 }
                             } else {
-                                Write-Host "     /!\ hdr10plus_tool NU este instalat. Fallback HDR10 static." -ForegroundColor Yellow
+                                Write-Host "     /!\ $(Get-ToolForExtract -Codec hevc -Kind hdr10plus) NU este instalat. Fallback HDR10 static." -ForegroundColor Yellow
                                 Write-Host "       Instaleaza: $ToolsDir\hdr10plus_parser.ps1" -ForegroundColor DarkGray
                             }
                         }
@@ -2086,6 +2086,10 @@ function Get-SourceInfo {
         "$file" 2>$null | Select-String "HDR10+"
     $is10bit  = $pixFmt -match "10"
     $isHDRPlus = [bool]$hdrPlus
+    # v69: HDR10+ pe surse APV — decoderul ffmpeg ignora T.35 → probe engine (3 AU)
+    if (-not $isHDRPlus -and $codec -eq "apv") {
+        if ((Invoke-ApvHdr10PlusProbe -File $file) -eq "hdr10plus") { $isHDRPlus = $true }
+    }
     $isHDR    = $transfer -eq "smpte2084" -or $isHDRPlus
     # HLG: BT.2100 HLG signaling. Mutual-exclusive cu HDR10/HDR10+.
     # Apple Log poate raporta arib-std-b67 — refinare la Get-SourceInfoExtended cu logProfile.
@@ -2313,6 +2317,14 @@ function Get-SourceInfoExtended {
             -read_intervals "%+#5" -show_entries frame_side_data=side_data_type `
             "$file" 2>$null | Select-String "HDR10+"
         $isHdrPlus = [bool]$hdrPlus
+        # v69: HDR10+ pe surse APV — decoderul ffmpeg IGNORA T.35 (nu apare in
+        # frame_side_data) → probe prin engine-ul apv_hdr10plus.py (primele 3 AU).
+        if (-not $isHdrPlus) {
+            $apvVc = Get-FFprobeValue $file "v:0" "codec_name"
+            if ($apvVc -eq "apv" -and (Invoke-ApvHdr10PlusProbe -File $file) -eq "hdr10plus") {
+                $isHdrPlus = $true
+            }
+        }
         $isHdr = ($transfer -eq "smpte2084") -or $isHdrPlus
         $dovi = & ffprobe -v error -show_entries stream=codec_tag_string `
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null |
@@ -2755,6 +2767,10 @@ function Get-SourceCodec {
 }
 
 # Get-ToolForExtract -Codec <hevc|av1|...> -Kind <dovi|hdr10plus>
+# v69: SURSA UNICA pentru numele binarelor externe DV/HDR10+ (env-overridable
+# prin AV_TOOL_* — accepta si cale absoluta). Executia/check-urile/hint-urile
+# trec EXCLUSIV pe aici; nu hardcoda numele in alta parte (mirror AV_TOOL_*
+# din av_common.sh).
 function Get-ToolForExtract {
     param(
         [string]$Codec = "hevc",
@@ -2762,14 +2778,14 @@ function Get-ToolForExtract {
     )
     if ($Codec -eq "av1") {
         switch ($Kind) {
-            "dovi"      { return "av1dovi_tool" }
-            "hdr10plus" { return "av1hdr10plus_tool" }
+            "dovi"      { return $(if ($env:AV_TOOL_AV1DOVI) { $env:AV_TOOL_AV1DOVI } else { "av1dovi_tool" }) }
+            "hdr10plus" { return $(if ($env:AV_TOOL_AV1HDR10PLUS) { $env:AV_TOOL_AV1HDR10PLUS } else { "av1hdr10plus_tool" }) }
             default     { return "" }
         }
     } else {
         switch ($Kind) {
-            "dovi"      { return "dovi_tool" }
-            "hdr10plus" { return "hdr10plus_tool" }
+            "dovi"      { return $(if ($env:AV_TOOL_DOVI) { $env:AV_TOOL_DOVI } else { "dovi_tool" }) }
+            "hdr10plus" { return $(if ($env:AV_TOOL_HDR10PLUS) { $env:AV_TOOL_HDR10PLUS } else { "hdr10plus_tool" }) }
             default     { return "" }
         }
     }
@@ -2785,11 +2801,11 @@ function Get-ToolForInject {
 }
 
 function Test-Av1DoviTool {
-    return [bool](Get-Command "av1dovi_tool" -ErrorAction SilentlyContinue)
+    return [bool](Get-Command (Get-ToolForExtract -Codec "av1" -Kind "dovi") -ErrorAction SilentlyContinue)
 }
 
 function Test-Av1Hdr10PlusTool {
-    return [bool](Get-Command "av1hdr10plus_tool" -ErrorAction SilentlyContinue)
+    return [bool](Get-Command (Get-ToolForExtract -Codec "av1" -Kind "hdr10plus") -ErrorAction SilentlyContinue)
 }
 
 # v44: detecteaza daca SVT-AV1 din ffmpeg curent suporta hdr10plus-json
@@ -2806,13 +2822,14 @@ function Test-SvtAv1Hdr10PlusCaps {
 function Test-DoviToolFor {
     param([string]$Codec = "hevc")
     if ($Codec -eq "av1") { return (Test-Av1DoviTool) }
-    return [bool](Get-Command "dovi_tool" -ErrorAction SilentlyContinue)
+    return [bool](Get-Command (Get-ToolForExtract -Codec "hevc" -Kind "dovi") -ErrorAction SilentlyContinue)
 }
 
 function Test-Hdr10PlusToolFor {
     param([string]$Codec = "hevc")
     if ($Codec -eq "av1") { return (Test-Av1Hdr10PlusTool) }
-    return [bool](Get-Command "hdr10plus_tool" -ErrorAction SilentlyContinue)
+    if ($Codec -eq "apv") { return [bool](Get-ApvHdr10PlusEnginePy) }   # v69: engine propriu
+    return [bool](Get-Command (Get-ToolForExtract -Codec "hevc" -Kind "hdr10plus") -ErrorAction SilentlyContinue)
 }
 
 # ── Show-Hdr10PlusDialog — HDR10+ dialog per fisier ────────────────
@@ -2837,7 +2854,7 @@ function Show-Hdr10PlusDialog {
     if ($hdr10plusToolAvail) {
         Write-Host "  ║  1) Re-encode HDR10 static (pierde +)        ║" -ForegroundColor White
         Write-Host "  ║  2) Re-encode HDR10+ (pastreaza metadata)    ║" -ForegroundColor White
-        Write-Host "  ║     → extrage JSON via hdr10plus_tool        ║" -ForegroundColor DarkGray
+        Write-Host "  ║     → extrage JSON via $(Get-ToolForExtract -Codec hevc -Kind hdr10plus)        ║" -ForegroundColor DarkGray
         Write-Host "  ║  3) Stream copy video (pastreaza tot, rapid) ║" -ForegroundColor White
         $maxOpt = 3
         if ($doviToolAvail) {
@@ -2846,7 +2863,7 @@ function Show-Hdr10PlusDialog {
             Write-Host "  ║     → $tlLabel" -ForegroundColor DarkGray
             $maxOpt = 4
         } else {
-            $needTool = if ($TargetCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+            $needTool = Get-ToolForExtract -Codec $TargetCodec -Kind "dovi"
             $hint     = if ($TargetCodec -eq "av1") { "av1dovi_parser.ps1" } else { "dovi_parser.ps1" }
             Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
             Write-Host "  ║  $needTool NU este instalat." -ForegroundColor Yellow
@@ -2864,7 +2881,7 @@ function Show-Hdr10PlusDialog {
         }
     } else {
         # v45: tool-ul lipsa e pt source-codec (extract), nu target-codec
-        $needHp = if ($srcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+        $needHp = Get-ToolForExtract -Codec $srcCodec -Kind "hdr10plus"
         $hintHp = if ($srcCodec -eq "av1") { "av1hdr10plus_parser.ps1" } else { "hdr10plus_parser.ps1" }
         Write-Host "  ║  $needHp NU este instalat (necesar pt sursa $srcCodec)" -ForegroundColor Yellow
         Write-Host "  ║  Fara el, metadata dinamica se pierde.       ║" -ForegroundColor Yellow
@@ -2891,6 +2908,18 @@ function Extract-Hdr10PlusMetadata {
     Ensure-TempDir
     $jsonFile = Join-Path $AV_TEMP_DIR ("hdr10plus_"+[guid]::NewGuid().ToString("N")+".json")
     $srcCodec = Get-FFprobeValue $file "v:0" "codec_name"
+    # v69: sursa APV → engine propriu (hdr10plus_tool/av1hdr10plus_tool nu cunosc APV)
+    if ($srcCodec -eq "apv") {
+        Write-Host "  HDR10+: Extrag metadata dinamica (codec=apv, engine=$(Split-Path -Leaf (Get-ApvHdr10PlusEnginePath)))..." -ForegroundColor Cyan
+        $apvJson = Invoke-ApvHdr10PlusExtract -File $file
+        if ($apvJson) {
+            $apvCount = ([regex]::Matches((Get-Content $apvJson -Raw), '"SequenceFrameIndex"')).Count
+            Write-Host "  HDR10+: Metadata extrasa ($apvCount scene descriptors)" -ForegroundColor Green
+            return $apvJson
+        }
+        Write-Host "  HDR10+: Extractie esuata — fallback la HDR10 static" -ForegroundColor Yellow
+        return ""
+    }
     $hpTool   = Get-ToolForExtract -Codec $srcCodec -Kind "hdr10plus"
     Write-Host "  HDR10+: Extrag metadata dinamica (codec=$srcCodec, tool=$hpTool)..." -ForegroundColor Cyan
     # v55 audit FIX: fisier intermediar (NU pipe ffmpeg|tool). In PowerShell pipe-ul
@@ -3048,6 +3077,160 @@ function Test-DjiDLogM {
     }
     Remove-Item $dump -Force -ErrorAction SilentlyContinue
     return $mode
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v69: APV HDR10+ — inject/extract T.35 (ST 2094-40) via engine partajat
+# src/apv_hdr10plus.py (mirror bash _apv_hdr10plus_*). APV suporta nativ
+# metadata ITU-T T.35 (RFC 9924), dar ffmpeg nu o scrie (liboapv) si nu o
+# expune (decoderul ignora T.35) → engine pe bitstream brut (-c copy -f apv).
+# ══════════════════════════════════════════════════════════════════════
+
+# v69: calea engine-ului — SURSA UNICA (env-overridable prin
+# AV_ENGINE_APV_HDR10PLUS; mirror variabila omonima din av_common.sh).
+function Get-ApvHdr10PlusEnginePath {
+    # env+default pe ACEEASI linie (conventia surselor unice — invariantul
+    # test_v69_no_hardcoded_tools valideaza ca default-ul sta langa env)
+    return $(if ($env:AV_ENGINE_APV_HDR10PLUS) { $env:AV_ENGINE_APV_HDR10PLUS } else { Join-Path $PSScriptRoot "apv_hdr10plus.py" })
+}
+
+# Interpretorul python daca engine-ul exista; $null altfel (soft-fail).
+function Get-ApvHdr10PlusEnginePy {
+    $engine = Get-ApvHdr10PlusEnginePath
+    if (-not (Test-Path $engine)) { return $null }
+    return (_Get-AvPython)
+}
+
+# Probe usor (detectie): demux primele 3 AU-uri → engine probe.
+# Return: "hdr10plus" | "none". Soft-fail → "none".
+function Invoke-ApvHdr10PlusProbe {
+    param([string]$File)
+    $py = Get-ApvHdr10PlusEnginePy
+    if (-not $py) { return "none" }
+    $engine = Get-ApvHdr10PlusEnginePath
+    Ensure-TempDir
+    $raw = Join-Path $AV_TEMP_DIR ("apvprobe_" + [guid]::NewGuid().ToString("N") + ".apv")
+    & ffmpeg -y -v error -i $File -map 0:v:0 -c:v copy -frames:v 3 -f apv $raw 2>$null | Out-Null
+    $result = "none"
+    if ((Test-Path $raw) -and (Get-Item $raw).Length -gt 0) {
+        $out = (& $py $engine probe -i $raw 2>$null | Select-Object -First 1)
+        if ($out -match '^hdr10plus') { $result = "hdr10plus" }
+    }
+    Remove-Item $raw -Force -ErrorAction SilentlyContinue
+    return $result
+}
+
+# Extract JSON HDR10+ dintr-o sursa APV (orice container) → calea JSON sau "".
+function Invoke-ApvHdr10PlusExtract {
+    param([string]$File)
+    $py = Get-ApvHdr10PlusEnginePy
+    if (-not $py) { return "" }
+    $engine = Get-ApvHdr10PlusEnginePath
+    Ensure-TempDir
+    $raw = Join-Path $AV_TEMP_DIR ("apvraw_" + [guid]::NewGuid().ToString("N") + ".apv")
+    $jsonFile = Join-Path $AV_TEMP_DIR ("hdr10plus_" + [guid]::NewGuid().ToString("N") + ".json")
+    & ffmpeg -y -v error -i $File -map 0:v:0 -c:v copy -f apv $raw 2>$null | Out-Null
+    $ok = $false
+    if ((Test-Path $raw) -and (Get-Item $raw).Length -gt 0) {
+        & $py $engine extract -i $raw -o $jsonFile 2>>"$LogFile" | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $jsonFile) -and (Get-Item $jsonFile).Length -gt 0) { $ok = $true }
+    }
+    Remove-Item $raw -Force -ErrorAction SilentlyContinue
+    if ($ok) { return $jsonFile }
+    Remove-Item $jsonFile -Force -ErrorAction SilentlyContinue
+    return ""
+}
+
+# Post-encode: injecteaza HDR10+ (T.35 per frame) + MDCV/CLL static in output-ul
+# APV, in-place. -framerate EXPLICIT la re-mux: raw APV nu poarta timing → fara
+# el demuxerul presupune un default gresit (validat empiric). Mirror bash
+# _apv_hdr10plus_inject_output. Return $true doar cu verificare probe reusita.
+function Invoke-ApvHdr10PlusInject {
+    param(
+        [string]$OutFile,
+        [string]$Json,
+        [string]$SrcFile,
+        [string]$Container
+    )
+    $py = Get-ApvHdr10PlusEnginePy
+    if (-not $py) {
+        Write-Host "  APV HDR10+: ⚠ python3/engine indisponibil — output ramane HDR10 static" -ForegroundColor Yellow
+        return $false
+    }
+    $engine = Get-ApvHdr10PlusEnginePath
+    Write-Host "  APV HDR10+: Injectez metadata dinamica T.35 in bitstream..." -ForegroundColor Cyan
+    $fps = Get-FFprobeValue $OutFile "v:0" "r_frame_rate"
+    if (-not $fps -or $fps -eq "0/0") { $fps = "30" }
+    Ensure-TempDir
+    $raw = Join-Path $AV_TEMP_DIR ("apvraw_" + [guid]::NewGuid().ToString("N") + ".apv")
+    & ffmpeg -y -v error -i $OutFile -map 0:v:0 -c:v copy -f apv $raw 2>>"$LogFile"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
+        Write-Host "  APV HDR10+: ⚠ demux raw esuat — output ramane HDR10 static" -ForegroundColor Yellow
+        Remove-Item $raw -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    # MDCV/CLL statice din sursa (decoderul nativ apv LE CITESTE — doar T.35 e ignorat)
+    $staticArgs = @()
+    Resolve-Hdr10Static -File $SrcFile
+    if ($script:hdr10MasterDisplayX265) { $staticArgs += @("--master-display", $script:hdr10MasterDisplayX265) }
+    if ($script:hdr10MaxCll)            { $staticArgs += @("--max-cll", $script:hdr10MaxCll) }
+    $injected = Join-Path $AV_TEMP_DIR ("apvinj_" + [guid]::NewGuid().ToString("N") + ".apv")
+    & $py $engine inject -i $raw -j $Json -o $injected @staticArgs 2>>"$LogFile" | Out-Null
+    $injRc = $LASTEXITCODE
+    Remove-Item $raw -Force -ErrorAction SilentlyContinue
+    if ($injRc -ne 0 -or -not (Test-Path $injected) -or (Get-Item $injected).Length -eq 0) {
+        Write-Host "  APV HDR10+: ⚠ inject esuat (vezi log) — output ramane HDR10 static" -ForegroundColor Yellow
+        Remove-Item $injected -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+    $final = Join-Path $AV_TEMP_DIR ("apvfinal_" + [guid]::NewGuid().ToString("N") + ".$Container")
+    $contFlags = Get-ContainerFlags $Container
+    # -f apv FORTAT: probe-ul demuxerului cere primul PBU = frame/au_info, dar noi
+    # punem metadata INAINTE (necesar decoderului) → fara -f apv probe-ul pica.
+    $muxArgs = @("-y","-v","error","-f","apv","-framerate",$fps,"-i",$injected,"-i",$OutFile,
+                 "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                 "-c","copy") + $contFlags + @($final)
+    & ffmpeg @muxArgs 2>>"$LogFile"
+    $muxRc = $LASTEXITCODE
+    Remove-Item $injected -Force -ErrorAction SilentlyContinue
+    if ($muxRc -eq 0 -and (Test-Path $final) -and (Get-Item $final).Length -gt 0) {
+        Move-Item -Force $final $OutFile
+        if ((Invoke-ApvHdr10PlusProbe -File $OutFile) -eq "hdr10plus") {
+            Write-Host "  APV HDR10+: ✓ T.35 per frame + MDCV/CLL injectate (verificat post-remux)" -ForegroundColor Green
+            # Plasa de siguranta OPTIONALA: decode-check cu decoderul de REFERINTA
+            # OpenAPV (instalabil cu tools/openapv_validator.ps1) — PATH sau tools/.
+            # Tacut cand binarul lipseste; warn onest (fara fail) cand respinge.
+            # v69: numele vine din env AV_TOOL_OAPV_DEC (mirror av_common.sh);
+            # accepta si cale absoluta (fallback-ul tools/ doar pe nume simplu).
+            $oapvName = if ($env:AV_TOOL_OAPV_DEC) { $env:AV_TOOL_OAPV_DEC } else { "oapv_app_dec" }
+            $oapvDec = (Get-Command $oapvName -ErrorAction SilentlyContinue).Source
+            if (-not $oapvDec -and $ToolsDir -and ($oapvName -notmatch '[\\/]')) {
+                $oapvCand = Join-Path $ToolsDir "$oapvName.exe"
+                if (Test-Path $oapvCand) { $oapvDec = $oapvCand }
+            }
+            if ($oapvDec) {
+                $vref = Join-Path $AV_TEMP_DIR ("apvref_" + [guid]::NewGuid().ToString("N") + ".apv")
+                & ffmpeg -y -v error -i $OutFile -map 0:v:0 -c:v copy -frames:v 3 -f apv $vref 2>$null | Out-Null
+                $refOk = $false
+                if ((Test-Path $vref) -and (Get-Item $vref).Length -gt 0) {
+                    & $oapvDec -i $vref 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) { $refOk = $true }
+                }
+                Remove-Item $vref -Force -ErrorAction SilentlyContinue
+                if ($refOk) {
+                    Write-Host "  APV HDR10+: ✓ acceptat si de decoderul de referinta OpenAPV" -ForegroundColor Green
+                } else {
+                    Write-Host "  APV HDR10+: ⚠ $oapvName (referinta) a respins fisierul — verifica manual" -ForegroundColor Yellow
+                }
+            }
+            return $true
+        }
+        Write-Host "  APV HDR10+: ⚠ metadata nedetectata post-remux — posibil pierduta" -ForegroundColor Yellow
+        return $false
+    }
+    Write-Host "  APV HDR10+: ⚠ re-mux esuat — output ramane HDR10 static" -ForegroundColor Yellow
+    Remove-Item $final -Force -ErrorAction SilentlyContinue
+    return $false
 }
 
 # ── Inject-DvRpu — injecteaza DV RPU in HEVC sau AV1 stream ────────
@@ -3564,6 +3747,26 @@ function Invoke-HdvCombineWithOriginal {
     )
     $ext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
     $contFlags = Get-ContainerFlags $ext
+    # v69 audit FIX: HEVC annexb brut (post-inject dovi_tool) NU are PTS pe
+    # B-frames → muxerul matroska refuza ("unknown timestamp", output gol);
+    # genpts/-framerate NU ajuta (validat empiric). Tinta .mkv pe HEVC →
+    # pas intermediar MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
+    $modExt = [System.IO.Path]::GetExtension($Modified).TrimStart('.').ToLowerInvariant()
+    if ($modExt -in @('hevc','h265','265') -and $ext -eq 'mkv') {
+        Ensure-TempDir
+        $step1 = Join-Path $AV_TEMP_DIR ("hdvstep1_" + [guid]::NewGuid().ToString("N") + ".mp4")
+        $a1 = @("-v","error","-y","-i",$Modified,"-i",$Original,
+                "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                "-c","copy") + $VTag + @($step1)
+        & ffmpeg @a1 2>$null
+        $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $step1) -and (Get-Item $step1).Length -gt 0)
+        if ($ok) {
+            & ffmpeg -v error -y -i $step1 -c copy $Output 2>$null
+            $ok = ($LASTEXITCODE -eq 0)
+        }
+        Remove-Item $step1 -Force -ErrorAction SilentlyContinue
+        return $ok
+    }
     $args = @("-v","error","-i",$Modified,"-i",$Original,
               "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
               "-c","copy") + $VTag + $contFlags + @($Output)
@@ -3584,7 +3787,7 @@ function Invoke-TransformRpu {
     Write-Host "  Codec sursa: $srcCodec"
 
     Write-Host ""
-    Write-Host "  Mode dovi_tool convert (filtrate dupa codec sursa: $srcCodec):" -ForegroundColor White
+    Write-Host "  Mode $(Get-ToolForExtract -Codec hevc -Kind dovi) convert (filtrate dupa codec sursa: $srcCodec):" -ForegroundColor White
     $defaultChoice = "1"
     if ($srcCodec -eq "hevc") {
         Write-Host "    1) Force 8.1 (removes mapping, + HDR10 base)    [-m 2]"
@@ -3621,7 +3824,7 @@ function Invoke-TransformRpu {
         default { Write-Host "Optiune invalida." -ForegroundColor Red; return }
     }
     if (-not (Test-DoviToolFor -Codec $targetCodec)) {
-        $t = if ($targetCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+        $t = Get-ToolForExtract -Codec $targetCodec -Kind "dovi"
         Write-Host "  EROARE: $t nu este instalat. Vezi src/tools/." -ForegroundColor Red
         return
     }
@@ -3678,7 +3881,7 @@ function Invoke-TransformRpu {
         if ($targetCodec -eq "av1" -and -not (Test-DvSurvived -File $finalOut -Codec $targetCodec)) {
             Write-Host ""
             Write-Host "  ⚠ AVERTISMENT: stratul Dolby Vision a fost pierdut la re-mux." -ForegroundColor Yellow
-            Write-Host "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg" -ForegroundColor Yellow
+            Write-Host "    Cauza: $(Get-ToolForExtract -Codec av1 -Kind dovi) inject-rpu produce metadata T.35 pe care ffmpeg" -ForegroundColor Yellow
             Write-Host "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)." -ForegroundColor Yellow
             Write-Host "    Fisier generat, dar FARA DV: $finalOut" -ForegroundColor Yellow
         } else {
@@ -3771,12 +3974,12 @@ function Invoke-Hdr10PlusToDv {
         return
     }
     if (-not (Test-Hdr10PlusToolFor -Codec $srcCodec)) {
-        $hp = if ($srcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+        $hp = Get-ToolForExtract -Codec $srcCodec -Kind "hdr10plus"
         Write-Host "  EROARE: $hp nu este instalat (necesar pt sursa $srcCodec)." -ForegroundColor Red
         return
     }
     if (-not (Test-DoviToolFor -Codec $srcCodec)) {
-        $dv = if ($srcCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+        $dv = Get-ToolForExtract -Codec $srcCodec -Kind "dovi"
         Write-Host "  EROARE: $dv nu este instalat (necesar pt sinteza DV RPU)." -ForegroundColor Red
         return
     }
@@ -3835,7 +4038,7 @@ function Invoke-Hdr10PlusToDv {
         if ($srcCodec -eq "av1" -and -not (Test-DvSurvived -File $finalOut -Codec $srcCodec)) {
             Write-Host ""
             Write-Host "  ⚠ AVERTISMENT: stratul Dolby Vision NU a fost adaugat (pierdut la re-mux)." -ForegroundColor Yellow
-            Write-Host "    Cauza: av1dovi_tool inject-rpu produce metadata T.35 pe care ffmpeg" -ForegroundColor Yellow
+            Write-Host "    Cauza: $(Get-ToolForExtract -Codec av1 -Kind dovi) inject-rpu produce metadata T.35 pe care ffmpeg" -ForegroundColor Yellow
             Write-Host "    o respinge la pachetizare (known issue toolchain AV1 DV — Tier 4)." -ForegroundColor Yellow
             Write-Host "    Output-ul pastreaza HDR10/HDR10+ original, dar FARA strat DV: $finalOut" -ForegroundColor Yellow
         } else {
@@ -3868,7 +4071,7 @@ function Invoke-RemoveDv {
         return
     }
     if (-not (Test-DoviToolFor -Codec $srcCodec)) {
-        $t = if ($srcCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+        $t = Get-ToolForExtract -Codec $srcCodec -Kind "dovi"
         Write-Host "  EROARE: $t nu este instalat. Vezi src/tools/." -ForegroundColor Red
         return
     }
@@ -3929,7 +4132,7 @@ function Invoke-RemoveHdr10Plus {
         return
     }
     if (-not (Test-Hdr10PlusToolFor -Codec $srcCodec)) {
-        $hp = if ($srcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+        $hp = Get-ToolForExtract -Codec $srcCodec -Kind "hdr10plus"
         Write-Host "  EROARE: $hp nu este instalat. Vezi src/tools/." -ForegroundColor Red
         return
     }
@@ -3985,7 +4188,7 @@ function Invoke-PlotDvMetadata {
         return
     }
     if (-not (Test-DoviToolFor -Codec $srcCodec)) {
-        $t = if ($srcCodec -eq "av1") { "av1dovi_tool" } else { "dovi_tool" }
+        $t = Get-ToolForExtract -Codec $srcCodec -Kind "dovi"
         Write-Host "  EROARE: $t nu este instalat. Vezi src/tools/." -ForegroundColor Red
         return
     }
@@ -7128,6 +7331,8 @@ foreach ($f in $inputFiles) {
     $tripleLayerTargetCodec = "hevc"
     $hdr10PlusJson = ""
     $doviRpuFile = ""
+    # v69: reset defensiv state APV HDR10+ per fisier (setat in sectiunea APV)
+    $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
     # v61: reset CWD ffmpeg per fisier (HDR10+ inline / 2-pass stats); pastreaza-l daca
     # vidstab e activ ($trfFile setat mai sus) — transform-ul refera .trf prin nume gol.
     if (-not $trfFile) { $script:ffmpegWorkDir = "" }
@@ -7314,7 +7519,7 @@ foreach ($f in $inputFiles) {
             Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
         if ($doViAv1) {
             $av1DoviAvail = (Test-Av1DoviTool) -and ($av1Impl -eq "libsvtav1")
-            $hevcDoviAvail = [bool](Get-Command "dovi_tool" -ErrorAction SilentlyContinue)
+            $hevcDoviAvail = [bool](Get-Command (Get-ToolForExtract -Codec "hevc" -Kind "dovi") -ErrorAction SilentlyContinue)
             Write-Host ""
             Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
             Write-Host "  ║  DOLBY VISION detectat                       ║" -ForegroundColor Magenta
@@ -7780,13 +7985,13 @@ foreach ($f in $inputFiles) {
                 Write-Host "  ⚠ H.264 HW nu suporta SEI HDR10 — pastrez HLG nativ" -ForegroundColor Yellow
                 $hlgResultHw = "hlg_native"
             }
+            # v69 FIX: skip/copy prin FLAG, nu `continue` in switch — `continue`
+            # intr-un switch iese DOAR din switch (nu sare fisierul): "skip" era
+            # contorizat dar fisierul se encoda oricum; "copy" facea stream copy
+            # si apoi encode-ul SUPRASCRIA output-ul. Confirmat empiric PS 5.1 + 7.x.
             switch ($hlgResultHw) {
-                "copy" {
-                    $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
-                    if (-not $scOk) { $totalErrors++ }
-                    continue
-                }
-                "skip" { $totalSkipped++; continue }
+                "copy" { $doStreamCopy = $true }
+                "skip" { $skipFile = $true }
                 "hlg_native" {
                     # v53: VUI via BSF
                     $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hlg"
@@ -7807,6 +8012,12 @@ foreach ($f in $inputFiles) {
                     else { $videoFilter = @("-vf",$hlgSdrVf) }
                 }
             }
+        }
+        if ($skipFile) { $totalSkipped++; continue }
+        if ($doStreamCopy) {
+            $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
+            if (-not $scOk) { $totalErrors++ }
+            continue
         }
 
         # v53: $hwColorFlags conține acum BSF (Get-HwVuiBsf), nu mai e -color_primaries
@@ -7937,19 +8148,57 @@ foreach ($f in $inputFiles) {
         $apvPixFmtFf = switch ($apvPixFmt) {
             "422_12" { "yuv422p12le" } "444_10" { "yuv444p10le" } "444_12" { "yuv444p12le" } "4444_10" { "yuva444p10le" } default { "yuv422p10le" }
         }
-        # DV / HDR10+ — APV nu transporta RPU DV sau HDR10+; iese baza HDR10 statica.
-        if ($logInfo.isDV -and $si.isHDRPlus) {
-            Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — APV NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
-            Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
-        } elseif ($logInfo.isDV) {
-            Write-Host "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+        # v69: HDR10+ SE PASTREAZA pe APV — T.35 nativ (RFC 9924); pipeline:
+        # extract JSON → encode → inject post-encode (engine apv_hdr10plus.py).
+        # DV ramane nepreservabil (nu exista profil DV pentru APV).
+        $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
+        if ($logInfo.isDV) {
+            Write-Host "  ATENTIE: Dolby Vision detectat — APV NU pastreaza RPU-ul DV (nu exista profil DV pt APV)." -ForegroundColor Yellow
             Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
-        } elseif ($si.isHDRPlus) {
-            Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+            if ($si.isHDRPlus) { Write-Host "    Hibrid DV+HDR10+: stratul HDR10+ POATE fi pastrat (dialogul urmator)." -ForegroundColor Yellow }
         }
+        $apvHpSkipFile = $false
+        if ($si.isHDRPlus) {
+            $apvSrcVc = Get-SourceCodec $f.FullName
+            if (-not (Test-Hdr10PlusToolFor -Codec $apvSrcVc) -or -not (Get-ApvHdr10PlusEnginePy)) {
+                Write-Host "  ATENTIE: HDR10+ detectat, dar tool-ul de extract ($apvSrcVc) sau python3/engine lipsesc." -ForegroundColor Yellow
+                Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+            } else {
+                # if/elseif, NU switch — `continue` in switch NU sare fisierul (iese doar din switch)
+                $apvHpChoice = ""
+                if     ($env:APV_HDR10PLUS_POLICY -eq "preserve") { $apvHpChoice = "1" }
+                elseif ($env:APV_HDR10PLUS_POLICY -eq "static")   { $apvHpChoice = "2" }
+                elseif ($env:APV_HDR10PLUS_POLICY -eq "skip")     { $apvHpChoice = "3" }
+                else {
+                    Write-Host ""
+                    Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
+                    Write-Host "  ║  HDR10+ DETECTAT (target APV)                 ║" -ForegroundColor Magenta
+                    Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
+                    Write-Host "  ║  1) Pastreaza HDR10+ (T.35 in bitstream APV) ║" -ForegroundColor White
+                    Write-Host "  ║     → extract JSON + inject post-encode      ║" -ForegroundColor Gray
+                    Write-Host "  ║  2) HDR10 static doar (pierde metadata +)    ║" -ForegroundColor White
+                    Write-Host "  ║  3) Skip fisier                              ║" -ForegroundColor White
+                    Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
+                    $apvHpChoice = Read-Host "  Alege 1-3 [implicit: 1]"
+                    if (-not $apvHpChoice) { $apvHpChoice = "1" }
+                }
+                if ($apvHpChoice -eq "2") {
+                    Write-Host "  HDR10+: Re-encode ca HDR10 static (fara metadata dinamica)" -ForegroundColor Yellow
+                } elseif ($apvHpChoice -eq "3") {
+                    Write-Host "  HDR10+: Skip fisier" -ForegroundColor Yellow
+                    $apvHpSkipFile = $true
+                } else {
+                    $script:apvHdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
+                    if ($script:apvHdr10PlusJson) {
+                        $script:apvHdr10PlusInject = $true
+                        Write-Host "  HDR10+: Metadata pregatita — se injecteaza in APV post-encode" -ForegroundColor Green
+                    } else {
+                        Write-Host "  HDR10+: Extractie esuata — re-encode ca HDR10 static" -ForegroundColor Yellow
+                    }
+                }
+            }
+        }
+        if ($apvHpSkipFile) { $totalSkipped++; continue }
         $apvExtraArg = if ($apvExtra) { @("-oapv-params",$apvExtra) } else { @() }
         Write-Host "  APV $apvPixFmt | Preset: $apvPreset | QP: $apvQp | PixFmt: $apvPixFmtFf | Container: $container" -ForegroundColor White
         "  APV $apvPixFmt | Preset: $apvPreset | QP: $apvQp | Container: $container" | Out-File $LogFile -Append -Encoding UTF8
@@ -8040,13 +8289,11 @@ foreach ($f in $inputFiles) {
 
         } elseif ($si.isHDRPlus) {
             # HDR10+ dialog
+            # v69 FIX: copy prin FLAG (consum dupa lantul de dialoguri) — `continue`
+            # in switch NU sarea fisierul: stream copy era urmat de encode peste output.
             $hdr10pResult = Show-Hdr10PlusDialog $f.FullName
             switch ($hdr10pResult) {
-                "copy" {
-                    $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
-                    if (-not $scOk) { $totalErrors++ }
-                    continue
-                }
+                "copy" { $doStreamCopy = $true }
                 "static" {
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
@@ -8077,13 +8324,10 @@ foreach ($f in $inputFiles) {
         } elseif ($logInfo.logProfile) {
             # LOG dialog
             $logResult = Show-LogDialog $f.FullName $f.Name "x265" $logInfo.logProfile $logInfo.cameraMake $logInfo.srcIsVfr
+            # v69 FIX: skip/copy prin FLAG (vezi nota de la dialogul HDR10+)
             switch ($logResult) {
-                "copy" {
-                    $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
-                    if (-not $scOk) { $totalErrors++ }
-                    continue
-                }
-                "skip" { $totalSkipped++; continue }
+                "copy" { $doStreamCopy = $true }
+                "skip" { $skipFile = $true }
                 default {
                     if ($script:logVideoFilter) {
                         if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$($script:logVideoFilter),$($videoFilter[1])") }
@@ -8100,13 +8344,10 @@ foreach ($f in $inputFiles) {
         } elseif ($logInfo.isHLG) {
             # v39: HLG dialog (BT.2100 HLG)
             $hlgResult = Show-HLGDialog $f.FullName $f.Name "x265"
+            # v69 FIX: skip/copy prin FLAG (vezi nota de la dialogul HDR10+)
             switch ($hlgResult) {
-                "copy" {
-                    $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
-                    if (-not $scOk) { $totalErrors++ }
-                    continue
-                }
-                "skip" { $totalSkipped++; continue }
+                "copy" { $doStreamCopy = $true }
+                "skip" { $skipFile = $true }
                 "hlg_native" {
                     $colorParams = @("-color_primaries","bt2020","-color_trc","arib-std-b67","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:"
@@ -8129,13 +8370,10 @@ foreach ($f in $inputFiles) {
         } else {
             # Source dialog (HDR10/SDR)
             $srcResult = Show-SourceDialog $f.FullName $f.Name $si
+            # v69 FIX: skip/copy prin FLAG (vezi nota de la dialogul HDR10+)
             switch ($srcResult) {
-                "copy" {
-                    $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
-                    if (-not $scOk) { $totalErrors++ }
-                    continue
-                }
-                "skip" { $totalSkipped++; continue }
+                "copy" { $doStreamCopy = $true }
+                "skip" { $skipFile = $true }
                 "hdr10" {
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
@@ -8159,6 +8397,14 @@ foreach ($f in $inputFiles) {
                     # SDR 10-bit — no color params needed
                 }
             }
+        }
+        # v69 FIX: consumul flag-urilor skip/copy din dialogurile x265 de mai sus
+        # (HDR10+/LOG/HLG/Source) — `continue` direct in switch NU sarea fisierul.
+        if ($skipFile) { $totalSkipped++; continue }
+        if ($doStreamCopy) {
+            $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
+            if (-not $scOk) { $totalErrors++ }
+            continue
         }
 
         $nProc = [Environment]::ProcessorCount
@@ -8291,6 +8537,9 @@ foreach ($f in $inputFiles) {
         if (Test-Path $outFile) { Remove-Item $outFile -Force }
         if ($hdr10PlusJson -and (Test-Path $hdr10PlusJson)) { Remove-Item $hdr10PlusJson -Force -ErrorAction SilentlyContinue }
         if ($doviRpuFile -and (Test-Path $doviRpuFile)) { Remove-Item $doviRpuFile -Force -ErrorAction SilentlyContinue }
+        # v69: si JSON-ul APV HDR10+ (paritate cu calea de eroare bash)
+        if ($script:apvHdr10PlusJson -and (Test-Path $script:apvHdr10PlusJson)) { Remove-Item $script:apvHdr10PlusJson -Force -ErrorAction SilentlyContinue }
+        $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
         $totalErrors++; continue
     }
     if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
@@ -8313,10 +8562,25 @@ foreach ($f in $inputFiles) {
             if (Inject-DvRpu $rawTemp $doviRpuFile $injectedTemp -TargetCodec $tlCodec) {
                 $finalTemp = Join-Path $AV_TEMP_DIR ("final_"+[guid]::NewGuid().ToString("N")+".$container")
                 $tlContFlags = Get-ContainerFlags $container
-                $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
-                           "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-                           "-c","copy") + $tlContFlags + @($finalTemp)
-                & ffmpeg @tlArgs 2>>"$LogFile"
+                # v69 audit FIX: HEVC annexb brut nu are PTS pe B-frames → muxerul
+                # matroska refuza (output gol). Tinta mkv pe HEVC → pas intermediar
+                # MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
+                if ($tlCodec -ne "av1" -and $container -eq "mkv") {
+                    $tlStep1 = Join-Path $AV_TEMP_DIR ("tlstep1_"+[guid]::NewGuid().ToString("N")+".mp4")
+                    $tlA1 = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
+                              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                              "-c","copy") + @($tlStep1)
+                    & ffmpeg @tlA1 2>>"$LogFile"
+                    if ($LASTEXITCODE -eq 0 -and (Test-Path $tlStep1) -and (Get-Item $tlStep1).Length -gt 0) {
+                        & ffmpeg -v error -y -i $tlStep1 -c copy $finalTemp 2>>"$LogFile"
+                    }
+                    Remove-Item $tlStep1 -Force -ErrorAction SilentlyContinue
+                } else {
+                    $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
+                               "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                               "-c","copy") + $tlContFlags + @($finalTemp)
+                    & ffmpeg @tlArgs 2>>"$LogFile"
+                }
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $finalTemp) -and (Get-Item $finalTemp).Length -gt 0) {
                     Move-Item -Force $finalTemp $outFile
                     # v56: guard onest AV1 — inject-rpu produce metadata T.35 pe care ffmpeg
@@ -8344,6 +8608,14 @@ foreach ($f in $inputFiles) {
     # Cleanup HDR10+ / DV temp files
     if ($hdr10PlusJson -and (Test-Path $hdr10PlusJson)) { Remove-Item $hdr10PlusJson -Force -ErrorAction SilentlyContinue }
     if ($doviRpuFile -and (Test-Path $doviRpuFile)) { Remove-Item $doviRpuFile -Force -ErrorAction SilentlyContinue }
+
+    # ── v69: APV HDR10+ — injecteaza T.35 + MDCV/CLL in bitstream-ul APV ──
+    # (post-encode, ca triple-layer; state setat in sectiunea APV per-file)
+    if ($script:apvHdr10PlusInject -and $script:apvHdr10PlusJson) {
+        Invoke-ApvHdr10PlusInject -OutFile $outFile -Json $script:apvHdr10PlusJson -SrcFile $f.FullName -Container $container | Out-Null
+    }
+    if ($script:apvHdr10PlusJson -and (Test-Path $script:apvHdr10PlusJson)) { Remove-Item $script:apvHdr10PlusJson -Force -ErrorAction SilentlyContinue }
+    $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
 
     $newSize   = (Get-Item $outFile).Length
     $saved     = [math]::Max(0, $f.Length - $newSize)

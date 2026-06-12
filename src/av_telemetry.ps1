@@ -25,6 +25,20 @@ if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $Ou
 $TempBase  = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (scripturi Python temporare), nu $env:TEMP
 if (-not (Test-Path $TempBase)) { New-Item -ItemType Directory -Force -Path $TempBase | Out-Null }
 
+# v69: rezolvare exiftool — SURSA UNICA pt nume (env AV_TOOL_EXIFTOOL, mirror
+# av_common.sh; accepta si cale absoluta) + fallback pe .exe de langa script.
+# Inainte lantul PATH→PSScriptRoot era duplicat in 3 locuri.
+function Get-ExifCmd {
+    $name = if ($env:AV_TOOL_EXIFTOOL) { $env:AV_TOOL_EXIFTOOL } else { "exiftool" }
+    $cmd = (Get-Command $name -ErrorAction SilentlyContinue).Source
+    if ($cmd) { return $cmd }
+    if ($name -notmatch '[\\/]') {
+        $cand = Join-Path $PSScriptRoot "$name.exe"
+        if (Test-Path $cand) { return $cand }
+    }
+    return $null
+}
+
 function Format-Bytes {
     param([long]$bytes)
     if ($bytes -ge 1GB) { "{0:N2} GB" -f ($bytes / 1GB) }
@@ -57,10 +71,7 @@ function Get-TelemetryBrand {
     if ($tags | Where-Object { $_ -imatch "fdsc" })      { return "garmin" }
     if ($tags | Where-Object { $_ -imatch "nmea|sony" }) { return "sony" }
     # Fallback: ISO 6709 single-point GPS (Apple/Samsung/Android stock)
-    if (-not $exifCmd) {
-        if (Get-Command "exiftool" -ErrorAction SilentlyContinue) { $exifCmd = "exiftool" }
-        elseif (Test-Path (Join-Path $PSScriptRoot "exiftool.exe")) { $exifCmd = Join-Path $PSScriptRoot "exiftool.exe" }
-    }
+    if (-not $exifCmd) { $exifCmd = Get-ExifCmd }
     if ($exifCmd) {
         $loc = & $exifCmd -s3 -api LargeFileSupport=1 -GPSLatitude $file 2>$null
         if ($loc) { return "quicktime" }
@@ -91,9 +102,7 @@ if ($fileCount -eq 0) {
 # ── Pre-scan: clasificare brand ──────────────────────────────────────
 Write-Host "`nScanare brand telemetrie..." -ForegroundColor Yellow
 # Pre-resolve exiftool to use during pre-scan (for QuickTime fallback detection)
-$exifProbe = $null
-if (Get-Command "exiftool" -ErrorAction SilentlyContinue) { $exifProbe = "exiftool" }
-elseif (Test-Path (Join-Path $PSScriptRoot "exiftool.exe")) { $exifProbe = Join-Path $PSScriptRoot "exiftool.exe" }
+$exifProbe = Get-ExifCmd
 
 $brands = @{}
 $djiCount = 0; $goproCount = 0; $sonyCount = 0; $garminCount = 0; $qtCount = 0; $unknownCount = 0
@@ -192,9 +201,8 @@ $needPy   = (($goproCount -gt 0) -or ($sonyCount -gt 0) -or ($garminCount -gt 0)
 $wantPyDjiNorm = ($djiCount -gt 0) -and ($choice -in @("1","2","4")) -and (-not $needPy)
 
 if ($needExif) {
-    if (Get-Command "exiftool" -ErrorAction SilentlyContinue) { $exifCmd = "exiftool" }
-    elseif (Test-Path (Join-Path $PSScriptRoot "exiftool.exe")) { $exifCmd = Join-Path $PSScriptRoot "exiftool.exe" }
-    else {
+    $exifCmd = Get-ExifCmd
+    if (-not $exifCmd) {
         Write-Host "[EROARE] ExifTool nu a fost gasit (necesar pentru DJI)." -ForegroundColor Red
         Write-Host "Descarca de pe https://exiftool.org/" -ForegroundColor Yellow
         Read-Host; exit
@@ -1220,7 +1228,7 @@ $(if ($ts) { "<time>$ts</time>" })
         }
     }
     elseif ($choice -eq "5") { Write-Host "  [INFO] QuickTime nu are stream raw — datele sunt in atom-ul mvhd/mdta" -ForegroundColor DarkGray }
-    elseif ($choice -eq "6") { Write-Host "  [INFO] QuickTime: foloseste exiftool -gps:all= pentru a sterge tag-urile (fara remux)" -ForegroundColor DarkGray }
+    elseif ($choice -eq "6") { Write-Host "  [INFO] QuickTime: foloseste $(if ($env:AV_TOOL_EXIFTOOL) { $env:AV_TOOL_EXIFTOOL } else { "exiftool" }) -gps:all= pentru a sterge tag-urile (fara remux)" -ForegroundColor DarkGray }
 }
 
 # ── Main loop ────────────────────────────────────────────────────────

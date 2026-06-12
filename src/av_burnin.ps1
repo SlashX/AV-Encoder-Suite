@@ -388,7 +388,12 @@ function Get-BurninHdr10Static {
 # Returneaza path JSON sau "" la esec.
 function Get-BurninHdr10PlusJson {
     param([string]$File, [string]$SrcCodec)
-    $tool = if ($SrcCodec -eq "av1") { "av1hdr10plus_tool" } else { "hdr10plus_tool" }
+    # v69: nume env-overridable (AV_TOOL_*, mirror av_common.sh) — copie standalone
+    $tool = if ($SrcCodec -eq "av1") {
+        if ($env:AV_TOOL_AV1HDR10PLUS) { $env:AV_TOOL_AV1HDR10PLUS } else { "av1hdr10plus_tool" }
+    } else {
+        if ($env:AV_TOOL_HDR10PLUS) { $env:AV_TOOL_HDR10PLUS } else { "hdr10plus_tool" }
+    }
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { return "" }
     $rawTmp = Join-Path $TempBase ("burnin_hp_{0}_{1}" -f $PID, [guid]::NewGuid().ToString().Substring(0,8))   # v63: temp-ul nostru, nu OS temp
     # v61: JSON in $TempBase (NU OS temp) — referit prin nume gol in svtav1-params
@@ -1340,6 +1345,10 @@ function Invoke-ImgFlow {
         $fcEmb = if ($script:BurninPreFilter) {
             "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][0:s:$($p.Track)]overlay[v]"
         } else { "[0:v][0:s:$($p.Track)]overlay[v]" }
+        # v69 FIX: kind necunoscut prin FLAG — `continue` in switch NU sare perechea
+        # (iese doar din switch) → cadea in verificarea $LASTEXITCODE de mai jos cu
+        # un exit code STALE si dubla $failCount + afisa o a doua eroare falsa.
+        $kindUnknown = $false
         switch ($p.Kind) {
             { $_ -in @("ext_pgs","ext_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (sursa: $($p.Aux)) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
@@ -1366,9 +1375,10 @@ function Invoke-ImgFlow {
             }
             default {
                 Write-Host "  [EROARE] kind necunoscut: $($p.Kind)" -ForegroundColor Red
-                $failCount++; continue
+                $kindUnknown = $true
             }
         }
+        if ($kindUnknown) { $failCount++; continue }
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {

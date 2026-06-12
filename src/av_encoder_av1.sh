@@ -185,7 +185,7 @@ encoder_setup_file() {
         if _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
             echo "  ║  3) DV Profile 10 (AV1) — re-encode + inject ║"
             echo "  ║     extrage RPU sursa → encode AV1 → inject  ║"
-            echo "  ║     necesita: av1dovi_tool (sven-pke fork)   ║"
+            echo "  ║     necesita: $AV_TOOL_AV1DOVI (sven-pke fork)   ║"
         fi
         echo "  ╚══════════════════════════════════════════════╝"
         local _max_dv_opt=2

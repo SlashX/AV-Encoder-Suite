@@ -3,9 +3,64 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v68 | 124 bug-uri fixate | 240+ features
-  142 fisiere (22 src + 3 Python engines + 12 tools + 6 profile + 3 burnin presets + 96 teste [89 test_* + 7 infra]) | ~42000 linii cod+teste | ~6000 linii documentatie
+  TOTAL: v69 | 128 bug-uri fixate | 245+ features
+  155 fisiere (22 src + 4 Python engines + 14 tools + 6 profile + 3 burnin presets + 106 teste [99 test_* + 7 infra]) | ~43000 linii cod+teste | ~6600 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v69 — HDR10+ pe APV (premiera) + reparatii adanci pe fluxurile HDR/DV
+═══════════════════════════════════════════════════════════════
+
+  ADD HDR10+ se pastreaza acum si pe encodarea APV (Samsung Advanced
+        Professional Video). Pana acum, la conversia unui clip HDR10+ in
+        APV, metadata dinamica se pierdea (ramanea doar HDR10 static) —
+        o limitare a ffmpeg, nu a codecului. Suita face acum puntea
+        printr-un motor propriu: la encode esti intrebat daca pastrezi
+        HDR10+ (implicit DA), iar metadata e scrisa per-cadru direct in
+        fluxul APV, impreuna cu informatiile statice (mastering display
+        + MaxCLL). Functioneaza din orice sursa HDR10+ (HEVC, AV1 sau
+        alt APV) si INVERS: un APV cu HDR10+ poate fi convertit inapoi
+        in HEVC/AV1 cu metadata intacta. "Verifica fisiere media"
+        detecteaza si raporteaza HDR10+ pe fisierele APV. Rezultatul a
+        fost validat bit-cu-bit fata de uneltele de referinta ale
+        ecosistemului HDR10+ si fata de clipul oficial de test.
+
+  ADD Validator optional pentru APV: un nou installer (tools/
+        openapv_validator) descarca / compileaza decodorul de REFERINTA
+        OpenAPV. Cand e instalat, verificarea de dupa encode ruleaza
+        automat si un decode-check cu implementarea oficiala; cand
+        lipseste, pasul e sarit in tacere. Complet optional.
+
+  FIX (Windows) In dialogurile de la encodare (HDR10/HLG/LOG/sursa),
+        optiunile "Skip" si "Stream copy" nu faceau ce promiteau:
+        fisierul "sarit" era totusi encodat, iar copia rapida era
+        suprascrisa de un encode complet. Reparat in toate dialogurile
+        afectate (10 locuri), cu un test permanent care impiedica
+        reaparitia. Pe Termux/Linux/macOS problema nu exista.
+
+  FIX Tinta MKV producea un fisier GOL la operatiunile care reasambleaza
+        video procesat: pastrarea Dolby Vision la encode, transformarile
+        din HDR/DV tools si optiunea Mux cu video brut (.hevc/.h264).
+        Cauza: fluxurile video brute nu poarta informatie de timp, iar
+        containerul MKV o cere strict. Reparat peste tot printr-un pas
+        intermediar MP4, transparent pentru utilizator. MP4/MOV si AV1
+        nu au fost niciodata afectate.
+
+  UPDATE Numele uneltelor externe (dovi_tool, hdr10plus_tool, exiftool
+        s.a.) nu mai sunt fixate in cod: se pot schimba printr-o simpla
+        variabila de mediu (AV_TOOL_*), inclusiv cu o cale completa —
+        util cand un sistem le instaleaza sub alt nume.
+
+  FIX "Verifica fisiere media" arata "0" la scenele HDR10+ pe fisierele
+        APV (informatia nu e vizibila pentru ffprobe acolo) — acum
+        raporteaza onest "N/A"; tipul ramane corect "HDR10+".
+
+  Note: hibridele Dolby Vision create pe HEVC au stratul DV complet in
+        flux, dar fara semnalizarea de container pentru televizoare —
+        vezi "LIMITARE CUNOSCUTA" in av_info.txt. Paritate completa
+        bash ↔ PowerShell; suita de teste a crescut cu 10 teste noi,
+        inclusiv teste-santinela care pazesc permanent regulile interne.
 
 
 ═══════════════════════════════════════════════════════════════

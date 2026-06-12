@@ -1382,7 +1382,7 @@ trimconcat_flow_pipeline() {
                             echo "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+→DV in HDR/DV tools (opt 8)."
                         elif [[ "$hdr_mode" == "hdr10plus" ]]; then
                             echo ""
-                            echo "  ⚡ HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita hdr10plus_tool)"
+                            echo "  ⚡ HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita $AV_TOOL_HDR10PLUS)"
                             echo "     1) Da [default]   2) Nu (doar HDR10 static)"
                             read -p "     Alege 1-2: " hdr10p_ch
                             if [[ "${hdr10p_ch:-1}" == "1" ]]; then
@@ -1401,7 +1401,7 @@ trimconcat_flow_pipeline() {
                                         echo "     ⚠ Extragere HDR10+ esuata. Fallback HDR10 static."
                                     fi
                                 else
-                                    echo "     ⚠ hdr10plus_tool NU este instalat. Fallback HDR10 static."
+                                    echo "     ⚠ $AV_TOOL_HDR10PLUS NU este instalat. Fallback HDR10 static."
                                     echo "       Instaleaza: $TOOLS_DIR/hdr10plus_parser.sh"
                                 fi
                             fi

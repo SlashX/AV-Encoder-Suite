@@ -23,9 +23,9 @@ detect_brand() {
     elif echo "$tags" | grep -qiE "nmea|sony";  then echo "sony"
     else
         # Fallback: ISO 6709 single-point GPS (Apple/Samsung/Android stock)
-        if command -v exiftool &>/dev/null; then
+        if command -v "$AV_TOOL_EXIFTOOL" &>/dev/null; then
             local loc
-            loc=$(exiftool -s3 -api LargeFileSupport=1 -GPSLatitude "$file" 2>/dev/null)
+            loc=$("$AV_TOOL_EXIFTOOL" -s3 -api LargeFileSupport=1 -GPSLatitude "$file" 2>/dev/null)
             if [[ -n "$loc" ]]; then echo "quicktime"; return; fi
         fi
         echo "unknown"
@@ -146,8 +146,8 @@ if [ "$DJI_COUNT" -gt 0 ] && [[ "$choice" =~ ^[124]$ ]] && [ "$NEED_PYTHON" -eq 
     WANT_PY_DJI_NORM=1
 fi
 
-if [ "$NEED_EXIFTOOL" -eq 1 ] && ! command -v exiftool &>/dev/null; then
-    echo "EROARE: exiftool nu este instalat (necesar pentru DJI/QuickTime)."
+if [ "$NEED_EXIFTOOL" -eq 1 ] && ! command -v "$AV_TOOL_EXIFTOOL" &>/dev/null; then
+    echo "EROARE: $AV_TOOL_EXIFTOOL nu este instalat (necesar pentru DJI/QuickTime)."
     echo "Instaleaza cu: $(av_pkg_install_hint exiftool)"
     exit 1
 fi
@@ -664,7 +664,7 @@ process_dji() {
     local file="$1"; local name="$2"
     case "$choice" in
         1|2|4)
-            exiftool -p "$GPX_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.gpx" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -p "$GPX_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.gpx" 2>/dev/null
             if [ -s "$OUTPUT_DIR/${name}.gpx" ]; then echo "  [OK] GPX: ${name}.gpx"
             else echo "  [SKIP] GPX: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}.gpx"; fi
             ;;
@@ -672,19 +672,19 @@ process_dji() {
     case "$choice" in
         1|4)
             # Track complet per-sample (DJI protobuf): -p template, NU -csv (care colapseaza la 1 rand)
-            exiftool -p "$DJI_BASIC_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}_basic.csv" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -p "$DJI_BASIC_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}_basic.csv" 2>/dev/null
             [ -s "$OUTPUT_DIR/${name}_basic.csv" ] && echo "  [OK] CSV Basic: ${name}_basic.csv" || rm -f "$OUTPUT_DIR/${name}_basic.csv"
             ;;
     esac
     case "$choice" in
         2|4)
-            exiftool -ee3 -api LargeFileSupport=1 -csv -G -n "$file" > "$OUTPUT_DIR/${name}_FULL.csv" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -ee3 -api LargeFileSupport=1 -csv -G -n "$file" > "$OUTPUT_DIR/${name}_FULL.csv" 2>/dev/null
             [ -s "$OUTPUT_DIR/${name}_FULL.csv" ] && echo "  [OK] CSV Full: ${name}_FULL.csv" || rm -f "$OUTPUT_DIR/${name}_FULL.csv"
             ;;
     esac
     case "$choice" in
         3|4)
-            exiftool -p "$SRT_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.srt" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -p "$SRT_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.srt" 2>/dev/null
             if [ -s "$OUTPUT_DIR/${name}.srt" ]; then echo "  [OK] SRT: ${name}.srt"
             else echo "  [SKIP] SRT: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}.srt"; fi
             ;;
@@ -694,7 +694,7 @@ process_dji() {
     case "$choice" in
         1|2|4)
             local norm_src="$OUTPUT_DIR/${name}_normsrc.csv.tmp"
-            exiftool -p "$DJI_NORM_FMT" -f -ee3 -api LargeFileSupport=1 "$file" > "$norm_src" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -p "$DJI_NORM_FMT" -f -ee3 -api LargeFileSupport=1 "$file" > "$norm_src" 2>/dev/null
             if [ -s "$norm_src" ] && [ "$HAVE_PYTHON" -eq 1 ]; then
                 python3 -c "
 import sys, csv, math
@@ -937,9 +937,9 @@ embed_telemetry_lossless() {
 
     # Pentru profilul `all`: genereaza KML daca lipseste (DJI prin exiftool, restul prin python)
     if [[ "$profile" == "all" && ! -s "$kml_file" ]]; then
-        if [[ -s "$file" ]] && command -v exiftool &>/dev/null && \
+        if [[ -s "$file" ]] && command -v "$AV_TOOL_EXIFTOOL" &>/dev/null && \
            ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null | grep -qiE 'djmd|dbgi'; then
-            exiftool -p "$KML_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$kml_file" 2>/dev/null
+            "$AV_TOOL_EXIFTOOL" -p "$KML_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$kml_file" 2>/dev/null
             [[ -s "$kml_file" ]] || rm -f "$kml_file"
         fi
         if [[ ! -s "$kml_file" && -s "$csv_norm" ]]; then
@@ -1112,10 +1112,10 @@ process_quicktime() {
         1|2|3|4)
             # Extract single-point GPS via ExifTool ISO 6709
             local lat lon alt dt
-            lat=$(exiftool -s3 -api LargeFileSupport=1 -n -GPSLatitude "$file" 2>/dev/null)
-            lon=$(exiftool -s3 -api LargeFileSupport=1 -n -GPSLongitude "$file" 2>/dev/null)
-            alt=$(exiftool -s3 -api LargeFileSupport=1 -n -GPSAltitude "$file" 2>/dev/null)
-            dt=$(exiftool -s3 -api LargeFileSupport=1 -CreateDate "$file" 2>/dev/null | head -1)
+            lat=$("$AV_TOOL_EXIFTOOL" -s3 -api LargeFileSupport=1 -n -GPSLatitude "$file" 2>/dev/null)
+            lon=$("$AV_TOOL_EXIFTOOL" -s3 -api LargeFileSupport=1 -n -GPSLongitude "$file" 2>/dev/null)
+            alt=$("$AV_TOOL_EXIFTOOL" -s3 -api LargeFileSupport=1 -n -GPSAltitude "$file" 2>/dev/null)
+            dt=$("$AV_TOOL_EXIFTOOL" -s3 -api LargeFileSupport=1 -CreateDate "$file" 2>/dev/null | head -1)
             if [ -z "$lat" ] || [ -z "$lon" ]; then
                 echo "  [SKIP] QuickTime: fara coordonate GPS in atom ISO 6709"; return
             fi
@@ -1151,7 +1151,7 @@ process_quicktime() {
                 echo "  [OK] CSV Norm: ${name}_norm.csv (1 punct)"
             fi
             if [ "$choice" == "2" ] || [ "$choice" == "4" ]; then
-                exiftool -api LargeFileSupport=1 -csv -G -n "$file" > "$OUTPUT_DIR/${name}_FULL.csv" 2>/dev/null
+                "$AV_TOOL_EXIFTOOL" -api LargeFileSupport=1 -csv -G -n "$file" > "$OUTPUT_DIR/${name}_FULL.csv" 2>/dev/null
                 [ -s "$OUTPUT_DIR/${name}_FULL.csv" ] && echo "  [OK] CSV Full: ${name}_FULL.csv" || rm -f "$OUTPUT_DIR/${name}_FULL.csv"
             fi
             if [ "$choice" == "3" ] || [ "$choice" == "4" ]; then
@@ -1166,7 +1166,7 @@ process_quicktime() {
             fi
             ;;
         5)  echo "  [INFO] QuickTime nu are stream raw — datele sunt in atom-ul mvhd/mdta" ;;
-        6)  echo "  [INFO] QuickTime: foloseste exiftool -gps:all= pentru a sterge tag-urile (fara remux)" ;;
+        6)  echo "  [INFO] QuickTime: foloseste $AV_TOOL_EXIFTOOL -gps:all= pentru a sterge tag-urile (fara remux)" ;;
     esac
 }
 

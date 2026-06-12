@@ -86,6 +86,14 @@ src/exiftool.exe
 src/exiftool_files/
 src/tools/exiftool.exe
 src/tools/exiftool_files/
+# ── OpenAPV (validator de referinta APV — v69; build local / installer) ──
+src/oapv_app_dec.exe
+src/oapv_app_enc.exe
+src/liboapv.dll
+src/tools/oapv_app_dec.exe
+src/tools/oapv_app_enc.exe
+src/tools/liboapv.dll
+src/tools/openapv_version.txt
 
 # ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
 # Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,

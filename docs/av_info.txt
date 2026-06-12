@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v68
+  Documentatie Setup & Utilizare — v69
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  142 fisiere totale (22 src + 12 tools + 6 profile + 3 burnin presets +
-  3 Python engines + 89 test_* scripts + 7 infra).
+  155 fisiere totale (22 src + 14 tools + 6 profile + 3 burnin presets +
+  4 Python engines + 99 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -116,6 +116,8 @@ CUPRINS
             ./tools/dovi_parser.sh             # Dolby Vision (HEVC)
             ./tools/av1hdr10plus_parser.sh     # HDR10+ AV1 (sven-pke fork)
             ./tools/av1dovi_parser.sh          # Dolby Vision AV1 (sven-pke fork)
+            ./tools/openapv_validator.sh       # decodor referinta OpenAPV (v69,
+                                               #   optional — decode-check APV)
 
   PASUL 5 — Permisiuni:
             chmod +x src/*.sh src/tools/*.sh
@@ -197,6 +199,9 @@ CUPRINS
       descarca release-ul pre-built de pe GitHub (quietvoid).
     - HDR10+ / DV tools (AV1): tools/av1hdr10plus_parser.ps1 si av1dovi_parser.ps1
       cer rustup + git (cargo build din sven-pke fork — nu exista releases).
+    - Validator APV (optional, v69): tools/openapv_validator.ps1 descarca
+      decodorul de referinta OpenAPV (release oficial) — activeaza automat
+      decode-check-ul suplimentar la encodarea APV cu HDR10+.
 
   PASUL 4 — Lansare:
     cd src
@@ -441,9 +446,23 @@ CUPRINS
 
   CONTAINERE: mp4 / mov / mkv (NU mxf — ffmpeg nu poate pune APV in MXF).
   HDR / Dolby Vision: APV (10/12-bit) pastreaza imaginea + culoarea HDR10 /
-            HLG / Log. Ca orice codec mezzanine, NU poate purta Dolby Vision
-            (RPU) sau HDR10+ dinamic — sursele DV / HDR10+ ies ca HDR10
-            standard (esti anuntat).
+            HLG / Log. Dolby Vision (RPU) NU poate fi purtat — sursele DV
+            ies ca HDR10 standard (esti anuntat).
+
+  HDR10+ PE APV (v69): metadata dinamica HDR10+ se PASTREAZA la encodarea
+  APV — premiera (ffmpeg singur o pierde; suita o scrie per-cadru direct
+  in fluxul APV printr-un motor propriu, impreuna cu mastering display +
+  MaxCLL statice). La encode, pe surse HDR10+ esti intrebat:
+    1) Pastreaza HDR10+ [implicit]  — metadata dinamica intacta in APV
+    2) Doar HDR10 static            — comportamentul vechi
+    3) Sare fisierul
+  Functioneaza din ORICE sursa HDR10+ (HEVC / AV1 / alt APV) si invers:
+  un APV cu HDR10+ poate fi re-encodat in x265/AV1 cu metadata pastrata.
+  "Verifica fisiere media" detecteaza HDR10+ pe APV. Bypass non-interactiv:
+  APV_HDR10PLUS_POLICY=preserve|static|skip (variabila de mediu).
+  Optional: installerul tools/openapv_validator instaleaza decodorul de
+  REFERINTA OpenAPV — cand exista, verificarea post-encode ruleaza automat
+  si un decode-check oficial; cand lipseste, pasul e sarit in tacere.
 
 
   ─── 7.5. Surse DVD si Blu-ray ───
@@ -1047,10 +1066,29 @@ CUPRINS
     "av1hdr10plus_tool" (tool-ul lipsa pt sursa AV1).
     Triple-layer inject ramane gate pe target codec (acolo se injecteaza).
 
+  HDR10+ pe APV (v69):
+    Encoderul APV pastreaza si el metadata dinamica HDR10+ (motor propriu,
+    fara hdr10plus_tool — scriere per-cadru direct in fluxul APV), din
+    orice sursa HDR10+ (HEVC / AV1 / APV) si inapoi. Detalii: 7.4.1.
+
   DOVI + HDR10+ co-existence (v45):
     Cand sursa are DV + HDR10+ embedded (Profile 8.1 hybrid), ambele
     layere sunt pastrate prin encode. RPU-ul real extras din sursa NU
     mai e supra-scris de un RPU sintetizat din JSON.
+
+  LIMITARE CUNOSCUTA — semnalizarea DV de container pe HEVC (v69):
+    Hibridele HEVC create de suita (triple-layer / inject) au stratul DV
+    COMPLET in bitstream (RPU per frame, verificabil cu dovi_tool
+    extract-rpu), dar ffmpeg nu poate scrie si inregistrarea de
+    configurare DV a containerului (box-ul dvcC in MP4 / DOVI config in
+    MKV) pornind de la un bitstream HEVC brut.
+    Practic: playerele PC moderne (mpv, madVR — care citesc RPU-ul
+    direct) activeaza DV normal; televizoarele si playerele care decid
+    DOAR dupa semnalizarea containerului pot reda fisierul ca
+    HDR10/HDR10+ (corect si sigur, dar fara stratul DV activ). Pentru
+    semnalizare completa de container e nevoie de un muxer extern
+    (ex. mkvmerge). AV1 NU e afectat — DV-ul e detectat la nivel de
+    frame indiferent de container.
 
   Fara hdr10plus_tool:
     1) Re-encode HDR10 static.
@@ -2622,3 +2660,24 @@ CUPRINS
   PROBLEMA: Test runner blocheaza pe prompt-uri param-mandatory
   SOLUTIE:  Runner PS1 foloseste -NonInteractive automat.
             Pentru bash CI: export AV_NONINTERACTIVE=1 inainte de tests/run_tests.sh.
+
+  PROBLEMA: Uneltele externe sunt instalate sub alt nume / alta cale
+            (ex. distro-ul livreaza "dovi-tool" in loc de "dovi_tool")
+  SOLUTIE:  v69 — numele tuturor uneltelor externe sunt configurabile prin
+            variabile de mediu (accepta nume simplu sau cale completa):
+              AV_TOOL_DOVI          (default: dovi_tool)
+              AV_TOOL_HDR10PLUS     (default: hdr10plus_tool)
+              AV_TOOL_AV1DOVI       (default: av1dovi_tool)
+              AV_TOOL_AV1HDR10PLUS  (default: av1hdr10plus_tool)
+              AV_TOOL_EXIFTOOL      (default: exiftool)
+              AV_TOOL_OAPV_DEC      (default: oapv_app_dec — optional)
+              AV_TOOL_SVTAV1ENCAPP  (default: SvtAv1EncApp — doar caps-probe)
+              AV_ENGINE_APV_HDR10PLUS (default: src/apv_hdr10plus.py)
+            Exemplu: AV_TOOL_DOVI=dovi-tool bash av_launcher.sh
+            Windows: $env:AV_TOOL_DOVI = "C:\tools\dovi_tool.exe"
+
+  PROBLEMA: La encodarea APV cu HDR10+ nu apare "decode-check referinta"
+  SOLUTIE:  Pasul e OPTIONAL si tacut — apare doar daca decodorul de
+            referinta OpenAPV (oapv_app_dec) e instalat. Ruleaza
+            tools/openapv_validator.sh / .ps1. Verificarea principala
+            (re-extragere + comparare metadata) ruleaza oricum.

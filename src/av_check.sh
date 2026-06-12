@@ -544,6 +544,17 @@ for file in "${FILES[@]}"; do
         TYPE="HLG"
     fi
 
+    # v69: HDR10+ pe APV — decoderul ffmpeg ignora T.35 (nu apare in frame_side_data)
+    # → probe prin engine-ul apv_hdr10plus.py (primele 3 AU). Doar upgrade HDR10/SDR→HDR10+.
+    APV_HDRPLUS=0
+    if [[ "$SRC_CODEC" == "apv" && ( "$TYPE" == "HDR10" || "$TYPE" == "SDR" ) ]]; then
+        if [[ "$(_apv_hdr10plus_probe "$file")" == "hdr10plus" ]]; then
+            TYPE="HDR10+"
+            HDR10PLUS="1"
+            APV_HDRPLUS=1
+        fi
+    fi
+
     # ── HDR rich fields (v57) — color metadata + mastering + scene count ─
     COLOR_PRIMARIES="${COLOR_PRIM_RAW:-}"
     COLOR_SPACE_VAL="${COLOR_SPACE_RAW:-}"
@@ -580,6 +591,9 @@ for file in "${FILES[@]}"; do
             -show_entries frame_side_data=side_data_type \
             "$file" 2>/dev/null | grep -c "HDR Dynamic Metadata SMPTE2094-40")
         [[ "$_scenes" =~ ^[0-9]+$ ]] && HDR10PLUS_SCENES="$_scenes"
+        # v69: pe APV ffprobe nu expune T.35 → count-ul ar fi mereu 0 (derutant).
+        # Ramane onest "N/A" (detectia TYPE=HDR10+ vine din engine-ul propriu).
+        [[ "$APV_HDRPLUS" == "1" ]] && HDR10PLUS_SCENES="N/A"
     fi
 
     # get_source_format — reutilizeaza datele extrase + BITS_RAW pt depth detection

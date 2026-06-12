@@ -1238,6 +1238,36 @@ mux_flow() {
         return 1
     fi
 
+    # v69 audit FIX: video elementary BRUT annexb/OBU (hevc/h264/av1 — FARA PTS
+    # pe frame-uri reordonate) → muxerul matroska/webm refuza ("Can't write
+    # packet with unknown timestamp", output gol). Pre-wrap in MP4 temporar
+    # (muxerul mp4 deriva timestamps), apoi mux normal cu MP4-ul ca input video.
+    # IVF si containerele NU sunt afectate (poarta PTS).
+    local _raw_wrap=""
+    if [[ "$TARGET" == "mkv" || "$TARGET" == "webm" ]]; then
+        local _vext="${video##*.}"; _vext="${_vext,,}"
+        case "$_vext" in
+            hevc|h265|265|h264|264|av1)
+                echo "  Video brut .$_vext → pas intermediar MP4 (matroska/webm cer PTS)..."
+                _raw_wrap=$(av_mktemp_ext mp4)
+                local -a _wtag=()
+                case "$vc" in
+                    hevc) _wtag=(-tag:v hvc1) ;;
+                    h264) _wtag=(-tag:v avc1) ;;
+                    av1)  _wtag=(-tag:v av01) ;;
+                esac
+                if ffmpeg -v error -y -i "$video" -map 0:v:0 -c copy "${_wtag[@]}" "$_raw_wrap" 2>/dev/null \
+                   && [ -s "$_raw_wrap" ]; then
+                    video="$_raw_wrap"
+                else
+                    rm -f "$_raw_wrap"
+                    echo "  EROARE: impachetarea intermediara a video-ului brut a esuat — abort."
+                    return 1
+                fi
+                ;;
+        esac
+    fi
+
     local -a audio_drop_idx=() audio_codec=()
     local i ac a_compat
     for i in "${!picked_audio[@]}"; do
@@ -1478,7 +1508,7 @@ mux_flow() {
 
     echo ""
     echo "  → $final_out"
-    echo "  Video:       $(basename "$video") ($vc)"
+    echo "  Video:       $video_base ($vc)"
     echo "  Audio:       $out_audio_idx track(s)"
     echo "  Subtitle:    $out_sub_idx track(s)"
     echo "  Chapters:    $([ "$chapters_input_idx" -ge 0 ] && echo "1 file" || echo "none")"
@@ -1494,8 +1524,9 @@ mux_flow() {
             "$final_out"; then
         mux_rc=1
     fi
-    # Cleanup temp FFMETADATA daca a fost generat
+    # Cleanup temp FFMETADATA daca a fost generat + MP4-ul intermediar (v69)
     [ -n "$chapters_tmp_ffmeta" ] && rm -f "$chapters_tmp_ffmeta" 2>/dev/null
+    [ -n "$_raw_wrap" ] && rm -f "$_raw_wrap" 2>/dev/null
     if [ "$mux_rc" -ne 0 ]; then
         echo "  EROARE: mux esuat."
         rm -f "$final_out"
