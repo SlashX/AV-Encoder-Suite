@@ -94,6 +94,12 @@ src/tools/oapv_app_dec.exe
 src/tools/oapv_app_enc.exe
 src/tools/liboapv.dll
 src/tools/openapv_version.txt
+# ── mkvmerge / MKVToolNix (v70 — dvcC de container pe hibride HEVC DV) ──
+# Link static pe Windows → doar exe-ul (fara DLL-uri); installer in tools/
+src/mkvmerge.exe
+src/tools/mkvmerge.exe
+src/mkvtoolnix_version.txt
+src/tools/mkvtoolnix_version.txt
 
 # ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
 # Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,

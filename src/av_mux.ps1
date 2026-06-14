@@ -1192,6 +1192,7 @@ function Invoke-MuxFlow {
     # timestamp", output gol). Pre-wrap in MP4 temporar, apoi mux normal.
     # IVF si containerele NU sunt afectate (poarta PTS). Mirror av_mux.sh.
     $rawWrap = ""
+    $dvRawSrc = ""
     $vExt = [System.IO.Path]::GetExtension($video).TrimStart('.').ToLowerInvariant()
     if ($Target -in @('mkv','webm') -and $vExt -in @('hevc','h265','265','h264','264','av1')) {
         Write-Host "  Video brut .$vExt → pas intermediar MP4 (matroska/webm cer PTS)..." -ForegroundColor DarkGray
@@ -1205,6 +1206,9 @@ function Invoke-MuxFlow {
         $wArgs = @("-v","error","-y","-i",$video,"-map","0:v:0","-c","copy") + $wTag + @($rawWrap)
         & ffmpeg @wArgs 2>$null
         if ($LASTEXITCODE -eq 0 -and (Test-Path $rawWrap) -and (Get-Item $rawWrap).Length -gt 0) {
+            # v70: HEVC brut -> MKV -> pastram calea raw pt post-procesare dvcC
+            # (mkvmerge scrie DOVI config din RPU daca sursa avea Dolby Vision).
+            if ($Target -eq 'mkv' -and $vExt -in @('hevc','h265','265')) { $dvRawSrc = $video }
             $video = $rawWrap
         } else {
             Remove-Item $rawWrap -Force -ErrorAction SilentlyContinue
@@ -1448,6 +1452,26 @@ function Invoke-MuxFlow {
         Write-Host "  EROARE: mux esuat." -ForegroundColor Red
         Remove-Item -LiteralPath $finalOut -Force -ErrorAction SilentlyContinue
         return
+    }
+    # v70: HEVC brut -> MKV cu DV -> scrie dvcC de container via mkvmerge (DV pe TV).
+    # Donor = MKV-ul deja construit (cale directa); mkvmerge absent sau sursa fara DV
+    # -> pastreaza MKV-ul ffmpeg (comportament neschimbat). Mirror av_mux.sh.
+    if ($dvRawSrc) {
+        $mux = if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } else { "mkvmerge" }
+        if (Get-Command $mux -ErrorAction SilentlyContinue) {
+            $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 $finalOut 2>$null | Select-Object -First 1)
+            if ($afr) { $afr = $afr.Trim() }
+            if ($afr -match '^[1-9][0-9]*(/[1-9][0-9]*)?$') {
+                $dvFinal = Join-Path $TempBase ("muxdv_" + [guid]::NewGuid().ToString("N") + ".mkv")
+                & $mux -o $dvFinal --default-duration "0:${afr}fps" $dvRawSrc --no-video $finalOut 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $dvFinal) -and (Get-Item $dvFinal).Length -gt 0) {
+                    Move-Item -LiteralPath $dvFinal -Destination $finalOut -Force
+                    Write-Host "  dvcC de container scris (DV pe TV, daca sursa avea DV)" -ForegroundColor DarkGray
+                } elseif (Test-Path $dvFinal) {
+                    Remove-Item -LiteralPath $dvFinal -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
     $elapsed = [int]((Get-Date) - $startTs).TotalSeconds
     $szNew = (Get-Item -LiteralPath $finalOut).Length

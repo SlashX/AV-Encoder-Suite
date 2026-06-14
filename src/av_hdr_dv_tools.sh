@@ -40,6 +40,9 @@ _hdv_combine_with_original() {
     local _mod_ext="${modified##*.}"
     if [[ ( "$_mod_ext" == "hevc" || "$_mod_ext" == "h265" || "$_mod_ext" == "265" ) \
           && "${output##*.}" == "mkv" ]]; then
+        # v70: mkvmerge scrie dvcC de container din RPU-ul brut (DV activabil si pe
+        # TV); cand lipseste → pas MP4 (DV doar in bitstream, comportament v69).
+        _mux_dv_mkv "$modified" "$original" "$output" && return 0
         local _step1; _step1=$(av_mktemp_ext mp4)
         local _rc=1
         if ffmpeg -v error -y -i "$modified" -i "$original" \

@@ -95,6 +95,7 @@ AV_TOOL_AV1HDR10PLUS="${AV_TOOL_AV1HDR10PLUS:-av1hdr10plus_tool}" # sven-pke for
 AV_TOOL_EXIFTOOL="${AV_TOOL_EXIFTOOL:-exiftool}"                # telemetrie (DJI/QuickTime)
 AV_TOOL_OAPV_DEC="${AV_TOOL_OAPV_DEC:-oapv_app_dec}"            # decoder referinta OpenAPV (optional)
 AV_TOOL_SVTAV1ENCAPP="${AV_TOOL_SVTAV1ENCAPP:-SvtAv1EncApp}"    # SVT-AV1 standalone (doar caps-probe)
+AV_TOOL_MKVMERGE="${AV_TOOL_MKVMERGE:-mkvmerge}"               # MKVToolNix (dvcC de container pe hibride HEVC DV, v70)
 AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1801,6 +1802,62 @@ inject_dv_rpu() {
         echo "  DV: Injectare RPU esuata" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 1
     fi
+}
+
+# v70: muxeaza un hibrid HEVC DV (raw .hevc cu RPU interleaved) intr-un MKV CU
+# semnalizare dvcC de container, prin mkvmerge. mkvmerge parseaza RPU-ul din
+# bitstream-ul HEVC brut si scrie automat "DOVI configuration record" (Block
+# Addition Mapping) → TV-urile care decid dupa dvcC activeaza DV (playerele PC
+# citeau deja RPU-ul din bitstream). ffmpeg NU poate sintetiza dvcC din RPU brut
+# (de aceea calea v69 = pas intermediar MP4 → DV doar in bitstream, dormant pe TV).
+# DOAR HEVC → MKV. Soft-optional: cand mkvmerge lipseste, return 1 → apelantul
+# cade pe pasul MP4 (comportament v69, fara dvcC). mkvmerge DOAR din elementary
+# stream scrie dvcC (NU din MP4 — validat empiric); raw .hevc nu poarta timing →
+# framerate explicit din sursa (avg_frame_rate, fallback r_frame_rate).
+# $1 = raw .hevc (cu RPU)   $2 = original (audio/subs/chapters + framerate)   $3 = output .mkv
+# Return: 0 = mkvmerge a scris output ne-gol (cu dvcC); 1 = indisponibil/esec.
+_mux_dv_mkv() {
+    local raw_hevc="$1" original="$2" output="$3"
+    command -v "$AV_TOOL_MKVMERGE" >/dev/null 2>&1 || return 1
+    # Raw HEVC nu are timing → derivam framerate-ul din sursa (CFR pe DV).
+    local afr
+    afr=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate \
+          -of default=noprint_wrappers=1:nokey=1 "$original" 2>/dev/null | head -1 | tr -d '\r' || true)
+    if [[ ! "$afr" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]]; then
+        afr=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate \
+              -of default=noprint_wrappers=1:nokey=1 "$original" 2>/dev/null | head -1 | tr -d '\r' || true)
+    fi
+    [[ "$afr" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]] || return 1
+    # v70 audit: pe surse NON-MKV, mkvmerge poate interpreta limba pistelor altfel
+    # decat ffmpeg (ex. cod QuickTime legacy nesetat → "und" la mkvmerge vs "eng"
+    # la ffmpeg) → output inconsistent dupa cum e prezent sau nu mkvmerge. Fix: pe
+    # non-MKV construim un donor MKV doar cu non-video (audio/subs/chapters/attach)
+    # via ffmpeg — care scrie limbile ca pe calea ffmpeg — si mkvmerge ia non-video
+    # de acolo (MKV nativ → pastreaza tot). Sursele deja-MKV se folosesc direct.
+    local donor="$original" donor_tmp=""
+    local _orig_ext="${original##*.}"; _orig_ext="${_orig_ext,,}"
+    if [[ "$_orig_ext" != "mkv" ]]; then
+        donor_tmp=$(av_mktemp_ext mkv)
+        # -c:s srt: mov_text (sub-ul tipic in MP4) NU se copiaza in matroska cu
+        # -c copy → convertit la srt (acelasi rezultat ca mkvmerge in calea directa).
+        # Sub bitmap (PGS/VobSub, rar in MP4) → conversia esueaza → fallback gratios.
+        if ffmpeg -v error -y -i "$original" -map 0:a? -map 0:s? -map 0:t? -map_chapters 0 \
+              -c copy -c:s srt "$donor_tmp" 2>/dev/null && [ -s "$donor_tmp" ]; then
+            donor="$donor_tmp"   # are non-video; daca sursa era video-only sau sub
+        else                     # incompatibil → build esueaza → fallback original direct
+            rm -f "$donor_tmp"; donor_tmp=""
+        fi
+    fi
+    # video (raw, cu RPU→dvcC) din input 0 + tot restul (audio/subs/chapters/attach) din donor
+    local _rc=1
+    if "$AV_TOOL_MKVMERGE" -o "$output" --default-duration "0:${afr}fps" \
+          "$raw_hevc" --no-video "$donor" >/dev/null 2>&1 && [ -s "$output" ]; then
+        _rc=0
+    else
+        rm -f "$output" 2>/dev/null || true
+    fi
+    [[ -n "$donor_tmp" ]] && rm -f "$donor_tmp"
+    return $_rc
 }
 
 # Extrage RPU dintr-un stream HEVC/AV1 raw sau dintr-un container.
@@ -5566,17 +5623,25 @@ run_encode_loop() {
                     # muxerul matroska refuza (output gol). Tinta mkv pe HEVC →
                     # pas intermediar MP4, apoi MP4→MKV. AV1/IVF neafectat.
                     if [[ "$_tl_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then
-                        local _tl_step1 _tl_rc=1
-                        _tl_step1=$(av_mktemp_ext mp4)
-                        if ffmpeg -v error -y -i "$injected_temp" -i "$output" \
-                              -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
-                              -c copy "$_tl_step1" 2>>"$LOG_FILE" && [ -s "$_tl_step1" ]; then
-                            ffmpeg -v error -y -i "$_tl_step1" -c copy "$final_temp" 2>>"$LOG_FILE"
-                            _tl_rc=$?
+                        # v70: mkvmerge scrie dvcC de container din RPU-ul brut →
+                        # DV activabil si pe TV; cand lipseste → pas MP4 (DV doar in
+                        # bitstream, comportament v69).
+                        if _mux_dv_mkv "$injected_temp" "$output" "$final_temp"; then
+                            log "  Triple-layer: dvcC de container scris via $AV_TOOL_MKVMERGE (DV activabil pe TV)"
+                            true  # garanteaza $?=0 pt verificarea [-s final_temp] de mai jos (log/tee ar putea returna non-zero)
+                        else
+                            local _tl_step1 _tl_rc=1
+                            _tl_step1=$(av_mktemp_ext mp4)
+                            if ffmpeg -v error -y -i "$injected_temp" -i "$output" \
+                                  -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+                                  -c copy "$_tl_step1" 2>>"$LOG_FILE" && [ -s "$_tl_step1" ]; then
+                                ffmpeg -v error -y -i "$_tl_step1" -c copy "$final_temp" 2>>"$LOG_FILE"
+                                _tl_rc=$?
+                            fi
+                            rm -f "$_tl_step1"
+                            [ "$_tl_rc" -ne 0 ] && rm -f "$final_temp"
+                            test "$_tl_rc" -eq 0
                         fi
-                        rm -f "$_tl_step1"
-                        [ "$_tl_rc" -ne 0 ] && rm -f "$final_temp"
-                        test "$_tl_rc" -eq 0
                     else
                         ffmpeg -v error -i "$injected_temp" -i "$output" \
                             -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \

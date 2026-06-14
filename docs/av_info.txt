@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v69
+  Documentatie Setup & Utilizare — v70
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  155 fisiere totale (22 src + 14 tools + 6 profile + 3 burnin presets +
-  4 Python engines + 99 test_* scripts + 7 infra).
+  159 fisiere totale (22 src + 16 tools + 6 profile + 3 burnin presets +
+  4 Python engines + 101 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -118,6 +118,8 @@ CUPRINS
             ./tools/av1dovi_parser.sh          # Dolby Vision AV1 (sven-pke fork)
             ./tools/openapv_validator.sh       # decodor referinta OpenAPV (v69,
                                                #   optional — decode-check APV)
+            ./tools/mkvmerge_installer.sh      # mkvmerge (v70, optional —
+                                               #   dvcC Dolby Vision pe MKV)
 
   PASUL 5 — Permisiuni:
             chmod +x src/*.sh src/tools/*.sh
@@ -202,6 +204,9 @@ CUPRINS
     - Validator APV (optional, v69): tools/openapv_validator.ps1 descarca
       decodorul de referinta OpenAPV (release oficial) — activeaza automat
       decode-check-ul suplimentar la encodarea APV cu HDR10+.
+    - mkvmerge (optional, v70): tools/mkvmerge_installer.ps1 descarca pachetul
+      portabil MKVToolNix — activeaza semnalizarea Dolby Vision de container
+      (dvcC) pe hibridele HEVC salvate in MKV (DV redat si pe televizoare).
 
   PASUL 4 — Lansare:
     cd src
@@ -1076,19 +1081,25 @@ CUPRINS
     layere sunt pastrate prin encode. RPU-ul real extras din sursa NU
     mai e supra-scris de un RPU sintetizat din JSON.
 
-  LIMITARE CUNOSCUTA — semnalizarea DV de container pe HEVC (v69):
+  SEMNALIZAREA DV DE CONTAINER PE HEVC (v70 — rezolvata pe MKV):
     Hibridele HEVC create de suita (triple-layer / inject) au stratul DV
     COMPLET in bitstream (RPU per frame, verificabil cu dovi_tool
-    extract-rpu), dar ffmpeg nu poate scrie si inregistrarea de
-    configurare DV a containerului (box-ul dvcC in MP4 / DOVI config in
-    MKV) pornind de la un bitstream HEVC brut.
-    Practic: playerele PC moderne (mpv, madVR — care citesc RPU-ul
-    direct) activeaza DV normal; televizoarele si playerele care decid
-    DOAR dupa semnalizarea containerului pot reda fisierul ca
-    HDR10/HDR10+ (corect si sigur, dar fara stratul DV activ). Pentru
-    semnalizare completa de container e nevoie de un muxer extern
-    (ex. mkvmerge). AV1 NU e afectat — DV-ul e detectat la nivel de
-    frame indiferent de container.
+    extract-rpu). Pana in v69, ffmpeg nu putea scrie si inregistrarea de
+    configurare DV a containerului (DOVI config in MKV / box-ul dvcC in
+    MP4) pornind de la un bitstream HEVC brut → televizoarele care decid
+    DOAR dupa semnalizarea containerului redau fisierul ca HDR10/HDR10+
+    (corect si sigur, dar fara stratul DV activ), in timp ce playerele PC
+    (mpv, madVR — care citesc RPU-ul direct) activeaza DV normal.
+    v70: cand unealta mkvmerge (MKVToolNix) e disponibila, suita scrie
+    automat aceasta semnalizare pentru tinta MKV → Dolby Vision se
+    activeaza si pe televizoare. Cand mkvmerge lipseste, comportamentul
+    ramane cel de pana acum (DV in flux, fara semnalizare de container),
+    fara niciun mesaj. Instaleaza mkvmerge cu tools/mkvmerge_installer
+    (.sh pe Linux/macOS/Termux, .ps1 pe Windows). "Verifica fisiere media"
+    raporteaza acum corect profilul DV pe aceste hibride MKV.
+    RAMANE: tinta MP4/MOV inca nu primeste box-ul dvcC (necesita un muxer
+    separat — planificat pentru o versiune viitoare). AV1 NU e afectat —
+    DV-ul e detectat la nivel de frame indiferent de container.
 
   Fara hdr10plus_tool:
     1) Re-encode HDR10 static.
@@ -2672,6 +2683,7 @@ CUPRINS
               AV_TOOL_EXIFTOOL      (default: exiftool)
               AV_TOOL_OAPV_DEC      (default: oapv_app_dec — optional)
               AV_TOOL_SVTAV1ENCAPP  (default: SvtAv1EncApp — doar caps-probe)
+              AV_TOOL_MKVMERGE      (default: mkvmerge — optional, dvcC DV pe MKV)
               AV_ENGINE_APV_HDR10PLUS (default: src/apv_hdr10plus.py)
             Exemplu: AV_TOOL_DOVI=dovi-tool bash av_launcher.sh
             Windows: $env:AV_TOOL_DOVI = "C:\tools\dovi_tool.exe"

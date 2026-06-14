@@ -3738,6 +3738,60 @@ function _Hdv-PickFile {
 # chapters). Mirror cu bash _hdv_combine_with_original. Folosit de toate 4
 # flow-uri HDR/DV ca pas final. NU e "remux user-facing" (acela traieste in
 # av_mux.ps1); e operatie post-processing fixa (map deterministic, fara prompts).
+# v70: muxeaza un hibrid HEVC DV (raw .hevc cu RPU interleaved) intr-un MKV CU
+# semnalizare dvcC de container, via mkvmerge. Parseaza RPU-ul din bitstream-ul
+# HEVC brut si scrie "DOVI configuration record" (Block Addition Mapping) ->
+# TV-urile activeaza DV (playerele PC citeau deja RPU din bitstream). ffmpeg NU
+# poate sintetiza dvcC din RPU brut (calea v69 = pas MP4 -> DV doar in bitstream).
+# Scrie dvcC DOAR din elementary stream (NU din MP4 - validat); raw .hevc nu are
+# timing -> framerate explicit din sursa. Soft-optional: muxer absent -> $false
+# (apelantul cade pe pasul MP4, comportament v69). Mirror al _mux_dv_mkv (bash).
+function Invoke-DvMkvMux {
+    param(
+        [Parameter(Mandatory)][string]$RawHevc,
+        [Parameter(Mandatory)][string]$Original,
+        [Parameter(Mandatory)][string]$Output
+    )
+    $mux = if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } else { "mkvmerge" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
+    # Raw HEVC nu poarta timing -> derivam framerate din sursa (CFR pe DV).
+    $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 $Original 2>$null | Select-Object -First 1)
+    if ($afr) { $afr = $afr.Trim() }
+    if ($afr -notmatch '^[1-9][0-9]*(/[1-9][0-9]*)?$') {
+        $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 $Original 2>$null | Select-Object -First 1)
+        if ($afr) { $afr = $afr.Trim() }
+    }
+    if ($afr -notmatch '^[1-9][0-9]*(/[1-9][0-9]*)?$') { return $false }
+    # v70 audit: pe surse NON-MKV mkvmerge poate interpreta limba pistelor altfel
+    # decat ffmpeg (ex. cod QuickTime legacy nesetat -> "und" vs "eng") -> output
+    # inconsistent dupa cum e prezent sau nu muxer-ul. Fix: pe non-MKV construim un
+    # donor MKV doar cu non-video via ffmpeg (limbi ca pe calea ffmpeg) si luam
+    # non-video de acolo (MKV nativ -> pastreaza tot). Sursele deja-MKV: direct.
+    $donor = $Original
+    $donorTmp = $null
+    $origExt = [System.IO.Path]::GetExtension($Original).TrimStart('.').ToLowerInvariant()
+    if ($origExt -ne 'mkv') {
+        $donorDir = Split-Path $Output -Parent
+        if (-not $donorDir) { $donorDir = "." }
+        $donorTmp = Join-Path $donorDir ("dvdonor_" + [guid]::NewGuid().ToString("N") + ".mkv")
+        # -c:s srt: mov_text (sub tipic MP4) nu se copiaza in matroska -> convertit la
+        # srt (ca mkvmerge in calea directa); bitmap (rar in MP4) -> esueaza -> fallback.
+        & ffmpeg -v error -y -i $Original -map 0:a? -map 0:s? -map 0:t? -map_chapters 0 -c copy -c:s srt $donorTmp 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $donorTmp) -and (Get-Item $donorTmp).Length -gt 0) {
+            $donor = $donorTmp
+        } else {
+            if (Test-Path $donorTmp) { Remove-Item $donorTmp -Force -ErrorAction SilentlyContinue }
+            $donorTmp = $null
+        }
+    }
+    # video (raw, RPU->dvcC) din input 0 + restul (audio/subs/chapters/attach) din donor
+    & $mux -o $Output --default-duration "0:${afr}fps" $RawHevc --no-video $donor 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $Output) -and (Get-Item $Output).Length -gt 0)
+    if (-not $ok -and (Test-Path $Output)) { Remove-Item $Output -Force -ErrorAction SilentlyContinue }
+    if ($donorTmp -and (Test-Path $donorTmp)) { Remove-Item $donorTmp -Force -ErrorAction SilentlyContinue }
+    return $ok
+}
+
 function Invoke-HdvCombineWithOriginal {
     param(
         [Parameter(Mandatory)][string]$Modified,
@@ -3753,6 +3807,9 @@ function Invoke-HdvCombineWithOriginal {
     # pas intermediar MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
     $modExt = [System.IO.Path]::GetExtension($Modified).TrimStart('.').ToLowerInvariant()
     if ($modExt -in @('hevc','h265','265') -and $ext -eq 'mkv') {
+        # v70: mkvmerge scrie dvcC de container din RPU brut (DV activabil si pe TV);
+        # cand lipseste -> pas MP4 (DV doar in bitstream, comportament v69).
+        if (Invoke-DvMkvMux -RawHevc $Modified -Original $Original -Output $Output) { return $true }
         Ensure-TempDir
         $step1 = Join-Path $AV_TEMP_DIR ("hdvstep1_" + [guid]::NewGuid().ToString("N") + ".mp4")
         $a1 = @("-v","error","-y","-i",$Modified,"-i",$Original,
@@ -8566,15 +8623,22 @@ foreach ($f in $inputFiles) {
                 # matroska refuza (output gol). Tinta mkv pe HEVC → pas intermediar
                 # MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
                 if ($tlCodec -ne "av1" -and $container -eq "mkv") {
-                    $tlStep1 = Join-Path $AV_TEMP_DIR ("tlstep1_"+[guid]::NewGuid().ToString("N")+".mp4")
-                    $tlA1 = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
-                              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-                              "-c","copy") + @($tlStep1)
-                    & ffmpeg @tlA1 2>>"$LogFile"
-                    if ($LASTEXITCODE -eq 0 -and (Test-Path $tlStep1) -and (Get-Item $tlStep1).Length -gt 0) {
-                        & ffmpeg -v error -y -i $tlStep1 -c copy $finalTemp 2>>"$LogFile"
+                    # v70: mkvmerge scrie dvcC de container din RPU brut (DV activabil
+                    # pe TV); cand lipseste -> pas MP4 (DV doar in bitstream, v69).
+                    if (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp) {
+                        Write-Host "  Triple-layer: dvcC de container scris (DV activabil pe TV)" -ForegroundColor Cyan
+                        "  Triple-layer: dvcC de container scris (DV activabil pe TV)" | Out-File $LogFile -Append -Encoding UTF8
+                    } else {
+                        $tlStep1 = Join-Path $AV_TEMP_DIR ("tlstep1_"+[guid]::NewGuid().ToString("N")+".mp4")
+                        $tlA1 = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
+                                  "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                                  "-c","copy") + @($tlStep1)
+                        & ffmpeg @tlA1 2>>"$LogFile"
+                        if ($LASTEXITCODE -eq 0 -and (Test-Path $tlStep1) -and (Get-Item $tlStep1).Length -gt 0) {
+                            & ffmpeg -v error -y -i $tlStep1 -c copy $finalTemp 2>>"$LogFile"
+                        }
+                        Remove-Item $tlStep1 -Force -ErrorAction SilentlyContinue
                     }
-                    Remove-Item $tlStep1 -Force -ErrorAction SilentlyContinue
                 } else {
                     $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
                                "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",

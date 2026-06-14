@@ -3,9 +3,44 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v69 | 128 bug-uri fixate | 245+ features
-  155 fisiere (22 src + 4 Python engines + 14 tools + 6 profile + 3 burnin presets + 106 teste [99 test_* + 7 infra]) | ~43000 linii cod+teste | ~6600 linii documentatie
+  TOTAL: v70 | 129 bug-uri fixate | 248+ features
+  159 fisiere (22 src + 4 Python engines + 16 tools + 6 profile + 3 burnin presets + 108 teste [101 test_* + 7 infra]) | ~43000 linii cod+teste | ~6700 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v70 — Dolby Vision pe MKV se activeaza acum si pe televizoare
+═══════════════════════════════════════════════════════════════
+
+  ADD Hibridele Dolby Vision pe HEVC salvate in MKV primesc acum
+        semnalizarea de container care le lipsea — astfel televizoarele
+        le recunosc si le redau ca Dolby Vision, nu doar ca HDR10/HDR10+.
+        (Pana acum stratul DV era complet in flux si mergea pe playerele
+        de PC care il citesc, dar televizoarele, care decid dupa eticheta
+        din container, redau fisierul ca HDR obisnuit.) Functioneaza
+        automat cand unealta mkvmerge (din pachetul MKVToolNix) e
+        disponibila; cand lipseste, comportamentul ramane exact cel de
+        pana acum, fara niciun mesaj. Se aplica oriunde suita produce un
+        hibrid DV pe HEVC in MKV: pastrarea Dolby Vision la encodare,
+        transformarile din HDR/DV tools si optiunea Mux. Doar MKV
+        deocamdata (pentru MP4/MOV urmeaza o versiune viitoare).
+        "Verifica fisiere media" raporteaza acum corect profilul Dolby
+        Vision pe aceste fisiere (inainte aparea "profil nedetectat").
+
+  ADD Doua scripturi noi de instalare pentru mkvmerge
+        (tools/mkvmerge_installer): pe Linux / macOS / Termux il iau din
+        managerul de pachete, pe Windows descarca pachetul portabil
+        oficial. Complet optionale — suita merge si fara mkvmerge.
+
+  UPDATE La acest pas, metadatele pistelor (limbile audio si de
+        subtitrare, capitolele) se pastreaza fidel si IDENTIC, indiferent
+        daca mkvmerge e instalat sau nu — fara diferente de la un sistem
+        la altul. Pe sursele MP4/MOV cu subtitrari, acestea sunt convertite
+        automat la formatul potrivit pentru MKV.
+
+  Note: aceasta versiune rezolva, pentru tinta MKV, "LIMITAREA CUNOSCUTA"
+        semnalata in v69 (Dolby Vision dormant pe televizoare la hibridele
+        HEVC). Paritate completa bash ↔ PowerShell.
 
 
 ═══════════════════════════════════════════════════════════════

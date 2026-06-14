@@ -1243,7 +1243,7 @@ mux_flow() {
     # packet with unknown timestamp", output gol). Pre-wrap in MP4 temporar
     # (muxerul mp4 deriva timestamps), apoi mux normal cu MP4-ul ca input video.
     # IVF si containerele NU sunt afectate (poarta PTS).
-    local _raw_wrap=""
+    local _raw_wrap="" _dv_raw_src=""
     if [[ "$TARGET" == "mkv" || "$TARGET" == "webm" ]]; then
         local _vext="${video##*.}"; _vext="${_vext,,}"
         case "$_vext" in
@@ -1258,6 +1258,9 @@ mux_flow() {
                 esac
                 if ffmpeg -v error -y -i "$video" -map 0:v:0 -c copy "${_wtag[@]}" "$_raw_wrap" 2>/dev/null \
                    && [ -s "$_raw_wrap" ]; then
+                    # v70: HEVC brut → MKV → pastram calea raw pt post-procesare dvcC
+                    # (mkvmerge scrie DOVI config din RPU daca sursa avea Dolby Vision).
+                    [[ "$TARGET" == "mkv" && ( "$_vext" == "hevc" || "$_vext" == "h265" || "$_vext" == "265" ) ]] && _dv_raw_src="$video"
                     video="$_raw_wrap"
                 else
                     rm -f "$_raw_wrap"
@@ -1536,6 +1539,18 @@ mux_flow() {
         echo "  EROARE: output gol."
         rm -f "$final_out"
         return 1
+    fi
+    # v70: HEVC brut → MKV cu DV → scrie dvcC de container via mkvmerge (DV activabil
+    # pe TV). Video din raw (RPU→dvcC) + non-video din MKV-ul deja construit; mkvmerge
+    # absent sau sursa fara DV → pastreaza MKV-ul ffmpeg (comportament neschimbat).
+    if [[ -n "$_dv_raw_src" ]]; then
+        local _dv_final; _dv_final=$(av_mktemp_ext mkv)
+        if _mux_dv_mkv "$_dv_raw_src" "$final_out" "$_dv_final"; then
+            mv -f "$_dv_final" "$final_out"
+            echo "  dvcC de container scris via $AV_TOOL_MKVMERGE (DV pe TV, daca sursa avea DV)"
+        else
+            rm -f "$_dv_final" 2>/dev/null
+        fi
     fi
     local end_ts; end_ts=$(date +%s)
     local sz_new; sz_new=$(av_stat_size "$final_out" 2>/dev/null || echo 0)
