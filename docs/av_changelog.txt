@@ -3,9 +3,64 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v70 | 129 bug-uri fixate | 248+ features
-  159 fisiere (22 src + 4 Python engines + 16 tools + 6 profile + 3 burnin presets + 108 teste [101 test_* + 7 infra]) | ~43000 linii cod+teste | ~6700 linii documentatie
+  TOTAL: v71 | 132 bug-uri fixate | 251+ features
+  167 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 114 teste [107 test_* + 7 infra]) | ~43000 linii cod+teste | ~6900 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v71 — Dolby Vision pe MP4/MOV si AV1 pe televizoare + telemetrie reparata
+═══════════════════════════════════════════════════════════════
+
+  ADD Hibridele Dolby Vision pe HEVC salvate in MP4/MOV primesc acum
+        semnalizarea de container (completarea v70, care acoperea HEVC pe
+        MKV) — astfel televizoarele le redau ca Dolby Vision, nu doar ca
+        HDR10/HDR10+. Functioneaza automat cand unealta MP4Box (din
+        pachetul GPAC) e disponibila; cand lipseste, comportamentul ramane
+        cel de pana acum, fara niciun mesaj. Se aplica la pastrarea Dolby
+        Vision la encodare, transformarile din HDR/DV tools, Mux si Remux.
+
+  ADD Hibridele Dolby Vision pe AV1 salvate in MKV primesc si ele acum
+        semnalizarea de container (via mkvmerge, exact ca la HEVC) — astfel
+        televizoarele le activeaza ca Dolby Vision. Se aplica la pastrarea
+        DV la encodare, transformarea "HDR10+ → DV" din HDR/DV tools si Mux.
+        Stratul Dolby Vision (RPU) si HDR10+ se pastreaza identice.
+
+  ADD Doua scripturi noi de instalare pentru MP4Box / GPAC
+        (tools/mp4box_installer): pe Linux / macOS / Termux il iau din
+        managerul de pachete, pe Windows prin winget (sau ghidare catre
+        pachetul portabil). Complet optionale — suita merge si fara MP4Box.
+        (mkvmerge, din v70, acopera acum atat HEVC cat si AV1 pe MKV.)
+
+  UPDATE Semnalizarea Dolby Vision de container se pastreaza acum si la
+        operatiile fara re-encodare: stream copy, taiere (trim), re-encodare
+        doar audio si remux. Cand un fisier Dolby Vision trece printr-una
+        din ele si eticheta de container s-ar pierde, aceasta e re-adaugata
+        automat (cand unealta potrivita e disponibila).
+
+  UPDATE Acoperirea finala, pe scurt: Dolby Vision se activeaza pe TV
+        pentru HEVC in MKV si MP4/MOV, si pentru AV1 in MKV. AV1 pe MP4/MOV
+        NU primeste semnalizarea (uneltele de container resping modul in
+        care e plasata metadata Dolby Vision a AV1-ului) — de altfel
+        continutul AV1 Dolby Vision se distribuie aproape exclusiv in MKV.
+        "Verifica fisiere media" raporteaza corect profilul DV pe toate.
+
+  FIX Capitolele se pastreaza acum corect cand un hibrid Dolby Vision e
+        salvat in MP4/MOV (inainte se pierdeau exact la acel pas de
+        scriere a semnalizarii de container).
+
+  FIX Optiunea "Embed lossless" din meniul Telemetrie nu mai esueaza pe
+        sursele reale (DJI / GoPro / Sony / Garmin): pista de date
+        proprietara a camerei nu poate fi re-multiplexata si bloca intreaga
+        operatie (nu se producea niciun fisier). Acum pista raw se elimina
+        automat, iar telemetria e pastrata in formele exportate (SRT / CSV
+        / GPX / KML) — embed-ul functioneaza din nou pe orice sursa.
+
+  FIX Optiunea "Elimina metadata" (Telemetrie) pe DJI: variantele care
+        incercau sa pastreze GPS-ul in fisier esuau (pista GPS proprietara
+        nu poate fi re-multiplexata). Meniul a fost simplificat onest (nu
+        mai promite ce nu se poate) si nu mai esueaza; pentru a pastra
+        GPS-ul, extrage-l intai cu optiunile de extractie, apoi curata.
 
 
 ═══════════════════════════════════════════════════════════════

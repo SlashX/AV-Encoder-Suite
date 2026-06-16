@@ -29,10 +29,11 @@ assert_contains "$COMMON" '--no-video "$donor"' "_mux_dv_mkv: non-video din dono
 assert_contains "$COMMON" '-map 0:a? -map 0:s? -map 0:t? -map_chapters 0' "_mux_dv_mkv: donor MKV non-video pe surse non-MKV (#2 consistenta limbi)"
 
 # ── 3. mkvmerge-FIRST (fallback pe pasul MP4 v69) in cele 2 situri bash ────
-assert_contains "$COMMON" 'if _mux_dv_mkv "$injected_temp" "$output" "$final_temp"; then' "triple-layer: _mux_dv_mkv pe ramura mkv"
+# v71: conditia e acum [[ mkv ]] && _mux_dv_mkv (HEVC+AV1; inainte gateat != av1)
+assert_contains "$COMMON" '"$CONTAINER" == "mkv" ]] && _mux_dv_mkv "$injected_temp" "$output" "$final_temp"; then' "triple-layer: _mux_dv_mkv pe ramura mkv (HEVC+AV1)"
 assert_contains "$HDV" '_mux_dv_mkv "$modified" "$original" "$output" && return 0' "_hdv_combine: _mux_dv_mkv pe ramura mkv"
 # ordonare: helperul mkvmerge INAINTE de pasul intermediar MP4 (av_mktemp_ext mp4)
-lc_mkv=$(grep -n 'if _mux_dv_mkv "\$injected_temp"' "$SCRIPT_DIR/av_common.sh" | head -1 | cut -d: -f1)
+lc_mkv=$(grep -n '&& _mux_dv_mkv "\$injected_temp"' "$SCRIPT_DIR/av_common.sh" | head -1 | cut -d: -f1)
 lc_mp4=$(grep -n '_tl_step1=$(av_mktemp_ext mp4)' "$SCRIPT_DIR/av_common.sh" | head -1 | cut -d: -f1)
 assert_eq "1" "$([[ -n "$lc_mkv" && -n "$lc_mp4" && "$lc_mkv" -lt "$lc_mp4" ]] && echo 1 || echo 0)" "triple-layer: mkvmerge inainte de fallback MP4"
 lh_mkv=$(grep -n '_mux_dv_mkv "\$modified"' "$SCRIPT_DIR/av_hdr_dv_tools.sh" | head -1 | cut -d: -f1)
@@ -46,7 +47,8 @@ assert_file_exists "$SCRIPT_DIR/tools/mkvmerge_installer.ps1" "installer PS1"
 # ── 4b. #3: av_mux post-process dvcC pe raw HEVC DV → MKV ─────────────
 MUX="$(cat "$SCRIPT_DIR/av_mux.sh")"
 assert_contains "$MUX" '_dv_raw_src="$video"' "av_mux: salveaza calea raw HEVC pt dvcC (#3)"
-assert_contains "$MUX" '_mux_dv_mkv "$_dv_raw_src" "$final_out"' "av_mux: post-process dvcC via _mux_dv_mkv (#3)"
+assert_contains "$MUX" '_dv_container_signal "$_dv_raw_src" "$final_out" "$TARGET"' "av_mux Mux: dispatch partajat _dv_container_signal (#3)"
+assert_contains "$COMMON" '_mux_dv_mkv "$raw" "$built"' "dispatch _dv_container_signal: mkv -> _mux_dv_mkv"
 
 # ── 5. FUNCTIONAL — hibrid HEVC mic self-contained → dvcC via helper real ──
 MKVM="${AV_TOOL_MKVMERGE:-mkvmerge}"

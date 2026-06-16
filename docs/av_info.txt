@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v70
+  Documentatie Setup & Utilizare — v71
 ═══════════════════════════════════════════════════════════════
 
 
@@ -119,7 +119,10 @@ CUPRINS
             ./tools/openapv_validator.sh       # decodor referinta OpenAPV (v69,
                                                #   optional — decode-check APV)
             ./tools/mkvmerge_installer.sh      # mkvmerge (v70, optional —
-                                               #   dvcC Dolby Vision pe MKV)
+                                               #   dvcC Dolby Vision pe MKV
+                                               #   [HEVC] + AV1 pe MKV [v71])
+            ./tools/mp4box_installer.sh        # MP4Box/GPAC (v71, optional —
+                                               #   dvcC Dolby Vision pe MP4/MOV)
 
   PASUL 5 — Permisiuni:
             chmod +x src/*.sh src/tools/*.sh
@@ -1081,25 +1084,29 @@ CUPRINS
     layere sunt pastrate prin encode. RPU-ul real extras din sursa NU
     mai e supra-scris de un RPU sintetizat din JSON.
 
-  SEMNALIZAREA DV DE CONTAINER PE HEVC (v70 — rezolvata pe MKV):
-    Hibridele HEVC create de suita (triple-layer / inject) au stratul DV
-    COMPLET in bitstream (RPU per frame, verificabil cu dovi_tool
-    extract-rpu). Pana in v69, ffmpeg nu putea scrie si inregistrarea de
-    configurare DV a containerului (DOVI config in MKV / box-ul dvcC in
-    MP4) pornind de la un bitstream HEVC brut → televizoarele care decid
-    DOAR dupa semnalizarea containerului redau fisierul ca HDR10/HDR10+
-    (corect si sigur, dar fara stratul DV activ), in timp ce playerele PC
-    (mpv, madVR — care citesc RPU-ul direct) activeaza DV normal.
-    v70: cand unealta mkvmerge (MKVToolNix) e disponibila, suita scrie
-    automat aceasta semnalizare pentru tinta MKV → Dolby Vision se
-    activeaza si pe televizoare. Cand mkvmerge lipseste, comportamentul
-    ramane cel de pana acum (DV in flux, fara semnalizare de container),
-    fara niciun mesaj. Instaleaza mkvmerge cu tools/mkvmerge_installer
-    (.sh pe Linux/macOS/Termux, .ps1 pe Windows). "Verifica fisiere media"
-    raporteaza acum corect profilul DV pe aceste hibride MKV.
-    RAMANE: tinta MP4/MOV inca nu primeste box-ul dvcC (necesita un muxer
-    separat — planificat pentru o versiune viitoare). AV1 NU e afectat —
-    DV-ul e detectat la nivel de frame indiferent de container.
+  SEMNALIZAREA DV DE CONTAINER (v70/v71 — rezolvata pe MKV si MP4):
+    Hibridele Dolby Vision create de suita (triple-layer / inject) au
+    stratul DV COMPLET in bitstream (RPU per frame, verificabil cu
+    dovi_tool / av1dovi_tool extract-rpu). Pana in v69, ffmpeg nu putea
+    scrie si inregistrarea de configurare DV a containerului (DOVI config
+    record / box-ul dvcC) pornind de la un bitstream brut → televizoarele
+    care decid DOAR dupa semnalizarea containerului redau fisierul ca
+    HDR10/HDR10+ (corect si sigur, dar fara stratul DV activ), in timp ce
+    playerele PC (mpv, madVR — care citesc RPU-ul direct) activeaza DV.
+    Cand uneltele de container sunt disponibile, suita scrie automat
+    aceasta semnalizare → Dolby Vision se activeaza si pe televizoare:
+      - HEVC pe MKV     (v70) — via mkvmerge (MKVToolNix)
+      - HEVC pe MP4/MOV (v71) — via MP4Box (GPAC)
+      - AV1  pe MKV     (v71) — via mkvmerge
+    Cand unealta lipseste, comportamentul ramane cel de pana acum (DV in
+    flux, fara semnalizare de container), fara niciun mesaj. Instaleaza cu
+    tools/mkvmerge_installer si tools/mp4box_installer (.sh pe Linux/macOS/
+    Termux, .ps1 pe Windows). Semnalizarea se pastreaza si la operatiile
+    fara re-encodare (remux, stream copy, taiere, doar audio). "Verifica
+    fisiere media" raporteaza corect profilul DV pe aceste hibride.
+    RAMANE: AV1 pe MP4/MOV nu primeste semnalizarea (uneltele de container
+    resping modul in care e plasata metadata DV a AV1-ului) — de altfel
+    continutul AV1 Dolby Vision se distribuie aproape exclusiv in MKV.
 
   Fara hdr10plus_tool:
     1) Re-encode HDR10 static.

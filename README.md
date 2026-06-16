@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v70** — 129 bugs fixed · 248+ features · ~43 000 LoC · 159 files
+**v71** — 132 bugs fixed · 251+ features · ~43 000 LoC · 167 files
 
 ---
 
@@ -15,7 +15,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 ## Highlights
 
 - **Dolby Vision preserve end-to-end** — HEVC↔AV1 cross-codec (P5/P7/P8.1↔P10), SW + all 6 HW backends (v46), HDR10+ co-existence when source carries both layers
-- **Dolby Vision on MKV now recognized by TVs** (v70) — the HEVC DV hybrids the suite builds carry the full DV layer in the bitstream but lacked the container signaling TVs decide by; when `mkvmerge` (MKVToolNix) is available, the suite writes the DOVI configuration record into the MKV so TVs engage Dolby Vision (PC players already read the in-stream RPU). Optional and silent when absent (falls back to the prior in-stream-only behavior); applies to DV preserve at encode, HDR/DV transforms, and Mux. Two installer scripts ship for mkvmerge; track metadata (audio/subtitle languages, chapters) is preserved faithfully and identically whether or not mkvmerge is present. MKV only for now (MP4/MOV planned). Resolves the v69 "known limitation"
+- **Dolby Vision now recognized by TVs** (v70/v71) — the DV hybrids the suite builds carry the full DV layer in the bitstream but lacked the container signaling TVs decide by; when the right tool is available, the suite writes the DOVI configuration record so TVs engage Dolby Vision (PC players already read the in-stream RPU). Coverage: HEVC in MKV (`mkvmerge`, v70) + HEVC in MP4/MOV (`MP4Box`/GPAC, v71) + AV1 in MKV (`mkvmerge`, v71). Optional and silent when absent (falls back to in-stream-only); applies to DV preserve at encode, HDR/DV transforms, Mux/Remux, and stream-copy/trim/audio-only passthrough. Track metadata (audio/subtitle languages, chapters) preserved faithfully. AV1 in MP4/MOV is not supported (the container tools reject the AV1 DV metadata-OBU placement). Resolves the v69 "known limitation"
 - **HDR10+ on APV** (v69) — a first: dynamic HDR10+ metadata survives encoding to Samsung APV (ffmpeg alone drops it). A dedicated stdlib engine writes the ST 2094-40 metadata per frame straight into the APV bitstream alongside static mastering-display/MaxCLL, from any HDR10+ source (HEVC / AV1 / APV) — and back: an HDR10+ APV file re-encodes to x265/AV1 with metadata intact. Output validated byte-exact against the HDR10+ ecosystem reference tools and the official test clip; optional decode-check via the OpenAPV reference decoder (`tools/openapv_validator`)
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata)
@@ -91,7 +91,7 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 
 ¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lose wide gamut on LOG, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU → honest per-source warnings (DV → clean HDR10 base; use x265/AV1 to keep DV). HDR10+ dynamic metadata is lost on DNxHR/ProRes — but **preserved on APV** since v69 (suite engine, see Highlights). ProRes 4444 XQ = native XQ profile (v64). DNxHR MXF audio = PCM only (v64). **APV** (v65) = `liboapv`/`libopenapv` auto-detect, independent profile/preset/QP knobs (x265-style), mp4/mov/mkv; full bash + PowerShell parity.
 
-DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` AV1) → re-encode HDR10 base → post-encode RPU inject → re-mux audio. On **MKV** targets, container DV signaling (DOVI configuration record) is written via `mkvmerge` when available (v70) → DV recognized by TVs, not just PC players (silent fallback to in-stream-only when absent; MP4/MOV planned).
+DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` AV1) → re-encode HDR10 base → post-encode RPU inject → re-mux audio. Container DV signaling (DOVI configuration record) is written when the tool is available — HEVC: MKV via `mkvmerge` (v70) + MP4/MOV via `MP4Box` (v71); AV1: MKV via `mkvmerge` (v71) → DV recognized by TVs, not just PC players (silent in-stream-only fallback when absent; AV1 in MP4/MOV unsupported — tools reject the AV1 DV OBU placement).
 
 ---
 
@@ -118,7 +118,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 |---|---|---|---|---|
 | **HDR10** | all encoders | ✅ | HEVC↔AV1 | — |
 | **HDR10+** dynamic | HEVC + SVT-AV1 v1.5+ · **APV (v69)** | ✅ | all directions incl. APV↔HEVC/AV1 | synthesize DV from HDR10+ (v45) |
-| **Dolby Vision** | HEVC 8.1 (v45) · AV1 P10 (v44) | ✅ | HEVC↔AV1 (v44/v45) | profile transform 5/7→8.1, 8.1↔10 · **MKV container signaling via mkvmerge (v70)** |
+| **Dolby Vision** | HEVC 8.1 (v45) · AV1 P10 (v44) | ✅ | HEVC↔AV1 (v44/v45) | profile transform 5/7→8.1, 8.1↔10 · **container signaling: HEVC MKV+MP4 (mkvmerge v70 / MP4Box v71) · AV1 MKV (v71)** |
 | **HLG** | all encoders + HW + MediaCodec (v39) | ✅ | ✅ | — |
 | **LOG** (Apple/D-Log M/Samsung) | `.cube` LUT → Rec.709 / HLG · keep LOG | ✅ | — | — |
 | **SDR tonemap** | Hable zscale → Rec.709 | — | — | — |
@@ -268,8 +268,10 @@ AV-Encoder-Suite/
 │       ├── exiftool_update.ps1     # ExifTool smart updater (Windows)
 │       ├── openapv_validator.sh    # v69 — OpenAPV reference decoder installer (cmake build)
 │       ├── openapv_validator.ps1   # v69 — OpenAPV reference decoder installer (Windows, prebuilt)
-│       ├── mkvmerge_installer.sh   # v70 — mkvmerge installer (pkg manager; dvcC DV on MKV)
+│       ├── mkvmerge_installer.sh   # v70 — mkvmerge installer (pkg manager; dvcC DV on MKV, HEVC+AV1)
 │       ├── mkvmerge_installer.ps1  # v70 — mkvmerge installer (Windows, portable .7z)
+│       ├── mp4box_installer.sh     # v71 — MP4Box/GPAC installer (pkg manager; dvcC DV on MP4/MOV)
+│       ├── mp4box_installer.ps1    # v71 — MP4Box/GPAC installer (Windows, winget)
 │       ├── profile_diff.sh         # v43 — compare two .conf profiles (bash)
 │       └── profile_diff.ps1        # v43 — compare two .conf profiles (PS1 mirror)
 ├── docs/
@@ -350,7 +352,8 @@ Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip when the binary is 
 | `av1dovi_tool` | DV RPU AV1 (sven-pke fork) | `av1dovi_parser.sh` (cargo) | `av1dovi_parser.ps1` (rustup + git) |
 | ExifTool updater | Latest version | `exiftool_update.sh` | `exiftool_update.ps1` |
 | `oapv_app_dec` | OpenAPV reference decoder — optional APV decode-check (v69) | `openapv_validator.sh` (cmake) | `openapv_validator.ps1` (prebuilt) |
-| `mkvmerge` | MKVToolNix — optional, DV container signaling (dvcC) on MKV (v70) | `mkvmerge_installer.sh` (pkg manager) | `mkvmerge_installer.ps1` (portable .7z) |
+| `mkvmerge` | MKVToolNix — optional, DV container signaling (dvcC) on MKV for HEVC (v70) + AV1 (v71) | `mkvmerge_installer.sh` (pkg manager) | `mkvmerge_installer.ps1` (portable .7z) |
+| `MP4Box` (GPAC) | optional, DV container signaling (dvcC) on MP4/MOV for HEVC (v71) | `mp4box_installer.sh` (pkg manager) | `mp4box_installer.ps1` (winget) |
 | Profile diff | Compare `.conf` files | `profile_diff.sh A B` | `profile_diff.ps1 A B` |
 
 AV1 forks install with renamed binaries (`av1dovi_tool`, `av1hdr10plus_tool`) so they coexist with HEVC upstream. Since v69, every external tool name is overridable via `AV_TOOL_*` environment variables (plain name or full path) — e.g. `AV_TOOL_DOVI=dovi-tool` for distros that ship renamed binaries.
@@ -392,4 +395,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v70** — 129 bugs fixed · 248+ features · ~43 000 LoC · 159 files
+Current: **v71** — 132 bugs fixed · 251+ features · ~43 000 LoC · 167 files

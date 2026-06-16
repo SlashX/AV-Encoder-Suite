@@ -399,6 +399,12 @@ trimconcat_flow_trim() {
                 -map 0 -map_metadata 0 -c copy \
                 -avoid_negative_ts make_zero -copyts \
                 "$out_path" 2>&1 | tail -5
+            # v71: trim stream-copy al unui DV HEVC → -c copy pierde dvcC de container →
+            # re-scrie (mkvmerge/MP4Box). DOAR pe stream-copy (re-encode refuza/tonemap DV).
+            if [[ -s "$out_path" ]]; then
+                local _tr_ext="${out_path##*.}"; _tr_ext="${_tr_ext,,}"
+                _dv_resignal_copy "$src" "$out_path" "$_tr_ext"
+            fi
         fi
 
         if [[ -f "$out_path" && -s "$out_path" ]]; then
@@ -561,6 +567,12 @@ trimconcat_flow_batch_trim() {
                     -avoid_negative_ts make_zero -copyts \
                     "$out_path" 2>&1 | tail -3
                 rc=${PIPESTATUS[0]}
+                # v71: batch trim stream-copy al unui DV HEVC → -c copy pierde dvcC →
+                # re-scrie (DOAR pe stream-copy; re-encode refuza/tonemap DV).
+                if [[ $rc -eq 0 && -s "$out_path" ]]; then
+                    local _bt_ext="${out_path##*.}"; _bt_ext="${_bt_ext,,}"
+                    _dv_resignal_copy "$src" "$out_path" "$_bt_ext"
+                fi
             fi
             if [[ $rc -eq 0 && -f "$out_path" && -s "$out_path" ]]; then
                 ok=$((ok+1))

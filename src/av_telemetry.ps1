@@ -178,17 +178,19 @@ if ($choice -eq "6") {
     Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
     Write-Host "║  ELIMINA METADATA (REMUX FARA RE-ENCODE)     ║" -ForegroundColor Yellow
     Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-    Write-Host "║  DJI:                                         ║" -ForegroundColor White
-    Write-Host "║   1) Doar debug (dbgi ~295 MB) [implicit]     ║" -ForegroundColor White
-    Write-Host "║   2) GPS + debug (djmd + dbgi)                ║" -ForegroundColor White
-    Write-Host "║   3) Tot (djmd + dbgi + tmcd + cover)         ║" -ForegroundColor White
+    Write-Host "║  DJI (GPS-ul djmd NU poate ramane la re-mux): ║" -ForegroundColor White
+    Write-Host "║   1) Sterge telemetria (djmd/dbgi/tmcd)       ║" -ForegroundColor White
+    Write-Host "║   2) Sterge telemetria + cover (mjpeg)        ║" -ForegroundColor White
     Write-Host "║  GoPro/Sony/Garmin: orice optiune sterge      ║" -ForegroundColor White
     Write-Host "║   track-ul de telemetrie (gpmd/nmea/fdsc)     ║" -ForegroundColor White
-    Write-Host "║   4) Anulare                                  ║" -ForegroundColor White
+    Write-Host "║   3) Anulare                                  ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-    $stripMode = Read-Host "Alege 1-4 [implicit: 1]"
+    Write-Host "  Nota DJI: ffmpeg nu poate re-muxa pistele de date proprietare" -ForegroundColor DarkGray
+    Write-Host "  (djmd/dbgi/tmcd, codec none) -> sunt eliminate. Pentru GPS," -ForegroundColor DarkGray
+    Write-Host "  extrage-l intai cu optiunile 1-5 din meniul telemetrie." -ForegroundColor DarkGray
+    $stripMode = Read-Host "Alege 1-3 [implicit: 1]"
     if (-not $stripMode) { $stripMode = "1" }
-    if ($stripMode -eq "4") { exit }
+    if ($stripMode -eq "3") { exit }
 }
 
 # ── Verificare dependente conditional ────────────────────────────────
@@ -852,21 +854,26 @@ function Process-DJIStrip {
     if (-not $hasDjmd -and -not $hasDbgi) {
         Write-Host "  [SKIP] Nu e fisier DJI" -ForegroundColor DarkGray; return
     }
-    $stripMaps = [System.Collections.Generic.List[string]]@("-map","0")
-    $stripIdx = 0
-    $tagLines = & ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 $f.FullName 2>$null
-    foreach ($tag in $tagLines) {
-        switch ($stripMode) {
-            "1" { if ($tag -imatch "dbgi")               { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
-            "2" { if ($tag -imatch "djmd|dbgi")          { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
-            "3" { if ($tag -imatch "djmd|dbgi|tmcd|mjpeg|jpeg") { $stripMaps.AddRange([string[]]@("-map","-0:$stripIdx")) } }
+    # -dn: pistele de date DJI (djmd/dbgi/tmcd) sunt codec=none -> ffmpeg NU le poate
+    # re-muxa (-c copy esueaza). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5).
+    # v71 audit: inainte modurile care PASTRAU date (1=keep djmd, 2=keep tmcd) esuau pe DJI.
+    $stripMaps = [System.Collections.Generic.List[string]]@("-map","0","-dn")
+    if ($stripMode -eq "2") {
+        # mode 2: elimina si cover-ul (mjpeg/jpeg). codec_tag al cover-ului DJI e
+        # [0][0][0][0] -> detectam dupa codec_NAME, nu tag. Index ABSOLUT din ffprobe.
+        $vidLines = & ffprobe -v error -select_streams v -show_entries stream=index,codec_name -of csv=p=0 $f.FullName 2>$null
+        foreach ($vl in $vidLines) {
+            $parts = "$vl".Trim() -split ','
+            if ($parts.Count -ge 2 -and $parts[1] -imatch '^(mjpeg|jpeg|png)$') {
+                $stripMaps.AddRange([string[]]@("-map","-0:$($parts[0])"))
+            }
         }
-        $stripIdx++
     }
     $outClean = Join-Path $OutputDir "${name}_clean$ext"
     & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
         Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green
+        Write-Host "  Nota: telemetria DJI (djmd/dbgi/tmcd) eliminata (ffmpeg nu o re-muxeaza); GPS via opt 1-5." -ForegroundColor DarkGray
     } else {
         Write-Host "  [EROARE] Remux esuat" -ForegroundColor Red
         Remove-Item $outClean -Force -ErrorAction SilentlyContinue
@@ -901,7 +908,8 @@ function Process-GoPro {
     }
     elseif ($choice -eq "6") {
         $ext = $f.Extension
-        $stripMaps = [System.Collections.Generic.List[string]]@("-map","0")
+        # -dn: data proprietar (gpmd) e codec=none -> ne-re-muxabil de ffmpeg
+        $stripMaps = [System.Collections.Generic.List[string]]@("-map","0","-dn")
         $stripIdx = 0
         $tagLines = & ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 $f.FullName 2>$null
         foreach ($tag in $tagLines) {
@@ -951,7 +959,8 @@ function Invoke-TelemExtractRaw {
 function Invoke-TelemStripTrack {
     param([System.IO.FileInfo]$f, [string]$name, [string]$tagRegex)
     $ext = $f.Extension
-    $stripMaps = [System.Collections.Generic.List[string]]@("-map","0")
+    # -dn: data codec=none ne-re-muxabil de ffmpeg
+    $stripMaps = [System.Collections.Generic.List[string]]@("-map","0","-dn")
     $stripIdx = 0
     $tagLines = & ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 $f.FullName 2>$null
     foreach ($tag in $tagLines) {
@@ -1079,7 +1088,11 @@ function Invoke-EmbedTelemetryLossless {
 
     # Build ffmpeg args
     $ffArgs = [System.Collections.Generic.List[string]]@("-v","error","-i",$f.FullName)
-    $ffMaps = [System.Collections.Generic.List[string]]@("-map","0:v","-map","0:a?","-map","0:d?")
+    # NU mapam pista de date sursa (djmd/dbgi/tmcd/gpmd): ffmpeg le vede ca
+    # codec=none (proprietare) -> -c copy esueaza (MP4: "tag for codec none";
+    # MKV: "Only audio/video/subtitles") -> embed pica. -dn (mai jos) le elimina;
+    # telemetria e re-exprimata ca SRT + CSV + GPX + KML. Raw-ul brut via opt 5/Raw.
+    $ffMaps = [System.Collections.Generic.List[string]]@("-map","0:v","-map","0:a?")
     $ffMeta = [System.Collections.Generic.List[string]]@()
     $subsCodec = "copy"
 
@@ -1121,7 +1134,7 @@ function Invoke-EmbedTelemetryLossless {
     }
 
     $ffArgs.AddRange($ffMaps)
-    $ffArgs.AddRange([string[]]@("-c:v","copy","-c:a","copy"))
+    $ffArgs.AddRange([string[]]@("-dn","-c:v","copy","-c:a","copy"))
     if ($hasSrt) { $ffArgs.AddRange([string[]]@("-c:s",$subsCodec)) }
     $ffArgs.AddRange($ffMeta)
     if ($targetExt -in @("mp4","mov","m4v")) {

@@ -350,6 +350,10 @@ remux_run_for_file() {
         rm -f "$final_out"
         return 1
     fi
+    # v71: remux al unui DV HEVC → re-scrie dvcC de container (ffmpeg -c copy o pierde,
+    # chiar si la MP4→MP4). _dv_resignal_copy: detecteaza DV pe sursa + extrage raw din
+    # output + dispatch (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv / unealta lipsa.
+    _dv_resignal_copy "$file" "$final_out" "$target"
     local end_ts=$(date +%s)
     local sz_orig sz_new
     sz_orig=$(av_stat_size "$file" 2>/dev/null || echo 0)
@@ -1258,9 +1262,9 @@ mux_flow() {
                 esac
                 if ffmpeg -v error -y -i "$video" -map 0:v:0 -c copy "${_wtag[@]}" "$_raw_wrap" 2>/dev/null \
                    && [ -s "$_raw_wrap" ]; then
-                    # v70: HEVC brut → MKV → pastram calea raw pt post-procesare dvcC
-                    # (mkvmerge scrie DOVI config din RPU daca sursa avea Dolby Vision).
-                    [[ "$TARGET" == "mkv" && ( "$_vext" == "hevc" || "$_vext" == "h265" || "$_vext" == "265" ) ]] && _dv_raw_src="$video"
+                    # v70 (HEVC) / v71 (AV1 .av1 OBU): video brut → MKV → pastram calea raw
+                    # pt post-procesare dvcC (mkvmerge scrie DOVI config din RPU pe HEVC SI AV1).
+                    [[ "$TARGET" == "mkv" && ( "$_vext" == "hevc" || "$_vext" == "h265" || "$_vext" == "265" || "$_vext" == "av1" ) ]] && _dv_raw_src="$video"
                     video="$_raw_wrap"
                 else
                     rm -f "$_raw_wrap"
@@ -1269,6 +1273,15 @@ mux_flow() {
                 fi
                 ;;
         esac
+    fi
+    # v71: AV1 IVF → MKV (IVF poarta PTS → sare raw-wrap-ul de mai sus) → pastram calea raw
+    # pt post-procesare dvcC (mkvmerge scrie DOVI config din RPU). MP4 ramane HEVC-only.
+    if [[ "$TARGET" == "mkv" && "${video##*.}" == "ivf" ]]; then _dv_raw_src="$video"; fi
+    # v71: pe tinta MP4/MOV, video brut HEVC DV → pastram calea raw pt post-procesare
+    # dvcC (MP4Box scrie box-ul dvcC din RPU). MP4/MOV nu necesita raw-wrap (deriva PTS).
+    if [[ "$TARGET" == "mp4" || "$TARGET" == "mov" || "$TARGET" == "m4v" ]]; then
+        local _vextmp4="${video##*.}"; _vextmp4="${_vextmp4,,}"
+        case "$_vextmp4" in hevc|h265|265) _dv_raw_src="$video" ;; esac
     fi
 
     local -a audio_drop_idx=() audio_codec=()
@@ -1540,17 +1553,10 @@ mux_flow() {
         rm -f "$final_out"
         return 1
     fi
-    # v70: HEVC brut → MKV cu DV → scrie dvcC de container via mkvmerge (DV activabil
-    # pe TV). Video din raw (RPU→dvcC) + non-video din MKV-ul deja construit; mkvmerge
-    # absent sau sursa fara DV → pastreaza MKV-ul ffmpeg (comportament neschimbat).
+    # v70/v71: video brut HEVC DV → scrie dvcC de container (DV pe TV, daca sursa avea
+    # DV). Dispatch mkv→mkvmerge / mp4-mov→MP4Box via _dv_container_signal (partajat).
     if [[ -n "$_dv_raw_src" ]]; then
-        local _dv_final; _dv_final=$(av_mktemp_ext mkv)
-        if _mux_dv_mkv "$_dv_raw_src" "$final_out" "$_dv_final"; then
-            mv -f "$_dv_final" "$final_out"
-            echo "  dvcC de container scris via $AV_TOOL_MKVMERGE (DV pe TV, daca sursa avea DV)"
-        else
-            rm -f "$_dv_final" 2>/dev/null
-        fi
+        _dv_container_signal "$_dv_raw_src" "$final_out" "$TARGET"
     fi
     local end_ts; end_ts=$(date +%s)
     local sz_new; sz_new=$(av_stat_size "$final_out" 2>/dev/null || echo 0)

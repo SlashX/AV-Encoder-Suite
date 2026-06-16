@@ -388,6 +388,11 @@ for file in "${FILES[@]}"; do
         rm -f "$output"
         TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
     else
+        # v71: audio-only pe DV HEVC → -c:v copy pierde dvcC de container → re-scrie
+        # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de NEW_SIZE (re-mux).
+        # NB: nivel script (in for) → fara `local` (vezi regula v66).
+        _au_ext="${output##*.}"; _au_ext="${_au_ext,,}"
+        _dv_resignal_copy "$file" "$output" "$_au_ext"
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
         echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"

@@ -25,7 +25,7 @@ Assert-Match $enc ([regex]::Escape('-map 0:a? -map 0:s? -map 0:t? -map_chapters 
 
 # ── 3. mkvmerge-FIRST (fallback pas MP4 v69) in cele 2 situri PS1 ──────────
 Assert-Match $enc ([regex]::Escape('if (Invoke-DvMkvMux -RawHevc $Modified -Original $Original -Output $Output) { return $true }')) "Invoke-HdvCombineWithOriginal: mkvmerge inainte de pas MP4"
-Assert-Match $enc ([regex]::Escape('if (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp)')) "triple-layer: mkvmerge inainte de pas MP4"
+Assert-Match $enc ([regex]::Escape('$container -eq "mkv" -and (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp)')) "triple-layer: mkvmerge pe ramura mkv (HEVC+AV1 v71)"
 
 # ── 4. installer-ele exista ───────────────────────────────────────────────
 Assert-Eq $true (Test-Path (Join-Path $SRC "tools\mkvmerge_installer.ps1")) "installer PS1 exista"
@@ -34,7 +34,8 @@ Assert-Eq $true (Test-Path (Join-Path $SRC "tools\mkvmerge_installer.sh")) "inst
 # ── 4b. #3: av_mux post-process dvcC pe raw HEVC DV -> MKV ─────────────
 $muxPs = Get-Content (Join-Path $SRC "av_mux.ps1") -Raw
 Assert-Match $muxPs ([regex]::Escape('$dvRawSrc = $video')) "av_mux: salveaza calea raw HEVC pt dvcC (#3)"
-Assert-Match $muxPs ([regex]::Escape('--no-video $finalOut')) "av_mux: post-process mkvmerge cu donor MKV construit (#3)"
+Assert-Match $muxPs ([regex]::Escape('Invoke-AvMuxDvSignal -Raw $dvRawSrc -Built $finalOut -Target $Target')) "av_mux Mux: post-process via Invoke-AvMuxDvSignal (#3)"
+Assert-Match $muxPs ([regex]::Escape('--no-video $Built')) "av_mux dispatch: mkvmerge --no-video"
 
 # ── 5. FUNCTIONAL — hibrid HEVC mic self-contained → dvcC via Invoke-DvMkvMux ──
 $mkvm = if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } else { "mkvmerge" }

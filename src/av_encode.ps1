@@ -380,6 +380,11 @@ function Invoke-TrimFlow {
                 -map 0 -map_metadata 0 -c copy `
                 -avoid_negative_ts make_zero -copyts `
                 $outPath 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            # v71: trim stream-copy al unui DV HEVC -> -c copy pierde dvcC -> re-scrie
+            # (DOAR pe stream-copy; re-encode refuza/tonemap DV).
+            if (Test-Path $outPath) {
+                Invoke-DvResignalCopy -Source $src.FullName -Output $outPath -Target ([System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant())
+            }
         }
 
         if ((Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
@@ -588,6 +593,10 @@ function Invoke-BatchTrimFlow {
                     -avoid_negative_ts make_zero -copyts `
                     $outPath 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
                 $rc = $LASTEXITCODE
+                # v71: batch trim stream-copy al unui DV HEVC -> re-scrie dvcC (DOAR stream-copy)
+                if ($rc -eq 0 -and (Test-Path $outPath)) {
+                    Invoke-DvResignalCopy -Source $src.FullName -Output $outPath -Target ([System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant())
+                }
             }
             if ($rc -eq 0 -and (Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
                 $ok++
@@ -2717,6 +2726,10 @@ function Invoke-StreamCopy {
     }
     if (Test-Path $scErrFile) { Remove-Item $scErrFile -Force -ErrorAction SilentlyContinue }
 
+    # v71: stream-copy al unui DV HEVC -> ffmpeg pierde dvcC de container -> re-scrie
+    # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de stats (re-mux).
+    Invoke-DvResignalCopy -Source $fileInfo.FullName -Output $outFile -Target $container
+
     # Stats
     $newSize = (Get-Item $outFile).Length
     $saved = [math]::Max(0, $fileInfo.Length - $newSize)
@@ -3740,12 +3753,12 @@ function _Hdv-PickFile {
 # av_mux.ps1); e operatie post-processing fixa (map deterministic, fara prompts).
 # v70: muxeaza un hibrid HEVC DV (raw .hevc cu RPU interleaved) intr-un MKV CU
 # semnalizare dvcC de container, via mkvmerge. Parseaza RPU-ul din bitstream-ul
-# HEVC brut si scrie "DOVI configuration record" (Block Addition Mapping) ->
-# TV-urile activeaza DV (playerele PC citeau deja RPU din bitstream). ffmpeg NU
+# brut HEVC (.hevc) SAU AV1 (.ivf, v71) si scrie "DOVI configuration record" (Block
+# Addition Mapping) -> TV-urile activeaza DV (playerele PC citeau deja RPU). ffmpeg NU
 # poate sintetiza dvcC din RPU brut (calea v69 = pas MP4 -> DV doar in bitstream).
-# Scrie dvcC DOAR din elementary stream (NU din MP4 - validat); raw .hevc nu are
-# timing -> framerate explicit din sursa. Soft-optional: muxer absent -> $false
-# (apelantul cade pe pasul MP4, comportament v69). Mirror al _mux_dv_mkv (bash).
+# Scrie dvcC DOAR din elementary stream (NU din MP4 - validat); raw nu are timing
+# fiabil -> framerate explicit din sursa. Soft-optional: muxer absent -> $false
+# (apelantul cade pe pasul MP4 [HEVC] / ffmpeg direct [AV1]). Mirror al _mux_dv_mkv (bash).
 function Invoke-DvMkvMux {
     param(
         [Parameter(Mandatory)][string]$RawHevc,
@@ -3792,6 +3805,109 @@ function Invoke-DvMkvMux {
     return $ok
 }
 
+# v71: muxeaza un hibrid HEVC DV (raw .hevc cu RPU) intr-un MP4/MOV CU semnalizare
+# dvcC de container, via MP4Box (GPAC). MP4Box auto-detecteaza RPU-ul din bitstream-ul
+# HEVC brut si scrie box-ul dvcC -> TV-urile activeaza DV. ffmpeg NU poate (nici
+# sintetiza dvcC din RPU brut, nici copia dvcC existent). Echivalentul MP4/MOV al
+# Invoke-DvMkvMux (v70). Soft-optional: lipsa MP4Box -> $false (apelantul cade pe
+# ffmpeg direct, DV doar in bitstream). Raw .hevc nu poarta timing -> :fps=<avg> din
+# sursa. Gata pe surse ISO (MP4/MOV/M4V) unde #<trackID> mapeaza fiabil pe track ID
+# (== ffprobe stream=id); alte containere -> $false (fallback).
+function Invoke-DvMp4Mux {
+    param(
+        [Parameter(Mandatory)][string]$RawHevc,
+        [Parameter(Mandatory)][string]$Original,
+        [Parameter(Mandatory)][string]$Output
+    )
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
+    # MP4Box scrie dvcC DOAR pt HEVC: pe AV1 (.ivf) plasarea OBU-ului de metadata DV de la
+    # av1dovi_tool e ne-conforma cu spec-ul Dolby Vision -> MP4Box REFUZA config-ul. AV1 DV
+    # -> dvcC doar pe MKV (mkvmerge, v71).
+    $rext = [System.IO.Path]::GetExtension($RawHevc).TrimStart('.').ToLowerInvariant()
+    if ($rext -notin @('hevc','h265','265')) { return $false }
+    $oext = [System.IO.Path]::GetExtension($Original).TrimStart('.').ToLowerInvariant()
+    if ($oext -notin @('mp4','mov','m4v','qt')) { return $false }
+    $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 $Original 2>$null | Select-Object -First 1)
+    if ($afr) { $afr = $afr.Trim() }
+    if ($afr -notmatch '^[1-9][0-9]*(/[1-9][0-9]*)?$') {
+        $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 $Original 2>$null | Select-Object -First 1)
+        if ($afr) { $afr = $afr.Trim() }
+    }
+    if ($afr -notmatch '^[1-9][0-9]*(/[1-9][0-9]*)?$') { return $false }
+    # video (raw, RPU->dvcC) + fiecare pista audio/subtitle din original dupa track ID
+    # (MP4Box #N; N = track ID ISO == ffprobe stream=id, in hex 0xN -> decimal)
+    # NB: ffprobe -select_streams accepta UN singur specificator (a,s e invalid) →
+    # enumeram audio apoi subtitle separat. id = track ID ISO (hex 0xN -> decimal).
+    $addArgs = New-Object System.Collections.Generic.List[string]
+    $addArgs.Add("-add"); $addArgs.Add("${RawHevc}:fps=${afr}")
+    foreach ($st in @('a','s')) {
+        $ids = @(& ffprobe -v error -select_streams $st -show_entries stream=id -of default=noprint_wrappers=1:nokey=1 $Original 2>$null)
+        foreach ($id in $ids) {
+            $id = "$id".Trim()
+            if (-not $id -or $id -eq 'N/A') { continue }
+            $dec = if ($id -like '0x*') { [Convert]::ToInt32($id.Substring(2), 16) } else { [int]$id }
+            $addArgs.Add("-add"); $addArgs.Add("${Original}#${dec}")
+        }
+    }
+    & $mux @addArgs -new $Output 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $Output) -and (Get-Item $Output).Length -gt 0)
+    if ($ok) {
+        # MP4Box -add NU copiaza capitolele (mkvmerge --no-video le include) →
+        # le caram separat (dump-chap + chap), doar daca originalul are capitole.
+        # Temp langa $Output (evita dep $AV_TEMP_DIR la AST-import + regula no-$env:TEMP).
+        $nch = @(& ffprobe -v error -show_chapters -of csv=p=0 $Original 2>$null).Count
+        if ($nch -gt 0) {
+            $chap = Join-Path (Split-Path $Output -Parent) ("chap_" + [guid]::NewGuid().ToString("N") + ".txt")
+            & $mux -dump-chap $Original -out $chap 2>$null | Out-Null
+            if ((Test-Path $chap) -and (Get-Item $chap).Length -gt 0) {
+                & $mux -chap $chap $Output 2>$null | Out-Null
+            }
+            if (Test-Path $chap) { Remove-Item $chap -Force -ErrorAction SilentlyContinue }
+        }
+    } elseif (Test-Path $Output) { Remove-Item $Output -Force -ErrorAction SilentlyContinue }
+    return $ok
+}
+
+# v71: scrie dvcC de container pe un output DEJA construit ($Built), inlocuind video-ul
+# cu $Raw (DV). Dispatch: mkv -> Invoke-DvMkvMux, mp4/mov -> Invoke-DvMp4Mux. Dispatch
+# UNIC folosit de fluxurile av_encode (stream-copy / audio-only / trim). Esec -> pastreaza
+# $Built. Echivalentul PS1 al _dv_container_signal (bash).
+function Invoke-DvContainerSignal {
+    param([Parameter(Mandatory)][string]$Raw, [Parameter(Mandatory)][string]$Built, [Parameter(Mandatory)][string]$Target)
+    Ensure-TempDir
+    $tmp = Join-Path $AV_TEMP_DIR ("dvsig_" + [guid]::NewGuid().ToString("N") + "." + $Target)
+    $ok = if ($Target -eq 'mkv') { Invoke-DvMkvMux -RawHevc $Raw -Original $Built -Output $tmp }
+          else { Invoke-DvMp4Mux -RawHevc $Raw -Original $Built -Output $tmp }
+    if ($ok -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {
+        Move-Item -Force $tmp $Built
+        Write-Host "  dvcC de container scris (DV pe TV)" -ForegroundColor DarkGray
+    } elseif (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+}
+
+# v71: re-scrie dvcC pe un output produs prin STREAM-COPY dintr-un DV HEVC (ffmpeg -c
+# copy pierde semnalizarea DV de container). Detecteaza DV pe SURSA, extrage video raw
+# din OUTPUT (poarta bitstream-ul DV) + dispatch. No-op cand: tinta non-mkv/mp4/mov,
+# sursa nu-i HEVC DV, sau unealta lipsa. Echivalentul PS1 al _dv_resignal_copy (bash).
+function Invoke-DvResignalCopy {
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Output, [Parameter(Mandatory)][string]$Target)
+    if ($Target -notin @('mkv','mp4','mov')) { return }
+    # ffmpeg PASTREAZA DOVI config la orice →MKV (block addition), dar o PIERDE la orice
+    # →MP4/MOV (chiar MP4→MP4). Output deja-semnalizat (→MKV) → skip; altfel re-adaugam.
+    $sdOut = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $Output 2>$null) -join "`n")
+    if ($sdOut -match 'DOVI') { return }
+    if ((Get-SourceCodec -File $Source) -ne 'hevc') { return }
+    $sd = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $Source 2>$null) -join "`n")
+    if ($sd -notmatch 'DOVI') { return }
+    Ensure-TempDir
+    $raw = Join-Path $AV_TEMP_DIR ("dvrx_" + [guid]::NewGuid().ToString("N") + ".hevc")
+    & ffmpeg -v error -y -i $Output -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb $raw 2>$null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $raw) -and (Get-Item $raw).Length -gt 0) {
+        Invoke-DvContainerSignal -Raw $raw -Built $Output -Target $Target
+    }
+    if (Test-Path $raw) { Remove-Item $raw -Force -ErrorAction SilentlyContinue }
+}
+
 function Invoke-HdvCombineWithOriginal {
     param(
         [Parameter(Mandatory)][string]$Modified,
@@ -3806,6 +3922,13 @@ function Invoke-HdvCombineWithOriginal {
     # genpts/-framerate NU ajuta (validat empiric). Tinta .mkv pe HEVC →
     # pas intermediar MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
     $modExt = [System.IO.Path]::GetExtension($Modified).TrimStart('.').ToLowerInvariant()
+    # v71: AV1 IVF → MKV → mkvmerge scrie dvcC de container din RPU brut (DV activabil pe TV).
+    # IVF poarta PTS → la esecul mkvmerge cade pe ffmpeg direct de jos (fara pas MP4). MP4
+    # ramane HEVC-only (MP4Box refuza plasarea OBU DV de la av1dovi_tool).
+    if ($modExt -eq 'ivf' -and $ext -eq 'mkv') {
+        if (Invoke-DvMkvMux -RawHevc $Modified -Original $Original -Output $Output) { return $true }
+        # esec → continua la ffmpeg direct de jos (IVF are PTS, nu necesita pas MP4)
+    }
     if ($modExt -in @('hevc','h265','265') -and $ext -eq 'mkv') {
         # v70: mkvmerge scrie dvcC de container din RPU brut (DV activabil si pe TV);
         # cand lipseste -> pas MP4 (DV doar in bitstream, comportament v69).
@@ -3823,6 +3946,11 @@ function Invoke-HdvCombineWithOriginal {
         }
         Remove-Item $step1 -Force -ErrorAction SilentlyContinue
         return $ok
+    }
+    # v71: hibrid HEVC DV → MP4/MOV → MP4Box scrie dvcC de container (DV activabil pe
+    # TV); cand lipseste / sursa non-ISO → ffmpeg direct (DV doar in bitstream, v69).
+    if ($modExt -in @('hevc','h265','265') -and $ext -in @('mp4','mov','m4v')) {
+        if (Invoke-DvMp4Mux -RawHevc $Modified -Original $Original -Output $Output) { return $true }
     }
     $args = @("-v","error","-i",$Modified,"-i",$Original,
               "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
@@ -5154,6 +5282,9 @@ if ($mainChoice -eq "2") {
             Write-Host "  EROARE" -ForegroundColor Red; Remove-Item $outFile -Force -ErrorAction SilentlyContinue
             $eaErr++; $eaDone--
         } else {
+            # v71: audio-only pe DV HEVC -> -c:v copy pierde dvcC de container -> re-scrie
+            # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de size (re-mux).
+            Invoke-DvResignalCopy -Source $f.FullName -Output $outFile -Target $eaContainer
             $ns = (Get-Item $outFile).Length
             Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
         }
@@ -8622,24 +8753,28 @@ foreach ($f in $inputFiles) {
                 # v69 audit FIX: HEVC annexb brut nu are PTS pe B-frames → muxerul
                 # matroska refuza (output gol). Tinta mkv pe HEVC → pas intermediar
                 # MP4, apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
-                if ($tlCodec -ne "av1" -and $container -eq "mkv") {
-                    # v70: mkvmerge scrie dvcC de container din RPU brut (DV activabil
-                    # pe TV); cand lipseste -> pas MP4 (DV doar in bitstream, v69).
-                    if (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp) {
-                        Write-Host "  Triple-layer: dvcC de container scris (DV activabil pe TV)" -ForegroundColor Cyan
-                        "  Triple-layer: dvcC de container scris (DV activabil pe TV)" | Out-File $LogFile -Append -Encoding UTF8
-                    } else {
-                        $tlStep1 = Join-Path $AV_TEMP_DIR ("tlstep1_"+[guid]::NewGuid().ToString("N")+".mp4")
-                        $tlA1 = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
-                                  "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
-                                  "-c","copy") + @($tlStep1)
-                        & ffmpeg @tlA1 2>>"$LogFile"
-                        if ($LASTEXITCODE -eq 0 -and (Test-Path $tlStep1) -and (Get-Item $tlStep1).Length -gt 0) {
-                            & ffmpeg -v error -y -i $tlStep1 -c copy $finalTemp 2>>"$LogFile"
-                        }
-                        Remove-Item $tlStep1 -Force -ErrorAction SilentlyContinue
+                if ($container -eq "mkv" -and (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp)) {
+                    # v70 (HEVC) / v71 (AV1): mkvmerge scrie dvcC de container din RPU brut
+                    # (HEVC .hevc SAU AV1 .ivf) -> DV activabil pe TV. MP4 ramane HEVC-only.
+                    Write-Host "  Triple-layer: dvcC de container scris (DV activabil pe TV)" -ForegroundColor Cyan
+                    "  Triple-layer: dvcC de container scris (DV activabil pe TV)" | Out-File $LogFile -Append -Encoding UTF8
+                } elseif ($tlCodec -ne "av1" -and $container -eq "mkv") {
+                    # HEVC -> MKV fara mkvmerge -> pas intermediar MP4 (raw HEVC nu poarta timing)
+                    $tlStep1 = Join-Path $AV_TEMP_DIR ("tlstep1_"+[guid]::NewGuid().ToString("N")+".mp4")
+                    $tlA1 = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
+                              "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
+                              "-c","copy") + @($tlStep1)
+                    & ffmpeg @tlA1 2>>"$LogFile"
+                    if ($LASTEXITCODE -eq 0 -and (Test-Path $tlStep1) -and (Get-Item $tlStep1).Length -gt 0) {
+                        & ffmpeg -v error -y -i $tlStep1 -c copy $finalTemp 2>>"$LogFile"
                     }
+                    Remove-Item $tlStep1 -Force -ErrorAction SilentlyContinue
+                } elseif ($tlCodec -ne "av1" -and $container -in @('mp4','mov','m4v') -and (Invoke-DvMp4Mux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp)) {
+                    # v71: HEVC DV → MP4/MOV → MP4Box scrie dvcC de container (DV pe TV)
+                    Write-Host "  Triple-layer: dvcC de container scris (DV activabil pe TV)" -ForegroundColor Cyan
+                    "  Triple-layer: dvcC de container scris (DV activabil pe TV)" | Out-File $LogFile -Append -Encoding UTF8
                 } else {
+                    # AV1 MP4 (IVF poarta timing) / MKV fara mkvmerge / MP4Box lipsa → ffmpeg direct
                     $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
                                "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
                                "-c","copy") + $tlContFlags + @($finalTemp)

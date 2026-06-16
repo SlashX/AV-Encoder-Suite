@@ -173,17 +173,19 @@ if [ "$choice" == "6" ]; then
     echo "╔══════════════════════════════════════════════╗"
     echo "║  ELIMINA METADATA (REMUX FARA RE-ENCODE)     ║"
     echo "╠══════════════════════════════════════════════╣"
-    echo "║  DJI:                                         ║"
-    echo "║   1) Doar debug (dbgi ~295 MB) [implicit]     ║"
-    echo "║   2) GPS + debug (djmd + dbgi)                ║"
-    echo "║   3) Tot (djmd + dbgi + tmcd + cover)         ║"
+    echo "║  DJI (GPS-ul djmd NU poate ramane la re-mux): ║"
+    echo "║   1) Sterge telemetria (djmd/dbgi/tmcd)       ║"
+    echo "║   2) Sterge telemetria + cover (mjpeg)        ║"
     echo "║  GoPro/Sony/Garmin: orice optiune sterge      ║"
     echo "║   track-ul de telemetrie (gpmd/nmea/fdsc)     ║"
-    echo "║   4) Anulare                                  ║"
+    echo "║   3) Anulare                                  ║"
     echo "╚══════════════════════════════════════════════╝"
-    read -p "Alege 1-4 [implicit: 1]: " STRIP_MODE
+    echo "  Notă DJI: ffmpeg nu poate re-muxa pistele de date proprietare"
+    echo "  (djmd/dbgi/tmcd, codec none) → sunt eliminate. Pentru GPS,"
+    echo "  extrage-l intai cu optiunile 1-5 din meniul telemetrie."
+    read -p "Alege 1-3 [implicit: 1]: " STRIP_MODE
     STRIP_MODE="${STRIP_MODE:-1}"
-    [ "$STRIP_MODE" == "4" ] && { echo "Anulat."; exit 0; }
+    [ "$STRIP_MODE" == "3" ] && { echo "Anulat."; exit 0; }
 fi
 
 # ── Template-uri ExifTool (DJI) ──────────────────────────────────────
@@ -795,20 +797,25 @@ process_dji_raw() {
 process_dji_strip() {
     local file="$1"; local name="$2"
     local ext="${file##*.}"
-    local maps="-map 0"
-    local local_idx=0
-    while IFS= read -r tag; do
-        case "$STRIP_MODE" in
-            1) echo "$tag" | grep -qi "dbgi" && maps="$maps -map -0:$local_idx" ;;
-            2) echo "$tag" | grep -qiE "djmd|dbgi" && maps="$maps -map -0:$local_idx" ;;
-            3) echo "$tag" | grep -qiE "djmd|dbgi|tmcd|mjpeg|jpeg" && maps="$maps -map -0:$local_idx" ;;
-        esac
-        local_idx=$((local_idx + 1))
-    done < <(ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null)
+    # -dn: pistele de date DJI (djmd/dbgi/tmcd) sunt codec=none → ffmpeg NU le poate
+    # re-muxa (-c copy esueaza: "tag for codec none" pe MP4 / "Only ... Matroska" pe
+    # MKV). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5). v71 audit: inainte
+    # modurile care PASTRAU date (1=keep djmd, 2=keep tmcd) esuau pe DJI ("Remux esuat").
+    local maps="-map 0 -dn"
+    if [ "$STRIP_MODE" == "2" ]; then
+        # mode 2: elimina si cover-ul (mjpeg/jpeg — pista video secundara). NB: codec_tag
+        # al cover-ului DJI e [0][0][0][0] → detectam dupa codec_NAME, nu tag. Index ABSOLUT.
+        local _vidx _vcodec
+        while IFS=, read -r _vidx _vcodec; do
+            _vidx="${_vidx%$'\r'}"; _vcodec="${_vcodec%$'\r'}"
+            [[ "$_vcodec" =~ ^(mjpeg|jpeg|png)$ ]] && maps="$maps -map -0:$_vidx"
+        done < <(ffprobe -v error -select_streams v -show_entries stream=index,codec_name -of csv=p=0 "$file" 2>/dev/null)
+    fi
     local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
     ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
     if [ $? -eq 0 ] && [ -s "$out_clean" ]; then
         echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"
+        echo "  Notă: telemetria DJI (djmd/dbgi/tmcd) eliminata (ffmpeg nu o re-muxeaza); GPS via opt 1-5."
     else
         echo "  [EROARE] Remux esuat"; rm -f "$out_clean"
     fi
@@ -838,7 +845,7 @@ process_gopro() {
             ;;
         6)  # Strip: orice STRIP_MODE elimina gpmd
             local ext="${file##*.}"
-            local maps="-map 0"
+            local maps="-map 0 -dn"   # -dn: data proprietar (gpmd) e codec=none → ne-re-muxabil
             local local_idx=0
             while IFS= read -r tag; do
                 if echo "$tag" | grep -qi "gpmd"; then maps="$maps -map -0:$local_idx"; fi
@@ -879,7 +886,7 @@ _telem_extract_raw() {
 
 _telem_strip_track() {
     local file="$1"; local name="$2"; local tag_re="$3"
-    local ext="${file##*.}"; local maps="-map 0"; local local_idx=0
+    local ext="${file##*.}"; local maps="-map 0 -dn"; local local_idx=0   # -dn: data codec=none ne-re-muxabil
     while IFS= read -r tag; do
         if echo "$tag" | grep -qiE "$tag_re"; then maps="$maps -map -0:$local_idx"; fi
         local_idx=$((local_idx + 1))
@@ -1008,7 +1015,12 @@ embed_telemetry_lossless() {
 
     # Build ffmpeg args
     local -a ff_args=(-v error -i "$file")
-    local -a ff_maps=(-map "0:v" -map "0:a?" -map "0:d?")
+    # NU mapam pista de date sursa (djmd/dbgi/tmcd/gpmd): ffmpeg le vede ca
+    # `codec=none` (proprietare DJI/GoPro) → `-c copy` esueaza ("Could not find
+    # tag for codec none" pe MP4; "Only audio/video/subtitles supported" pe MKV)
+    # → embed-ul pica complet. `-dn` le elimina; telemetria e oricum re-exprimata
+    # ca SRT + CSV + GPX + KML. Raw-ul brut se obtine separat (optiunile 5/Raw).
+    local -a ff_maps=(-map "0:v" -map "0:a?")
     local -a ff_meta=()
     local subs_codec="copy"
 
@@ -1049,7 +1061,7 @@ embed_telemetry_lossless() {
         fi
     fi
 
-    ff_args+=("${ff_maps[@]}" -c:v copy -c:a copy)
+    ff_args+=("${ff_maps[@]}" -dn -c:v copy -c:a copy)
     [[ $has_srt -eq 1 ]] && ff_args+=(-c:s "$subs_codec")
     ff_args+=("${ff_meta[@]}")
     case "$target_ext" in

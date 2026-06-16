@@ -100,6 +100,13 @@ src/mkvmerge.exe
 src/tools/mkvmerge.exe
 src/mkvtoolnix_version.txt
 src/tools/mkvtoolnix_version.txt
+# ── MP4Box / GPAC (v71 — dvcC de container pe hibride HEVC DV pe MP4/MOV) ──
+# MP4Box NU e standalone (are nevoie de libgpac.dll + av*.dll) → folder GPAC
+# intreg sau install system-wide (winget); installer in tools/
+src/mp4box.exe
+src/tools/mp4box.exe
+src/gpac/
+src/tools/gpac/
 
 # ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
 # Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,

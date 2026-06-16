@@ -38,6 +38,13 @@ _hdv_combine_with_original() {
     # empiric). Ruta robusta pt tinta .mkv: pas intermediar MP4 (muxerul mp4
     # deriva timestamps), apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
     local _mod_ext="${modified##*.}"
+    # v71: AV1 IVF → MKV → mkvmerge scrie dvcC de container din RPU-ul brut (DV activabil
+    # si pe TV). IVF poarta PTS → la esecul mkvmerge cade pe ffmpeg direct de jos (fara pas
+    # MP4). MP4/MOV ramane HEVC-only (MP4Box refuza plasarea OBU DV de la av1dovi_tool).
+    if [[ "$_mod_ext" == "ivf" && "${output##*.}" == "mkv" ]]; then
+        _mux_dv_mkv "$modified" "$original" "$output" && return 0
+        # esec → continua la ffmpeg direct (IVF are PTS, nu necesita pas MP4)
+    fi
     if [[ ( "$_mod_ext" == "hevc" || "$_mod_ext" == "h265" || "$_mod_ext" == "265" ) \
           && "${output##*.}" == "mkv" ]]; then
         # v70: mkvmerge scrie dvcC de container din RPU-ul brut (DV activabil si pe
@@ -53,6 +60,12 @@ _hdv_combine_with_original() {
         fi
         rm -f "$_step1"
         return $_rc
+    fi
+    # v71: hibrid HEVC DV → MP4/MOV → MP4Box scrie dvcC de container (DV activabil pe
+    # TV); cand lipseste / sursa non-ISO → ffmpeg direct (DV doar in bitstream, v69).
+    if [[ ( "$_mod_ext" == "hevc" || "$_mod_ext" == "h265" || "$_mod_ext" == "265" ) \
+          && ( "${output##*.}" == "mp4" || "${output##*.}" == "mov" || "${output##*.}" == "m4v" ) ]]; then
+        _mux_dv_mp4 "$modified" "$original" "$output" && return 0
     fi
     # shellcheck disable=SC2086
     ffmpeg -v error -i "$modified" -i "$original" \
@@ -610,6 +623,9 @@ hdv_flow_plot() {
 # ─────────────────────────────────────────────────────────────────────
 # Submeniu principal
 # ─────────────────────────────────────────────────────────────────────
+# Test guard (paritate av_burnin/av_mux/av_trimconcat): la sourcing in teste
+# (AV_HDR_DV_TEST_MODE=1) sare meniul + dispatch-ul → expune doar functiile.
+if [[ "${AV_HDR_DV_TEST_MODE:-0}" == "1" ]]; then return 0 2>/dev/null || exit 0; fi
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║  HDR/DV TOOLS                        ║"
