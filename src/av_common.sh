@@ -1878,11 +1878,18 @@ _mux_dv_mkv() {
 _mux_dv_mp4() {
     local raw_hevc="$1" original="$2" output="$3"
     command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || return 1
-    # MP4Box scrie dvcC DOAR pt HEVC: pe AV1 (.ivf) considera plasarea OBU-ului de
-    # metadata DV de la av1dovi_tool ne-conforma cu spec-ul Dolby Vision si REFUZA
-    # config-ul (importa stream-ul fara dvcC). AV1 DV → dvcC doar pe MKV (mkvmerge, v71).
+    # HEVC: MP4Box auto-detecteaza DV din NAL-uri → dvcC fara dvp explicit.
+    # AV1 (.ivf/.av1/.obu): auto-detect-ul refuza plasarea OBU-ului de metadata DV de la
+    # av1dovi_tool ("must appear after all non-shown frames") → trebuie dvp= EXPLICIT
+    # (v72), care scrie dvcC oricum (RPU byte-identic, validat empiric). $4 = referinta cu
+    # dvcC pt derivarea compat-ului (sursa la passthrough); altfel $original; fallback 10.1.
     local _rext="${raw_hevc##*.}"; _rext="${_rext,,}"
-    case "$_rext" in hevc|h265|265) : ;; *) return 1 ;; esac
+    local _is_av1=0
+    case "$_rext" in
+        hevc|h265|265) : ;;
+        ivf|av1|obu)   _is_av1=1 ;;
+        *) return 1 ;;
+    esac
     local _oext="${original##*.}"; _oext="${_oext,,}"
     case "$_oext" in mp4|mov|m4v|qt) : ;; *) return 1 ;; esac
     local afr
@@ -1893,11 +1900,25 @@ _mux_dv_mp4() {
               -of default=noprint_wrappers=1:nokey=1 "$original" 2>/dev/null | head -1 | tr -d '\r' || true)
     fi
     [[ "$afr" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]] || return 1
+    # AV1: deriva dvp=profil.compat din dvcC-ul referintei DV (profil mereu 10; compat =
+    # bl_signal_compatibility_id), fallback 10.1 (HDR10-cross-compat — corect prin
+    # constructie la HDR10+→DV si cazul dominant AV1 DV). HEVC: fara dvp (auto-detect).
+    local _firstadd="${raw_hevc}:fps=${afr}"
+    if [[ "$_is_av1" == "1" ]]; then
+        local _dv_ref="${4:-$original}" _c _dvp="10.1"
+        # AV1 DV e MEREU profil 10 (dav1.10.xx) — NU citi dv_profile din referinta: la
+        # cross-codec (sursa HEVC DV profil 8/5/7 → tinta AV1) ar produce dvcC AV1 gresit.
+        # Citeste DOAR compat (bl_signal_compatibility_id, consistent intre profile); fallback 10.1.
+        _c=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id \
+             -of default=noprint_wrappers=1:nokey=1 "$_dv_ref" 2>/dev/null | head -1 | tr -d '\r' || true)
+        [[ "$_c" =~ ^[0-9]+$ ]] && _dvp="10.${_c}"
+        _firstadd="${raw_hevc}:dvp=${_dvp}:fps=${afr}"
+    fi
     # video (raw, cu RPU→dvcC) + fiecare pista audio/subtitle din original dupa track ID.
     # MP4Box #N: N = track ID ISO (== ffprobe stream=id, in hex 0xN → decimal prin $(( )) ).
     # NB: ffprobe -select_streams accepta UN singur specificator (a,s e invalid) →
     # enumeram audio apoi subtitle separat. id e track ID-ul ISO (hex 0xN → $(( )) ).
-    local -a add_args=("-add" "${raw_hevc}:fps=${afr}")
+    local -a add_args=("-add" "$_firstadd")
     local _st _id
     for _st in a s; do
         while IFS= read -r _id; do
@@ -1934,13 +1955,13 @@ _mux_dv_mp4() {
 # MP4Box (_mux_dv_mp4). Dispatch UNIC folosit de toate fluxurile (av_mux + stream-copy).
 # Unealta absenta / esec → pastreaza $built, return 1. $1=raw .hevc $2=built $3=target ext.
 _dv_container_signal() {
-    local raw="$1" built="$2" target="$3"
+    local raw="$1" built="$2" target="$3" dv_ref="${4:-}"
     local tmp ok=1
     tmp=$(av_mktemp_ext "$target")
     if [[ "$target" == "mkv" ]]; then
         _mux_dv_mkv "$raw" "$built" "$tmp" || ok=0
     else
-        _mux_dv_mp4 "$raw" "$built" "$tmp" || ok=0
+        _mux_dv_mp4 "$raw" "$built" "$tmp" "$dv_ref" || ok=0
     fi
     if [[ "$ok" == "1" ]] && [ -s "$tmp" ]; then
         mv -f "$tmp" "$built"
@@ -1963,19 +1984,27 @@ _dv_resignal_copy() {
     # ffmpeg PASTREAZA DOVI config la orice →MKV (block addition in track header), dar o
     # PIERDE la orice →MP4/MOV (chiar MP4→MP4). Deci daca output-ul are deja semnalizarea
     # (cazul →MKV), nimic de facut (evitam re-mux redundant); altfel (→MP4/MOV) re-adaugam.
-    # Verificam intai OUTPUT-ul, apoi ca SURSA chiar era DV HEVC.
+    # Verificam intai OUTPUT-ul, apoi ca SURSA chiar era DV (HEVC sau AV1, v72).
     if ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type \
         -of default=noprint_wrappers=1:nokey=1 "$output" 2>/dev/null | grep -qi "DOVI"; then
         return 0
     fi
     local _sc; _sc=$(detect_source_codec "$source" 2>/dev/null || true)
-    [[ "$_sc" == "hevc" ]] || return 0
+    [[ "$_sc" == "hevc" || "$_sc" == "av1" ]] || return 0
     ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type \
         -of default=noprint_wrappers=1:nokey=1 "$source" 2>/dev/null | grep -qi "DOVI" || return 0
+    # extragere raw codec-aware: HEVC annexb / AV1 IVF. La AV1+MP4, MP4Box cere dvp= →
+    # _dv_container_signal paseaza $source ca referinta de compat (al 4-lea arg).
     local _raw
-    _raw=$(av_mktemp_ext hevc)
-    if ffmpeg -v error -y -i "$output" -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb "$_raw" 2>/dev/null && [ -s "$_raw" ]; then
-        _dv_container_signal "$_raw" "$output" "$target" || true
+    if [[ "$_sc" == "av1" ]]; then
+        _raw=$(av_mktemp_ext ivf)
+        ffmpeg -v error -y -i "$output" -map 0:v:0 -c:v copy -f ivf "$_raw" 2>/dev/null || true
+    else
+        _raw=$(av_mktemp_ext hevc)
+        ffmpeg -v error -y -i "$output" -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb "$_raw" 2>/dev/null || true
+    fi
+    if [ -s "$_raw" ]; then
+        _dv_container_signal "$_raw" "$output" "$target" "$source" || true
     fi
     rm -f "$_raw"
     return 0
@@ -5750,7 +5779,7 @@ run_encode_loop() {
                     if [[ "$CONTAINER" == "mkv" ]] && _mux_dv_mkv "$injected_temp" "$output" "$final_temp"; then
                         # v70 (HEVC) / v71 (AV1): mkvmerge scrie dvcC de container din RPU-ul
                         # brut (HEVC .hevc SAU AV1 .ivf) → DV activabil si pe TV. mkvmerge
-                        # accepta IVF; AV1+MKV adaugat in v71 (MP4Box refuza AV1 → MP4 ramane HEVC-only).
+                        # accepta IVF; AV1+MP4 acoperit in v72 via MP4Box dvp= (ramura mp4 de mai jos).
                         log "  Triple-layer: dvcC de container scris via $AV_TOOL_MKVMERGE (DV activabil pe TV)"
                         true  # garanteaza $?=0 pt verificarea [-s final_temp] de mai jos (log/tee ar putea returna non-zero)
                     elif [[ "$_tl_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then
@@ -5766,13 +5795,14 @@ run_encode_loop() {
                         rm -f "$_tl_step1"
                         [ "$_tl_rc" -ne 0 ] && rm -f "$final_temp"
                         test "$_tl_rc" -eq 0
-                    elif [[ "$_tl_codec" != "av1" && ( "$CONTAINER" == "mp4" || "$CONTAINER" == "mov" || "$CONTAINER" == "m4v" ) ]] \
-                         && _mux_dv_mp4 "$injected_temp" "$output" "$final_temp"; then
-                        # v71: HEVC DV → MP4/MOV → MP4Box scrie dvcC de container (DV pe TV)
+                    elif [[ ( "$CONTAINER" == "mp4" || "$CONTAINER" == "mov" || "$CONTAINER" == "m4v" ) ]] \
+                         && _mux_dv_mp4 "$injected_temp" "$output" "$final_temp" "$file"; then
+                        # v71 HEVC / v72 AV1: DV → MP4/MOV → MP4Box scrie dvcC de container (DV pe TV).
+                        # AV1 cere dvp= explicit → derivat din $file (sursa DV daca are dvcC), fallback 10.1.
                         log "  Triple-layer: dvcC de container scris via $AV_TOOL_MP4BOX (DV activabil pe TV)"
                         true  # garanteaza $?=0 pt verificarea [-s final_temp] de mai jos
                     else
-                        # AV1 MP4 (IVF poarta timing) / MKV fara mkvmerge / MP4Box lipsa → ffmpeg direct
+                        # AV1+MKV fara mkvmerge (IVF poarta timing) / MP4Box lipsa → ffmpeg direct
                         ffmpeg -v error -i "$injected_temp" -i "$output" \
                             -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
                             -c copy $cont_flags "$final_temp" 2>>"$LOG_FILE"

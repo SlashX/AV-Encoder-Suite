@@ -1,6 +1,7 @@
 # v71 — mirror al test_v71_av1_mkv_dvcc.sh (PS1).
 #   dvcC de container pe hibridele AV1 DV → MKV (extensie v70 la AV1). mkvmerge scrie
-#   "DOVI configuration record" si din AV1 (.ivf). MP4/MOV ramane HEVC-only.
+#   "DOVI configuration record" si din AV1 (.ivf). AV1+MP4/MOV acoperit in v72 (vezi
+#   test_v72_av1_mp4_dvcc) — aici doar calea MKV.
 #   Source-level (mereu) + functional (AV1 DV sample + ffmpeg + mkvmerge + av1dovi_tool):
 #   AV1 DV IVF → Invoke-HdvCombineWithOriginal REAL → MKV → dvcC + RPU.
 . "$PSScriptRoot\..\framework.ps1"
@@ -16,11 +17,11 @@ $muxPs = Get-Content (Join-Path $SRC 'av_mux.ps1')    -Raw
 Assert-Match $enc ([regex]::Escape('$container -eq "mkv" -and (Invoke-DvMkvMux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp)')) "triple-layer: mkv ungateat (HEVC+AV1)"
 Assert-Match $enc ([regex]::Escape('elseif ($tlCodec -ne "av1" -and $container -eq "mkv")')) "triple-layer: pas MP4 ramane HEVC-only"
 
-# ── 2. Invoke-HdvCombineWithOriginal: ramura AV1 IVF → MKV ─────────────────
-Assert-Match $enc ([regex]::Escape("(`$modExt -eq 'ivf' -and `$ext -eq 'mkv')")) "Invoke-HdvCombine: ramura AV1 IVF → MKV"
+# ── 2. Invoke-HdvCombineWithOriginal: ramura AV1 IVF (MKV + MP4/MOV in v72) ─
+Assert-Match $enc ([regex]::Escape("if (`$modExt -eq 'ivf') {")) "Invoke-HdvCombine: ramura AV1 IVF"
 
-# ── 3. Invoke-DvMp4Mux gate: doar HEVC raw (AV1 .ivf → false) ──────────────
-Assert-Match $enc ([regex]::Escape("`$rext -notin @('hevc','h265','265')")) "Invoke-DvMp4Mux: gate raw HEVC (AV1 respins)"
+# ── 3. Invoke-DvMp4Mux gate: AV1 acum ACCEPTAT cu dvp= (v72; inainte respins) ──
+Assert-Match $enc ([regex]::Escape("elseif (`$rext -in @('ivf','av1','obu')) { `$isAv1 = `$true }")) "Invoke-DvMp4Mux: AV1 acceptat (v72)"
 
 # ── 4. av_mux.ps1: capturile AV1 pe MKV ───────────────────────────────────
 Assert-Match $muxPs ([regex]::Escape("@('hevc','h265','265','av1')")) "av_mux: captura .av1 OBU pe MKV"

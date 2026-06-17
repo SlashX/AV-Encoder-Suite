@@ -382,7 +382,7 @@ function Show-RemuxStreamSelection {
 # -> MP4Box. Inline (av_mux.ps1 e standalone). Folosit de Mux + Remux (DRY).
 # Unealta absenta / esec -> pastreaza $Built (comportament neschimbat).
 function Invoke-AvMuxDvSignal {
-    param([string]$Raw, [string]$Built, [string]$Target)
+    param([string]$Raw, [string]$Built, [string]$Target, [string]$DvRef = "")
     $afr = (& ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 $Built 2>$null | Select-Object -First 1)
     if ($afr) { $afr = $afr.Trim() }
     if ($afr -notmatch '^[1-9][0-9]*(/[1-9][0-9]*)?$') { return }
@@ -396,12 +396,25 @@ function Invoke-AvMuxDvSignal {
         }
     } else {
         $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
-        # MP4Box scrie dvcC DOAR pt HEVC: pe AV1 (.ivf) refuza (plasare OBU DV ne-conforma).
-        # AV1 DV -> dvcC doar pe MKV (v71). Gate defensiv (captura nici nu paseaza AV1+mp4).
+        # HEVC: MP4Box auto-detecteaza DV din NAL-uri. AV1 (.ivf/.av1/.obu): auto-detect-ul
+        # refuza plasarea OBU DV de la av1dovi_tool -> dvp= EXPLICIT (v72), care scrie dvcC
+        # oricum. Compat din $DvRef (sursa la Remux/passthrough) sau $Built, fallback 10.1.
         $rawExt = [System.IO.Path]::GetExtension($Raw).TrimStart('.').ToLowerInvariant()
-        if (($rawExt -in @('hevc','h265','265')) -and (Get-Command $mux -ErrorAction SilentlyContinue)) {
+        $isAv1 = $rawExt -in @('ivf','av1','obu')
+        if (($rawExt -in @('hevc','h265','265','ivf','av1','obu')) -and (Get-Command $mux -ErrorAction SilentlyContinue)) {
+            $firstAdd = "${Raw}:fps=${afr}"
+            if ($isAv1) {
+                # AV1 DV e MEREU profil 10 (dav1.10.xx) — NU citi dv_profile din referinta
+                # (cross-codec ar da 8/5/7). Citeste DOAR compat; fallback 10.1.
+                $dvRef = if ($DvRef) { $DvRef } else { $Built }
+                $dvp = "10.1"
+                $c = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id -of default=noprint_wrappers=1:nokey=1 $dvRef 2>$null | Select-Object -First 1)
+                if ($c) { $c = $c.Trim() }
+                if ($c -match '^[0-9]+$') { $dvp = "10.$c" }
+                $firstAdd = "${Raw}:dvp=${dvp}:fps=${afr}"
+            }
             $addArgs = New-Object System.Collections.Generic.List[string]
-            $addArgs.Add("-add"); $addArgs.Add("${Raw}:fps=${afr}")
+            $addArgs.Add("-add"); $addArgs.Add($firstAdd)
             # ffprobe -select_streams ia un singur specificator → audio apoi subtitle
             foreach ($st in @('a','s')) {
                 $ids = @(& ffprobe -v error -select_streams $st -show_entries stream=id -of default=noprint_wrappers=1:nokey=1 $Built 2>$null)
@@ -499,19 +512,25 @@ function Invoke-RemuxFile {
         Remove-Item -LiteralPath $finalOut -Force -ErrorAction SilentlyContinue
         return $false
     }
-    # v71: remux al unui DV HEVC -> scrie dvcC de container. ffmpeg -c copy PASTREAZA
-    # semnalizarea DV la orice ->MKV (block addition in track header), dar o PIERDE la
-    # orice ->MP4/MOV. Doar DV (side_data) + video pastrat + tinta mkv/mp4/mov.
-    if ($srcCodec -eq "hevc" -and $Sel.VideoRel.Count -gt 0 -and $Target -in @("mkv","mp4","mov")) {
+    # v71 (HEVC) / v72 (AV1): remux al unui DV -> scrie dvcC de container. ffmpeg -c copy
+    # PASTREAZA semnalizarea DV la orice ->MKV (block addition in track header), dar o PIERDE
+    # la orice ->MP4/MOV. Doar DV (side_data) + video pastrat + tinta mkv/mp4/mov.
+    if ($srcCodec -in @("hevc","av1") -and $Sel.VideoRel.Count -gt 0 -and $Target -in @("mkv","mp4","mov")) {
         $sdProbe = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join "`n")
         # output-DOVI check (paritate cu _dv_resignal_copy): daca ffmpeg a pastrat deja
         # semnalizarea (->MKV), nimic de re-muxat → evitam un re-mux redundant.
         $sdOut = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $finalOut 2>$null) -join "`n")
         if (($sdProbe -match "DOVI") -and ($sdOut -notmatch "DOVI")) {
-            $rxRaw = Join-Path $TempBase ("rxraw_" + [guid]::NewGuid().ToString("N") + ".hevc")
-            & ffmpeg -v error -y -i $finalOut -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb $rxRaw 2>$null
-            if ($LASTEXITCODE -eq 0 -and (Test-Path $rxRaw) -and (Get-Item $rxRaw).Length -gt 0) {
-                Invoke-AvMuxDvSignal -Raw $rxRaw -Built $finalOut -Target $Target
+            # extragere raw codec-aware: HEVC annexb / AV1 IVF (v72). $File = referinta compat.
+            if ($srcCodec -eq "av1") {
+                $rxRaw = Join-Path $TempBase ("rxraw_" + [guid]::NewGuid().ToString("N") + ".ivf")
+                & ffmpeg -v error -y -i $finalOut -map 0:v:0 -c:v copy -f ivf $rxRaw 2>$null
+            } else {
+                $rxRaw = Join-Path $TempBase ("rxraw_" + [guid]::NewGuid().ToString("N") + ".hevc")
+                & ffmpeg -v error -y -i $finalOut -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb $rxRaw 2>$null
+            }
+            if ((Test-Path $rxRaw) -and (Get-Item $rxRaw).Length -gt 0) {
+                Invoke-AvMuxDvSignal -Raw $rxRaw -Built $finalOut -Target $Target -DvRef $File
             }
             if (Test-Path $rxRaw) { Remove-Item -LiteralPath $rxRaw -Force -ErrorAction SilentlyContinue }
         }
@@ -1296,9 +1315,10 @@ function Invoke-MuxFlow {
     # v71: AV1 IVF -> MKV (IVF poarta PTS -> sare raw-wrap-ul) -> pastram calea raw pt dvcC
     # (mkvmerge scrie DOVI config din RPU). MP4 ramane HEVC-only.
     if ($Target -eq 'mkv' -and $vExt -eq 'ivf') { $dvRawSrc = $video }
-    # v71: pe tinta MP4/MOV, video brut HEVC DV -> pastram calea raw pt post-procesare
-    # dvcC (MP4Box scrie box-ul dvcC din RPU). MP4/MOV nu necesita raw-wrap (deriva PTS).
-    if ($Target -in @('mp4','mov','m4v') -and $vExt -in @('hevc','h265','265')) { $dvRawSrc = $video }
+    # v71 (HEVC) / v72 (AV1): pe tinta MP4/MOV, video brut DV -> pastram calea raw pt
+    # post-procesare dvcC (MP4Box scrie box-ul dvcC din RPU; AV1 cere dvp= explicit).
+    # MP4/MOV nu necesita raw-wrap (deriva PTS).
+    if ($Target -in @('mp4','mov','m4v') -and $vExt -in @('hevc','h265','265','av1','ivf')) { $dvRawSrc = $video }
 
     $audioDropIdx = New-Object System.Collections.Generic.HashSet[int]
     $audioCodec = New-Object System.Collections.Generic.List[string]

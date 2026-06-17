@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # v71 — dvcC de container pe hibridele AV1 DV → MKV (extensie v70 la AV1). mkvmerge
 # scrie "DOVI configuration record" si din AV1 (.ivf, NU doar HEVC), pastrand RPU +
-# HDR10+. MP4/MOV ramane HEVC-only (MP4Box refuza plasarea OBU DV de la av1dovi_tool).
+# HDR10+. AV1+MP4/MOV acoperit in v72 (MP4Box dvp= explicit) — vezi test_v72_av1_mp4_dvcc.
 #   Source-level (mereu): gating-ul ungateat (encode triple-layer + _hdv_combine + av_mux),
 #   gate-ul AV1 pe _mux_dv_mp4. Functional (cand exista AV1 DV sample + ffmpeg + mkvmerge):
 #   AV1 DV IVF → _hdv_combine_with_original REAL → MKV → assert dvcC + RPU.
@@ -16,14 +16,15 @@ MUX="$(cat "$SCRIPT_DIR/av_mux.sh")"
 
 # ── 1. encode triple-layer: ramura mkv ungateata (HEVC + AV1) ─────────────
 assert_contains "$COMMON" '"$CONTAINER" == "mkv" ]] && _mux_dv_mkv "$injected_temp" "$output" "$final_temp"' "triple-layer: mkv ungateat (HEVC+AV1)"
-# AV1 MP4 ramane pe ffmpeg direct (else); HEVC MKV fara mkvmerge → elif cu pas MP4
-assert_contains "$COMMON" 'elif [[ "$_tl_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then' "triple-layer: pas MP4 ramane HEVC-only"
+# AV1 MP4 → MP4Box dvp= (v72, branch mp4 ungateat); HEVC MKV fara mkvmerge → elif cu pas MP4
+assert_contains "$COMMON" 'elif [[ "$_tl_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then' "triple-layer: HEVC MKV fallback (pas MP4) gardat pe non-av1"
 
-# ── 2. _hdv_combine: ramura AV1 IVF → MKV → _mux_dv_mkv ────────────────────
-assert_contains "$HDV" '"$_mod_ext" == "ivf" && "${output##*.}" == "mkv"' "_hdv_combine: ramura AV1 IVF → MKV"
+# ── 2. _hdv_combine: ramura AV1 IVF (MKV + MP4/MOV in v72) ─────────────────
+assert_contains "$HDV" '"$_mod_ext" == "ivf" ]]; then' "_hdv_combine: ramura AV1 IVF"
+assert_contains "$HDV" '"$_oe" == "mkv"' "_hdv_combine: AV1 IVF → MKV (sub-ramura mkvmerge)"
 
-# ── 3. _mux_dv_mp4 gate: doar HEVC raw (AV1 .ivf → return 1) ───────────────
-assert_contains "$COMMON" 'case "$_rext" in hevc|h265|265) : ;; *) return 1 ;; esac' "_mux_dv_mp4: gate raw HEVC (AV1 respins)"
+# ── 3. _mux_dv_mp4 gate: AV1 acum ACCEPTAT cu dvp= (v72; inainte respins) ──
+assert_contains "$COMMON" 'ivf|av1|obu)   _is_av1=1 ;;' "_mux_dv_mp4: AV1 acceptat (v72)"
 
 # ── 4. av_mux: capturile AV1 pe MKV (.av1 OBU in raw-wrap + .ivf separat) ──
 assert_contains "$MUX" '"$_vext" == "av1"' "av_mux: captura .av1 OBU pe MKV"

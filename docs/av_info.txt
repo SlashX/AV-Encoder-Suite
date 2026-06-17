@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v71
+  Documentatie Setup & Utilizare — v72
 ═══════════════════════════════════════════════════════════════
 
 
@@ -121,8 +121,9 @@ CUPRINS
             ./tools/mkvmerge_installer.sh      # mkvmerge (v70, optional —
                                                #   dvcC Dolby Vision pe MKV
                                                #   [HEVC] + AV1 pe MKV [v71])
-            ./tools/mp4box_installer.sh        # MP4Box/GPAC (v71, optional —
-                                               #   dvcC Dolby Vision pe MP4/MOV)
+            ./tools/mp4box_installer.sh        # MP4Box/GPAC (v71/v72, optional —
+                                               #   dvcC Dolby Vision pe MP4/MOV
+                                               #   [HEVC v71 + AV1 v72])
 
   PASUL 5 — Permisiuni:
             chmod +x src/*.sh src/tools/*.sh
@@ -1084,7 +1085,7 @@ CUPRINS
     layere sunt pastrate prin encode. RPU-ul real extras din sursa NU
     mai e supra-scris de un RPU sintetizat din JSON.
 
-  SEMNALIZAREA DV DE CONTAINER (v70/v71 — rezolvata pe MKV si MP4):
+  SEMNALIZAREA DV DE CONTAINER (v70/v71/v72 — rezolvata pe MKV si MP4):
     Hibridele Dolby Vision create de suita (triple-layer / inject) au
     stratul DV COMPLET in bitstream (RPU per frame, verificabil cu
     dovi_tool / av1dovi_tool extract-rpu). Pana in v69, ffmpeg nu putea
@@ -1098,15 +1099,15 @@ CUPRINS
       - HEVC pe MKV     (v70) — via mkvmerge (MKVToolNix)
       - HEVC pe MP4/MOV (v71) — via MP4Box (GPAC)
       - AV1  pe MKV     (v71) — via mkvmerge
+      - AV1  pe MP4/MOV (v72) — via MP4Box (GPAC)
     Cand unealta lipseste, comportamentul ramane cel de pana acum (DV in
     flux, fara semnalizare de container), fara niciun mesaj. Instaleaza cu
     tools/mkvmerge_installer si tools/mp4box_installer (.sh pe Linux/macOS/
     Termux, .ps1 pe Windows). Semnalizarea se pastreaza si la operatiile
     fara re-encodare (remux, stream copy, taiere, doar audio). "Verifica
     fisiere media" raporteaza corect profilul DV pe aceste hibride.
-    RAMANE: AV1 pe MP4/MOV nu primeste semnalizarea (uneltele de container
-    resping modul in care e plasata metadata DV a AV1-ului) — de altfel
-    continutul AV1 Dolby Vision se distribuie aproape exclusiv in MKV.
+    Toate combinatiile uzuale sunt acum acoperite (HEVC si AV1, MKV si
+    MP4/MOV).
 
   Fara hdr10plus_tool:
     1) Re-encode HDR10 static.

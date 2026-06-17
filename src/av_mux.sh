@@ -1277,11 +1277,12 @@ mux_flow() {
     # v71: AV1 IVF → MKV (IVF poarta PTS → sare raw-wrap-ul de mai sus) → pastram calea raw
     # pt post-procesare dvcC (mkvmerge scrie DOVI config din RPU). MP4 ramane HEVC-only.
     if [[ "$TARGET" == "mkv" && "${video##*.}" == "ivf" ]]; then _dv_raw_src="$video"; fi
-    # v71: pe tinta MP4/MOV, video brut HEVC DV → pastram calea raw pt post-procesare
-    # dvcC (MP4Box scrie box-ul dvcC din RPU). MP4/MOV nu necesita raw-wrap (deriva PTS).
+    # v71 (HEVC) / v72 (AV1): pe tinta MP4/MOV, video brut DV → pastram calea raw pt
+    # post-procesare dvcC (MP4Box scrie box-ul dvcC din RPU; AV1 cere dvp= explicit,
+    # derivat in _mux_dv_mp4). MP4/MOV nu necesita raw-wrap (deriva PTS).
     if [[ "$TARGET" == "mp4" || "$TARGET" == "mov" || "$TARGET" == "m4v" ]]; then
         local _vextmp4="${video##*.}"; _vextmp4="${_vextmp4,,}"
-        case "$_vextmp4" in hevc|h265|265) _dv_raw_src="$video" ;; esac
+        case "$_vextmp4" in hevc|h265|265|av1|ivf) _dv_raw_src="$video" ;; esac
     fi
 
     local -a audio_drop_idx=() audio_codec=()

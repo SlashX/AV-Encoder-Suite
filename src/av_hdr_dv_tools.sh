@@ -38,11 +38,17 @@ _hdv_combine_with_original() {
     # empiric). Ruta robusta pt tinta .mkv: pas intermediar MP4 (muxerul mp4
     # deriva timestamps), apoi MP4→MKV. AV1/IVF neafectat (IVF poarta PTS).
     local _mod_ext="${modified##*.}"
-    # v71: AV1 IVF → MKV → mkvmerge scrie dvcC de container din RPU-ul brut (DV activabil
-    # si pe TV). IVF poarta PTS → la esecul mkvmerge cade pe ffmpeg direct de jos (fara pas
-    # MP4). MP4/MOV ramane HEVC-only (MP4Box refuza plasarea OBU DV de la av1dovi_tool).
-    if [[ "$_mod_ext" == "ivf" && "${output##*.}" == "mkv" ]]; then
-        _mux_dv_mkv "$modified" "$original" "$output" && return 0
+    # v71 (MKV) / v72 (MP4/MOV): AV1 IVF → mkvmerge (MKV) / MP4Box (MP4/MOV) scriu dvcC de
+    # container din RPU-ul brut → DV activabil pe TV. IVF poarta PTS → la esec cade pe ffmpeg
+    # direct de jos (fara pas MP4). MP4Box cere dvp= explicit (compat din $original daca are
+    # dvcC — transform-profil; fallback 10.1 — HDR10+→DV; vezi _mux_dv_mp4).
+    if [[ "$_mod_ext" == "ivf" ]]; then
+        local _oe="${output##*.}"
+        if [[ "$_oe" == "mkv" ]]; then
+            _mux_dv_mkv "$modified" "$original" "$output" && return 0
+        elif [[ "$_oe" == "mp4" || "$_oe" == "mov" || "$_oe" == "m4v" ]]; then
+            _mux_dv_mp4 "$modified" "$original" "$output" && return 0
+        fi
         # esec → continua la ffmpeg direct (IVF are PTS, nu necesita pas MP4)
     fi
     if [[ ( "$_mod_ext" == "hevc" || "$_mod_ext" == "h265" || "$_mod_ext" == "265" ) \
