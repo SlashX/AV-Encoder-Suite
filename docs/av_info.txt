@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v72
+  Documentatie Setup & Utilizare — v73
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1104,8 +1104,12 @@ CUPRINS
     flux, fara semnalizare de container), fara niciun mesaj. Instaleaza cu
     tools/mkvmerge_installer si tools/mp4box_installer (.sh pe Linux/macOS/
     Termux, .ps1 pe Windows). Semnalizarea se pastreaza si la operatiile
-    fara re-encodare (remux, stream copy, taiere, doar audio). "Verifica
-    fisiere media" raporteaza corect profilul DV pe aceste hibride.
+    fara re-encodare (remux, stream copy, taiere, doar audio; v73: si la
+    unirea Concat prin stream copy si in pipeline pe variantele copy). La
+    extragerea telemetriei 1:1 (embed) spre MP4 dintr-o sursa DV apare un
+    avertisment (pe MP4 semnalizarea de container se pierde → pastreaza MKV,
+    v73). "Verifica fisiere media" raporteaza corect profilul DV pe aceste
+    hibride.
     Toate combinatiile uzuale sunt acum acoperite (HEVC si AV1, MKV si
     MP4/MOV).
 
@@ -1303,11 +1307,18 @@ CUPRINS
   cu un singur set de cuts.
 
 
-  ─── 9.5. HDR/LOG awareness la re-encode (v60) ───
+  ─── 9.5. HDR/LOG awareness la re-encode (v60 + v62 + v73) ───
 
   La re-encode (NU stream copy) pe Trim / Batch trim / Concat, daca sursa
   e non-SDR → dialog inainte de ffmpeg (per-fisier la Trim/Batch, agregat
   la Concat). Reutilizeaza detectia din encode-ul principal.
+
+  v73: clipurile LOG (D-Log M / Samsung Log / Apple Log) sunt recunoscute
+  acum si la Concat (agregat). Inainte treceau tacut ca SDR si erau
+  re-encodate fara LUT — imaginea iesea spalacita. Cand toate clipurile
+  sunt de acelasi brand si exista un LUT potrivit in Luts/, e propus
+  automat (Apply LUT / Keep LOG / Skip); la branduri amestecate, lipsa
+  LUT-ului sau amestec LOG+SDR → Keep LOG / Skip + nota cu pasii corecti.
 
   Clasificare sursa + optiuni:
     HDR10 / HDR10+   → 1) Preserve HDR10 (10-bit + master-display + max-cll)
@@ -1315,8 +1326,10 @@ CUPRINS
                        2) Tonemap → SDR (Hable)   3) Skip
     HLG              → 1) Preserve HLG (10-bit + arib-std-b67)
                        2) Tonemap → SDR           3) Skip
-    LOG (apple/dji/  → 1) Apply LUT Rec.709 (cand exista in Luts/<brand>_*.cube)
-        samsung)        2) Tonemap → SDR   3) Keep LOG (fara transform)   4) Skip
+    LOG (apple/dji/  → cu LUT in Luts/: 1) Apply LUT Rec.709  2) Keep LOG  3) Skip
+        samsung)        fara LUT:        1) Keep LOG  2) Skip
+                        (v62: tonemap eliminat pe LOG — Log→Rec.709 cere LUT,
+                         zscale nu poate liniariza un transfer necunoscut)
     DV               → REFUZ preserve (RPU se pierde la re-encode) →
                        doar Tonemap / Skip
     SDR              → fara dialog (flow original)

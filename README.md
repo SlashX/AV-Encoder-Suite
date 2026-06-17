@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v72** — 132 bugs fixed · 252+ features · ~43 000 LoC · 171 files
+**v73** — 132 bugs fixed · 255+ features · ~43 000 LoC · 175 files
 
 ---
 
@@ -179,7 +179,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 3. **Media analysis** (`av_check`) — 30-50 field CSV
 4. **Telemetry** — 6 modes: Standard / Full / SRT / All / Raw / Strip
 5. **External GPS** — GPX/FIT/KML → CSV/SRT
-6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass (+ dry-run preview, v63) · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag)
+6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass (+ dry-run preview, v63) · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag); v73: LOG also detected at concat (brand LUT / keep LOG / skip) + DV container signaling kept on stream-copy / pipeline smart-copy / audio-only paths
 7. **Mux tools** (v49 + v50, no re-encode, lossless):
 
    | Flow | Action |
@@ -395,4 +395,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v72** — 132 bugs fixed · 252+ features · ~43 000 LoC · 171 files
+Current: **v73** — 132 bugs fixed · 255+ features · ~43 000 LoC · 175 files

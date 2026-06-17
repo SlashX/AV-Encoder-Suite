@@ -1013,6 +1013,18 @@ embed_telemetry_lossless() {
 
     local out="$OUTPUT_DIR/${name}_telem.${target_ext}"
 
+    # v73 (T2): pe sursa DV + output non-MKV, dvcC de container se pierde (ffmpeg il pastreaza
+    # DOAR la →MKV). Embed-ul ramane lossless (RPU e in bitstream → PC vede DV), dar TV-ul va
+    # reda HDR10. Avertizam onest (re-signal automat se face pe encode/concat/mux, nu aici —
+    # telemetria e standalone; cazul DV+telemetrie e niche, iar default-ul MKV il acopera).
+    if [[ "$target_ext" != "mkv" ]] && ffprobe -v error -select_streams v:0 \
+            -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 \
+            "$file" 2>/dev/null | grep -qi "DOVI"; then
+        echo ""
+        echo "  ⚠ Sursa are Dolby Vision: pe .$target_ext semnalizarea DV de container (dvcC) se"
+        echo "    pierde → TV-ul va reda HDR10. Pentru DV pe TV, pastreaza output-ul MKV (default)."
+    fi
+
     # Build ffmpeg args
     local -a ff_args=(-v error -i "$file")
     # NU mapam pista de date sursa (djmd/dbgi/tmcd/gpmd): ffmpeg le vede ca

@@ -245,6 +245,34 @@ function Get-PipelineHdrMode {
     return "sdr"
 }
 
+# v73: agregat LOG pentru Concat (N->1). Get-PipelineHdrMode nu clasifica LOG (cade pe
+# sdr); aici detectam LOG AUTORITAR prin Get-SourceInfoExtended (intoarce obiect -> fara
+# clobber de globale) si stabilim daca un LUT unic e aplicabil: toate sursele LOG +
+# acelasi brand + LUT prezent in Luts/. Apelat DOAR pe ramura sdr din Invoke-ConcatFlow.
+# Intoarce: "none" (zero surse LOG) | "lut:<brand>" (LUT unic aplicabil) | "keep"
+function Get-ConcatLogMode {
+    param([string[]]$Files)
+    $total = 0; $logCount = 0; $brand = ""; $mixedBrand = $false
+    foreach ($f in $Files) {
+        $total++
+        $dji = Get-DJITracks $f
+        $ext = Get-SourceInfoExtended $f $dji
+        if ($ext.logProfile) {
+            $logCount++
+            $mk = if ($ext.cameraMake) { $ext.cameraMake } else { "unknown" }
+            if (-not $brand) { $brand = $mk }
+            elseif ($brand -ne $mk) { $mixedBrand = $true }
+        }
+    }
+    if ($logCount -eq 0) { return "none" }
+    if (($logCount -eq $total) -and (-not $mixedBrand)) {
+        $b = if ($brand) { $brand } else { "unknown" }
+        $lut = Find-LutForBrand $b $InputDir $InputDir
+        if ($lut.files.Count -gt 0) { return "lut:$b" }
+    }
+    return "keep"
+}
+
 function Test-TcInputHDR {
     param([string[]]$files)
     foreach ($f in $files) {
@@ -747,6 +775,12 @@ function Invoke-ConcatFlow {
             "-map","0","-map_metadata","0","-c","copy",
             "-avoid_negative_ts","make_zero",$outPath)
         Invoke-FfmpegWithProgress -Label "Concat (copy)" -TotalSeconds ([int]$totalS) -Arguments $ffArgs | Out-Null
+        # v73: surse DV -> -c copy pierde dvcC la ->MP4/MOV (pastrat la ->MKV de ffmpeg).
+        # Re-signal (referinta compat = prima sursa). No-op pe non-DV / MKV-deja-ok.
+        if (Test-Path $outPath) {
+            $ccExt = [System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant()
+            Invoke-DvResignalCopy -Source $selected[0].FullName -Output $outPath -Target $ccExt
+        }
     } else {
         Write-Host ""
         Write-Host "  Re-encode: 1-libx265 [default]  2-libx264" -ForegroundColor Cyan
@@ -796,6 +830,8 @@ function Invoke-ConcatFlow {
                     }
                     "dv" {
                         Write-Host "  /!\ Surse Dolby Vision — re-encode concat nu pastreaza RPU." -ForegroundColor Yellow
+                        Write-Host "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza)," -ForegroundColor DarkGray
+                        Write-Host "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)." -ForegroundColor DarkGray
                         Write-Host "  1) Tonemap -> SDR [implicit]   2) Skip concat"
                         $c = Read-Host "  Alege 1-2 [implicit: 1]"
                         if ($c -eq "2") { $script:tcMode = "skip" } else { $script:tcMode = "tonemap" }
@@ -823,6 +859,57 @@ function Invoke-ConcatFlow {
             }
             Write-Host "  Surse: $agg -> mod: $(Get-TcModeLabel $script:tcMode)" -ForegroundColor Cyan
             if ($script:tcDowngradeReason) { Write-Host "  /!\ $($script:tcDowngradeReason)" -ForegroundColor Yellow }
+        } else {
+            # v73: pe agregat sdr, Get-PipelineHdrMode nu clasifica LOG -> verificam separat
+            # (autoritar). Daca sursele sunt LOG, oferim LUT/Keep LOG/Skip in loc sa re-encodam
+            # tacut un LOG mis-tagged (Build-TcVideoArgs + setparams repara culoarea).
+            $logAgg = Get-ConcatLogMode ($selected | ForEach-Object { $_.FullName })
+            if ($logAgg -ne "none") {
+                $brand = if ($logAgg -like "lut:*") { $logAgg.Substring(4) } else { "unknown" }
+                if ($env:TC_HDR_POLICY) {
+                    switch ($env:TC_HDR_POLICY) {
+                        "lut" {
+                            $lut = Find-LutForBrand $brand $InputDir $InputDir
+                            if (($logAgg -like "lut:*") -and $lut.files.Count -gt 0) {
+                                $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName
+                            } else { $script:tcMode = "keep_log" }
+                        }
+                        "skip"  { $script:tcMode = "skip" }
+                        default { $script:tcMode = "keep_log" }
+                    }
+                } elseif ($logAgg -like "lut:*") {
+                    $lut = Find-LutForBrand $brand $InputDir $InputDir
+                    Write-Host ""
+                    Write-Host "  Surse LOG (brand=$brand, toate la fel)" -ForegroundColor Cyan
+                    Write-Host "  1) Apply LUT Rec.709 ($($lut.files[0].Name)) [implicit]"
+                    Write-Host "  2) Keep LOG (fara transform - pt grading; lossless = stream copy)"
+                    Write-Host "  3) Skip concat"
+                    $c = Read-Host "  Alege 1-3 [implicit: 1]"
+                    switch ($c) {
+                        "2" { $script:tcMode = "keep_log" }
+                        "3" { $script:tcMode = "skip" }
+                        default { $script:tcMode = "lut_rec709"; $script:tcLutFile = $lut.files[0].FullName }
+                    }
+                } else {
+                    Write-Host ""
+                    Write-Host "  /!\ Surse LOG fara LUT unic aplicabil (branduri diferite / lipsa LUT" -ForegroundColor Yellow
+                    Write-Host "    in Luts/ / amestec LOG+SDR) - un singur LUT nu se potriveste uniform." -ForegroundColor Yellow
+                    Write-Host "  1) Keep LOG (fara transform) [implicit]"
+                    Write-Host "  2) Skip concat"
+                    Write-Host "  -> Pentru LUT corect: encodeaza fiecare sursa separat (opt 1 / Trim), apoi concat."
+                    $c = Read-Host "  Alege 1-2 [implicit: 1]"
+                    switch ($c) {
+                        "2" { $script:tcMode = "skip" }
+                        default { $script:tcMode = "keep_log" }
+                    }
+                }
+                if (-not (Build-TcVideoArgs $selected[0].FullName $codec)) {
+                    Write-Host "  Concat anulat (mod=$(Get-TcModeLabel $script:tcMode))." -ForegroundColor Yellow
+                    Remove-TempSubdirSafe $subdir ""
+                    return
+                }
+                Write-Host "  Surse: LOG -> mod: $(Get-TcModeLabel $script:tcMode)" -ForegroundColor Cyan
+            }
         }
 
         $ffIn = @()
@@ -1309,7 +1396,8 @@ function Invoke-PipelineFlow {
                     if ($hdrMode -eq "dv") {
                         Write-Host ""
                         Write-Host "  /!\ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
-                        Write-Host "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+->DV in HDR/DV tools (opt 8)." -ForegroundColor DarkGray
+                        Write-Host "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza)," -ForegroundColor DarkGray
+                        Write-Host "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)." -ForegroundColor DarkGray
                     } elseif ($hdrMode -eq "hdr10plus") {
                         Write-Host ""
                         Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita $(Get-ToolForExtract -Codec hevc -Kind hdr10plus))" -ForegroundColor Cyan
@@ -1359,7 +1447,8 @@ function Invoke-PipelineFlow {
                         if ($hdrMode -eq "dv") {
                             Write-Host ""
                             Write-Host "  /!\ DOLBY VISION detectat. AV1 re-encode -> fallback HDR10 (DV RPU nu se pastreaza)." -ForegroundColor Yellow
-                            Write-Host "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+->DV in HDR/DV tools (opt 8)." -ForegroundColor DarkGray
+                            Write-Host "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza)," -ForegroundColor DarkGray
+                            Write-Host "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)." -ForegroundColor DarkGray
                         } elseif ($hdrMode -eq "hdr10plus") {
                             Write-Host ""
                             Write-Host "  HDR10+ detectat. Pastrezi metadata dinamica inline (svtav1 hdr10plus-json)?" -ForegroundColor Cyan
@@ -1461,6 +1550,13 @@ function Invoke-PipelineFlow {
             $hdrPixArgs + $hdrColorArgs + $hdrX265Args + $hdrSvtArgs + $plCtag +
             $aArgs + @($outPath)
         Invoke-FfmpegWithProgress -Label "Pass 3/3 ($codec)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
+    }
+
+    # v73: pe caile de COPY (smart-copy / audio-only) DV trece in bitstream -> re-signal dvcC
+    # (pierdut la ->MP4/MOV; pastrat la ->MKV de ffmpeg). Re-encode pierde RPU -> NU re-signal.
+    if (($smartCopy -or $audioOnly) -and (Test-Path $outPath)) {
+        $plExt = [System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant()
+        Invoke-DvResignalCopy -Source $chosen[0].FullName -Output $outPath -Target $plExt
     }
 
     Remove-TempSubdirSafe $subdir $outPath

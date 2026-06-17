@@ -1086,6 +1086,19 @@ function Invoke-EmbedTelemetryLossless {
 
     $out = Join-Path $OutputDir "${name}_telem.${targetExt}"
 
+    # v73 (T2): pe sursa DV + output non-MKV, dvcC de container se pierde (ffmpeg il pastreaza
+    # DOAR la ->MKV). Embed-ul ramane lossless (RPU e in bitstream -> PC vede DV), dar TV-ul va
+    # reda HDR10. Avertizam onest (re-signal automat se face pe encode/concat/mux, nu aici —
+    # telemetria e standalone; cazul DV+telemetrie e niche, iar default-ul MKV il acopera).
+    if ($targetExt -ne "mkv") {
+        $dvSd = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null) -join "`n"
+        if ($dvSd -match "DOVI") {
+            Write-Host ""
+            Write-Host "  /!\ Sursa are Dolby Vision: pe .$targetExt semnalizarea DV de container (dvcC) se" -ForegroundColor Yellow
+            Write-Host "    pierde -> TV-ul va reda HDR10. Pentru DV pe TV, pastreaza output-ul MKV (default)." -ForegroundColor Yellow
+        }
+    }
+
     # Build ffmpeg args
     $ffArgs = [System.Collections.Generic.List[string]]@("-v","error","-i",$f.FullName)
     # NU mapam pista de date sursa (djmd/dbgi/tmcd/gpmd): ffmpeg le vede ca

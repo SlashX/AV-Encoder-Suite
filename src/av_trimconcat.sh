@@ -110,6 +110,37 @@ detect_pipeline_hdr_mode() {
     echo "sdr"
 }
 
+# v73: agregat LOG pentru Concat (N→1). detect_pipeline_hdr_mode NU clasifica LOG
+# (cade pe sdr); aici detectam LOG AUTORITAR prin detect_source_info rulat in SUBSHELL
+# (→ fara clobber de globale in parent) si stabilim daca un LUT unic e aplicabil:
+# toate sursele LOG + acelasi brand + LUT prezent in Luts/. Apelat DOAR pe ramura
+# sdr din trimconcat_flow_concat (LOG amestecat cu HDR real iese deja prin _agg=mixed).
+# Echo: none (zero surse LOG) | lut:<brand> (LUT unic aplicabil) | keep (doar Keep LOG / Skip)
+detect_concat_log_mode() {
+    local f _info _lp _mk total=0 logcount=0 brand="" mixed_brand=0
+    for f in "$@"; do
+        total=$((total + 1))
+        # subshell: detect_source_info seteaza globalele DOAR in subshell; echo le citeste
+        # acolo, parent-ul ramane neatins (concat re-face state-ul prin _tc_reset_hdr_state).
+        _info=$(detect_source_info "$f" >/dev/null 2>&1; echo "${LOG_PROFILE:-}|${CAMERA_MAKE:-}")
+        _lp="${_info%%|*}"; _mk="${_info#*|}"
+        if [[ -n "$_lp" ]]; then
+            logcount=$((logcount + 1))
+            if [[ -z "$brand" ]]; then
+                brand="$_mk"
+            elif [[ "$brand" != "$_mk" ]]; then
+                mixed_brand=1
+            fi
+        fi
+    done
+    if (( logcount == 0 )); then echo "none"; return; fi
+    if (( logcount == total && mixed_brand == 0 )) && find_lut_for_brand "${brand:-unknown}" >/dev/null 2>&1; then
+        echo "lut:${brand:-unknown}"
+    else
+        echo "keep"
+    fi
+}
+
 # ──────────────────────────────────────────────────────────────────────
 # v37: Reusable helper — rulează ffmpeg cu progress bar + label custom.
 # Folosit de Trim/Concat/Pipeline. Acceptă durata totală explicit
@@ -817,6 +848,12 @@ trimconcat_flow_concat() {
             -map 0 -map_metadata 0 -c copy \
             -avoid_negative_ts make_zero \
             "$out_path"
+        # v73: daca sursele sunt DV, -c copy pierde dvcC de container la →MP4/MOV (pastrat la
+        # →MKV de ffmpeg). Re-signal (referinta compat = prima sursa). No-op pe non-DV / MKV-deja-ok.
+        if [[ -s "$out_path" ]]; then
+            local _cc_ext="${out_path##*.}"; _cc_ext="${_cc_ext,,}"
+            _dv_resignal_copy "${selected[0]}" "$out_path" "$_cc_ext"
+        fi
     else
         # Re-encode via concat filter
         echo ""
@@ -857,6 +894,8 @@ trimconcat_flow_concat() {
                         [[ "${_c:-1}" == "2" ]] && TC_MODE="skip" || TC_MODE="tonemap" ;;
                     dv)
                         echo "  ⚠ Surse Dolby Vision — re-encode concat nu pastreaza RPU."
+                        echo "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza),"
+                        echo "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)."
                         echo "  1) Tonemap → SDR [implicit]   2) Skip concat"
                         read -p "  Alege 1-2 [implicit: 1]: " _c
                         [[ "${_c:-1}" == "2" ]] && TC_MODE="skip" || TC_MODE="tonemap" ;;
@@ -879,6 +918,52 @@ trimconcat_flow_concat() {
             fi
             echo "  Surse: $_agg → mod: $(_tc_mode_label "$TC_MODE")"
             [[ -n "$TC_DOWNGRADE_REASON" ]] && echo "  ⚠ $TC_DOWNGRADE_REASON"
+        else
+            # v73: pe agregat sdr, detect_pipeline_hdr_mode nu clasifica LOG → verificam
+            # separat (autoritar). Daca sursele sunt LOG, oferim LUT/Keep LOG/Skip in loc sa
+            # re-encodam tacut un LOG mis-tagged (build_tc_video_args + setparams repara culoarea).
+            local _log_agg; _log_agg=$(detect_concat_log_mode "${selected[@]}" 2>/dev/null || echo none)
+            if [[ "$_log_agg" != "none" ]]; then
+                local _brand="${_log_agg#lut:}"
+                if [[ -n "${TC_HDR_POLICY:-}" ]]; then
+                    case "$TC_HDR_POLICY" in
+                        lut)  if [[ "$_log_agg" == lut:* ]] && find_lut_for_brand "$_brand" >/dev/null 2>&1; then
+                                  TC_MODE="lut_rec709"; TC_LUT_FILE="${LUT_FILES[0]}"
+                              else TC_MODE="keep_log"; fi ;;
+                        skip) TC_MODE="skip" ;;
+                        *)    TC_MODE="keep_log" ;;
+                    esac
+                elif [[ "$_log_agg" == lut:* ]] && find_lut_for_brand "$_brand" >/dev/null 2>&1; then
+                    echo ""
+                    echo "  Surse LOG (brand=$_brand, toate la fel)"
+                    echo "  1) Apply LUT Rec.709 (${LUT_FILES[0]##*/}) [implicit]"
+                    echo "  2) Keep LOG (fara transform — pt grading; lossless = stream copy)"
+                    echo "  3) Skip concat"
+                    read -p "  Alege 1-3 [implicit: 1]: " _c
+                    case "${_c:-1}" in
+                        2) TC_MODE="keep_log" ;;
+                        3) TC_MODE="skip" ;;
+                        *) TC_MODE="lut_rec709"; TC_LUT_FILE="${LUT_FILES[0]}" ;;
+                    esac
+                else
+                    echo ""
+                    echo "  ⚠ Surse LOG fara LUT unic aplicabil (branduri diferite / lipsa LUT"
+                    echo "    in Luts/ / amestec LOG+SDR) — un singur LUT nu se potriveste uniform."
+                    echo "  1) Keep LOG (fara transform) [implicit]"
+                    echo "  2) Skip concat"
+                    echo "  → Pentru LUT corect: encodeaza fiecare sursa separat (opt 1 / Trim), apoi concat."
+                    read -p "  Alege 1-2 [implicit: 1]: " _c
+                    case "${_c:-1}" in
+                        2) TC_MODE="skip" ;;
+                        *) TC_MODE="keep_log" ;;
+                    esac
+                fi
+                if ! build_tc_video_args "${selected[0]}" "$codec"; then
+                    echo "  Concat anulat (mod=$(_tc_mode_label "$TC_MODE"))."
+                    cleanup_temp_subdir "$subdir" ""; av_wake_unlock; return 0
+                fi
+                echo "  Surse: LOG → mod: $(_tc_mode_label "$TC_MODE")"
+            fi
         fi
 
         # Build -i pentru fiecare fișier + filter_complex
@@ -1391,7 +1476,8 @@ trimconcat_flow_pipeline() {
                         if [[ "$hdr_mode" == "dv" ]]; then
                             echo ""
                             echo "  ⚠ DOLBY VISION detectat. Re-encode -> fallback HDR10 (DV RPU nu se pastreaza)."
-                            echo "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+→DV in HDR/DV tools (opt 8)."
+                            echo "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza),"
+                            echo "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)."
                         elif [[ "$hdr_mode" == "hdr10plus" ]]; then
                             echo ""
                             echo "  ⚡ HDR10+ detectat. Pastrezi metadata dinamica (dhdr10-info)? (necesita $AV_TOOL_HDR10PLUS)"
@@ -1441,7 +1527,8 @@ trimconcat_flow_pipeline() {
                             if [[ "$hdr_mode" == "dv" ]]; then
                                 echo ""
                                 echo "  ⚠ DOLBY VISION detectat. AV1 re-encode -> fallback HDR10 (DV RPU nu se pastreaza)."
-                                echo "    Pentru DV: pastreaza HDR10+ aici, apoi HDR10+→DV in HDR/DV tools (opt 8)."
+                                echo "    Pentru DV pastrat: encodeaza fiecare clip prin meniul principal (DV se pastreaza),"
+                                echo "    apoi uneste-le cu Concat stream-copy (dvcC se re-semnalizeaza automat)."
                             elif [[ "$hdr_mode" == "hdr10plus" ]]; then
                                 echo ""
                                 echo "  ⚡ HDR10+ detectat. Pastrezi metadata dinamica inline (svtav1 hdr10plus-json)?"
@@ -1559,6 +1646,13 @@ trimconcat_flow_pipeline() {
             "${hdr_pix_args[@]}" "${hdr_color_args[@]}" "${hdr_x265_args[@]}" "${hdr_svt_args[@]}" $_pl_ctag \
             "${aopt[@]}" \
             "$out_path"
+    fi
+
+    # v73: pe caile de COPY (smart-copy / audio-only) DV trece in bitstream → re-signal dvcC
+    # (pierdut la →MP4/MOV; pastrat la →MKV de ffmpeg). Re-encode pierde RPU → NU re-signal.
+    if (( smart_copy == 1 || audio_only == 1 )) && [[ -s "$out_path" ]]; then
+        local _pl_ext="${out_path##*.}"; _pl_ext="${_pl_ext,,}"
+        _dv_resignal_copy "${chosen[0]}" "$out_path" "$_pl_ext"
     fi
 
     av_wake_unlock

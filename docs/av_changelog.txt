@@ -3,9 +3,45 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v72 | 132 bug-uri fixate | 252+ features
-  171 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 118 teste [111 test_* + 7 infra]) | ~43000 linii cod+teste | ~6900 linii documentatie
+  TOTAL: v73 | 132 bug-uri fixate | 255+ features
+  175 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 122 teste [115 test_* + 7 infra]) | ~43000 linii cod+teste | ~6950 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v73 — Clipuri LOG la unire (Concat) + Dolby Vision pe mai multe fluxuri
+═══════════════════════════════════════════════════════════════
+
+  ADD La unirea cu re-encodare (Concat) a clipurilor filmate in LOG
+        (D-Log M de la DJI, Samsung Log, Apple Log), suita le recunoaste
+        acum si te intreaba ce sa faca: aplica un LUT (corectie de culoare
+        catre Rec.709), pastreaza LOG asa cum e (pentru gradare ulterioara)
+        sau sari peste fisier. Pana acum clipurile LOG erau re-encodate
+        tacut, fara LUT si fara avertisment — imaginea iesea spalacita.
+        Cand toate clipurile sunt de la acelasi brand si exista un LUT
+        potrivit in folderul Luts/, acesta e propus automat; cand sunt
+        branduri amestecate sau lipseste LUT-ul, primesti optiunea de a
+        pastra LOG plus o nota cu pasii corecti.
+
+  UPDATE Semnalizarea Dolby Vision de container (cea dupa care
+        televizoarele activeaza DV) se pastreaza acum si pe inca trei
+        fluxuri fara re-encodare a imaginii: unirea prin stream copy
+        (Concat) si, in pipeline-ul Trim+Concat+Encode, variantele
+        "stream copy inteligent" si "doar audio". Ca si pana acum, pe MKV
+        eticheta se pastreaza automat, iar pe MP4/MOV este re-adaugata
+        (cand unealta potrivita e disponibila). Stratul Dolby Vision si
+        metadata HDR10+ raman identice.
+
+  UPDATE La extragerea telemetriei cu pastrare 1:1 (embed), daca sursa e
+        Dolby Vision si alegi MP4, primesti acum un avertisment ca pe MP4
+        semnalizarea DV de container se pierde (televizorul ar reda HDR10)
+        — recomandarea fiind sa pastrezi varianta MKV (implicita), unde
+        Dolby Vision se pastreaza.
+
+  UPDATE Mesajul afisat cand alegi re-encodarea unor surse Dolby Vision la
+        Concat sau in pipeline indica acum calea curata de a pastra totusi
+        DV: encodeaza fiecare clip prin meniul principal (acolo Dolby
+        Vision se pastreaza), apoi uneste-le cu Concat prin stream copy.
 
 
 ═══════════════════════════════════════════════════════════════
