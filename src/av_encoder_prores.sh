@@ -2,7 +2,7 @@
 # ══════════════════════════════════════════════════════════════════════
 # av_encoder_prores.sh — Encoder Apple ProRes (prores_ks)
 # Codec profesional intra-frame, standard Apple/Final Cut Pro.
-# Container obligatoriu: .mov (QuickTime)
+# Container: .mov (QuickTime) sau .mxf (broadcast/Avid, v74)
 # v30: Doar logica specifica — loop-ul e in av_common.sh
 # ══════════════════════════════════════════════════════════════════════
 
@@ -32,12 +32,12 @@ encoder_get_label()  { echo "ProRes ($PRORES_PROFILE)"; }
 encoder_log_header() {
     log "Profil         : $PRORES_PROFILE"
     log "Note           : ProRes = codec Apple profesional intra-frame"
-    log "                 Container obligatoriu: .mov (QuickTime)"
+    log "                 Container: $CONTAINER (.mov QuickTime sau .mxf broadcast)"
 }
 
-# ProRes: container DOAR mov
+# ProRes: container mov sau mxf (v74). MXF ignora -movflags (la fel ca DNxHR).
 get_container_flags() {
-    echo "-movflags +faststart"
+    case "$CONTAINER" in mxf) echo "" ;; *) echo "-movflags +faststart" ;; esac
 }
 
 encoder_setup_file() {
@@ -63,29 +63,40 @@ encoder_setup_file() {
     # iese baza HDR10 statica (PQ + mastering display + MaxCLL, verificat empiric).
     if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
         log "  ATENTIE: DV + HDR10+ (hibrid) detectat — ProRes NU pastreaza nici RPU DV, nici HDR10+."
-        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
+        log "    Iese HDR10 static (PQ + master-display pastrat); ambele straturi dinamice se pierd."
         log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
     elif [[ -n "${DOVI:-}" ]]; then
         log "  ATENTIE: Dolby Vision detectat — ProRes NU pastreaza RPU-ul DV."
-        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+        log "    Iese HDR10 base (PQ + master-display pastrat); stratul DV se pierde."
         log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
     elif [[ -n "${HDR_PLUS:-}" ]]; then
         log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
-        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+        log "    Iese HDR10 static (master-display pastrat)."
     fi
 
     # ── ProRes profil → codec params ────────────────────────────────
     # prores_ks: profile 0=proxy 1=lt 2=standard 3=hq 4=4444 5=4444xq.
     # XQ = profil 5 nativ (tag corect "XQ"); NU profil 4 + qscale (acela scrie tag "4444").
     # Acceptam si token-ul vechi "4444xq" pentru compat cu profile salvate.
+    # v74: 4444/XQ pastreaza alpha DOAR daca sursa o are (altfel yuv444p10le — fara plan
+    # alpha opac inutil; ~0.4% economie + semantica curata). Profilele 422 n-au alpha.
+    local _4444_pf="yuv444p10le" _alpha_note=""
+    if [[ "$PRORES_PROFILE" == "4444" || "$PRORES_PROFILE" == "xq" || "$PRORES_PROFILE" == "4444xq" ]]; then
+        local _src_pf
+        _src_pf=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+        case "$_src_pf" in
+            yuva*|ya8*|ya16*|*rgba*|*argb*|*abgr*|*bgra*|*gbrap*|pal8) _4444_pf="yuva444p10le"; _alpha_note=", alpha" ;;
+        esac
+    fi
     local profile_num pixfmt quality_label
     case "$PRORES_PROFILE" in
         proxy)     profile_num=0; pixfmt="yuv422p10le"; quality_label="ProRes Proxy (~45 Mbps)" ;;
         lt)        profile_num=1; pixfmt="yuv422p10le"; quality_label="ProRes LT (~100 Mbps)" ;;
         standard)  profile_num=2; pixfmt="yuv422p10le"; quality_label="ProRes Standard (~145 Mbps)" ;;
         hq)        profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
-        4444)      profile_num=4; pixfmt="yuva444p10le"; quality_label="ProRes 4444 (~330 Mbps, alpha)" ;;
-        xq|4444xq) profile_num=5; pixfmt="yuva444p10le"; quality_label="ProRes 4444 XQ (~500 Mbps)" ;;
+        4444)      profile_num=4; pixfmt="$_4444_pf"; quality_label="ProRes 4444 (~330 Mbps${_alpha_note})" ;;
+        xq|4444xq) profile_num=5; pixfmt="$_4444_pf"; quality_label="ProRes 4444 XQ (~500 Mbps${_alpha_note})" ;;
         *)         profile_num=3; pixfmt="yuv422p10le"; quality_label="ProRes HQ (~220 Mbps)" ;;
     esac
     log "  Profil: $quality_label | PixFmt: $pixfmt | Container: $CONTAINER"

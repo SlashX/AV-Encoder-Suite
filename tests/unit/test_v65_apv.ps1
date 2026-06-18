@@ -27,7 +27,7 @@ Assert-Match $LAUNCH ([regex]::Escape('Format container output (APV)')) "launche
 Assert-Eq $false ([bool]($LAUNCH -match 'mxf — broadcast profesional')) "launcher: APV nu mai ofera mxf"
 
 # ── 3. Schema bash ────────────────────────────────────────────────────
-Assert-Match $COMMON ([regex]::Escape('APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10"')) "schema: APV_PIXFMT"
+Assert-Match $COMMON ([regex]::Escape('APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10,4444_12"')) "schema: APV_PIXFMT (v74 +4444_12)"
 Assert-Match $COMMON ([regex]::Escape('APV_PRESET)           echo "enum:,fastest,fast,medium,slow,placebo"'))     "schema: APV_PRESET real"
 Assert-Match $COMMON ([regex]::Escape('APV_QP)               echo "intrange:0,63"')) "schema: APV_QP intrange"
 Assert-Eq $false ([bool]($COMMON -match 'APV_PROFILE\)'))       "schema: APV_PROFILE vechi scos"
@@ -38,7 +38,7 @@ Assert-Match $ENC ([regex]::Escape('$useAPV    = ($ENCODER -eq "apv")'))  "PS1: 
 Assert-Match $ENC ([regex]::Escape('profil / pixel format'))    "PS1: meniu pixfmt"
 Assert-Match $ENC ([regex]::Escape('Container APV'))            "PS1: container APV"
 Assert-Match $ENC ([regex]::Escape('@("-c:v",$apvEncoder,"-preset",$apvPreset,"-qp",$apvQp)')) "PS1: comanda encode APV"
-Assert-Match $ENC ([regex]::Escape("'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10'")) "PS1: schema APV_PIXFMT"
+Assert-Match $ENC ([regex]::Escape("'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10,4444_12'")) "PS1: schema APV_PIXFMT (v74 +4444_12)"
 Assert-Match $ENC ([regex]::Escape('"APV_PIXFMT=$apvPixFmt"')) "PS1: save flow APV"
 Assert-Match $ENC ([regex]::Escape("'\bliboapv\b'"))           "PS1: auto-detect liboapv"
 Assert-Eq $false ([bool]($ENC -match "'APV_PROFILE'"))         "PS1: APV_PROFILE vechi scos"

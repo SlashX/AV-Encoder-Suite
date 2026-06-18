@@ -85,6 +85,24 @@ function Get-SourceInfo {
     $isDVFrames = [bool]$dvFrames
     $isHDR     = $transfer -eq "smpte2084" -or $isHDRPlus
     $isHLG     = ($transfer -eq "arib-std-b67") -and (-not $isHDRPlus)
+    # v74: pe ProRes, codec_tag (FourCC) -> profil (apco/apcs/apcn/apch/ap4h/ap4x)
+    $proresTag = ""
+    if ($codec -eq "prores") {
+        $proresTag = (& ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null | Select-Object -First 1)
+        if ($proresTag) { $proresTag = $proresTag.Trim() }
+    }
+    # v74: profilul DNxHR din campul `profile` (codec_tag e [0][0][0][0], inutil pt dnxhd)
+    $dnxhrProf = ""
+    if ($codec -eq "dnxhd") {
+        $dnxhrProf = (& ffprobe -v error -select_streams v:0 -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null | Select-Object -First 1)
+        if ($dnxhrProf) { $dnxhrProf = $dnxhrProf.Trim() }
+    }
+    # v74 (G3): profilul APV din campul `profile` (numeric 33/44/55/66/77/88; codec_tag apv1 inutil)
+    $apvProf = ""
+    if ($codec -eq "apv") {
+        $apvProf = (& ffprobe -v error -select_streams v:0 -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$file" 2>$null | Select-Object -First 1)
+        if ($apvProf) { $apvProf = $apvProf.Trim() }
+    }
     $fmt = switch ($codec) {
         "h264" { "H.264 $depthLabel" }
         "hevc" {
@@ -99,9 +117,38 @@ function Get-SourceInfo {
             elseif ($isHLG)     { "AV1 HLG"       }
             else                { "AV1 $depthLabel SDR" }
         }
-        "prores"     { "Apple ProRes" }
-        "dnxhd"      { "Avid DNxHR $depthLabel" }
-        "apv"        { "Samsung APV $depthLabel" }
+        "prores"     {
+            switch ($proresTag) {
+                "apco"  { "Apple ProRes Proxy" }
+                "apcs"  { "Apple ProRes LT" }
+                "apcn"  { "Apple ProRes Standard" }
+                "apch"  { "Apple ProRes HQ" }
+                "ap4h"  { "Apple ProRes 4444" }
+                "ap4x"  { "Apple ProRes 4444 XQ" }
+                default { "Apple ProRes" }
+            }
+        }
+        "dnxhd"      {
+            switch ($dnxhrProf) {
+                "DNXHR LB"  { "Avid DNxHR LB" }
+                "DNXHR SQ"  { "Avid DNxHR SQ" }
+                "DNXHR HQ"  { "Avid DNxHR HQ" }
+                "DNXHR HQX" { "Avid DNxHR HQX" }
+                "DNXHR 444" { "Avid DNxHR 444" }
+                default     { "Avid DNxHR $depthLabel" }
+            }
+        }
+        "apv"        {
+            switch ($apvProf) {
+                "33" { "Samsung APV 4:2:2 10-bit" }
+                "44" { "Samsung APV 4:2:2 12-bit" }
+                "55" { "Samsung APV 4:4:4 10-bit" }
+                "66" { "Samsung APV 4:4:4 12-bit" }
+                "77" { "Samsung APV 4:4:4:4 10-bit" }
+                "88" { "Samsung APV 4:4:4:4 12-bit" }
+                default { "Samsung APV $depthLabel" }
+            }
+        }
         "mpeg2video" { "MPEG-2" }
         default      { "$codec $depthLabel" }
     }

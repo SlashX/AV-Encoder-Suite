@@ -61,7 +61,7 @@ encoder_setup_file() {
     local file="$1"
 
     # ── APV pixfmt/profil → pix_fmt + eticheta (profil auto din pix_fmt) ──
-    #   422_10→33  422_12→44  444_10→55  444_12→66  4444_10→77 (alpha)
+    #   422_10→33  422_12→44  444_10→55  444_12→66  4444_10→77  4444_12→88 (alpha)
     local pixfmt prof_label
     case "$APV_PIXFMT" in
         422_10)  pixfmt="yuv422p10le";  prof_label="APV 4:2:2 10-bit (profil 422-10)" ;;
@@ -69,6 +69,7 @@ encoder_setup_file() {
         444_10)  pixfmt="yuv444p10le";  prof_label="APV 4:4:4 10-bit (profil 444-10)" ;;
         444_12)  pixfmt="yuv444p12le";  prof_label="APV 4:4:4 12-bit (profil 444-12)" ;;
         4444_10) pixfmt="yuva444p10le"; prof_label="APV 4:4:4+alpha 10-bit (profil 4444-10)" ;;
+        4444_12) pixfmt="yuva444p12le"; prof_label="APV 4:4:4+alpha 12-bit (profil 4444-12)" ;;
         *)       pixfmt="yuv422p10le";  prof_label="APV 4:2:2 10-bit (profil 422-10)" ;;
     esac
     log "  $prof_label | Preset: $APV_PRESET | QP: $APV_QP | Container: $CONTAINER"
@@ -97,7 +98,7 @@ encoder_setup_file() {
         if ! _check_hdr10plus_tool_for "$_src_vc" || ! _apv_hdr10plus_engine_py >/dev/null 2>&1; then
             # tool de extract pt codec-ul sursa SAU engine-ul de inject lipsesc
             log "  ATENTIE: HDR10+ detectat, dar tool-ul de extract ($_src_vc) sau python3/engine lipsesc."
-            log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+            log "    Iese HDR10 static (master-display pastrat)."
         else
             case "${APV_HDR10PLUS_POLICY:-}" in
                 preserve) _hp_choice=1 ;;

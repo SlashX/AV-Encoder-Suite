@@ -42,7 +42,7 @@ echo "Fisier,Format_sursa,Container,Dimensiune(MB),Durata(sec),Rezolutie,PixelFo
 # (substring "12", nu "10") → 12-bit etichetat ca 8-bit. Folosim bits_per_raw_sample
 # (autoritar) cu fallback la pattern pix_fmt p10/p12/p16.
 get_source_format() {
-    local codec="$1" pix_fmt="$2" transfer="$3" hdr_plus_found="$4" bits_raw="${5:-}"
+    local codec="$1" pix_fmt="$2" transfer="$3" hdr_plus_found="$4" bits_raw="${5:-}" codec_tag="${6:-}" dnxhr_prof="${7:-}" apv_prof="${8:-}"
     local depth=8 is_hdr=0 is_hdrplus=0 is_hlg=0
     if [[ "$bits_raw" =~ ^[0-9]+$ ]] && [ "$bits_raw" -ge 10 ] && [ "$bits_raw" -le 16 ]; then
         depth="$bits_raw"
@@ -73,9 +73,40 @@ get_source_format() {
         vp9)        fmt="VP9 $depth_label" ;;
         mpeg4)      fmt="MPEG-4" ;;
         mpeg2video) fmt="MPEG-2" ;;
-        prores)     fmt="Apple ProRes" ;;
-        dnxhd)      fmt="Avid DNxHR $depth_label" ;;
-        apv)        fmt="Samsung APV $depth_label" ;;
+        prores)
+            # v74: profil din codec_tag (FourCC) — apco/apcs/apcn/apch/ap4h/ap4x
+            case "$codec_tag" in
+                apco) fmt="Apple ProRes Proxy" ;;
+                apcs) fmt="Apple ProRes LT" ;;
+                apcn) fmt="Apple ProRes Standard" ;;
+                apch) fmt="Apple ProRes HQ" ;;
+                ap4h) fmt="Apple ProRes 4444" ;;
+                ap4x) fmt="Apple ProRes 4444 XQ" ;;
+                *)    fmt="Apple ProRes" ;;
+            esac ;;
+        dnxhd)
+            # v74: profil din campul ffprobe `profile` (DNXHR LB/SQ/HQ/HQX/444);
+            # codec_tag e [0][0][0][0] (inutil pt DNxHR). Fallback la depth daca lipseste.
+            case "$dnxhr_prof" in
+                "DNXHR LB")  fmt="Avid DNxHR LB" ;;
+                "DNXHR SQ")  fmt="Avid DNxHR SQ" ;;
+                "DNXHR HQ")  fmt="Avid DNxHR HQ" ;;
+                "DNXHR HQX") fmt="Avid DNxHR HQX" ;;
+                "DNXHR 444") fmt="Avid DNxHR 444" ;;
+                *)           fmt="Avid DNxHR $depth_label" ;;
+            esac ;;
+        apv)
+            # v74 (G3): profil din campul ffprobe `profile` (numeric 33/44/55/66/77/88;
+            # codec_tag e apv1 — acelasi pt toate). Profilul codeaza chroma + bit-depth.
+            case "$apv_prof" in
+                33) fmt="Samsung APV 4:2:2 10-bit" ;;
+                44) fmt="Samsung APV 4:2:2 12-bit" ;;
+                55) fmt="Samsung APV 4:4:4 10-bit" ;;
+                66) fmt="Samsung APV 4:4:4 12-bit" ;;
+                77) fmt="Samsung APV 4:4:4:4 10-bit" ;;
+                88) fmt="Samsung APV 4:4:4:4 12-bit" ;;
+                *)  fmt="Samsung APV $depth_label" ;;
+            esac ;;
         *)          fmt="$codec $depth_label" ;;
     esac
     echo "$fmt"
@@ -597,7 +628,19 @@ for file in "${FILES[@]}"; do
     fi
 
     # get_source_format — reutilizeaza datele extrase + BITS_RAW pt depth detection
-    SRC_FMT=$(get_source_format "$SRC_CODEC" "$PIX_FMT" "$TRANSFER" "${HDR10PLUS:-0}" "${BITS_RAW:-}")
+    # v74: pe ProRes, codec_tag (FourCC) → profil (apco/apch/ap4h/ap4x...). Probe doar pe prores.
+    _prores_tag=""
+    [[ "$SRC_CODEC" == "prores" ]] && _prores_tag=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    # v74: profilul DNxHR vine din campul `profile` (codec_tag e [0][0][0][0], inutil)
+    _dnxhr_prof=""
+    [[ "$SRC_CODEC" == "dnxhd" ]] && _dnxhr_prof=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    # v74 (G3): profilul APV din campul `profile` (numeric 33/44/55/66/77/88; codec_tag apv1 inutil)
+    _apv_prof=""
+    [[ "$SRC_CODEC" == "apv" ]] && _apv_prof=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    SRC_FMT=$(get_source_format "$SRC_CODEC" "$PIX_FMT" "$TRANSFER" "${HDR10PLUS:-0}" "${BITS_RAW:-}" "$_prores_tag" "$_dnxhr_prof" "$_apv_prof")
 
     # ── Subtitrari, capitole, attachments ────────────────────────────
     SUBS_INFO=$(get_subtitles_info "$file")

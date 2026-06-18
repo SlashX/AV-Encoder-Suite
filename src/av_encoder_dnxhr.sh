@@ -41,20 +41,22 @@ encoder_setup_file() {
     local file="$1"
 
     # ── LOG format — DNxHR pastreaza Log-ul intact automat ────────────
-    # Doar HQX/444 (10-bit) pastreaza precizia + tag-ul wide-gamut. Pe LB/SQ/HQ
-    # (8-bit) curba Log ramane in pixeli, dar transfer=unknown (Samsung/DJI Log)
-    # face dnxhd sa reseteze primaries bt2020 -> bt709 (verificat empiric).
+    # Doua nuante SEPARATE (verificat empiric v74): (a) precizie — doar HQX/444 (10-bit)
+    # o pastreaza; LB/SQ/HQ scad la 8-bit. (b) tag gamut bt2020 — CONTAINER-driven, NU
+    # profil: pastrat pe MXF la ORICE profil, pe MOV -> unknown la ORICE profil (-color_*
+    # nu ajuta). Cosmetic — curba Log ramane in pixeli oricum.
     if [[ -n "$LOG_PROFILE" ]]; then
         local profile_label
         profile_label=$(_log_profile_label "$LOG_PROFILE")
         if [[ "$DNXHR_PROFILE" == "hqx" || "$DNXHR_PROFILE" == "444" ]]; then
-            log "  LOG detectat: $profile_label — DNxHR pastreaza Log intact (10-bit, wide gamut)."
+            log "  LOG detectat: $profile_label — DNxHR pastreaza Log intact (10-bit)."
         else
-            log "  LOG detectat: $profile_label — ATENTIE: profilul $DNXHR_PROFILE e 8-bit."
-            log "    Curba Log ramane in pixeli, dar se pierde precizia 10-bit si tag-ul"
-            log "    wide-gamut (bt2020 devine bt709) — afecteaza grading/LUT ulterior."
+            log "  LOG detectat: $profile_label — ATENTIE: profil $DNXHR_PROFILE e 8-bit (precizia scade 10->8 bit)."
             log "    Recomandat pentru Log: profil HQX sau 444 (10-bit)."
         fi
+        # Tag gamut bt2020: container-driven (orice profil) — pastrat pe MXF, pierdut pe MOV.
+        [[ "$CONTAINER" == "mov" ]] && \
+            log "    Nota: pe MOV tag-ul de gamut bt2020 -> unknown (pe MXF pastrat, orice profil); cosmetic — pixelii Log raman."
     fi
 
     # ── Avertisment HDR/HLG cu profil 8-bit (LB/SQ/HQ) ────────────────
@@ -72,15 +74,15 @@ encoder_setup_file() {
     # HDR10 statica (PQ + mastering display + MaxCLL, verificat empiric).
     if [[ -n "${DOVI:-}" && -n "${HDR_PLUS:-}" ]]; then
         log "  ATENTIE: DV + HDR10+ (hibrid) detectat — DNxHR NU pastreaza nici RPU DV, nici HDR10+."
-        log "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd."
+        log "    Iese HDR10 static (PQ + master-display pastrat); ambele straturi dinamice se pierd."
         log "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
     elif [[ -n "${DOVI:-}" ]]; then
         log "  ATENTIE: Dolby Vision detectat — DNxHR NU pastreaza RPU-ul DV."
-        log "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde."
+        log "    Iese HDR10 base (PQ + master-display pastrat); stratul DV se pierde."
         log "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools."
     elif [[ -n "${HDR_PLUS:-}" ]]; then
         log "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza."
-        log "    Iese HDR10 static (mastering display + MaxCLL pastrate)."
+        log "    Iese HDR10 static (master-display pastrat)."
     fi
 
     # ── Profil DNxHR → codec params ───────────────────────────────────

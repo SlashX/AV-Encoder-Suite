@@ -63,8 +63,8 @@ assert_contains "$ENC_PS1" "DNxHR NU pastreaza RPU-ul DV"         "PS1 dnxhr: wa
 assert_contains "$ENC_PS1" "ProRes NU pastreaza RPU-ul DV"        "PS1 prores: warning DV"
 
 # ── 6c. av_check — eticheta prietenoasa DNxHR (paritate cu ProRes) ────
-assert_contains "$AVCHK"     'dnxhd)      fmt="Avid DNxHR'  "av_check.sh: dnxhd -> Avid DNxHR"
-assert_contains "$AVCHK_PS1" '"dnxhd"      { "Avid DNxHR'   "av_check.ps1: dnxhd -> Avid DNxHR"
+assert_contains "$AVCHK"     '"DNXHR HQ")  fmt="Avid DNxHR HQ"'   "av_check.sh: dnxhd -> Avid DNxHR <profil> (v74)"
+assert_contains "$AVCHK_PS1" '"DNXHR HQ"  { "Avid DNxHR HQ" }'    "av_check.ps1: dnxhd -> Avid DNxHR <profil> (v74)"
 
 # ── 6d. MXF audio = PCM (AAC default + MXF ar pica) ───────────────────
 assert_contains "$LAUNCHER" "MXF suporta doar audio PCM"           "launcher: constrangere MXF audio PCM"

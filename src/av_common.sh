@@ -5897,7 +5897,7 @@ profile_schema_get() {
         ENCODER_NAME)         echo "enum:libx265,libx264,av1,dnxhr,prores,apv,hwenc" ;;
         AV1_ENCODER_NAME)     echo "enum:,libsvtav1,libaom-av1" ;;
         DNXHR_PROFILE)        echo "enum:,lb,sq,hq,hqx,444" ;;
-        APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10" ;;
+        APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10,4444_12" ;;
         APV_PRESET)           echo "enum:,fastest,fast,medium,slow,placebo" ;;
         APV_QP)               echo "intrange:0,63" ;;
         APV_EXTRA)            echo "string" ;;

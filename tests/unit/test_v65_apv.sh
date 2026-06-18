@@ -32,7 +32,7 @@ assert_contains "$LAUNCHER" 'Format container output (APV)' "launcher: meniu con
 assert_not_contains "$LAUNCHER" 'mxf — broadcast profesional' "launcher: APV nu mai ofera mxf"
 
 # ── 3. Schema bash — campuri noi, APV_PROFILE vechi scos ──────────────
-assert_contains "$COMMON" 'APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10"' "schema: APV_PIXFMT"
+assert_contains "$COMMON" 'APV_PIXFMT)           echo "enum:,422_10,422_12,444_10,444_12,4444_10,4444_12"' "schema: APV_PIXFMT (v74 +4444_12)"
 assert_contains "$COMMON" 'APV_PRESET)           echo "enum:,fastest,fast,medium,slow,placebo"'     "schema: APV_PRESET real"
 assert_contains "$COMMON" 'APV_QP)               echo "intrange:0,63"' "schema: APV_QP intrange (virgula)"
 assert_not_contains "$COMMON" 'APV_PROFILE)'     "schema: APV_PROFILE vechi scos"
@@ -43,7 +43,7 @@ assert_contains "$ENC_PS1" '$useAPV    = ($ENCODER -eq "apv")'  "PS1: APV in pro
 assert_contains "$ENC_PS1" 'profil / pixel format'              "PS1: meniu pixfmt APV"
 assert_contains "$ENC_PS1" 'Container APV'                      "PS1: container APV"
 assert_contains "$ENC_PS1" '@("-c:v",$apvEncoder,"-preset",$apvPreset,"-qp",$apvQp)' "PS1: comanda encode APV"
-assert_contains "$ENC_PS1" "'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10'" "PS1: schema APV_PIXFMT"
+assert_contains "$ENC_PS1" "'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10,4444_12'" "PS1: schema APV_PIXFMT (v74 +4444_12)"
 assert_contains "$ENC_PS1" '"APV_PIXFMT=$apvPixFmt"'  "PS1: save flow APV"
 assert_contains "$ENC_PS1" 'apvEncoder = "liboapv"'   "PS1: auto-detect liboapv"
 assert_not_contains "$ENC_PS1" "'APV_PROFILE'"        "PS1: APV_PROFILE vechi scos"

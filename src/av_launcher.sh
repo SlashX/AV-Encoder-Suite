@@ -543,13 +543,15 @@ if [[ "$ENCODER_NAME" == "apv" ]]; then
     echo "║  3) 4:4:4 10-bit (444-10) grading    ║"
     echo "║  4) 4:4:4 12-bit (444-12) grading    ║"
     echo "║  5) 4:4:4 + alpha 10-bit (4444-10)   ║"
+    echo "║  6) 4:4:4 + alpha 12-bit (4444-12)   ║"
     echo "╚══════════════════════════════════════╝"
-    read -p "Alege 1-5 [implicit: 1]: " apv_pf_choice
+    read -p "Alege 1-6 [implicit: 1]: " apv_pf_choice
     case "${apv_pf_choice:-1}" in
         2) APV_PIXFMT="422_12";  echo "  Profil: APV 4:2:2 12-bit" ;;
         3) APV_PIXFMT="444_10";  echo "  Profil: APV 4:4:4 10-bit" ;;
         4) APV_PIXFMT="444_12";  echo "  Profil: APV 4:4:4 12-bit" ;;
         5) APV_PIXFMT="4444_10"; echo "  Profil: APV 4:4:4 + alpha 10-bit" ;;
+        6) APV_PIXFMT="4444_12"; echo "  Profil: APV 4:4:4 + alpha 12-bit" ;;
         *) APV_PIXFMT="422_10";  echo "  Profil: APV 4:2:2 10-bit" ;;
     esac
     echo ""
@@ -636,8 +638,19 @@ elif [[ "$ENCODER_NAME" == "apv" ]]; then
     esac
     echo "  Container ales: $CONTAINER"
 elif [[ "$ENCODER_NAME" == "prores" ]]; then
-    CONTAINER="mov"
-    echo "  Container: mov (obligatoriu pentru ProRes)"
+    # v74: ProRes e valid si in MXF (broadcast/Avid), nu doar mov. Audio PCM se aplica
+    # automat prin regula MXF=PCM de mai jos (gardata pe CONTAINER, nu pe encoder).
+    echo "╔══════════════════════════════════════╗"
+    echo "║  Format container output (ProRes)    ║"
+    echo "║  1) mov — QuickTime / Apple [implicit]║"
+    echo "║  2) mxf — broadcast / Avid           ║"
+    echo "╚══════════════════════════════════════╝"
+    read -p "Alege 1 sau 2 [implicit: 1]: " container_choice
+    case "${container_choice:-1}" in
+        2) CONTAINER="mxf" ;;
+        *) CONTAINER="mov" ;;
+    esac
+    echo "  Container ales: $CONTAINER"
 else
     if [[ "$ENCODER_NAME" == "av1" ]]; then
         echo "╔══════════════════════════════════════╗"
@@ -1310,7 +1323,7 @@ elif [[ "$ENCODER_NAME" == "apv" ]]; then
         "$APV_PIXFMT" "$APV_PRESET" "$APV_QP" "$APV_EXTRA" "$CONTAINER" "$SCALE_WIDTH" "$TARGET_FPS" "$FPS_METHOD" \
         "$VIDEO_FILTER_PRESET" "$AUDIO_NORMALIZE"
 elif [[ "$ENCODER_NAME" == "prores" ]]; then
-    echo "Rulez $ENCODER_SCRIPT (profil: $PRORES_PROFILE, container: mov)..."
+    echo "Rulez $ENCODER_SCRIPT (profil: $PRORES_PROFILE, container: $CONTAINER)..."
     ./"$ENCODER_SCRIPT" "$AUDIO_CODEC_ARG" \
         "$PRORES_PROFILE" "$CONTAINER" "$SCALE_WIDTH" "$TARGET_FPS" "$FPS_METHOD" \
         "$VIDEO_FILTER_PRESET" "$AUDIO_NORMALIZE"

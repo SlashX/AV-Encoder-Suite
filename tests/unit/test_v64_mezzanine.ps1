@@ -57,8 +57,8 @@ Assert-Match $ENC ([regex]::Escape('DNxHR NU pastreaza RPU-ul DV'))    "PS1 dnxh
 Assert-Match $ENC ([regex]::Escape('ProRes NU pastreaza RPU-ul DV'))   "PS1 prores: warning DV"
 
 # ── 6c. av_check — eticheta prietenoasa DNxHR (paritate cu ProRes) ────
-Assert-Match $AVCHK  ([regex]::Escape('dnxhd)      fmt="Avid DNxHR'))  "av_check.sh: dnxhd -> Avid DNxHR"
-Assert-Match $AVCHKP ([regex]::Escape('"dnxhd"      { "Avid DNxHR'))   "av_check.ps1: dnxhd -> Avid DNxHR"
+Assert-Match $AVCHK  ([regex]::Escape('"DNXHR HQ")  fmt="Avid DNxHR HQ"'))   "av_check.sh: dnxhd -> Avid DNxHR <profil> (v74)"
+Assert-Match $AVCHKP ([regex]::Escape('"DNXHR HQ"  { "Avid DNxHR HQ" }'))    "av_check.ps1: dnxhd -> Avid DNxHR <profil> (v74)"
 
 # ── 6d. MXF audio = PCM (AAC default + MXF ar pica) ───────────────────
 Assert-Match $LAUNCH ([regex]::Escape('MXF suporta doar audio PCM'))                       "launcher: constrangere MXF audio PCM"

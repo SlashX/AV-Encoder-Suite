@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v73** — 132 bugs fixed · 255+ features · ~43 000 LoC · 175 files
+**v74** — 132 bugs fixed · 261+ features · ~43 000 LoC · 181 files
 
 ---
 
@@ -89,7 +89,7 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **ProRes** KS | 10/12 | ✅ preserve | — | — | ✅ preserve | ✅ |
 | **APV** (FF 8.1+) | 10/12 · 4:2:2/4:4:4 (+alpha) | ✅ preserve | ✅ per-frame (v69) | — | ✅ preserve | ✅ |
 
-¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lose wide gamut on LOG, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU → honest per-source warnings (DV → clean HDR10 base; use x265/AV1 to keep DV). HDR10+ dynamic metadata is lost on DNxHR/ProRes — but **preserved on APV** since v69 (suite engine, see Highlights). ProRes 4444 XQ = native XQ profile (v64). DNxHR MXF audio = PCM only (v64). **APV** (v65) = `liboapv`/`libopenapv` auto-detect, independent profile/preset/QP knobs (x265-style), mp4/mov/mkv; full bash + PowerShell parity.
+¹ DNxHR HQX/444 = 10-bit (HDR); LB/SQ/HQ = 8-bit (SDR/proxy — lower precision on LOG/HDR, warned). **Mezzanine codecs** (DNxHR/ProRes/APV) preserve the HDR10/HLG picture + color tags but do **not** carry Dolby Vision RPU → honest per-source warnings (DV → clean HDR10 base; use x265/AV1 to keep DV). HDR10+ dynamic metadata is lost on DNxHR/ProRes — but **preserved on APV** since v69 (suite engine, see Highlights). ProRes 4444 XQ = native XQ profile (v64). **ProRes** (v74): analysis shows the exact profile (Proxy…4444 XQ), 4444/XQ add an alpha channel only when the source has one, container MOV **or** MXF; runs on all platforms via software `prores_ks` (VideoToolbox HW is macOS-only). **DNxHR** (v74): analysis shows the exact profile (LB/SQ/HQ/HQX/444). DNxHR MXF audio = PCM only (v64). **APV** (v65) = `liboapv`/`libopenapv` auto-detect, independent profile/preset/QP knobs (x265-style), mp4/mov/mkv; full bash + PowerShell parity. **APV** (v74): analysis shows the exact profile (4:2:2 / 4:4:4 / 4:4:4:4 · 10/12-bit) + new 4:4:4-alpha 12-bit (4444-12) profile.
 
 DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` AV1) → re-encode HDR10 base → post-encode RPU inject → re-mux audio. Container DV signaling (DOVI configuration record) is written when the tool is available — HEVC: MKV via `mkvmerge` (v70) + MP4/MOV via `MP4Box` (v71); AV1: MKV via `mkvmerge` (v71) + MP4/MOV via `MP4Box` (v72) → DV recognized by TVs, not just PC players (silent in-stream-only fallback when absent). All common combinations (HEVC/AV1 × MKV/MP4/MOV) are covered.
 
@@ -395,4 +395,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v73** — 132 bugs fixed · 255+ features · ~43 000 LoC · 175 files
+Current: **v74** — 132 bugs fixed · 261+ features · ~43 000 LoC · 181 files

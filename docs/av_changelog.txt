@@ -3,9 +3,40 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v73 | 132 bug-uri fixate | 255+ features
-  175 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 122 teste [115 test_* + 7 infra]) | ~43000 linii cod+teste | ~6950 linii documentatie
+  TOTAL: v74 | 132 bug-uri fixate | 261+ features
+  181 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 128 teste [121 test_* + 7 infra]) | ~43000 linii cod+teste | ~7100 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v74 — ProRes, DNxHR & APV: profil la analiza + polish (ProRes 4444/MXF, APV 4444-12)
+═══════════════════════════════════════════════════════════════
+
+  ADD "Verifica fisiere media" arata acum profilul ProRes exact (Proxy /
+        LT / Standard / HQ / 4444 / 4444 XQ), nu doar "Apple ProRes" —
+        identificat din eticheta interna a fisierului (codec tag).
+
+  ADD ProRes poate fi salvat acum si in container MXF (broadcast / Avid),
+        nu doar MOV. La MXF audio-ul devine automat PCM (cerinta formatului,
+        exact ca la DNxHR). MOV ramane implicit.
+
+  UPDATE ProRes 4444 / 4444 XQ nu mai adauga un canal alpha (transparenta)
+        cand sursa nu are unul — fisiere putin mai mici si fara un canal
+        alpha "gol" derutant. Cand sursa CHIAR are alpha (grafica, capturi
+        cu transparenta), acesta se pastreaza ca inainte. (ProRes ruleaza
+        software pe toate platformele — Windows / Linux / Termux / macOS —
+        prin prores_ks; varianta hardware VideoToolbox e doar pe macOS.)
+
+  ADD "Verifica fisiere media" arata acum si profilul DNxHR exact (LB / SQ /
+        HQ / HQX / 444), nu doar "Avid DNxHR" — la fel ca la ProRes. (DNxHR
+        ruleaza software pe toate platformele, ca ProRes.)
+
+  ADD "Verifica fisiere media" arata acum si profilul APV exact (4:2:2 /
+        4:4:4 / 4:4:4:4, cu 10 sau 12-bit), nu doar "Samsung APV" — toate cele
+        trei codecuri mezzanine (ProRes / DNxHR / APV) afiseaza acum profilul.
+
+  ADD APV are acum si profilul 4:4:4 + alpha pe 12-bit (4444-12), pe langa cel
+        de 10-bit — completeaza setul (4:2:2 si 4:4:4 aveau deja 10 si 12-bit).
 
 
 ═══════════════════════════════════════════════════════════════

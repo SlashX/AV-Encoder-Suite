@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v73
+  Documentatie Setup & Utilizare — v74
 ═══════════════════════════════════════════════════════════════
 
 
@@ -403,9 +403,16 @@ CUPRINS
   CONTAINERE: .mov (QuickTime — FCP/Premiere/Resolve) sau .mxf (Avid native).
   LIMITARI: track-uri DJI omise automat; PGS/DVDSUB incompatibile cu .mov;
             fara CRF / preset / tune / VBR — bitrate fix per profil.
+  ANALIZA (v74): "Verifica fisiere media" afiseaza profilul DNxHR exact
+            (Avid DNxHR LB / SQ / HQ / HQX / 444), citit din campul `profile`.
   HDR / Dolby Vision: profilurile HQX si 444 (10-bit) pastreaza imaginea si
-            semnalizarea HDR10 / HLG. LB/SQ/HQ (8-bit) sunt pentru SDR / proxy
-            (pe surse Log pierd gama wide — esti avertizat, recomandat HQX/444).
+            semnalizarea HDR10 / HLG. Pe surse HDR (PQ/HLG) DNxHR pastreaza
+            tag-urile de culoare pe ambele containere. Pe surse LOG (transfer
+            necunoscut) tag-ul de gamut bt2020 e container-driven: pastrat pe
+            MXF (orice profil), pe MOV devine unknown (orice profil) — cosmetic,
+            pixelii Log raman intacti. LB/SQ/HQ (8-bit) scad precizia 10->8 bit
+            (recomandat HQX/444 pt 10-bit). Master-display se pastreaza pe ambele
+            containere; MaxCLL doar pe MOV (muxer-ul MXF nu il scrie).
             Ca orice codec mezzanine, DNxHR NU poate purta metadata dinamica
             Dolby Vision (RPU) sau HDR10+ — sursele DV / HDR10+ ies ca HDR10
             standard (suita te anunta clar).
@@ -416,7 +423,9 @@ CUPRINS
 
   ─── 7.4. ProRes — codec profesional Apple ───
 
-  Encoder Apple intra-frame (prores_ks). Container OBLIGATORIU .mov.
+  Encoder Apple intra-frame (prores_ks) — software, ruleaza pe TOATE platformele
+  (Windows / Linux / Termux / macOS); varianta hardware VideoToolbox e doar pe macOS.
+  Container .mov [implicit] sau .mxf (broadcast / Avid — v74; audio devine PCM).
   LOG format: pastrare automata (fara dialog, mesaj informativ).
 
   PROFILE:
@@ -424,13 +433,18 @@ CUPRINS
     LT       ~100 Mbps  light workflow
     Standard ~145 Mbps  interchange
     HQ       ~220 Mbps  [implicit recomandat] high quality broadcast
-    4444     ~330 Mbps  4:4:4 + alpha channel
+    4444     ~330 Mbps  4:4:4 (+ alpha doar daca sursa il are — v74)
     4444 XQ  ~500 Mbps  calitate maxima VFX / compositing (profil nativ XQ)
 
-  HDR / Dolby Vision: ProRes (10/12-bit) pastreaza imaginea si culoarea HDR10 /
-            HLG / Log intacte (toate profilurile sunt 10-bit). Ca orice codec
-            mezzanine, NU poate purta Dolby Vision (RPU) sau HDR10+ dinamic —
-            sursele DV / HDR10+ ies ca HDR10 standard (suita te anunta clar).
+  v74: 4444 / 4444 XQ pastreaza canalul alpha DOAR daca sursa il are (altfel,
+       fara plan alpha "gol" inutil); aceste doua profile ies pe 12-bit nativ
+       (422 = 10-bit). "Verifica fisiere media" afiseaza profilul exact
+       (Apple ProRes Proxy / LT / Standard / HQ / 4444 / 4444 XQ).
+
+  HDR / Dolby Vision: ProRes pastreaza imaginea si culoarea HDR10 / HLG / Log
+            intacte (422 = 10-bit, 4444/XQ = 12-bit). Ca orice codec mezzanine,
+            NU poate purta Dolby Vision (RPU) sau HDR10+ dinamic — sursele DV /
+            HDR10+ ies ca HDR10 standard (suita te anunta clar).
 
 
   ─── 7.4.1. APV — codec profesional Samsung ───
@@ -448,12 +462,15 @@ CUPRINS
     4:4:4 10-bit  (444-10)              grading / VFX
     4:4:4 12-bit  (444-12)              grading maxim
     4:4:4 + alpha 10-bit (4444-10)      compositing cu transparenta
+    4:4:4 + alpha 12-bit (4444-12)      compositing maxim, alpha 12-bit (v74)
 
   PRESET VITEZA: fastest / fast / medium [implicit] / slow / placebo.
   QP (CALITATE): 0-63, mai mic = mai bun, implicit 32 (ca un CRF).
   EXTRA: parametri avansati optionali (-oapv-params key=value:key=value).
 
   CONTAINERE: mp4 / mov / mkv (NU mxf — ffmpeg nu poate pune APV in MXF).
+  ANALIZA (v74): "Verifica fisiere media" afiseaza profilul APV exact (Samsung
+            APV 4:2:2 / 4:4:4 / 4:4:4:4 + 10/12-bit), citit din campul `profile`.
   HDR / Dolby Vision: APV (10/12-bit) pastreaza imaginea + culoarea HDR10 /
             HLG / Log. Dolby Vision (RPU) NU poate fi purtat — sursele DV
             ies ca HDR10 standard (esti anuntat).
@@ -697,7 +714,7 @@ CUPRINS
     libx265 / libx264         → mp4, mkv, mov
     libsvtav1 / libaom-av1    → mp4, mkv, webm
     dnxhd                     → mkv, mov, mxf
-    prores_ks                 → mov (OBLIGATORIU)
+    prores_ks                 → mov [implicit] / mxf (v74)
     liboapv / libopenapv      → mp4, mov, mkv (ffmpeg 8.1+ OpenAPV)
 
   AUDIO ENCODERE (ce putem SCRIE):

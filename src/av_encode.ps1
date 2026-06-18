@@ -5704,7 +5704,7 @@ function Get-ProfileSchema {
         'AV1_ENCODER_NAME'     { 'enum:,libsvtav1,libaom-av1'; return }
         'AV1_IMPL'             { 'enum:,libsvtav1,libaom-av1'; return }
         'DNXHR_PROFILE'        { 'enum:,lb,sq,hq,hqx,444'; return }
-        'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10'; return }
+        'APV_PIXFMT'           { 'enum:,422_10,422_12,444_10,444_12,4444_10,4444_12'; return }
         'APV_PRESET'           { 'enum:,fastest,fast,medium,slow,placebo'; return }
         'APV_QP'               { 'intrange:0,63'; return }
         'APV_EXTRA'            { 'string'; return }
@@ -6323,10 +6323,11 @@ if ($useAPV) {
     Write-Host "║  3-4:4:4 10-bit (444-10) grading     ║" -ForegroundColor White
     Write-Host "║  4-4:4:4 12-bit (444-12) grading     ║" -ForegroundColor White
     Write-Host "║  5-4:4:4 + alpha 10-bit (4444-10)    ║" -ForegroundColor White
+    Write-Host "║  6-4:4:4 + alpha 12-bit (4444-12)    ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-    $apvPfChoice = Read-Host "Alege 1-5 [implicit: 1]"
+    $apvPfChoice = Read-Host "Alege 1-6 [implicit: 1]"
     $apvPixFmt = switch ($apvPfChoice) {
-        "2" { "422_12" } "3" { "444_10" } "4" { "444_12" } "5" { "4444_10" } default { "422_10" }
+        "2" { "422_12" } "3" { "444_10" } "4" { "444_12" } "5" { "4444_10" } "6" { "4444_12" } default { "422_10" }
     }
     Write-Host "  Profil: APV $apvPixFmt" -ForegroundColor Green
     Write-Host ""
@@ -6479,9 +6480,15 @@ if ($useX264) {
 
 Write-Host ""
 if ($useProRes) {
-    # ProRes: container obligatoriu mov
-    $container = "mov"
-    Write-Host "  Container: mov (obligatoriu pentru ProRes)" -ForegroundColor Green
+    # v74: ProRes valid si in MXF (broadcast/Avid), nu doar mov. Audio PCM aplicat
+    # automat prin regula MXF=PCM de mai jos (gardata pe $container, nu pe encoder).
+    Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  Container ProRes                        ║" -ForegroundColor Cyan
+    Write-Host "║  1-mov  QuickTime / Apple [implicit]     ║" -ForegroundColor White
+    Write-Host "║  2-mxf  broadcast / Avid                 ║" -ForegroundColor White
+    Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+    $contChoice = Read-Host "Alege 1 sau 2 [implicit: 1]"
+    $container  = if ($contChoice -eq "2") { "mxf" } else { "mov" }
 } elseif ($useDNxHR) {
     Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  Container DNxHR                         ║" -ForegroundColor Cyan
@@ -8359,29 +8366,38 @@ foreach ($f in $inputFiles) {
         # HDR10+; iese baza HDR10 statica (PQ + mastering + MaxCLL, verificat).
         if ($logInfo.isDV -and $si.isHDRPlus) {
             Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — ProRes NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (PQ + master-display pastrat); ambele straturi dinamice se pierd." -ForegroundColor Yellow
             Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
         } elseif ($logInfo.isDV) {
             Write-Host "  ATENTIE: Dolby Vision detectat — ProRes NU pastreaza RPU-ul DV." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 base (PQ + master-display pastrat); stratul DV se pierde." -ForegroundColor Yellow
             Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
         } elseif ($si.isHDRPlus) {
             Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (master-display pastrat)." -ForegroundColor Yellow
         }
         # prores_ks: 0=proxy 1=lt 2=standard 3=hq 4=4444 5=4444xq.
         # XQ = profil 5 nativ (tag corect "XQ"), NU profil 4 + qscale (tag "4444").
         $profileNum = switch ($proresProfile) {
             "proxy" { 0 } "lt" { 1 } "standard" { 2 } "hq" { 3 } "4444" { 4 } "xq" { 5 } "4444xq" { 5 } default { 3 }
         }
-        $proresPixFmt = switch ($proresProfile) {
-            "4444" { "yuva444p10le" } "xq" { "yuva444p10le" } "4444xq" { "yuva444p10le" } default { "yuv422p10le" }
+        # v74: 4444/XQ pastreaza alpha DOAR daca sursa o are (altfel yuv444p10le, fara plan
+        # alpha opac inutil; ~0.4% economie + semantica curata). Profilele 422 n-au alpha.
+        $proresPixFmt = "yuv422p10le"; $proresAlphaNote = ""
+        if ($proresProfile -in @("4444","xq","4444xq")) {
+            $srcPf = (& ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null | Select-Object -First 1)
+            if ($srcPf) { $srcPf = $srcPf.Trim() }
+            if ($srcPf -match '^yuva|^ya8|^ya16|rgba|argb|abgr|bgra|gbrap|^pal8') {
+                $proresPixFmt = "yuva444p10le"; $proresAlphaNote = ", alpha"
+            } else {
+                $proresPixFmt = "yuv444p10le"
+            }
         }
         $proresQuality = switch ($proresProfile) {
             "proxy" { "ProRes Proxy (~45 Mbps)" } "lt" { "ProRes LT (~100 Mbps)" }
             "standard" { "ProRes Standard (~145 Mbps)" } "hq" { "ProRes HQ (~220 Mbps)" }
-            "4444" { "ProRes 4444 (~330 Mbps, alpha)" } "xq" { "ProRes 4444 XQ (~500 Mbps)" }
-            "4444xq" { "ProRes 4444 XQ (~500 Mbps)" }
+            "4444" { "ProRes 4444 (~330 Mbps$proresAlphaNote)" } "xq" { "ProRes 4444 XQ (~500 Mbps$proresAlphaNote)" }
+            "4444xq" { "ProRes 4444 XQ (~500 Mbps$proresAlphaNote)" }
             default { "ProRes HQ (~220 Mbps)" }
         }
         Write-Host "  Profil: $proresQuality | PixFmt: $proresPixFmt | Container: $container" -ForegroundColor White
@@ -8400,18 +8416,20 @@ foreach ($f in $inputFiles) {
 
     } elseif ($useDNxHR) {
         # ── DNxHR per-file ───────────────────────────────────────────
-        # LOG format — doar HQX/444 (10-bit) pastreaza precizia + tag-ul wide-gamut;
-        # pe LB/SQ/HQ (8-bit), transfer=unknown (Samsung/DJI Log) face dnxhd sa
-        # reseteze primaries bt2020 -> bt709 (verificat empiric).
+        # LOG: doua nuante SEPARATE (v74) — (a) precizie: doar HQX/444 (10-bit) o pastreaza,
+        # LB/SQ/HQ scad la 8-bit; (b) tag gamut bt2020: CONTAINER-driven (NU profil) — pastrat
+        # pe MXF la orice profil, pe MOV -> unknown la orice profil (-color_* nu ajuta). Cosmetic.
         if ($logInfo.logProfile) {
             $profileLabel = Get-LogProfileLabel $logInfo.logProfile
             if ($dnxhrProfile -eq "hqx" -or $dnxhrProfile -eq "444") {
-                Write-Host "  LOG detectat: $profileLabel — DNxHR pastreaza Log intact (10-bit, wide gamut)." -ForegroundColor Green
+                Write-Host "  LOG detectat: $profileLabel — DNxHR pastreaza Log intact (10-bit)." -ForegroundColor Green
             } else {
-                Write-Host "  LOG detectat: $profileLabel — ATENTIE: profilul $dnxhrProfile e 8-bit." -ForegroundColor Yellow
-                Write-Host "    Curba Log ramane in pixeli, dar se pierde precizia 10-bit si tag-ul" -ForegroundColor Yellow
-                Write-Host "    wide-gamut (bt2020 devine bt709) — afecteaza grading/LUT ulterior." -ForegroundColor Yellow
+                Write-Host "  LOG detectat: $profileLabel — ATENTIE: profil $dnxhrProfile e 8-bit (precizia scade 10->8 bit)." -ForegroundColor Yellow
                 Write-Host "    Recomandat pentru Log: profil HQX sau 444 (10-bit)." -ForegroundColor Yellow
+            }
+            # Tag gamut bt2020: container-driven (orice profil) — pastrat pe MXF, pierdut pe MOV.
+            if ($container -eq "mov") {
+                Write-Host "    Nota: pe MOV tag-ul de gamut bt2020 -> unknown (pe MXF pastrat, orice profil); cosmetic — pixelii Log raman." -ForegroundColor Yellow
             }
         }
         # PixFmt per profil (constrans de encoderul dnxhd): LB/SQ/HQ=8-bit yuv422p
@@ -8433,15 +8451,15 @@ foreach ($f in $inputFiles) {
         # statica (PQ + mastering + MaxCLL, verificat empiric).
         if ($logInfo.isDV -and $si.isHDRPlus) {
             Write-Host "  ATENTIE: DV + HDR10+ (hibrid) detectat — DNxHR NU pastreaza nici RPU DV, nici HDR10+." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (PQ + mastering + MaxCLL pastrate); ambele straturi dinamice se pierd." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (PQ + master-display pastrat); ambele straturi dinamice se pierd." -ForegroundColor Yellow
             Write-Host "    Pentru DV/HDR10+: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
         } elseif ($logInfo.isDV) {
             Write-Host "  ATENTIE: Dolby Vision detectat — DNxHR NU pastreaza RPU-ul DV." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 base (PQ + mastering + MaxCLL pastrate); stratul DV se pierde." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 base (PQ + master-display pastrat); stratul DV se pierde." -ForegroundColor Yellow
             Write-Host "    Pentru a pastra DV: encode x265/AV1 cu preserve, sau meniul HDR/DV tools." -ForegroundColor Yellow
         } elseif ($si.isHDRPlus) {
             Write-Host "  ATENTIE: HDR10+ detectat — metadata dinamica (SMPTE2094-40) NU se pastreaza." -ForegroundColor Yellow
-            Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+            Write-Host "    Iese HDR10 static (master-display pastrat)." -ForegroundColor Yellow
         }
         Write-Host "  Profil: $dnxhrProfile | PixFmt: $dnxhrPixFmt | Container: $container" -ForegroundColor White
         "  Profil: $dnxhrProfile | Container: $container" | Out-File $LogFile -Append -Encoding UTF8
@@ -8461,7 +8479,7 @@ foreach ($f in $inputFiles) {
             Write-Host "  LOG detectat: $profileLabel — APV pastreaza profilul Log intact (10/12-bit)." -ForegroundColor Green
         }
         $apvPixFmtFf = switch ($apvPixFmt) {
-            "422_12" { "yuv422p12le" } "444_10" { "yuv444p10le" } "444_12" { "yuv444p12le" } "4444_10" { "yuva444p10le" } default { "yuv422p10le" }
+            "422_12" { "yuv422p12le" } "444_10" { "yuv444p10le" } "444_12" { "yuv444p12le" } "4444_10" { "yuva444p10le" } "4444_12" { "yuva444p12le" } default { "yuv422p10le" }
         }
         # v69: HDR10+ SE PASTREAZA pe APV — T.35 nativ (RFC 9924); pipeline:
         # extract JSON → encode → inject post-encode (engine apv_hdr10plus.py).
@@ -8477,7 +8495,7 @@ foreach ($f in $inputFiles) {
             $apvSrcVc = Get-SourceCodec $f.FullName
             if (-not (Test-Hdr10PlusToolFor -Codec $apvSrcVc) -or -not (Get-ApvHdr10PlusEnginePy)) {
                 Write-Host "  ATENTIE: HDR10+ detectat, dar tool-ul de extract ($apvSrcVc) sau python3/engine lipsesc." -ForegroundColor Yellow
-                Write-Host "    Iese HDR10 static (mastering display + MaxCLL pastrate)." -ForegroundColor Yellow
+                Write-Host "    Iese HDR10 static (master-display pastrat)." -ForegroundColor Yellow
             } else {
                 # if/elseif, NU switch — `continue` in switch NU sare fisierul (iese doar din switch)
                 $apvHpChoice = ""
