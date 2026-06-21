@@ -3,9 +3,111 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v74 | 132 bug-uri fixate | 261+ features
-  181 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 128 teste [121 test_* + 7 infra]) | ~43000 linii cod+teste | ~7100 linii documentatie
+  TOTAL: v75 | 141 bug-uri fixate | 264+ features
+  187 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 134 teste [127 test_* + 7 infra]) | ~43000 linii cod+teste | ~7200 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v75 — Hardware Encoding: audit de corectitudine pe toate 6 backend-urile
+        (NVENC / QSV / VAAPI / VideoToolbox / AMF / MediaCodec)
+═══════════════════════════════════════════════════════════════
+
+  FIX Treapta de calitate 1-7 era inversata pe VAAPI (Intel/AMD Linux) si
+        VideoToolbox (macOS): alegand o treapta lenta / de calitate primeai
+        de fapt una rapida / slaba, si invers. Acum corespunde corect
+        (4=Quality ramane implicit). NVENC / QSV / AMF erau deja corecte.
+
+  FIX Encoderul AV1 hardware Intel (QSV si VAAPI) nu mai e oferit pe placi
+        care il listeaza dar nu il pot rula efectiv (Intel UHD si mai vechi)
+        — acolo incercarea esua cu o eroare criptica. Acum e oferit doar pe
+        Arc / Core Ultra / Meteor Lake si mai noi; pe restul cade automat pe
+        AV1 software, fara eroare. Pe Linux, detectarea verifica acum si
+        capabilitatea reala la pornire (un test scurt pe GPU) — o placa
+        AV1-capabila cu nume neobisnuit e recunoscuta automat, fara liste de
+        modele.
+
+  UPDATE NVENC (NVIDIA) foloseste acum un mod de calitate constanta pe
+        varianta de calitate — raport calitate / marime mai bun decat modul
+        fix de dinainte, si la fel ca pe celelalte platforme (Linux / macOS).
+
+  UPDATE AMF (AMD) trimite acum explicit modul "transcoding" (+ profil main
+        pe AV1) — encodare mai predictibila.
+
+  ADD Pe sursele HDR10+ encodate hardware (Windows), suita avertizeaza acum
+        ca metadata dinamica HDR10+ se pierde la encodarea hardware (ramane
+        HDR10 static) si iti ofera sa continui sau sa sari peste fisier — in
+        loc s-o piarda tacut. Pastrarea completa ramane pe encodarea software.
+
+  UPDATE HDR10 (fara metadata dinamica) pe encodare hardware: semnalizarea de
+        culoare (BT.2020 / PQ) e re-afirmata acum explicit pe toate placile
+        (NVIDIA / AMD / Intel), nu doar lasata pe seama propagarii ffmpeg —
+        redare HDR10 consistenta indiferent de placa.
+
+  FIX MediaCodec (Android / Termux): flagship-urile Snapdragon recente
+        (8 Gen 3, ex. Galaxy S24 Ultra) sunt acum recunoscute corect ca
+        [verificat] — inainte apareau ca [suport necunoscut] din cauza
+        etichetei de producator "QTI" (in loc de "Qualcomm"). La fel,
+        flagship-urile Exynos moderne (Galaxy S21 / S22 / S24) sunt
+        recunoscute dupa numele de cod intern al cipului (s5e...), nu doar
+        dupa numele comercial.
+
+  UPDATE MediaCodec: encodarea 10-bit (HDR10 / HLG) produce semnalizare si
+        container pe 10-bit, dar precizia la intrare ramane 8-bit —
+        encoderele MediaCodec din ffmpeg nu accepta intrare pe 10-bit,
+        indiferent de chip (verificat pe Snapdragon 8 Gen 3 si Exynos 1380;
+        hardware-ul are bloc HDR, dar ffmpeg nu-l poate hrani pe calea cu
+        filtre). Pentru HDR fara banding, foloseste encodarea software.
+
+  FIX MediaCodec nu mai marcheaza AV1 ca encodare hardware pe niciun
+        telefon. AV1 hardware ENCODE pe mobil e cvasi-inexistent (decodarea e
+        raspandita, dar encodarea aproape nicaieri) — verificat ca lipseste si
+        pe Snapdragon 8 Gen 3 (Galaxy S24 Ultra are doar decodor AV1 hardware)
+        si pe Exynos 1380 (Galaxy A54). Suita marca eronat aceste chipuri ca
+        avand AV1 hardware. Acum, cand alegi AV1 pe un telefon fara unitate de
+        encodare AV1, encodarea cade automat pe varianta software a suitei
+        (libsvtav1) — calitate mai buna si control mai bun decat encoderul
+        software ascuns din MediaCodec. Suportul AV1 hardware e detectat acum
+        direct din lista de codecuri a telefonului (nu ghicit din modelul
+        cipului): daca un telefon viitor chiar are encoder AV1 hardware, suita
+        il va folosi de la sine, fara actualizari. (Override manual: HW_FORCE=1.)
+
+  FIX Dolby Vision tratat gresit ca simplu HDR la re-encodare (Windows) — pe
+        sursele AV1 si pe HEVC Dolby Vision compatibil (Profil 8.1 HDR10 /
+        Profil 8.4 HLG). Aceste fisiere poarta eticheta interna standard (AV1 =
+        goala, HEVC compatibil = "hvc1"), nu eticheta dedicata Dolby Vision, iar
+        DV-ul real (stocat separat) nu era recunoscut pe calea de encodare →
+        optiunea de pastrare DV nu aparea si DV se pierdea tacut (la hibrid
+        DV + HDR10+ se avertiza doar despre HDR10+; Profil 8.4 era citit ca HLG).
+        Cum Profil 8.1 e cel mai raspandit DV de streaming, impactul era real,
+        nu de nisa. Acum detectia foloseste metadata reala (la fel ca pe
+        celelalte platforme) → dialogul Dolby Vision apare corect pentru x265 / AV1 / hardware,
+        cu pastrarea profilului (5 / 8.1 / 8.4 / 10), iar analiza si sumarul de
+        dinainte de encodare arata "Dolby Vision" (nu "HDR10" / "HLG"). HEVC
+        Dolby Vision Profil 5 / 7 (cu eticheta dedicata dvhe/dvh1) era deja corect.
+
+  FIX Dolby Vision Profil 8.4 (compatibil HLG) era etichetat gresit ca Profil 5
+        cand fisierul DV se scria intr-un container MP4 / MOV (encodare cu
+        pastrare DV, transform RPU sau hibrid HDR10+→DV) — eticheta interna si
+        descriptorul de container ieseau pe Profil 5, deci un televizor putea
+        reda gresit. Acum profilul si modul de compatibilitate se scriu explicit
+        din metadata reala a sursei: Profil 5 → "dvh1", Profil 8.1 (HDR10) si
+        Profil 8.4 (HLG) → "hvc1", fiecare cu descriptorul corect. Containerul
+        MKV era deja corect. (Validat empiric pe fisiere DV reale P5 / 8.1 / 8.4.)
+
+  ADD Fluxurile "HDR/DV tools" avertizeaza acum cand sursa e Dolby Vision
+        Profil 5 (single-layer, fara strat HDR10 de compatibilitate):
+        conversia Profil 5 → 8.1 nu e posibila (nu exista baza HDR10 de
+        fabricat → ramane Profil 5), iar eliminarea stratului DV lasa o baza de
+        imagine bruta nevizionabila (nu HDR10 valid). Indrumare: pentru a
+        pastra DV-ul Profil 5 intact 1:1 foloseste Mux tools → Remux
+        (stream-copy). Pe Profil 7 / 8.x (care au strat HDR10) ambele operatii
+        raman valide.
+
+  NOTA Prezenta unui encoder MediaCodec in lista ffmpeg NU garanteaza suport
+        hardware: pe SoC fara unitate dedicata, MediaCodec cade transparent
+        pe varianta software. Eticheta [verificat] reflecta suportul hardware
+        cunoscut al cipului, nu simpla prezenta a encoderului.
 
 
 ═══════════════════════════════════════════════════════════════

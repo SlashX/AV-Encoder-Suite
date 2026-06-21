@@ -20,7 +20,8 @@ Assert-Match $enc ([regex]::Escape('stream_side_data=dv_bl_signal_compatibility_
 Assert-Match $enc ([regex]::Escape('$dvp = "10.$c"')) "Invoke-DvMp4Mux: profil AV1 fortat la 10 (cross-codec safe)"
 Assert-Match $enc ([regex]::Escape('$firstAdd = "${RawHevc}:dvp=${dvp}:fps=${afr}"')) "Invoke-DvMp4Mux: -add cu dvp= la AV1"
 Assert-Match $enc ([regex]::Escape('$dvp = "10.1"')) "Invoke-DvMp4Mux: fallback dvp=10.1"
-Assert-Match $enc ([regex]::Escape('$dvRef = if ($DvRef) { $DvRef } else { $Original }')) "Invoke-DvMp4Mux: referinta compat = DvRef sau Original"
+# v75: ramura AV1 foloseste $av1Ref (redenumit din $dvRef ca sa nu coincida case-insensitive cu parametrul $DvRef)
+Assert-Match $enc ([regex]::Escape('$av1Ref = if ($DvRef) { $DvRef } else { $Original }')) "Invoke-DvMp4Mux: referinta compat AV1 = DvRef sau Original"
 
 # ── 2. triple-layer: ramura mp4/mov ungateata (HEVC+AV1) + DvRef=$f ────────
 Assert-Match $enc ([regex]::Escape("`$container -in @('mp4','mov','m4v') -and (Invoke-DvMp4Mux -RawHevc `$injectedTemp -Original `$outFile -Output `$finalTemp -DvRef `$f)")) "triple-layer: mp4/mov ungateat cu DvRef"

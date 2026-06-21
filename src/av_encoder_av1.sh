@@ -97,8 +97,8 @@ encoder_setup_file() {
     # ── v38: MediaCodec branch (Termux HW AV1) ────────────────────────
     if [[ "${USE_MEDIACODEC:-0}" == "1" ]]; then
         # Pre-check: AV1 hw encode disponibil pe SoC? (capabilitate SoC, nu per-fisier)
-        if [[ "${MC_CAP_AV1:-0}" != "1" ]]; then
-            log "  ⚠ SoC nu suporta AV1 HW encode — fallback la SW $AV1_ENCODER (toate fisierele)"
+        if [[ "${MC_CAP_AV1:-0}" != "1" ]] && [[ "${HW_FORCE:-0}" != "1" ]]; then
+            log "  ⚠ SoC nu suporta AV1 HW encode — fallback la SW $AV1_ENCODER (toate fisierele; HW_FORCE=1 pt a forta av1_mediacodec)"
             USE_MEDIACODEC=0
         elif [[ -n "${LOG_PROFILE:-}" ]]; then
             log "  ⚠ Sursa LOG ($LOG_PROFILE) — MediaCodec nu suporta LUT/tonemap; fallback la SW $AV1_ENCODER"

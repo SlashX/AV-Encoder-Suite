@@ -11,19 +11,20 @@ assert_eq "p1" "$(hw_preset_label nvenc 1)" "nvenc slot 1"
 assert_eq "p4" "$(hw_preset_label nvenc 4)" "nvenc slot 4 (default Quality)"
 assert_eq "p7" "$(hw_preset_label nvenc 7)" "nvenc slot 7 (Veryslow)"
 
-# VAAPI: q1..q7
-assert_eq "q1" "$(hw_preset_label vaapi 1)" "vaapi slot 1"
-assert_eq "q7" "$(hw_preset_label vaapi 7)" "vaapi slot 7"
+# VAAPI: -quality 7..1 (v75: iHD 1=best/slow .. 7=fast -> invers fata de slot)
+assert_eq "q7" "$(hw_preset_label vaapi 1)" "vaapi slot 1 (Ultrafast -> quality 7 fast)"
+assert_eq "q4" "$(hw_preset_label vaapi 4)" "vaapi slot 4 (mijloc, stabil)"
+assert_eq "q1" "$(hw_preset_label vaapi 7)" "vaapi slot 7 (Veryslow -> quality 1 best)"
 
 # QSV: 7-tier nominal
 assert_eq "veryfast" "$(hw_preset_label qsv 1)" "qsv slot 1"
 assert_eq "medium"   "$(hw_preset_label qsv 4)" "qsv slot 4"
 assert_eq "veryslow" "$(hw_preset_label qsv 7)" "qsv slot 7"
 
-# VideoToolbox: q:v 80..50
-assert_eq "q:v 80" "$(hw_preset_label videotoolbox 1)" "vt slot 1 (low quality, fast)"
-assert_eq "q:v 65" "$(hw_preset_label videotoolbox 4)" "vt slot 4"
-assert_eq "q:v 50" "$(hw_preset_label videotoolbox 7)" "vt slot 7 (high quality, slow)"
+# VideoToolbox: q:v 50..80 (v75: mai mare = mai bun -> corectat, era invers)
+assert_eq "q:v 50" "$(hw_preset_label videotoolbox 1)" "vt slot 1 (Ultrafast -> q:v 50 mai mic)"
+assert_eq "q:v 65" "$(hw_preset_label videotoolbox 4)" "vt slot 4 (mijloc, stabil)"
+assert_eq "q:v 80" "$(hw_preset_label videotoolbox 7)" "vt slot 7 (Veryslow -> q:v 80 best)"
 
 # AMF: 3-tier (speed/balanced/quality)
 assert_eq "speed"    "$(hw_preset_label amf 1)" "amf slot 1 → speed"

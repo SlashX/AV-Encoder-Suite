@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  159 fisiere totale (22 src + 16 tools + 6 profile + 3 burnin presets +
-  4 Python engines + 101 test_* scripts + 7 infra).
+  187 fisiere totale (22 src + 18 tools + 6 profile + 3 burnin presets +
+  4 Python engines + 127 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -2303,14 +2303,43 @@ CUPRINS
     x264 → h264_mediacodec   (8-bit only, SDR only)
     av1  → av1_mediacodec    (rar, doar SoC AV1-capable)
 
-  SoC WHITELIST (capabilitati verificate, marcat [verificat] in meniu):
-    Snapdragon 8xx (8 Gen 1+ HEVC10, 8 Gen 2+ AV1)
-    Exynos 21xx-24xx HEVC10, 24xx+ AV1
-    Tensor G2+ HEVC10, G3+ AV1
-    Dimensity 9000+ HEVC10, 9300+ AV1
+  SoC WHITELIST (HEVC 10-bit HW encode, marcat [verificat] in meniu):
+    Snapdragon 8xx (8 Gen 1+)
+    Exynos 2100+ (recunoscut si dupa codename s5e9...)
+    Tensor G2+
+    Dimensity 9000+
+  AV1 HW ENCODE nu se mai revendica pe niciun SoC (v75) — vezi nota de mai jos.
+
+  Detectia citeste ro.soc.manufacturer / ro.soc.model + ro.hardware.
+  Nota (v75, validat pe hardware real): producatorul Qualcomm e raportat
+  pe device-urile recente ca "QTI" (nu "Qualcomm") — recunoscut acum,
+  altfel flagship-ul Snapdragon (ex. S24 Ultra / 8 Gen 3) cadea pe
+  [suport necunoscut]. Samsung raporteaza in ro.soc.model NUMELE DE COD
+  al cipului (ex. A54 = s5e8835; Exynos 2100 = s5e9840, 2200 = s5e9925,
+  2400 = s5e9945), nu numele comercial "exynos2100" — flagship-urile
+  Exynos sunt recunoscute acum si dupa codename.
 
   SoC necunoscut: marcat [suport necunoscut], prompt confirmare la
   alegere (default NU). Bypass: HW_FORCE=1.
+
+  IMPORTANT: prezenta unui encoder MediaCodec in lista ffmpeg NU
+  garanteaza suport hardware. Pe un SoC fara unitate dedicata, MediaCodec
+  cade transparent pe encoder software; spre deosebire de QSV, care esueaza
+  direct pe hardware lipsa. Eticheta [verificat] reflecta suportul HARDWARE
+  cunoscut al cipului, nu simpla prezenta a encoderului.
+
+  AV1 HW ENCODE pe mobil (v75): cvasi-inexistent. Decode-ul e raspandit
+  (8 Gen 2+, Dimensity 9000+, Exynos 2200+, Tensor G3+), dar encode-ul
+  aproape nicaieri — infirmat empiric pe Snapdragon 8 Gen 3 (S24 Ultra:
+  doar c2.qti.av1.DECODER in /vendor; av1_mediacodec = c2.android.av1.encoder
+  software libaom, 1.68x la 1080p vs h264 HW 4.81x) si Exynos 1380 (A54).
+  De aceea suita nu mai ghiceste AV1 HW din modelul SoC, ci il detecteaza
+  DIRECT din lista de codecuri a telefonului (un encoder AV1 hardware, non-
+  software, in /vendor/etc/media_codecs). Cand alegi av1_mediacodec, daca
+  cipul n-are encoder AV1 HW, fluxul cade automat pe libsvtav1 (encoderul SW
+  al suitei — calitate mai buna + control total decat libaom-prin-MediaCodec).
+  Forward-compat: daca un telefon viitor expune un encoder AV1 hardware, suita
+  il foloseste de la sine, fara update. Override manual: HW_FORCE=1.
 
   PIERDERI REALE (universale MediaCodec, nu chip-specific):
     HDR10+ dynamic metadata (per-frame) — imposibil via API public Android
@@ -2318,9 +2347,21 @@ CUPRINS
 
   TOT RESTUL FUNCTIONEAZA:
     HDR10 static (cu signaling repair via hevc_metadata bsf post-encode)
-    HEVC 10-bit main10
-    AV1 SDR (SoC AV1-capable)
+    HEVC 10-bit main10 (semnalizare + container 10-bit)
+    AV1 SDR (doar pe SoC cu AV1 encode HW REAL — rar; altfel fallback libsvtav1)
     HLG nativ (v39 — signaling in transfer chars, fara SEI repair)
+
+  PRECIZIE 10-BIT la intrare (v75): encoderele MediaCodec din ffmpeg
+  accepta DOAR intrare 8-bit (mediacodec / yuv420p / nv12) — orice sursa
+  10-bit e convertita automat la 8-bit inainte de encoder (verificat pe
+  Snapdragon 8 Gen 3 si Exynos 1380). Output-ul HDR10 / HLG e marcat si
+  ambalat ca 10-bit (signaling corect, recunoscut de TV), dar precizia
+  reala e 8-bit → posibil banding pe HDR real. Hardware-ul chiar ARE bloc
+  encode HDR (ex. nod c2.qti.hevc.encoder.hdr pe Snapdragon), insa ffmpeg
+  nu-l poate hrani pe calea cu filtre. Pentru HDR fara banding: software.
+  Forward-compat: suita verifica automat formatele de intrare ale encoderului
+  — daca o versiune viitoare de ffmpeg adauga intrare 10-bit, MediaCodec o va
+  folosi de la sine, fara modificari.
 
   Dialog HDR MediaCodec (DV / HDR10+ / HLG / HDR10):
     1) SW libx265 — pastrare completa (recomandat default)
@@ -2330,7 +2371,8 @@ CUPRINS
     5) Skip
 
   x264 special: h264_mediacodec NU suporta HDR → auto-tonemap.
-  AV1: daca SoC fara AV1 HW encoder → fallback SW automat.
+  AV1: whitelist-ul nu mai revendica AV1 HW encode (v75) → cand cipul n-are
+  unitate AV1 encode (cazul uzual pe mobil), fluxul cade automat pe libsvtav1.
 
   Profile bypass MEDIACODEC_HDR_POLICY:
     sw_full | sw_degraded | hw_repair | hw_hlg (v39) | hw_sdr | skip
@@ -2356,13 +2398,17 @@ CUPRINS
     1=Ultrafast / 2=Faster / 3=Fast / 4=Quality (default) /
     5=Slow / 6=Slower / 7=Veryslow
 
-  Mapping per backend:
+  Mapping per backend (slot 1=rapid → 7=calitate):
     NVENC         p1..p7
-    VAAPI         q1..q7
+    VAAPI         -quality 7..1   (iHD: 1=cel mai bun/lent, 7=rapid)
     QSV           veryfast..veryslow
-    VideoToolbox  q:v 80..50
+    VideoToolbox  q:v 50..80      (q:v mai mare = mai bun)
     AMF           speed / balanced / quality (3-tier)
     MediaCodec    scalare bitrate 60%..150%
+
+  Nota (v75): directia VAAPI (-quality) si VideoToolbox (q:v) era inversata
+  fata de slot (slot lent → valoare rapida si invers); corectata acum.
+  NVENC / QSV / AMF erau deja corecte.
 
   Tabelul afiseaza coloane filtrate per platforma (Termux→MC, macOS→VT,
   Linux→nvenc+vaapi+qsv+amf). Coloana activa highlighted galben.

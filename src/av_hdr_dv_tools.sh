@@ -126,6 +126,18 @@ hdv_flow_transform_rpu() {
     src_codec=$(detect_source_codec "$file")
     echo "  Codec sursa: $src_codec"
 
+    # v75: Profil 5 = single-layer (fara strat HDR10). Conversia P5->8.1 nu poate
+    # fabrica o baza HDR10 -> dovi_tool lasa stream-ul tot Profil 5 (no-op onest).
+    local _dv_prof
+    _dv_prof=$(get_dv_profile "$file")
+    if [[ "$_dv_prof" == *"Profil 5"* ]]; then
+        echo ""
+        echo "  ⚠ ATENTIE: $_dv_prof — single-layer, fara strat HDR10 backward-compatible."
+        echo "    Conversia P5→8.1 NU e posibila (nu exista baza HDR10 de fabricat);"
+        echo "    output-ul ar ramane Profil 5. Pentru a pastra DV-ul intact 1:1:"
+        echo "    Mux tools → Remux (stream-copy)."
+    fi
+
     echo ""
     echo "  Mode $AV_TOOL_DOVI convert (filtrate dupa codec sursa: $src_codec):"
     local _default_choice=1
@@ -452,6 +464,18 @@ hdv_flow_remove_dv() {
         echo "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $src_codec)."
         return 1
     fi
+
+    # v75: Profil 5 nu are strat HDR10 backward-compatible — eliminarea DV lasa
+    # baza IPT bruta (NU HDR10 valid). Remove DV are sens doar pe Profil 7/8.x.
+    local _dv_prof
+    _dv_prof=$(get_dv_profile "$file")
+    if [[ "$_dv_prof" == *"Profil 5"* ]]; then
+        echo ""
+        echo "  ⚠ ATENTIE: $_dv_prof — fara strat HDR10 backward-compatible."
+        echo "    Eliminarea DV lasa baza IPT bruta (NU HDR10 valid → imagine nevizionabila)."
+        echo "    Remove DV → HDR10 are sens doar pe Profil 7/8.x (au baza HDR10)."
+    fi
+
     if ! _check_dovi_tool_for "$src_codec"; then
         local _t="$AV_TOOL_DOVI"; [[ "$src_codec" == "av1" ]] && _t="$AV_TOOL_AV1DOVI"
         echo "  EROARE: $_t nu este instalat. Vezi src/tools/."

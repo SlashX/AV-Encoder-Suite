@@ -1878,11 +1878,13 @@ _mux_dv_mkv() {
 _mux_dv_mp4() {
     local raw_hevc="$1" original="$2" output="$3"
     command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || return 1
-    # HEVC: MP4Box auto-detecteaza DV din NAL-uri → dvcC fara dvp explicit.
-    # AV1 (.ivf/.av1/.obu): auto-detect-ul refuza plasarea OBU-ului de metadata DV de la
-    # av1dovi_tool ("must appear after all non-shown frames") → trebuie dvp= EXPLICIT
-    # (v72), care scrie dvcC oricum (RPU byte-identic, validat empiric). $4 = referinta cu
-    # dvcC pt derivarea compat-ului (sursa la passthrough); altfel $original; fallback 10.1.
+    # dvp= EXPLICIT pt AMBELE codec-uri (v75). HEVC: auto-detect-ul MP4Box mislabeleaza
+    # P8.4 (HLG) ca profil 5 (tag dvh1 + dvcC profil 5 → TV gresit) → dvp=profil.compat din
+    # referinta il forteaza corect (P5→5/dvh1, P8.1→8.1/hvc1, P8.4→8.4/hvc1; tag-ul iese
+    # automat corect). AV1 (.ivf/.av1/.obu): auto-detect-ul refuza plasarea OBU-ului de
+    # metadata DV de la av1dovi_tool ("must appear after all non-shown frames") → dvp=
+    # oricum scrie dvcC (RPU byte-identic, validat). $4 = referinta cu dvcC (sursa la
+    # passthrough); altfel $original.
     local _rext="${raw_hevc##*.}"; _rext="${_rext,,}"
     local _is_av1=0
     case "$_rext" in
@@ -1900,19 +1902,32 @@ _mux_dv_mp4() {
               -of default=noprint_wrappers=1:nokey=1 "$original" 2>/dev/null | head -1 | tr -d '\r' || true)
     fi
     [[ "$afr" =~ ^[1-9][0-9]*(/[1-9][0-9]*)?$ ]] || return 1
-    # AV1: deriva dvp=profil.compat din dvcC-ul referintei DV (profil mereu 10; compat =
-    # bl_signal_compatibility_id), fallback 10.1 (HDR10-cross-compat — corect prin
-    # constructie la HDR10+→DV si cazul dominant AV1 DV). HEVC: fara dvp (auto-detect).
+    # Deriva dvp=profil.compat din dvcC-ul referintei DV ($4 / $original).
     local _firstadd="${raw_hevc}:fps=${afr}"
+    local _dv_ref="${4:-$original}"
     if [[ "$_is_av1" == "1" ]]; then
-        local _dv_ref="${4:-$original}" _c _dvp="10.1"
         # AV1 DV e MEREU profil 10 (dav1.10.xx) — NU citi dv_profile din referinta: la
         # cross-codec (sursa HEVC DV profil 8/5/7 → tinta AV1) ar produce dvcC AV1 gresit.
         # Citeste DOAR compat (bl_signal_compatibility_id, consistent intre profile); fallback 10.1.
+        local _c _dvp="10.1"
         _c=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id \
              -of default=noprint_wrappers=1:nokey=1 "$_dv_ref" 2>/dev/null | head -1 | tr -d '\r' || true)
         [[ "$_c" =~ ^[0-9]+$ ]] && _dvp="10.${_c}"
         _firstadd="${raw_hevc}:dvp=${_dvp}:fps=${afr}"
+    elif [[ -n "${4:-}" ]]; then
+        # HEVC: dvp= din referinta EXPLICITA ($4) DOAR. Auto-detect-ul MP4Box mislabeleaza
+        # DOAR P8.4 (HLG) ca profil 5 — pe preserve/passthrough sursa (cu dvcC; profilul ei
+        # == profilul stream-ului) se pasa ca $4 → dvp corect (prinde P8.4). FARA $4
+        # (transform/hybrid via _hdv_combine): NU folosi $original ca referinta — e sursa
+        # PRE-transform, alt profil decat stream-ul 8.1 PRODUS (ex. P5→8.1 ar scrie 5.0 pe
+        # un stream 8.1). Stream-ul produs e mereu 8.1, iar auto-detect e CORECT pe 8.1
+        # (validat empiric; bug-ul P8.4 nu se aplica) → ramane :fps= (auto-detect).
+        local _hp _hc
+        _hp=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile \
+              -of default=noprint_wrappers=1:nokey=1 "$4" 2>/dev/null | head -1 | tr -d '[:space:]\r' || true)
+        _hc=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id \
+              -of default=noprint_wrappers=1:nokey=1 "$4" 2>/dev/null | head -1 | tr -d '[:space:]\r' || true)
+        [[ "$_hp" =~ ^[0-9]+$ && "$_hc" =~ ^[0-9]+$ ]] && _firstadd="${raw_hevc}:dvp=${_hp}.${_hc}:fps=${afr}"
     fi
     # video (raw, cu RPU→dvcC) + fiecare pista audio/subtitle din original dupa track ID.
     # MP4Box #N: N = track ID ISO (== ffprobe stream=id, in hex 0xN → decimal prin $(( )) ).
@@ -3896,11 +3911,40 @@ parse_bitrate_kbps() {
     fi
 }
 
+# v75: probe daca encoderul mediacodec accepta INPUT 10-bit pe calea cu filtre.
+# "Supported pixel formats" din `-h encoder` = formatele de INTRARE acceptate. Azi listeaza
+# doar `mediacodec yuv420p nv12` (8-bit) → return 1 (fals). Daca un ffmpeg viitor adauga
+# p010/yuv420p10, return 0 (adevarat) → build_mediacodec_cmd cere 10-bit automat. Soft-fail.
+_mc_encoder_supports_10bit() {
+    local enc_codec="$1"
+    ffmpeg -hide_banner -h "encoder=${enc_codec}_mediacodec" 2>/dev/null \
+        | grep -iE 'supported pixel formats' | grep -qiE 'p010|yuv420p10'
+}
+
+# v75 forward-compat: detecteaza un encoder AV1 HARDWARE din lista de codecuri Android.
+# Treble: codecurile HW sunt declarate de vendor in /vendor/etc/media_codecs*.xml, denumite
+# c2.<vendor>.* / OMX.<vendor>.* (ex. c2.qti.av1.encoder); cele SW = c2.android.* / OMX.google.*.
+# Return 0 daca exista un nod encoder AV1 NON-software. Inlocuieste ghicitul AV1 din modelul
+# SoC (nesigur — infirmat pe 8 Gen 3, care are doar c2.qti.av1.DECODER). Soft-fail (return 1)
+# daca /vendor nu e citibil sau exista doar encoder AV1 software.
+_mc_has_hw_av1_encoder() {
+    # $1 (optional, pt teste) = glob/cale fisiere; default = lista de codecuri a vendor-ului
+    local files="${1:-/vendor/etc/media_codecs*.xml}"
+    # v75: prinde AMBELE conventii de nume — Codec2 `c2.<vendor>.av1.encoder`
+    # (av1 INAINTE de encoder) si OMX legacy `OMX.<vendor>.video.encoder.av1`
+    # (encoder INAINTE de av1). OMX-AV1 e practic inexistent azi (AV1 = era Codec2),
+    # dar regex-ul ramane robust forward/backward fara cost.
+    # shellcheck disable=SC2086  # glob intentionat nequotat (default contine *)
+    grep -ihE 'name="[^"]*(av1[^"]*encoder|encoder[^"]*av1)' $files 2>/dev/null \
+        | grep -v '<!--' \
+        | grep -qivE 'c2\.android\.|omx\.google\.'
+}
+
 # ══════════════════════════════════════════════════════════════════════
 # v38: MEDIACODEC DETECTION (Termux/Android)
 # Set vars globale: MC_AVAILABLE, MC_ENCODERS (h264/hevc/av1 list),
 #   MC_SOC_VENDOR, MC_SOC_MODEL, MC_ANDROID_VER, MC_SOC_VERIFIED,
-#   MC_CAP_HEVC10, MC_CAP_AV1
+#   MC_CAP_HEVC10, MC_CAP_AV1, MC_INPUT_10BIT (v75)
 # ══════════════════════════════════════════════════════════════════════
 detect_mediacodec_caps() {
     MC_AVAILABLE=0
@@ -3911,6 +3955,7 @@ detect_mediacodec_caps() {
     MC_SOC_VERIFIED=0
     MC_CAP_HEVC10=0
     MC_CAP_AV1=0
+    MC_INPUT_10BIT=0
 
     # Platform gate: Termux/Android necesita getprop pentru SoC info; ffmpeg pentru encoder check
     command -v getprop >/dev/null 2>&1 || return 1
@@ -3924,6 +3969,14 @@ detect_mediacodec_caps() {
     MC_ENCODERS="$enc_list"
     MC_AVAILABLE=1
 
+    # v75 forward-compat: probe daca encoderul mediacodec accepta INPUT 10-bit. Azi ffmpeg
+    # expune doar 8-bit (mediacodec/yuv420p/nv12) → MC_INPUT_10BIT=0. Daca un ffmpeg viitor
+    # adauga p010 in formatele de intrare, build_mediacodec_cmd cere 10-bit AUTOMAT (fara
+    # modificari de cod). Probe pe hevc (consumatorul principal 10-bit HDR/HLG).
+    if [[ "$enc_list" == *"hevc_mediacodec"* ]] && _mc_encoder_supports_10bit hevc; then
+        MC_INPUT_10BIT=1
+    fi
+
     # SoC info
     MC_SOC_VENDOR=$(getprop ro.soc.manufacturer 2>/dev/null)
     MC_SOC_MODEL=$(getprop ro.soc.model 2>/dev/null)
@@ -3933,48 +3986,66 @@ detect_mediacodec_caps() {
 
     # SoC whitelist pentru capabilitati fine (10-bit HEVC, AV1 encode)
     # Nota: prezenta in whitelist marcheaza [verificat] in UI; absenta nu blocheaza
-    local v_lc m_lc
+    local v_lc m_lc hw_lc
     v_lc=$(echo "$MC_SOC_VENDOR" | tr '[:upper:]' '[:lower:]')
     m_lc=$(echo "$MC_SOC_MODEL" | tr '[:upper:]' '[:lower:]')
+    # v75: ro.hardware ca semnal vendor suplimentar. Pe device-uri reale (S24 Ultra,
+    # validat pe SM8650) ro.soc.manufacturer raporteaza "QTI" (Qualcomm Technologies Inc),
+    # NU "Qualcomm"/"qcom" → whitelist-ul rata flagship-ul Snapdragon (fallback pe ro.hardware
+    # nu se declansa, vendor ne-gol). ro.hardware ramane "qcom".
+    hw_lc=$(getprop ro.hardware 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
-    # Snapdragon 8xx (Gen 1+) — HEVC main10 + AV1 encode pe 8 Gen 2+
-    if [[ "$v_lc" == *"qualcomm"* ]] || [[ "$v_lc" == *"qcom"* ]]; then
+    # AV1 HW ENCODE NU se revendica pe NICIUN SoC din whitelist (v75). Euristica
+    # "model SoC → AV1 encode" e nesigura: AV1 hardware ENCODE pe mobil e cvasi-inexistent
+    # (decode e raspandit din 8 Gen 2 / Dimensity 9000 / Exynos 2200 / Tensor G3, dar
+    # encode aproape nicaieri). Infirmat empiric pe Snapdragon 8 Gen 3 (S24 Ultra: doar
+    # c2.qti.av1.DECODER in /vendor, av1_mediacodec = c2.android.av1.encoder SW libaom
+    # 1.68x@1080p vs h264 HW 4.81x) si pe Exynos 1380 (A54). Pe restul = neverificabil.
+    # Cand MC_CAP_AV1=0, gard-ul din av_encoder_av1.sh cade pe libsvtav1 (SW bun al suitei),
+    # mai bun decat libaom-prin-MediaCodec. Escape: HW_FORCE=1 (vezi gard-ul). Daca apare un
+    # SoC cu AV1 encode HW REAL verificat, re-adauga claim-ul narrow aici.
+    # Snapdragon 8xx (Gen 1+) — HEVC main10
+    if [[ "$v_lc" == *"qualcomm"* ]] || [[ "$v_lc" == *"qcom"* ]] || [[ "$v_lc" == *"qti"* ]] || [[ "$hw_lc" == *"qcom"* ]]; then
         # SM8450 (8 Gen 1), SM8475 (8+ Gen 1), SM8550 (8 Gen 2), SM8650 (8 Gen 3), SM8750 (8 Gen 4)
         if [[ "$m_lc" =~ sm8(4|5|6|7)[0-9]{2} ]] || [[ "$m_lc" =~ sm8[5-9][0-9]{2} ]]; then
             MC_SOC_VERIFIED=1
             MC_CAP_HEVC10=1
-            # AV1 encode HW: doar 8 Gen 2+ (SM8550+)
-            if [[ "$m_lc" =~ sm8[5-9][0-9]{2} ]] || [[ "$m_lc" =~ sm87[0-9]{2} ]]; then
-                MC_CAP_AV1=1
-            fi
         fi
     fi
-    # Samsung Exynos 2100+ (HEVC 10-bit), Exynos 2400+ (AV1 encode)
+    # Samsung Exynos 2100+ (HEVC 10-bit)
+    # v75: device-urile moderne raporteaza CODENAME-ul s5e in ro.soc.model, NU numele de
+    # marketing "exynos2100" (validat real: A54 = s5e8835; Exynos 2100=s5e9840, 2200=s5e9925,
+    # 2400=s5e9945) → matchul pe "exynos2xxx" era cod mort pe hardware real. Adaug flagship
+    # 2100+ via codename s5e9(8[4-9]|9[0-9])x → HEVC10 (exclude Exynos 990/9820/9830 vechi
+    # + mid-range s5e88xx ca A54). Caveat: codename-urile flagship sunt din tabele publice,
+    # NEtestate pe hardware flagship Exynos (doar A54 confirmat). AV1 encode = vezi nota de sus.
     if [[ "$v_lc" == *"samsung"* ]] || [[ "$m_lc" == *"exynos"* ]]; then
-        if [[ "$m_lc" =~ exynos2[1-9][0-9]{2} ]]; then
+        if [[ "$m_lc" =~ exynos2[1-9][0-9]{2} ]] || [[ "$m_lc" =~ s5e9(8[4-9]|9[0-9])[0-9] ]]; then
             MC_SOC_VERIFIED=1
             MC_CAP_HEVC10=1
-            [[ "$m_lc" =~ exynos2[4-9][0-9]{2} ]] && MC_CAP_AV1=1
         fi
     fi
-    # Google Tensor (G2+) — HEVC 10-bit; G3+ AV1 encode
+    # Google Tensor (G2+) — HEVC 10-bit
     if [[ "$v_lc" == *"google"* ]] || [[ "$m_lc" == *"tensor"* ]] || [[ "$m_lc" == *"gs"* ]]; then
         if [[ "$m_lc" =~ (gs[2-9]|tensor.*g[2-9]) ]]; then
             MC_SOC_VERIFIED=1
             MC_CAP_HEVC10=1
-            [[ "$m_lc" =~ (gs[3-9]|tensor.*g[3-9]) ]] && MC_CAP_AV1=1
         fi
     fi
-    # MediaTek Dimensity 9000+ — HEVC 10-bit; 9300+ AV1 encode
+    # MediaTek Dimensity 9000+ — HEVC 10-bit
     # MTK SoC numbers: D9000=MT6983, D9200=MT6985, D9300=MT6989, D9400=MT6991, D9500+=MT699x
     if [[ "$v_lc" == *"mediatek"* ]] || [[ "$m_lc" == *"mt"* ]] || [[ "$m_lc" == *"dimensity"* ]]; then
         if [[ "$m_lc" =~ (mt69[89][0-9]|dimensity.?9[0-9]{3}) ]]; then
             MC_SOC_VERIFIED=1
             MC_CAP_HEVC10=1
-            # AV1: D9300+ (MT6989, MT6991, MT699x) sau "Dimensity 9300+"
-            [[ "$m_lc" =~ (mt6989|mt699[0-9]|dimensity.?9[3-9][0-9]{2}) ]] && MC_CAP_AV1=1
         fi
     fi
+
+    # v75 forward-compat: AV1 HW encode detectat DIRECT din encoderul vendor (nu ghicit din
+    # modelul SoC — euristica aia era nesigura, infirmata pe 8 Gen 3). Cand un cip viitor
+    # expune un encoder AV1 hardware (c2.<vendor>.av1.encoder), MC_CAP_AV1=1 automat, fara
+    # update de whitelist. Azi (S24U/A54) = doar c2.android.av1.encoder SW → ramane 0.
+    _mc_has_hw_av1_encoder && MC_CAP_AV1=1
 
     return 0
 }
@@ -4038,6 +4109,42 @@ mediacodec_print_banner() {
 #   XX_DEVICE        path device (Linux: /dev/dri/renderD128) sau -
 # ══════════════════════════════════════════════════════════════════════
 
+# ── v75: Intel AV1 encode gate (shared QSV + VAAPI) ───────────────────
+# Prezenta av1_qsv/av1_vaapi in `ffmpeg -encoders` NU garanteaza AV1 encode HW:
+# iGPU-urile Intel vechi (UHD Graphics) listeaza encoderul dar esueaza la runtime
+# (ret -22 "Invalid argument", 0 output — confirmat empiric). AV1 encode Intel exista
+# doar pe Arc (DG2/Alchemist/Battlemage) + iGPU Xe2/Xe-LPG (Meteor/Arrow/Lunar/Panther
+# Lake, brand "Intel Arc Graphics"). Gate pe model (din lspci), aliniat cu PS1
+# Get-GPUCapabilities $intelAv1Rx. Daca lspci numeste placa altfel → fallback SW (sigur).
+_intel_gpu_has_av1_encode() {
+    local model_lc; model_lc=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    [[ "$model_lc" =~ arc|dg2|alchemist|battlemage|meteor.?lake|arrow.?lake|lunar.?lake|panther.?lake|core.?ultra ]]
+}
+
+# v75 audit: probe FUNCTIONAL AV1 HW — micro-encode real (testsrc 320x240 0.2s → null) ca
+# verificare AUTORITARA cand modelul GPU nu e in whitelist-ul de mai sus (lspci poate numi
+# placa atipic → fals-negativ pe Arc real). Prezenta av1_qsv/av1_vaapi in -encoders NU
+# garanteaza HW: iGPU vechi listeaza encoderul dar pica la runtime (Intel UHD: av1_qsv →
+# -22 "doesn't support AV1 encoding"; validat empiric). **`format=nv12` e OBLIGATORIU** —
+# testsrc raw (rgb/yuv420p) face QSV sa esueze "query encoder params" CHIAR si pe encoder
+# capabil (fals-negativ; validat: hevc_qsv pica fara format=nv12, reuseste cu el). Exit 0 =
+# AV1 HW real. NU poate da fals-POZITIV (encoderul incapabil pica clar) → sigur in hibridul
+# `model || probe` (probe-ul doar ADAUGA detectie, nu o scoate). Folosit la detectie (o data).
+_hw_av1_qsv_works() {
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
+        -vf format=nv12 -c:v av1_qsv -f null - >/dev/null 2>&1
+}
+_hw_av1_vaapi_works() {
+    local dev="${1:-}"
+    [[ -z "$dev" ]] && return 1
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    # VAAPI cere device + hwupload (oglinda pipeline-ului din build_vaapi_cmd: format,hwupload).
+    ffmpeg -hide_banner -loglevel error -vaapi_device "$dev" \
+        -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
+        -vf "format=nv12,hwupload" -c:v av1_vaapi -f null - >/dev/null 2>&1
+}
+
 # ── VAAPI (Linux Intel iGPU + AMD Mesa) ───────────────────────────────
 detect_vaapi_caps() {
     VAAPI_AVAILABLE=0
@@ -4077,8 +4184,10 @@ detect_vaapi_caps() {
         # Intel Skylake+ suporta HEVC 10-bit; HDR10 fragil (Mesa >=23)
         VAAPI_CAP_10BIT=1
         VAAPI_CAP_HDR10=1
-        # AV1 encode VAAPI: doar Intel Arc (DG2) si Core Ultra (Meteor Lake+)
-        if [[ "$VAAPI_ENCODERS" == *"av1_vaapi"* ]]; then
+        # AV1 encode VAAPI: doar Intel Arc (DG2) + Xe2 iGPU (Meteor Lake+) — gate pe model
+        # SAU probe functional (v75: nu doar prezenta av1_vaapi; model atipic → probe autoritar)
+        if [[ "$VAAPI_ENCODERS" == *"av1_vaapi"* ]] && \
+           { _intel_gpu_has_av1_encode "$VAAPI_GPU_MODEL" || _hw_av1_vaapi_works "$VAAPI_DEVICE"; }; then
             VAAPI_CAP_AV1=1
         fi
     elif [[ "$card_info" =~ [Aa][Mm][Dd]|[Rr]adeon|[Aa][Tt][Ii] ]]; then
@@ -4140,7 +4249,14 @@ detect_qsv_caps() {
 
     QSV_CAP_10BIT=1
     QSV_CAP_HDR10=1  # Arc + Core Ultra
-    [[ "$QSV_ENCODERS" == *"av1_qsv"* ]] && QSV_CAP_AV1=1
+    # v75: AV1 QSV gate pe model SAU probe functional — nu doar prezenta encoderului.
+    # Model recunoscut → rapid (fara probe); nerecunoscut → probe autoritar (prinde Arc cu
+    # nume lspci atipic). Probe-ul nu poate da fals-pozitiv → hibrid sigur (doar adauga).
+    if [[ "$QSV_ENCODERS" == *"av1_qsv"* ]]; then
+        if _intel_gpu_has_av1_encode "$QSV_GPU_MODEL" || _hw_av1_qsv_works; then
+            QSV_CAP_AV1=1
+        fi
+    fi
 
     QSV_AVAILABLE=1
     return 0
@@ -4361,9 +4477,9 @@ hw_list_backends_for_codec() {
 # v42 Chunk 2: UX uniform — preset table + backend menu
 # Slot 1=Ultrafast .. 7=Veryslow ; default 4=Quality
 # Mapping per backend:
-#   NVENC: p1..p7        | VAAPI: q1..q7 (1=fast, 7=slow)
+#   NVENC: p1..p7        | VAAPI: -quality 7..1 (iHD: 1=best/slow .. 7=fast; v75 inversat vs slot)
 #   QSV: veryfast..veryslow
-#   VideoToolbox: q:v 80..50 (mai mic = mai bun)
+#   VideoToolbox: q:v 50..80 (v75: mai MARE = mai bun — corectat; era 80..50 invers)
 #   AMF: speed/balanced/quality (3-tier mapped pe 1-7)
 #   MediaCodec: scalare bitrate 60%..150%
 # ══════════════════════════════════════════════════════════════════════
@@ -4375,13 +4491,13 @@ hw_preset_label() {
     local backend="$1" slot="$2"
     case "$backend" in
         nvenc)        echo "p${slot}" ;;
-        vaapi)        echo "q${slot}" ;;
+        vaapi)        echo "q$((8 - slot))" ;;  # v75: iHD -quality 1=best..7=fast → invers fata de slot
         qsv)
             local qsv_n=(veryfast faster fast medium slow slower veryslow)
             echo "${qsv_n[$((slot-1))]}"
             ;;
         videotoolbox)
-            local vt_q=(80 75 70 65 60 55 50)
+            local vt_q=(50 55 60 65 70 75 80)  # v75: q:v mai mare = mai bun (corectat, era invers)
             echo "q:v ${vt_q[$((slot-1))]}"
             ;;
         amf)
@@ -4632,8 +4748,15 @@ build_mediacodec_cmd() {
     case "${MC_HDR_MODE:-}" in
         hw_repair)
             # 10-bit HDR10: BT.2020 + PQ + main10 (doar HEVC suporta main10)
+            # NOTA (v75): encoderele mediacodec ffmpeg accepta DOAR 8-bit input
+            # (mediacodec/yuv420p/nv12) — un pix_fmt 10-bit auto-downconverteaza la yuv420p
+            # (validat empiric S24 Ultra + A54: "Incompatible pixel format ... auto-selecting
+            # yuv420p"). main10 da container/signaling 10-bit (HDR10 cere 10-bit) dar
+            # PRECIZIA ramane 8-bit → risc de banding pe HDR real. ffmpeg nu poate hrani
+            # 10-bit catre MediaCodec pe calea cu filtre azi; cerem p010le DOAR daca un
+            # ffmpeg viitor expune 10-bit input (MC_INPUT_10BIT, probe in detect) → forward-compat.
             if [[ "$MC_CAP_HEVC10" == "1" ]] && [[ "$enc_codec" == "hevc" ]]; then
-                pix_fmt="yuv420p10le"
+                if [[ "${MC_INPUT_10BIT:-0}" == "1" ]]; then pix_fmt="p010le"; else pix_fmt="yuv420p"; fi
                 profile_flag="-profile:v main10"
             else
                 pix_fmt="yuv420p"
@@ -4647,12 +4770,14 @@ build_mediacodec_cmd() {
             MC_NEEDS_REPAIR=1
             ;;
         hw_hlg)
-            # v39: HLG nativ 10-bit — fara SEI repair (signaling in transfer chars)
+            # v39: HLG nativ — signaling in transfer chars (fara SEI repair)
+            # v75: 8-bit input azi (vezi nota hw_repair) — main10 = container/signaling
+            # 10-bit, precizie 8-bit. p010le DOAR pe ffmpeg viitor cu 10-bit input (MC_INPUT_10BIT).
             if [[ "$MC_CAP_HEVC10" == "1" ]] && [[ "$enc_codec" == "hevc" ]]; then
-                pix_fmt="yuv420p10le"
+                if [[ "${MC_INPUT_10BIT:-0}" == "1" ]]; then pix_fmt="p010le"; else pix_fmt="yuv420p"; fi
                 profile_flag="-profile:v main10"
             elif [[ "$enc_codec" == "av1" ]]; then
-                pix_fmt="yuv420p10le"
+                if [[ "${MC_INPUT_10BIT:-0}" == "1" ]]; then pix_fmt="p010le"; else pix_fmt="yuv420p"; fi
             else
                 pix_fmt="yuv420p"
                 log "  ATENTIE: SoC nu suporta 10-bit pentru HLG, fallback la 8-bit"
@@ -4858,6 +4983,9 @@ build_vaapi_cmd() {
     local file="$1" enc_codec="$2"
     local enc_name="${enc_codec}_vaapi"
     local slot="${HW_PRESET_SLOT:-4}"
+    # v75: VAAPI iHD -quality 1=best(slow)..7=fast → invers fata de slot (1=fast..7=best).
+    # Neverificat pe Linux real (lipsa GPU); AMD Mesa ignora -quality. Caveat audit.
+    local vaapi_q=$((8 - slot))
 
     local rate_flags
     if [[ "${ENCODE_MODE:-1}" =~ ^[23]$ ]] && [[ -n "${VBR_TARGET:-}" ]]; then
@@ -4879,11 +5007,11 @@ build_vaapi_cmd() {
         VIDEO_FILTER="-vf ${va_tail}"
     fi
 
-    log "  VAAPI: $enc_name | quality $slot | device $VAAPI_DEVICE${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
+    log "  VAAPI: $enc_name | quality $vaapi_q (slot $slot) | device $VAAPI_DEVICE${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
     # v53: $_HW_VUI_BSF — vezi nota la NVENC
     FFMPEG_CMD="ffmpeg -threads $THREADS -vaapi_device $VAAPI_DEVICE -i \"\$file\" $MAP_FLAGS \
-        -c:v $enc_name -quality $slot $rate_flags \
+        -c:v $enc_name -quality $vaapi_q $rate_flags \
         $_HW_PROFILE $VIDEO_FILTER $_HW_VUI_BSF $AUDIO_PARAMS"
     return 0
 }
@@ -4897,7 +5025,9 @@ build_videotoolbox_cmd() {
         *)      enc_name="${enc_codec}_videotoolbox" ;;
     esac
     local slot="${HW_PRESET_SLOT:-4}"
-    local vt_q=(80 75 70 65 60 55 50)
+    # v75: q:v mai mare = mai bun in VideoToolbox (ffmpeg vtenc: -q:v N → quality N/100).
+    # Era 80..50 invers (slot 7 best primea q:v cel mai mic). Neverificat pe Mac real.
+    local vt_q=(50 55 60 65 70 75 80)
     local q="${vt_q[$((slot-1))]}"
 
     local rate_flags

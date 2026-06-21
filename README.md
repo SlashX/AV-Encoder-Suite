@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v74** — 132 bugs fixed · 261+ features · ~43 000 LoC · 181 files
+**v75** — 141 bugs fixed · 264+ features · ~43 000 LoC · 187 files
 
 ---
 
@@ -20,6 +20,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata)
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
+- **Hardware encoding correctness audit** (v75) — across all 6 backends: fixed inverted quality presets on VAAPI / VideoToolbox (picking "quality" no longer gave you "fast"), AV1 HW now offered only on GPUs that can actually run it (Intel Arc / Core Ultra+, with a live capability probe on Linux), NVENC constant-quality VBR, explicit HDR10 color signaling on every card, and an honest warning that HDR10+ degrades to static HDR10 on HW encode. MediaCodec recognizes modern Snapdragon (`QTI`) / Exynos (codename) SoCs and no longer claims nonexistent mobile AV1 HW encode (→ clean SW fallback). On Windows, Dolby Vision Profile 8.1 / 8.4 and AV1 DV — which carry a standard/empty codec tag rather than the DV-dedicated one — are now detected from side-data on the encode path, so the preserve dialog appears and DV is no longer silently lost; P8.4 (HLG-compatible) is also no longer mislabeled as Profile 5 in MP4/MOV
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
 - **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
 - **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
@@ -100,13 +101,15 @@ DV preserve: extract source RPU codec-aware (`dovi_tool` HEVC / `av1dovi_tool` A
 | Backend | Platform | H.264 | H.265 | AV1 (HW) | HDR10 | Notes |
 |---|---|---|---|---|---|---|
 | **NVENC** | Win + Linux | ✅ | ✅ | RTX 40+ / Ada | ✅ 10-bit | `p1..p7` |
-| **QSV** | Win + Linux | ✅ | ✅ | Alchemist+ | Tiger Lake+ | `veryfast..veryslow` |
-| **VAAPI** | Linux | ✅ | ✅ | ATS / Battlemage | ✅ | `/dev/dri/renderD*`, `q1..q7` |
-| **VideoToolbox** | macOS | ✅ | ✅ + ProRes | M3+ Apple Silicon | AS only (+ HLG) | `q:v 80..50` |
+| **QSV** | Win + Linux | ✅ | ✅ | Arc / Core Ultra / Meteor+ | Tiger Lake+ | `veryfast..veryslow` |
+| **VAAPI** | Linux | ✅ | ✅ | Arc / Core Ultra / Meteor+ | ✅ | `/dev/dri/renderD*`, `-quality 7..1` |
+| **VideoToolbox** | macOS | ✅ | ✅ + ProRes | M3+ Apple Silicon | AS only (+ HLG) | `q:v 50..80` |
 | **AMF** | Win + Linux exp (v42.1) | ✅ | ✅ | RDNA3+ (RX 7000/8000 + 740M–890M) | ✅ | `speed/balanced/quality` |
-| **MediaCodec** | Termux/Android | ✅ | ✅ + HDR10 repair | SoC-dependent | via `hevc_metadata` bsf | `60%..150%`, SoC whitelist |
+| **MediaCodec** | Termux/Android | ✅ | ✅ + HDR10 repair (8-bit input) | none on mobile → SW fallback | via `hevc_metadata` bsf | `60%..150%`, SoC whitelist |
 
 Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across all backends. `show_hdr_hw_dialog` per-source-type (DV / HDR10+ / HLG / HDR10) with `sw_full` / `sw_degraded` / `hw_hdr10` / `hw_hlg` / `hw_sdr` / `hw_preserve` (v46, DV preserve via HW) / skip. Bypass via `HW_HDR_POLICY`.
+
+**v75 — HW correctness audit (all 6 backends)**: VAAPI `-quality` + VideoToolbox `q:v` preset direction was inverted vs slot → fixed (NVENC/QSV/AMF were already correct). Intel AV1 (QSV/VAAPI) now gated by GPU model — older Intel that lists `av1_qsv` but fails at runtime (UHD) is no longer offered → clean SW fallback. NVENC quality path uses constant-quality VBR (`-rc vbr -cq`); AMF sends explicit `usage=transcoding` (+ `main` profile on AV1); PS1 HW warns on HDR10+ (dynamic metadata dropped → HDR10 static, opt-skip). MediaCodec: flagship Snapdragon (`QTI` vendor) + modern Exynos (`s5e` codename) now recognized as `[verificat]`; 10-bit HDR is signaled/containered but **8-bit input precision** (ffmpeg MediaCodec encoders accept only 8-bit — validated on SD 8 Gen 3 + Exynos 1380). **AV1 HW encode no longer claimed on any SoC** — mobile AV1 hardware *encode* is near-nonexistent (decode is widespread; encode absent on SD 8 Gen 3 + Exynos 1380, both verified) → `MC_CAP_AV1=0` everywhere, so `av1_mediacodec` falls back to the suite's libsvtav1 (better quality/control than the hidden MediaCodec SW libaom; `HW_FORCE=1` to override). Encoder presence ≠ HW: MediaCodec falls back to SW transparently.
 
 **v46 — HW DV preserve**: all 6 HW backends now support DV preserve (HEVC target via Profile 8.1, AV1 target via Profile 10). Extracts source RPU → HW encode HDR10 base → post-encode RPU inject. MediaCodec adds SEI signaling repair between encode and inject. Available on 12 combinations (6 backends × 2 codecs).
 
@@ -395,4 +398,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v74** — 132 bugs fixed · 261+ features · ~43 000 LoC · 181 files
+Current: **v75** — 141 bugs fixed · 264+ features · ~43 000 LoC · 187 files

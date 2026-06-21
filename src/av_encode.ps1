@@ -3918,11 +3918,10 @@ function Invoke-DvMp4Mux {
     )
     $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
-    # HEVC: MP4Box auto-detecteaza DV din NAL-uri -> dvcC fara dvp explicit.
-    # AV1 (.ivf/.av1/.obu): auto-detect-ul refuza plasarea OBU-ului de metadata DV de la
-    # av1dovi_tool -> trebuie dvp= EXPLICIT (v72), care scrie dvcC oricum (RPU byte-identic).
-    # $DvRef = referinta cu dvcC pt derivarea compat-ului (sursa la passthrough); altfel
-    # $Original; fallback 10.1 (HDR10-cross-compat).
+    # dvp= EXPLICIT pt AMBELE codec-uri (v75). HEVC: auto-detect-ul MP4Box mislabeleaza P8.4
+    # (HLG) ca profil 5 (tag + dvcC gresite) -> dvp=profil.compat il forteaza corect. AV1
+    # (.ivf/.av1/.obu): auto-detect-ul refuza plasarea OBU-ului DV -> dvp= oricum scrie dvcC.
+    # $DvRef = referinta cu dvcC pt derivarea profil/compat (sursa la passthrough); altfel $Original.
     $rext = [System.IO.Path]::GetExtension($RawHevc).TrimStart('.').ToLowerInvariant()
     $isAv1 = $false
     if ($rext -in @('hevc','h265','265')) { }
@@ -3941,17 +3940,31 @@ function Invoke-DvMp4Mux {
     # (MP4Box #N; N = track ID ISO == ffprobe stream=id, in hex 0xN -> decimal)
     # NB: ffprobe -select_streams accepta UN singur specificator (a,s e invalid) →
     # enumeram audio apoi subtitle separat. id = track ID ISO (hex 0xN -> decimal).
-    # AV1: deriva dvp. AV1 DV e MEREU profil 10 (dav1.10.xx) — NU citi dv_profile din
-    # referinta (la cross-codec HEVC DV→AV1 ar fi 8/5/7 → dvcC AV1 gresit). Citeste DOAR
-    # compat (bl_signal_compatibility_id), fallback 10.1. HEVC: fara dvp (auto-detect).
+    # Deriva dvp=profil.compat din dvcC-ul referintei ($DvRef / $Original).
+    # AV1 DV e MEREU profil 10 (dav1.10.xx) — NU citi dv_profile (cross-codec HEVC→AV1 ar fi
+    # 8/5/7 → dvcC gresit); doar compat, fallback 10.1. HEVC (v75): profil REAL + compat —
+    # auto-detect-ul MP4Box mislabeleaza P8.4 ca profil 5 → dvp il forteaza corect + scrie
+    # codec_tag corect (dvh1 P5/P7, hvc1 P8.x). Fara dvcC pe referinta → auto-detect (vechi).
     $firstAdd = "${RawHevc}:fps=${afr}"
     if ($isAv1) {
-        $dvRef = if ($DvRef) { $DvRef } else { $Original }
+        # AV1 DV = mereu profil 10 (dav1.10.xx). Compat din referinta (DvRef sau Original);
+        # NU citi dv_profile (cross-codec HEVC→AV1 ar da 8/5/7). Fallback 10.1.
+        $av1Ref = if ($DvRef) { $DvRef } else { $Original }
         $dvp = "10.1"
-        $c = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id -of default=noprint_wrappers=1:nokey=1 $dvRef 2>$null | Select-Object -First 1)
+        $c = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id -of default=noprint_wrappers=1:nokey=1 $av1Ref 2>$null | Select-Object -First 1)
         if ($c) { $c = $c.Trim() }
         if ($c -match '^[0-9]+$') { $dvp = "10.$c" }
         $firstAdd = "${RawHevc}:dvp=${dvp}:fps=${afr}"
+    } elseif ($DvRef) {
+        # HEVC: dvp din referinta EXPLICITA ($DvRef) DOAR (preserve/passthrough: profilul ei
+        # == profilul stream-ului → prinde P8.4). FARA $DvRef (transform/hybrid via
+        # Invoke-HdvCombine): NU folosi $Original — e sursa PRE-transform (alt profil decat
+        # stream-ul 8.1 produs; P5→8.1 ar scrie 5.0) → auto-detect (corect pe 8.1).
+        $hp = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile -of default=noprint_wrappers=1:nokey=1 $DvRef 2>$null | Select-Object -First 1)
+        if ($hp) { $hp = $hp.Trim() }
+        $hc = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_bl_signal_compatibility_id -of default=noprint_wrappers=1:nokey=1 $DvRef 2>$null | Select-Object -First 1)
+        if ($hc) { $hc = $hc.Trim() }
+        if ($hp -match '^[0-9]+$' -and $hc -match '^[0-9]+$') { $firstAdd = "${RawHevc}:dvp=${hp}.${hc}:fps=${afr}" }
     }
     $addArgs = New-Object System.Collections.Generic.List[string]
     $addArgs.Add("-add"); $addArgs.Add($firstAdd)
@@ -4097,6 +4110,17 @@ function Invoke-TransformRpu {
     if (-not $file) { Write-Host "Anulat." -ForegroundColor Yellow; return }
     $srcCodec = Get-SourceCodec $file
     Write-Host "  Codec sursa: $srcCodec"
+
+    # v75: Profil 5 = single-layer (fara strat HDR10). Conversia P5->8.1 nu poate
+    # fabrica o baza HDR10 -> dovi_tool lasa stream-ul tot Profil 5 (no-op onest).
+    $dvProf = Get-DVProfile $file
+    if ($dvProf -like "*Profil 5*") {
+        Write-Host ""
+        Write-Host "  ⚠ ATENTIE: $dvProf — single-layer, fara strat HDR10 backward-compatible." -ForegroundColor Yellow
+        Write-Host "    Conversia P5→8.1 NU e posibila (nu exista baza HDR10 de fabricat);" -ForegroundColor Yellow
+        Write-Host "    output-ul ar ramane Profil 5. Pentru a pastra DV-ul intact 1:1:" -ForegroundColor Yellow
+        Write-Host "    Mux tools → Remux (stream-copy)." -ForegroundColor Yellow
+    }
 
     Write-Host ""
     Write-Host "  Mode $(Get-ToolForExtract -Codec hevc -Kind dovi) convert (filtrate dupa codec sursa: $srcCodec):" -ForegroundColor White
@@ -4382,6 +4406,17 @@ function Invoke-RemoveDv {
         Write-Host "  EROARE: Doar HEVC si AV1 sunt suportate (sursa: $srcCodec)." -ForegroundColor Red
         return
     }
+
+    # v75: Profil 5 nu are strat HDR10 backward-compatible — eliminarea DV lasa
+    # baza IPT bruta (NU HDR10 valid). Remove DV are sens doar pe Profil 7/8.x.
+    $dvProf = Get-DVProfile $file
+    if ($dvProf -like "*Profil 5*") {
+        Write-Host ""
+        Write-Host "  ⚠ ATENTIE: $dvProf — fara strat HDR10 backward-compatible." -ForegroundColor Yellow
+        Write-Host "    Eliminarea DV lasa baza IPT bruta (NU HDR10 valid → imagine nevizionabila)." -ForegroundColor Yellow
+        Write-Host "    Remove DV → HDR10 are sens doar pe Profil 7/8.x (au baza HDR10)." -ForegroundColor Yellow
+    }
+
     if (-not (Test-DoviToolFor -Codec $srcCodec)) {
         $t = Get-ToolForExtract -Codec $srcCodec -Kind "dovi"
         Write-Host "  EROARE: $t nu este instalat. Vezi src/tools/." -ForegroundColor Red
@@ -4915,7 +4950,7 @@ function Show-LogDialog {
 # ── Show-X264Dialog — x264 dialog per-file (8bit/10bit/copy/skip) ──
 # Return: "8bit" | "10bit" | "copy" | "skip"
 function Show-X264Dialog {
-    param([string]$file, [string]$filename, [hashtable]$sourceInfo, [bool]$isHdr)
+    param([string]$file, [string]$filename, [hashtable]$sourceInfo, [bool]$isHdr, [bool]$isDV)
     $srcPixfmt = Get-FFprobeValue $file "v:0" "pix_fmt"
     $srcBitdepth = if ($srcPixfmt -match "10") { "10-bit" } else { "8-bit" }
     $w = Get-FFprobeValue $file "v:0" "width"
@@ -4925,11 +4960,9 @@ function Show-X264Dialog {
     if ($sourceInfo.isHDRPlus) { $srcLabel = "HDR10+ $srcBitdepth" }
     elseif ($sourceInfo.isHDR) { $srcLabel = "HDR10 $srcBitdepth" }
 
-    # Check DV
-    $doVi = & ffprobe -v error -show_entries stream=codec_tag_string `
-        -of default=noprint_wrappers=1:nokey=1 $file 2>$null |
-        Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
-    if ($doVi) { $srcLabel = "Dolby Vision $srcBitdepth"; $isHdr = $true }
+    # Check DV — v75 audit: $isDV (din $logInfo.isDV, fallback side_data) prinde si AV1 DV
+    # (codec_tag [0][0][0][0]); checkul codec_tag local de dinainte rata AV1 DV → eticheta gresita.
+    if ($isDV) { $srcLabel = "Dolby Vision $srcBitdepth"; $isHdr = $true }
 
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -5508,17 +5541,16 @@ if ($mainChoice -eq "3") {
 
         $dji = Get-DJITracks $f.FullName
 
-        # DV detectat din codec_tag_string (stream-level, nu din frames)
-        $doVi = & ffprobe -v error -show_entries stream=codec_tag_string `
-            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
-            Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        # v75 audit: DV via $chkLogInfo.isDV (Get-SourceInfoExtended, cu fallback side_data) —
+        # prinde si AV1 DV (codec_tag [0][0][0][0]); checkul codec_tag de dinainte rata AV1 DV
+        # → sumarul afisa "HDR10" pe surse AV1 DV. Get-SourceInfoExtended calculat o data, aici.
+        $chkLogInfo = Get-SourceInfoExtended $f.FullName $dji
         $tipHdr = "SDR"; $dvProf = "N/A"
         if     ($si.isHDRPlus) { $tipHdr = "HDR10+" }
         elseif ($si.isHDR)     { $tipHdr = "HDR10"  }
-        if ($doVi) { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
+        if ($chkLogInfo.isDV) { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
 
-        # LOG Profile detect (reuse Get-SourceInfoExtended)
-        $chkLogInfo = Get-SourceInfoExtended $f.FullName $dji
+        # LOG Profile detect (reuse Get-SourceInfoExtended de mai sus)
         $chkLogProfile = if ($chkLogInfo.logProfile) { Get-LogProfileLabel $chkLogInfo.logProfile } else { "N/A" }
 
         # Recomandare encoder
@@ -7671,6 +7703,12 @@ foreach ($f in $inputFiles) {
     $tgtCodecMap = @{ "libx265" = "hevc"; "libx264" = "h264"; "libsvtav1" = "av1"; "libaom-av1" = "av1" }
     $tgtCodecSmart = $tgtCodecMap[$rtEncoder]
     $vfActiveSmart = ($vfParts.Count -gt 0) -or $vfIsVidstab -or [bool]$vfPreset
+    # v75 audit: AICI ramane DELIBERAT codec_tag (NU $logInfo.isDV ca la gate-urile de
+    # dialog). E un GUARD care blocheaza smart-copy total cand tag-ul striga DV (HEVC dvhe/
+    # dvh1). Pe AV1 DV (codec_tag gol) il lasam sa OFERE copy 1:1 lossless — cel mai bun
+    # rezultat pt DV (RPU intact); daca userul refuza, cade pe dialogul av1 (reparat sa
+    # detecteze AV1 DV via $logInfo.isDV). A-l muta pe isDV ar bloca copy-ul lossless AV1 DV
+    # (dialogul av1 n-are optiune de copy) → pierdere de capabilitate. Vezi gate-urile 7843/8238/8594.
     $doviSmart = & ffprobe -v error -show_entries stream=codec_tag_string `
         -of default=nw=1:nk=1 $f.FullName 2>$null |
         Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
@@ -7740,7 +7778,7 @@ foreach ($f in $inputFiles) {
         }
         if (-not $skipFile -and -not $doStreamCopy -and -not $logInfo.logProfile -and -not $logInfo.isHLG) {
             # Standard x264 dialog
-            $x264Result = Show-X264Dialog $f.FullName $f.Name $si $si.isHDR
+            $x264Result = Show-X264Dialog $f.FullName $f.Name $si $si.isHDR $logInfo.isDV
             switch ($x264Result) {
                 "copy" { $doStreamCopy = $true }
                 "skip" { $skipFile = $true }
@@ -7836,9 +7874,11 @@ foreach ($f in $inputFiles) {
         $hdr10PlusAv1Param = ""
 
         # DV check — v44: cu optiune Profile 10 (AV1) prin sven-pke fork
-        $doViAv1 = & ffprobe -v error -show_entries stream=codec_tag_string `
-            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
-            Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        # v75 audit: $logInfo.isDV (Get-SourceInfoExtended, fallback side_data) in loc de
+        # codec_tag — AV1 DV are codec_tag [0][0][0][0] (DV in side_data) → check-ul vechi
+        # pe codec_tag rata AV1 DV → dialogul DV (inclusiv preserve P10) nu aparea, DV se
+        # pierdea tacut. Paritate cu bash detect_source_info (DOVI via side_data, fix v58).
+        $doViAv1 = $logInfo.isDV
         if ($doViAv1) {
             $av1DoviAvail = (Test-Av1DoviTool) -and ($av1Impl -eq "libsvtav1")
             $hevcDoviAvail = [bool](Get-Command (Get-ToolForExtract -Codec "hevc" -Kind "dovi") -ErrorAction SilentlyContinue)
@@ -8176,7 +8216,10 @@ foreach ($f in $inputFiles) {
                 @("-rc","vbr_peak","-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize)
             }
         } elseif ($hwEncCodec -match "nvenc") {
-            @("-rc","constqp","-qp",$hwEncQP)
+            # v75: constant-quality VBR (paritate bash build_nvenc_cmd: -rc vbr -cq -b:v 0).
+            # constqp = QP fix (mai putin eficient); -cq in VBR = calitate constanta cu
+            # alocare adaptiva de bitrate (recomandarea NVENC). Acum eticheta "CQ" e corecta.
+            @("-rc","vbr","-cq",$hwEncQP,"-b:v","0")
         } elseif ($hwEncCodec -match "qsv") {
             @("-global_quality",$hwEncQP)
         } else {
@@ -8189,6 +8232,13 @@ foreach ($f in $inputFiles) {
             @("-preset",$hwEncPreset)
         } else {
             @("-quality",$hwEncPreset)
+        }
+        # v75: AMF — usage transcoding (default AMF nu e optimizat offline) + profile main
+        # pe AV1 (paritate bash build_amf_cmd). Neverificat pe GPU AMD real (lipsa hardware).
+        $hwAmfExtra = @()
+        if ($hwEncCodec -match "amf") {
+            $hwAmfExtra += @("-usage","transcoding")
+            if ($hwEncCodec -eq "av1_amf") { $hwAmfExtra += @("-profile:v","main") }
         }
         $hwPixFmt = "yuv420p"
         # 10-bit for NVENC/QSV/AV1-AMF if source is 10-bit (h264_amf/hevc_amf raman 8-bit)
@@ -8218,10 +8268,12 @@ foreach ($f in $inputFiles) {
         }
 
         # v46: DV source detection + DV preserve via HW (HEVC/AV1 target only)
+        # v75 audit: $logInfo.isDV (fallback side_data) prinde si AV1 DV (codec_tag [0][0][0][0]);
+        # check-ul vechi pe codec_tag rata AV1 DV → blocul HDR10+ de mai jos il trata ca simplu
+        # HDR10+ (pe hibrizi AV1 DV+HDR10+ avertiza doar "se pierde HDR10+", pierdea si DV tacut)
+        # iar preserve-ul DV via HW era inaccesibil. Paritate cu bash detect_source_info (fix v58).
         $hwColorFlags = @()
-        $hwDoVi = & ffprobe -v error -show_entries stream=codec_tag_string `
-            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
-            Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        $hwDoVi = $logInfo.isDV
         if ($hwDoVi) {
             $hwTargetCodec = if ($hwEncCodec -match "^hevc_") { "hevc" } elseif ($hwEncCodec -match "^av1_") { "av1" } else { "" }
             $hwSrcCodec = Get-SourceCodec $f.FullName
@@ -8299,6 +8351,34 @@ foreach ($f in $inputFiles) {
             }
         }
 
+        # v75: HDR10+ pe HW — dynamic metadata (SMPTE2094-40) NU se transmite prin HW
+        # encoders (limitare inerenta; paritate cu bash show_hdr_hw_dialog ramura hdr10plus).
+        # HDR10 static (VUI + mastering-display + MaxCLL) se pastreaza automat prin NVENC/QSV
+        # (confirmat empiric). Avertizam + oferim skip; pt HDR10+ complet → encoder SW.
+        if ($si.isHDRPlus -and -not $hwDoVi) {
+            Write-Host ""
+            Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
+            Write-Host "  ║  ⚠ Sursa HDR10+ (metadata dinamica)          ║" -ForegroundColor Yellow
+            Write-Host "  ║  HW nu transmite HDR10+ dinamic.             ║" -ForegroundColor Yellow
+            Write-Host "  ║  Iese HDR10 static (mastering + MaxCLL OK).   ║" -ForegroundColor Yellow
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
+            Write-Host "  ║  1) Continua HW — HDR10 static (drop dinamic) ║" -ForegroundColor White
+            Write-Host "  ║  2) Skip (pt HDR10+ complet: encoder SW)      ║" -ForegroundColor White
+            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+            $hp10c = ""
+            if ($env:HW_HDR_POLICY) {
+                if ($env:HW_HDR_POLICY -eq "skip") { $hp10c = "2"; Write-Host "  HW HDR policy: skip" -ForegroundColor Cyan }
+                else { $hp10c = "1" }
+            } else {
+                $hp10c = Read-Host "  Alege 1-2 [implicit: 1]"
+                if (-not $hp10c) { $hp10c = "1" }
+            }
+            if ($hp10c -eq "2") { $totalSkipped++; continue }
+            # HDR10 static: re-afirma VUI prin BSF (robust, inclusiv AMF) + 10-bit
+            $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
+            if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+        }
+
         # v39: HLG dialog pentru HW encode (signaling via color_trc, fara SEI repair)
         if ($logInfo.isHLG) {
             $isH264HW = ($hwEncCodec -match "^h264_")
@@ -8335,6 +8415,19 @@ foreach ($f in $inputFiles) {
                 }
             }
         }
+
+        # v75 audit: HDR10 SIMPLU (smpte2084, non-plus, non-DV, non-HLG) — re-afirma VUI prin
+        # BSF (acelasi Get-HwVuiBsf hdr10 ca ramurile DV-strip/HDR10+/HLG). Paritate cu bash
+        # _hw_hdr_setup (hw_hdr10 seteaza _HW_VUI_BSF si pe HDR10 simplu). Pe QSV ffmpeg propaga
+        # VUI din sursa si fara BSF (validat), DAR BSF-ul GARANTEAZA semnalizarea pe TOATE
+        # backendurile (NVENC/AMF/VAAPI/VT, netestabile pe boxa) — vezi finding v63 (HW are
+        # nevoie de VUI explicit). Re-afirma exact valorile corecte (BT.2020/PQ/BT.2020nc), deci
+        # zero risc. p010le deja setat din $si.is10bit; il pastram explicit pt consistenta.
+        if ($si.isHDR -and -not $si.isHDRPlus -and -not $hwDoVi -and -not $logInfo.isHLG) {
+            $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
+            if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+        }
+
         if ($skipFile) { $totalSkipped++; continue }
         if ($doStreamCopy) {
             $scOk = Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams
@@ -8349,7 +8442,7 @@ foreach ($f in $inputFiles) {
         $codecTagKey = ($hwEncCodec -split '_')[0]
         $codecTag = Get-CodecTagForContainer $codecTagKey $container
         $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
-                  @("-c:v",$hwEncCodec) + $hwQpFlag + $hwPresetFlag + $nvencTuneFlag + $nvencQualityFlag +
+                  @("-c:v",$hwEncCodec) + $hwQpFlag + $hwPresetFlag + $nvencTuneFlag + $nvencQualityFlag + $hwAmfExtra +
                   @("-pix_fmt",$hwPixFmt) +
                   $videoFilter + $fpsFlag + $hwColorFlags + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
@@ -8546,9 +8639,10 @@ foreach ($f in $inputFiles) {
 
     } else {
         # ── x265 per-file dialog ─────────────────────────────────────
-        $doVi = & ffprobe -v error -show_entries stream=codec_tag_string `
-            -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null |
-            Select-String -Pattern "dovi|dvhe|dvh1" -CaseSensitive:$false
+        # v75 audit: $logInfo.isDV (fallback side_data) prinde AV1 DV (codec_tag [0][0][0][0]) →
+        # sursa AV1 DV → HEVC primeste corect dialogul DV (era pierdut tacut, preserve HEVC 8.1
+        # cross-codec inaccesibil). Paritate cu bash detect_source_info (fix v58).
+        $doVi = $logInfo.isDV
 
         $colorParams = @(); $x265Hdr = ""
         $x265PixFmt = "yuv420p10le"
