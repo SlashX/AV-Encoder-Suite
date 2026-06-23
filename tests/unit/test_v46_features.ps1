@@ -53,7 +53,7 @@ Assert-Match $srcText 'Test-DoviToolFor\s+-Codec\s+\$hwTargetCodec' "Gate checks
 # ─────────────────────────────────────────────────────────────────
 # 4) DV preserve branch sets triple-layer state
 # ─────────────────────────────────────────────────────────────────
-Assert-Match $srcText 'Get-DvRpu\s+-InputFile\s+\$f\.FullName\s+-RpuOut\s+\$srcRpu\s+-SourceCodec\s+\$hwSrcCodec' "HW DV preserve extracts RPU via Get-DvRpu"
+Assert-Match $srcText 'Get-PreserveRpu\s+-File\s+\$f\.FullName\s+-RpuOut\s+\$srcRpu\s+-Codec\s+\$hwSrcCodec' "HW DV preserve extracts RPU via Get-PreserveRpu (P7-aware, v76)"
 Assert-Match $srcText '\$tripleLayerMode\s*=\s*\$true' "HW DV preserve sets tripleLayerMode"
 Assert-Match $srcText '\$tripleLayerTargetCodec\s*=\s*\$hwTargetCodec' "HW DV preserve sets tripleLayerTargetCodec from HW target"
 
@@ -73,6 +73,7 @@ Assert-Match $srcText 'hw_preserve dar tool indisponibil' "Fallback path when DV
 # Existing code at ~line 5839 — verify it gates on tripleLayerMode + doviRpuFile
 # ─────────────────────────────────────────────────────────────────
 Assert-Match $srcText 'if\s*\(\$tripleLayerMode\s+-and\s+\$doviRpuFile\)' "Post-encode inject handler gates on triple-layer + RPU"
-Assert-Match $srcText 'Inject-DvRpu\s+\$rawTemp\s+\$doviRpuFile\s+\$injectedTemp\s+-TargetCodec\s+\$tlCodec' "Post-encode handler calls Inject-DvRpu with target codec"
+# v76 F3: input redenumit $rawTemp -> $dvSrc (raw direct, sau raw+HDR10+ injectat in lantul hibrid)
+Assert-Match $srcText 'Inject-DvRpu\s+\$dvSrc\s+\$doviRpuFile\s+\$injectedTemp\s+-TargetCodec\s+\$tlCodec' "Post-encode handler calls Inject-DvRpu with target codec"
 
 Invoke-TestSummary

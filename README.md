@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v75** — 141 bugs fixed · 264+ features · ~43 000 LoC · 187 files
+**v76** — 142 bugs fixed · 266+ features · ~43 000 LoC · 194 files
 
 ---
 
@@ -21,9 +21,10 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata)
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
 - **Hardware encoding correctness audit** (v75) — across all 6 backends: fixed inverted quality presets on VAAPI / VideoToolbox (picking "quality" no longer gave you "fast"), AV1 HW now offered only on GPUs that can actually run it (Intel Arc / Core Ultra+, with a live capability probe on Linux), NVENC constant-quality VBR, explicit HDR10 color signaling on every card, and an honest warning that HDR10+ degrades to static HDR10 on HW encode. MediaCodec recognizes modern Snapdragon (`QTI`) / Exynos (codename) SoCs and no longer claims nonexistent mobile AV1 HW encode (→ clean SW fallback). On Windows, Dolby Vision Profile 8.1 / 8.4 and AV1 DV — which carry a standard/empty codec tag rather than the DV-dedicated one — are now detected from side-data on the encode path, so the preserve dialog appears and DV is no longer silently lost; P8.4 (HLG-compatible) is also no longer mislabeled as Profile 5 in MP4/MOV
+- **HDR10+ preserved on hardware encode** (v76) — every HW encoder drops dynamic HDR10+ (only static HDR10 survives); when the HDR10+ tool is present the suite re-injects the per-scene metadata onto the HW-encoded bitstream, restoring dynamic HDR10+ intact on HEVC and AV1 — including hybrid DV + HDR10+ sources (both layers kept, DV signaled via the container record). On an HDR10+ source picked for HW, preserve-via-inject is the default. Also new: **Dolby Vision Profile 7 → 8.1** in HDR/DV tools — P7 (dual-layer, typical of UHD discs) isn't read by many TVs/players, so the suite converts to universal 8.1, keeping the HDR10 base + DV metadata and warning before discarding an enhancement layer that actually carries luminance (FEL-safe; `DV_P7_FORCE=1` to override). Same conversion is now applied automatically when re-encoding a P7 source with DV preserve, so the output is valid single-layer 8.1. Validated on QSV HEVC; other HW backends spec-level
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
 - **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
-- **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
+- **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / P7→8.1 dual-layer-aware / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
 - **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
 - **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
 - **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output, with opt-in **measured** MaxCLL/MaxFALL (v63)
@@ -246,6 +247,7 @@ AV-Encoder-Suite/
 │   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat)
 │   ├── dji_djmd_dlogm.py       # v62 — DJI Action 6 D-Log M detector (djmd protobuf .2.4.1==19)
 │   ├── apv_hdr10plus.py        # v69 — APV HDR10+ engine (ST 2094-40 inject/extract/probe)
+│   ├── dv_p7_analyze.py        # v76 — DV Profile 7 enhancement-layer classifier (MEL / FEL-safe / FEL-complex)
 │   ├── burnin_presets/         # v48 — HUD layout presets (.conf)
 │   │   ├── minimal.conf        # timestamp + speed corner overlay
 │   │   ├── data-strip.conf     # bottom bar gauges (speed/alt/heading/temp)
@@ -398,4 +400,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v75** — 141 bugs fixed · 264+ features · ~43 000 LoC · 187 files
+Current: **v76** — 142 bugs fixed · 266+ features · ~43 000 LoC · 194 files

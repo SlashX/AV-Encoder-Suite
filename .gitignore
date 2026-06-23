@@ -94,10 +94,13 @@ src/tools/oapv_app_dec.exe
 src/tools/oapv_app_enc.exe
 src/tools/liboapv.dll
 src/tools/openapv_version.txt
-# ── mkvmerge / MKVToolNix (v70 — dvcC de container pe hibride HEVC DV) ──
-# Link static pe Windows → doar exe-ul (fara DLL-uri); installer in tools/
+# ── mkvmerge / mkvextract / MKVToolNix (v70 dvcC de container + v76 P7→8.1) ──
+# Link static pe Windows → doar exe-urile (fara DLL-uri); installer in tools/.
+# mkvextract extrage BL+EL+RPU din P7 MKV pt conversia DV Profil 7 → 8.1 (v76).
 src/mkvmerge.exe
+src/mkvextract.exe
 src/tools/mkvmerge.exe
+src/tools/mkvextract.exe
 src/mkvtoolnix_version.txt
 src/tools/mkvtoolnix_version.txt
 # ── MP4Box / GPAC (v71 — dvcC de container pe hibride HEVC DV pe MP4/MOV) ──

@@ -125,7 +125,7 @@ encoder_setup_file() {
                     # v46: MC encode HDR10 base + repair SEI + inject DV RPU post-encode
                     local _rpu_tmp
                     _rpu_tmp=$(av_mktemp_ext "rpu.bin")
-                    if extract_dv_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
+                    if _extract_preserve_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
                         DOVI_RPU_FILE="$_rpu_tmp"
                         TRIPLE_LAYER_MODE=1
                         TRIPLE_LAYER_TARGET_CODEC="hevc"
@@ -237,7 +237,7 @@ encoder_setup_file() {
                     local _src_rpu
                     _src_rpu=$(av_mktemp_ext bin)
                     log "  DV preserve (HEVC): Extrag RPU din sursa ($_dv_src_codec)..."
-                    if extract_dv_rpu "$file" "$_src_rpu" "$_dv_src_codec"; then
+                    if _extract_preserve_rpu "$file" "$_src_rpu" "$_dv_src_codec"; then
                         DOVI_RPU_FILE="$_src_rpu"
                         TRIPLE_LAYER_MODE=1
                         TRIPLE_LAYER_TARGET_CODEC="hevc"

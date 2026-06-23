@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v74
+  Documentatie Setup & Utilizare — v76
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  187 fisiere totale (22 src + 18 tools + 6 profile + 3 burnin presets +
-  4 Python engines + 127 test_* scripts + 7 infra).
+  194 fisiere totale (22 src + 18 tools + 6 profile + 3 burnin presets +
+  5 Python engines + 133 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -1777,6 +1777,7 @@ CUPRINS
     - Ai DV 8.1 si vrei o conversie fidela care pastreaza maparea de
       tonalitate (luma/chroma mapping).
     - Ai HEVC DV 8.1 si vrei AV1 DV Profile 10 echivalent.
+    - Ai DV Profile 7 (dublu-strat, de pe disc UHD) si vrei 8.1 universal (v76).
 
   Modes oferite (dovi_tool 2.x; -m este flag global inainte de subcomanda):
     1) Force 8.1 (removes mapping, + HDR10 base)    [-m 2]
@@ -1784,9 +1785,20 @@ CUPRINS
     3) 8.1 pastrand maparea luma/chroma             [-m 5]
     4) Pentru AV1: profile 10 (sven-pke fork)       [-m 2 + tool av1]
 
-  Nota: conversia se face prin "editor" de RPU (mod global), nu prin
+  Nota: conversia 5 / 8.x se face prin "editor" de RPU (mod global), nu prin
   subcomanda "convert" (care in 2.x opereaza pe fisiere HEVC, nu pe RPU).
-  Profile 7 (dual-layer BL+EL) ramane pentru o versiune viitoare.
+
+  Profile 7 → 8.1 (v76, dual-layer aware): cand sursa e DV Profile 7
+  (dublu-strat, tipic de pe disc UHD), optiunea apare automat in Transform RPU.
+  Profile 7 nu e citit de multe televizoare / playere; 8.1 e compatibil
+  universal. Conversia pastreaza imaginea HDR10 de baza + metadata Dolby Vision
+  (renunta la al doilea strat, de enhancement). Garda de siguranta: pe sursele
+  rare unde al doilea strat aduce informatie reala de luminozitate (FEL complex),
+  eliminarea lui poate afecta tonemapping-ul → suita avertizeaza si cere
+  confirmare inainte sa continue (ocolire automata: DV_P7_FORCE=1; pe restul —
+  lossless — conversia se aplica direct). Cand sursa P7 e in container MKV e
+  nevoie de mkvextract (vine cu acelasi installer MKVToolNix ca mkvmerge).
+  Profile 7 = doar HEVC (AV1 DV e mereu single-layer Profile 10).
 
   AV1 Dolby Vision (v56 — reparat): injectarea stratului DV in AV1 omitea un
   octet de aliniere obligatoriu, iar decodorul (dav1d) ignora apoi DV-ul (se
@@ -2430,6 +2442,9 @@ CUPRINS
                           target HEVC/AV1 + tool DV (dovi_tool / av1dovi_tool)
                           pt sursa SI target. MediaCodec adauga repair SEI
                           intre encode si inject.
+                          v76: acelasi mecanism pastreaza si HDR10+ pe HW
+                          (re-inject metadata dinamica) + sursele hibride
+                          DV + HDR10+ — vezi 14.5.2.
     skip
 
   Bypass dialog via HW_HDR_POLICY in profil (paralel cu MEDIACODEC_HDR_POLICY).
@@ -2451,6 +2466,33 @@ CUPRINS
   hw_preserve dar tool indisponibil.
 
   Acopera 12 combinatii: 6 backends × {HEVC target, AV1 target}.
+
+
+  ─── 14.5.2. HW HDR10+ preserve via inject (v76) ───
+
+  Orice encoder hardware dropeaza metadata dinamica HDR10+ (ramane doar HDR10
+  static — luminozitate fixa pe tot filmul). v76 o restaureaza prin acelasi
+  pattern ca DV preserve:
+
+    1. extract HDR10+ JSON din sursa (codec-aware: hdr10plus_tool HEVC,
+       av1hdr10plus_tool AV1)
+    2. HW encode produce baza HDR10 (PQ 10-bit)
+    3. post-encode: re-inject HDR10+ peste bitstream-ul encodat hardware
+       (pe AV1 se re-adauga si octetul de aliniere T.35, exact ca la DV)
+
+  Gate: target HEVC/AV1 + hdr10plus_tool pt sursa SI target. Cand unealta e
+  prezenta, pe o sursa HDR10+ + HW pastrarea via inject e optiunea IMPLICITA
+  (ai ales deja HW; metadata re-injectata e identica cu sursa) — sw_full
+  coboara pe pozitia 2.
+
+  Hibrid DV + HDR10+ pe HW: sursa hibrida intra pe hw_preserve (DV are
+  prioritate) si lantul re-injecteaza ambele straturi peste baza HW — intai
+  HDR10+, apoi DV RPU — cu semnalizare de container (dvcC) la final pe MKV/MP4.
+
+  Validat empiric pe QSV HEVC (boxa Intel). NVENC / AMF / VAAPI / VideoToolbox
+  + AV1 HW = la nivel de specificatie (acelasi pattern). Bypass:
+  HW_HDR_POLICY=hw_preserve (pe sursa HDR10+ se ruteaza automat la HDR10+
+  preserve; pe DV → DV preserve).
 
 
   ─── 14.6. Profile fields HW ───
@@ -2768,7 +2810,10 @@ CUPRINS
               AV_TOOL_OAPV_DEC      (default: oapv_app_dec — optional)
               AV_TOOL_SVTAV1ENCAPP  (default: SvtAv1EncApp — doar caps-probe)
               AV_TOOL_MKVMERGE      (default: mkvmerge — optional, dvcC DV pe MKV)
+              AV_TOOL_MKVEXTRACT    (default: mkvextract — optional, extract strat P7 BL+EL+RPU pt conversia 7→8.1, v76)
+              AV_TOOL_MP4BOX        (default: mp4box — optional, dvcC DV pe MP4/MOV, v71)
               AV_ENGINE_APV_HDR10PLUS (default: src/apv_hdr10plus.py)
+              AV_ENGINE_DV_P7       (default: src/dv_p7_analyze.py — clasificare strat P7 MEL/FEL, v76)
             Exemplu: AV_TOOL_DOVI=dovi-tool bash av_launcher.sh
             Windows: $env:AV_TOOL_DOVI = "C:\tools\dovi_tool.exe"
 

@@ -3,9 +3,43 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v75 | 141 bug-uri fixate | 264+ features
-  187 fisiere (22 src + 4 Python engines + 18 tools + 6 profile + 3 burnin presets + 134 teste [127 test_* + 7 infra]) | ~43000 linii cod+teste | ~7200 linii documentatie
+  TOTAL: v76 | 142 bug-uri fixate | 266+ features
+  194 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 140 teste [133 test_* + 7 infra]) | ~43000 linii cod+teste | ~7200 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v76 — HDR10+ pastrat la encodare hardware + Dolby Vision Profil 7 → 8.1
+═══════════════════════════════════════════════════════════════
+
+  ADD HDR10+ se pastreaza acum la encodarea hardware. Pana acum, orice placa
+        video (NVIDIA / Intel / AMD) pierdea metadata dinamica HDR10+ la
+        encodarea hardware — ramanea doar HDR10 static (luminozitate fixa pe
+        tot filmul). Acum, daca unealta de metadata HDR10+ e instalata, suita
+        re-aplica metadata dinamica peste fisierul encodat hardware →
+        luminozitatea scena-cu-scena e restaurata complet, identica cu sursa.
+        Functioneaza pe HEVC si AV1, inclusiv pe sursele hibride
+        Dolby Vision + HDR10+ (ambele straturi se pastreaza). Cand alegi
+        hardware pe o sursa HDR10+ si unealta e prezenta, pastrarea e acum
+        optiunea implicita; altfel raman variantele software (pastrare
+        completa) sau HDR10 static.
+
+  ADD HDR/DV tools — conversie Dolby Vision Profil 7 → Profil 8.1. Profil 7
+        (dublu-strat, tipic de pe disc UHD) nu e citit de multe televizoare si
+        playere; Profil 8.1 e compatibil universal. Optiunea apare automat in
+        "Transform RPU" cand sursa e Profil 7 si pastreaza imaginea HDR10 de
+        baza impreuna cu metadata Dolby Vision. Garda de siguranta: pe sursele
+        rare unde al doilea strat aduce informatie reala de luminozitate (nu
+        doar o copie), conversia poate afecta redarea → suita avertizeaza si
+        cere confirmare inainte sa continue (ocolire automata: DV_P7_FORCE=1).
+
+  FIX Re-encodarea cu pastrare Dolby Vision pe o sursa Profil 7 producea un
+        fisier Dolby Vision invalid. La re-encodare al doilea strat se pierde
+        inevitabil (rezultatul e single-layer), dar metadata Dolby Vision
+        ramanea marcata Profil 7 — care cere acel strat — deci un televizor
+        putea respinge DV-ul. Acum metadata se converteste la Profil 8.1
+        (single-layer, universal) inainte de scriere → Dolby Vision valid.
+        Afecta encodarea x265 si hardware pe surse Profil 7.
 
 
 ═══════════════════════════════════════════════════════════════

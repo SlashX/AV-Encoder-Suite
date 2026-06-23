@@ -3138,26 +3138,27 @@ function _Get-AvPython {
 # cere. In-place pe IVF. Soft-fail daca python/engine lipsesc (Test-DvSurvived
 # prinde pierderea ulterior). Engine partajat src/av1_dv_t35_repair.py.
 function Repair-Av1DvT35 {
-    param([string]$File)
+    param([string]$File, [string]$Mode = "dv")   # v76: Mode = dv | hdr10plus | both
+    $lbl = switch ($Mode) { "hdr10plus" { "HDR10+" } "both" { "DV+HDR10+" } default { "DV" } }
     $engine = Join-Path $PSScriptRoot "av1_dv_t35_repair.py"
     $py = _Get-AvPython
     if (-not $py) {
-        Write-Host "  DV: ⚠ repair T.35 AV1 sarit (Python 3 indisponibil) — DV poate fi pierdut la dav1d" -ForegroundColor Yellow
+        Write-Host "  ${lbl}: ⚠ repair T.35 AV1 sarit (Python 3 indisponibil) — metadata poate fi pierduta la dav1d" -ForegroundColor Yellow
         return $false
     }
     if (-not (Test-Path $engine)) {
-        Write-Host "  DV: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" -ForegroundColor Yellow
+        Write-Host "  ${lbl}: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" -ForegroundColor Yellow
         return $false
     }
     $fixed = Join-Path $AV_TEMP_DIR ("t35fix_"+[guid]::NewGuid().ToString("N")+".ivf")
-    & $py $engine $File $fixed 2>$null | Out-Null
+    & $py $engine $File $fixed $Mode 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $fixed) -and (Get-Item $fixed).Length -gt 0) {
         Move-Item -Force $fixed $File
-        Write-Host "  DV: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" -ForegroundColor Green
+        Write-Host "  ${lbl}: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" -ForegroundColor Green
         return $true
     }
     Remove-Item $fixed -Force -ErrorAction SilentlyContinue
-    Write-Host "  DV: ⚠ repair T.35 AV1 esuat — DV poate fi pierdut la dav1d" -ForegroundColor Yellow
+    Write-Host "  ${lbl}: ⚠ repair T.35 AV1 esuat — metadata poate fi pierduta la dav1d" -ForegroundColor Yellow
     return $false
 }
 
@@ -3361,6 +3362,36 @@ function Inject-DvRpu {
         return $true
     } else {
         Write-Host "  DV: Injectare RPU esuata" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# ── Inject-Hdr10PlusMetadata — injecteaza HDR10+ dinamic (SMPTE ST 2094-40) ────
+# v76: oglinda lui Inject-DvRpu pentru calea HW-preserve. HW encoderele dropeaza
+# dinamicul (iese HDR10 static) → re-injectam JSON-ul extras din sursa in bitstream-ul
+# HDR10 produs de HW. hdr10plus_tool (HEVC) / av1hdr10plus_tool (AV1): `inject -i -j -o`
+# (CLI confirmat, identic ambele). NB: spre deosebire de DV (T.35 repair), OBU-ul HDR10+
+# AV1 (0x003C) e scris de av1hdr10plus_tool si sarit de Repair-Av1DvT35 — daca dav1d il
+# respinge se evalueaza in F2 (azi calea dovedita = HEVC).
+function Inject-Hdr10PlusMetadata {
+    param(
+        [string]$StreamFile,
+        [string]$JsonFile,
+        [string]$OutputFile,
+        [string]$TargetCodec = "hevc"
+    )
+    $hpBin = Get-ToolForInject -Codec $TargetCodec -Kind "hdr10plus"
+    if (-not $hpBin) { Write-Host "  HDR10+: tool inject indisponibil ($TargetCodec)" -ForegroundColor Yellow; return $false }
+    Write-Host "  HDR10+: Injectez metadata in bitstream $TargetCodec (tool=$hpBin)..." -ForegroundColor Cyan
+    & $hpBin inject -i "$StreamFile" -j "$JsonFile" -o "$OutputFile" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $OutputFile) -and (Get-Item $OutputFile).Length -gt 0) {
+        # v76: AV1 — av1hdr10plus_tool omite acelasi trailing-byte T.35 (0x80) ca av1dovi_tool
+        # (dav1d: "Malformed ITU-T T.35") → repara OBU-ul HDR10+ (provider 0x003C).
+        if ($TargetCodec -eq "av1") { Repair-Av1DvT35 -File $OutputFile -Mode "hdr10plus" | Out-Null }
+        Write-Host "  HDR10+: Injectare reusita" -ForegroundColor Green
+        return $true
+    } else {
+        Write-Host "  HDR10+: Injectare esuata" -ForegroundColor Yellow
         return $false
     }
 }
@@ -4099,6 +4130,158 @@ function Invoke-HdvCombineWithOriginal {
     return ($LASTEXITCODE -eq 0)
 }
 
+# ── v76: P7 → 8.1 (dual-layer aware) — mirror al helperilor bash (av_common.sh) +
+# orchestrator (av_hdr_dv_tools.sh). P7 = BL HDR10 + EL [MEL/FEL] + RPU → 8.1 single-layer
+# pastreaza BL + RPU, arunca EL. Gate de siguranta pe FEL complex (engine dv_p7_analyze.py).
+function Get-DvP7EnginePath {
+    return $(if ($env:AV_ENGINE_DV_P7) { $env:AV_ENGINE_DV_P7 } else { Join-Path $PSScriptRoot "dv_p7_analyze.py" })
+}
+
+# Peak base-layer in niti (MaxCLL real al BL) — pragul gate-ului FEL. Fallback 1000.
+function Get-DvBlPeakNits {
+    param([string]$File)
+    $maxcll = & ffprobe -v error -select_streams v:0 -show_frames -read_intervals "0%+#1" `
+        -show_entries frame_side_data=max_content -of default=noprint_wrappers=1:nokey=1 $File 2>$null |
+        Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
+    if ($maxcll -and [int]$maxcll -gt 0) { return [int]$maxcll }
+    return 1000
+}
+
+# Extrage stream HEVC complet (BL+EL+RPU). MKV: EL in block additions → mkvextract
+# (ffmpeg -c copy pierde EL+RPU). Alte containere: EL interleaved → ffmpeg. Return bool.
+function Get-DvFullHevc {
+    param([string]$File, [string]$OutFile)
+    $ext = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLowerInvariant()
+    $mkvx = if ($env:AV_TOOL_MKVEXTRACT) { $env:AV_TOOL_MKVEXTRACT } else { "mkvextract" }
+    $mkvm = if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } else { "mkvmerge" }
+    if ($ext -eq "mkv" -and (Get-Command $mkvx -ErrorAction SilentlyContinue)) {
+        $vid = 0
+        $line = (& $mkvm -i $File 2>$null | Where-Object { $_ -match '^Track ID (\d+): video' } | Select-Object -First 1)
+        if ($line -match '^Track ID (\d+): video') { $vid = $Matches[1] }
+        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+        & $mkvx $File tracks "$($vid):$OutFile" 2>&1 | Out-Null
+    } else {
+        & ffmpeg -y -v error -i $File -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb -f hevc $OutFile 2>$null
+    }
+    return ((Test-Path $OutFile) -and (Get-Item $OutFile).Length -gt 0)
+}
+
+# Clasifica EL-ul (pe stream complet) via engine. Return: "<MEL|FEL_SAFE|FEL_COMPLEX|UNKNOWN> l1_nits=.. bl_peak=.. thr=.."
+function Get-P7ElClass {
+    param([string]$Stream, [string]$Orig)
+    $unknown = "UNKNOWN l1_nits=0 bl_peak=0 thr=0"
+    $py = _Get-AvPython
+    if (-not $py) { return $unknown }
+    $engine = Get-DvP7EnginePath
+    if (-not (Test-Path $engine)) { return $unknown }
+    $doviBin = Get-ToolForExtract -Codec hevc -Kind "dovi"
+    if (-not $doviBin) { return $unknown }
+    $rpu  = Join-Path $AV_TEMP_DIR ("p7rpu_"+[guid]::NewGuid().ToString("N")+".bin")
+    $json = Join-Path $AV_TEMP_DIR ("p7_"+[guid]::NewGuid().ToString("N")+".json")
+    & $doviBin extract-rpu $Stream -o $rpu 2>&1 | Out-Null
+    if (-not (Test-Path $rpu) -or (Get-Item $rpu).Length -eq 0) {
+        Remove-Item $rpu,$json -Force -ErrorAction SilentlyContinue; return $unknown
+    }
+    & $doviBin export -i $rpu -d "all=$json" 2>&1 | Out-Null
+    $blPeak = Get-DvBlPeakNits -File $Orig
+    $out = (& $py $engine $json "$blPeak" 2>$null | Select-Object -First 1)
+    Remove-Item $rpu,$json -Force -ErrorAction SilentlyContinue
+    if ($out) { return $out } else { return $unknown }
+}
+
+# Orchestrator P7→8.1. Return: 0=ok, 1=eroare, 2=refuzat (EL complex/nedeterminat fara force).
+function Convert-P7ToProfile81 {
+    param([string]$File, [string]$FinalOut)
+    $fullHevc = Join-Path $AV_TEMP_DIR ("p7full_"+[guid]::NewGuid().ToString("N")+".hevc")
+    Write-Host "  [1/3] Extract stream complet (BL+EL+RPU)..." -ForegroundColor Cyan
+    if (-not (Get-DvFullHevc -File $File -OutFile $fullHevc)) {
+        $mkvx = if ($env:AV_TOOL_MKVEXTRACT) { $env:AV_TOOL_MKVEXTRACT } else { "mkvextract" }
+        Write-Host "  EROARE: extract stream esuat (P7 in MKV cere $mkvx)." -ForegroundColor Red
+        Remove-Item $fullHevc -Force -ErrorAction SilentlyContinue; return 1
+    }
+
+    Write-Host "  [2/3] Analiza strat de imbunatatire (EL)..." -ForegroundColor Cyan
+    $verdict = Get-P7ElClass -Stream $fullHevc -Orig $File
+    $vkey = ($verdict -split ' ')[0]
+    Write-Host "    EL: $verdict"
+    switch ($vkey) {
+        "MEL"      { Write-Host "    -> MEL (minimal): discard LOSSLESS." -ForegroundColor Green }
+        "FEL_SAFE" { Write-Host "    -> FEL fara expansiune de luminozitate: discard SIGUR." -ForegroundColor Green }
+        default {
+            Write-Host "    ⚠ ${vkey}: EL-ul poarta (posibil) expansiune de luminozitate." -ForegroundColor Yellow
+            Write-Host "      Aruncarea lui ar putea strica tone-mapping-ul (highlight-uri pierdute)." -ForegroundColor Yellow
+            if ($env:DV_P7_FORCE -eq "1") {
+                Write-Host "      DV_P7_FORCE=1 -> convertesc oricum." -ForegroundColor Yellow
+            } elseif ($env:AV_NONINTERACTIVE -eq "1") {
+                Write-Host "      Refuzat (non-interactiv). Forteaza cu DV_P7_FORCE=1." -ForegroundColor Yellow
+                Remove-Item $fullHevc -Force -ErrorAction SilentlyContinue; return 2
+            } else {
+                $ans = Read-Host "      Convertesc oricum (pierzi highlight-urile)? [y/N]"
+                if ($ans -notmatch '^[Yy]') {
+                    Write-Host "      Anulat." -ForegroundColor Yellow
+                    Remove-Item $fullHevc -Force -ErrorAction SilentlyContinue; return 2
+                }
+            }
+        }
+    }
+
+    Write-Host "  [3/3] Conversie P7->8.1 (discard EL) + re-mux dvcC..." -ForegroundColor Cyan
+    $bl81 = Join-Path $AV_TEMP_DIR ("p7bl81_"+[guid]::NewGuid().ToString("N")+".hevc")
+    $doviBin = Get-ToolForExtract -Codec hevc -Kind "dovi"
+    & $doviBin -m 2 convert --discard -i $fullHevc -o $bl81 2>&1 | Out-Null
+    if (-not (Test-Path $bl81) -or (Get-Item $bl81).Length -eq 0) {
+        Write-Host "  EROARE: $doviBin convert --discard esuat." -ForegroundColor Red
+        Remove-Item $fullHevc,$bl81 -Force -ErrorAction SilentlyContinue; return 1
+    }
+    Remove-Item $fullHevc -Force -ErrorAction SilentlyContinue
+
+    $outExt = [System.IO.Path]::GetExtension($FinalOut).TrimStart('.').ToLowerInvariant()
+    $vtag = @()
+    if ($outExt -in @("mp4","mov","m4v")) { $vtag = @("-tag:v","hvc1") }
+    $ok = Invoke-HdvCombineWithOriginal -Modified $bl81 -Original $File -Output $FinalOut -VTag $vtag
+    Remove-Item $bl81 -Force -ErrorAction SilentlyContinue
+    if ($ok -and (Test-Path $FinalOut) -and (Get-Item $FinalOut).Length -gt 0) { return 0 }
+    Write-Host "  EROARE: re-mux final esuat." -ForegroundColor Red
+    Remove-Item $FinalOut -Force -ErrorAction SilentlyContinue; return 1
+}
+
+# v76: extrage RPU pt DV PRESERVE pe calea de ENCODE (baza re-encodata e mereu
+# single-layer HDR10). Pe sursa P7 (dual-layer HEVC), Get-DvRpu fie ESUEAZA (RPU sta in
+# EL → ffmpeg -c copy il pierde, ex. P7 MKV) fie da un RPU profil-7 care, injectat intr-o
+# baza single-layer, produce un stream DV INVALID (profil 7 cere un EL care nu mai exista).
+# Deci pt P7: extragem stream-ul COMPLET (mkvextract pt MKV via Get-DvFullHevc), convertim
+# STREAM-ul la 8.1 (`-m 2 convert --discard`) si extragem RPU-ul profil-8 din el (EL pierdut
+# oricum la re-encode → 8.1 e profilul corect; conversia e de STREAM, NU de RPU — `-m 2 editor`
+# pe RPU P7 e no-op). Restul (P8.x / AV1 P10): Get-DvRpu normal. Oglinda bash _extract_preserve_rpu.
+#   Return: $true=OK, $false=fail.
+function Get-PreserveRpu {
+    param([string]$File, [string]$RpuOut, [string]$Codec = "hevc")
+    if ($Codec -ne "hevc" -or (Get-DVProfile $File) -notlike "*Profil 7*") {
+        return (Get-DvRpu -InputFile $File -RpuOut $RpuOut -SourceCodec $Codec)
+    }
+    $full = Join-Path $AV_TEMP_DIR ("preserve_full_"+[guid]::NewGuid().ToString("N")+".hevc")
+    $conv = Join-Path $AV_TEMP_DIR ("preserve_conv81_"+[guid]::NewGuid().ToString("N")+".hevc")
+    if (-not (Get-DvFullHevc -File $File -OutFile $full)) {
+        Remove-Item $full,$conv -Force -ErrorAction SilentlyContinue; return $false
+    }
+    $doviBin = Get-ToolForExtract -Codec hevc -Kind "dovi"
+    # P7→8.1 = operatie de STREAM (discard EL): convertim stream-ul (`-m 2 convert --discard`),
+    # apoi extragem RPU-ul profil-8 din el (-m 2 editor pe RPU P7 ar fi no-op → ramane profil 7).
+    & $doviBin -m 2 convert --discard -i $full -o $conv 2>&1 | Out-Null
+    Remove-Item $full -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $conv) -or (Get-Item $conv).Length -eq 0) {
+        Remove-Item $conv -Force -ErrorAction SilentlyContinue; return $false
+    }
+    & $doviBin extract-rpu $conv -o $RpuOut 2>&1 | Out-Null
+    Remove-Item $conv -Force -ErrorAction SilentlyContinue
+    if ((Test-Path $RpuOut) -and (Get-Item $RpuOut).Length -gt 0) {
+        Write-Host "  DV preserve: sursa P7 -> stream convertit 8.1 + RPU profil-8 extras (baza re-encodata single-layer; EL pierdut la re-encode)" -ForegroundColor Cyan
+        return $true
+    }
+    Remove-Item $RpuOut -Force -ErrorAction SilentlyContinue
+    return $false
+}
+
 function Invoke-TransformRpu {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -4120,6 +4303,40 @@ function Invoke-TransformRpu {
         Write-Host "    Conversia P5→8.1 NU e posibila (nu exista baza HDR10 de fabricat);" -ForegroundColor Yellow
         Write-Host "    output-ul ar ramane Profil 5. Pentru a pastra DV-ul intact 1:1:" -ForegroundColor Yellow
         Write-Host "    Mux tools → Remux (stream-copy)." -ForegroundColor Yellow
+    }
+
+    # v76: Profil 7 = dual-layer (BL HDR10 + EL + RPU). Calea RPU-only de mai jos NU merge
+    # pe P7 (RPU sta in EL, pe care Get-RawVideo il pierde) → flux dedicat: extract stream
+    # complet (mkvextract) → discard EL → 8.1 single-layer + dvcC.
+    if ($dvProf -like "*Profil 7*") {
+        Write-Host ""
+        Write-Host "  Profil 7 detectat → conversie la 8.1 (single-layer, compatibilitate universala)." -ForegroundColor White
+        Write-Host "  Pastreaza BL HDR10 + RPU (DV activ pe TV + PC), arunca EL."
+        $ext7 = [System.IO.Path]::GetExtension($file).TrimStart('.').ToLowerInvariant()
+        $mkvx7 = if ($env:AV_TOOL_MKVEXTRACT) { $env:AV_TOOL_MKVEXTRACT } else { "mkvextract" }
+        if ($ext7 -eq "mkv" -and -not (Get-Command $mkvx7 -ErrorAction SilentlyContinue)) {
+            Write-Host "  EROARE: P7 in MKV are EL in block additions → necesita $mkvx7" -ForegroundColor Red
+            Write-Host "         (vine cu MKVToolNix). Instaleaza-l si reincearca." -ForegroundColor Red
+            return
+        }
+        if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
+        $out7 = Join-Path $OutputDir ("{0}_dv81.{1}" -f [System.IO.Path]::GetFileNameWithoutExtension($file), $ext7)
+        Write-Host ""
+        $rc7 = Convert-P7ToProfile81 -File $file -FinalOut $out7
+        switch ($rc7) {
+            0 {
+                Write-Host ""
+                Write-Host "  ✓ P7→8.1 complet: $out7" -ForegroundColor Green
+                Write-Host "    Profil rezultat: $(Get-DVProfile $out7)"
+            }
+            2 {
+                Write-Host ""
+                Write-Host "  Conversie anulata (EL complex / nedeterminat). DV-ul P7 ramane intact in sursa." -ForegroundColor Yellow
+                Write-Host "  Alternativa pastrare 1:1: Mux tools → Remux (stream-copy)." -ForegroundColor Yellow
+            }
+            default { Write-Host "  EROARE: conversie P7→8.1 esuata." -ForegroundColor Red }
+        }
+        return
     }
 
     Write-Host ""
@@ -7685,6 +7902,8 @@ foreach ($f in $inputFiles) {
     $tripleLayerTargetCodec = "hevc"
     $hdr10PlusJson = ""
     $doviRpuFile = ""
+    # v76: reset defensiv state HW HDR10+ preserve per fisier (setat in dialogul HDR10+ HW)
+    $hwHdr10PlusInject = $false; $hwHdr10PlusCodec = ""
     # v69: reset defensiv state APV HDR10+ per fisier (setat in sectiunea APV)
     $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
     # v61: reset CWD ffmpeg per fisier (HDR10+ inline / 2-pass stats); pastreaza-l daca
@@ -7921,7 +8140,7 @@ foreach ($f in $inputFiles) {
                 } else {
                     Write-Host "  DV (AV1 P10): Extrag RPU din sursa ($srcCodec)..." -ForegroundColor Cyan
                     $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
-                    if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $srcCodec) {
+                    if (Get-PreserveRpu -File $f.FullName -RpuOut $srcRpu -Codec $srcCodec) {
                         $doviRpuFile = $srcRpu
                         $tripleLayerMode = $true
                         $tripleLayerTargetCodec = "av1"
@@ -8323,11 +8542,27 @@ foreach ($f in $inputFiles) {
                 # v46: extract RPU + setup triple-layer; HW produce HDR10 base layer
                 $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
                 Write-Host "  v46 HW DV preserve: Extrag RPU sursa ($hwSrcCodec)..." -ForegroundColor Cyan
-                if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $hwSrcCodec) {
+                if (Get-PreserveRpu -File $f.FullName -RpuOut $srcRpu -Codec $hwSrcCodec) {
                     $doviRpuFile = $srcRpu
                     $tripleLayerMode = $true
                     $tripleLayerTargetCodec = $hwTargetCodec
                     Write-Host "  v46 HW DV preserve: RPU extras — HW encode + inject post-encode ($hwTargetCodec)" -ForegroundColor Green
+                    # v76 F3: hibrid DV+HDR10+ — sursa DV cu HDR10+ co-existent (P8.1 hybrid / AV1
+                    # DV+HDR10+). DV are prioritate la detectie, dar HW dropeaza SI dinamicul HDR10+ →
+                    # extragem SI JSON-ul ca sa-l re-injectam in lantul DV (HDR10+ INAINTE de DV RPU,
+                    # re-mux cu dvcC = pasul final). Gateat pe hdr10plus_tool (target codec).
+                    if ($si.isHDRPlus -and (Test-Hdr10PlusToolFor -Codec $hwTargetCodec)) {
+                        Write-Host "  v76 HW hibrid DV+HDR10+: Extrag metadata HDR10+..." -ForegroundColor Cyan
+                        $hpJsonHyb = Extract-Hdr10PlusMetadata $f.FullName
+                        if ($hpJsonHyb -and (Test-Path $hpJsonHyb)) {
+                            $hdr10PlusJson = $hpJsonHyb
+                            $hwHdr10PlusInject = $true
+                            $hwHdr10PlusCodec = $hwTargetCodec
+                            Write-Host "  v76 HW hibrid DV+HDR10+: JSON HDR10+ extras — inject inaintea DV RPU" -ForegroundColor Green
+                        } else {
+                            Write-Host "  v76 HW hibrid: extract JSON HDR10+ esuat — doar DV preserve" -ForegroundColor Yellow
+                        }
+                    }
                 } else {
                     Write-Host "  v46 HW DV preserve: Extract RPU esuat — fallback HDR10" -ForegroundColor Yellow
                     Remove-Item $srcRpu -Force -ErrorAction SilentlyContinue
@@ -8356,27 +8591,77 @@ foreach ($f in $inputFiles) {
         # HDR10 static (VUI + mastering-display + MaxCLL) se pastreaza automat prin NVENC/QSV
         # (confirmat empiric). Avertizam + oferim skip; pt HDR10+ complet → encoder SW.
         if ($si.isHDRPlus -and -not $hwDoVi) {
+            # v76: HDR10+ preserve pe HW via post-encode inject (oglinda hw_preserve DV).
+            # HW dropeaza SMPTE2094-40 → extragem JSON, encode baza HDR10, re-injectam dinamicul.
+            # Pe calea HW preserve = recomandat/default (userul a ales HW; metadata re-injectata
+            # byte-exact → HW speed + HDR10+ pastrat). Gated pe hdr10plus_tool (src+enc).
+            $hpTargetCodec = if ($hwEncCodec -match "^hevc_") { "hevc" } elseif ($hwEncCodec -match "^av1_") { "av1" } else { "" }
+            $hpSrcCodec = Get-SourceCodec $f.FullName
+            $hwCanHpPreserve = ($hpTargetCodec -in @("hevc","av1")) -and (Test-Hdr10PlusToolFor -Codec $hpSrcCodec) -and (Test-Hdr10PlusToolFor -Codec $hpTargetCodec)
             Write-Host ""
-            Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
-            Write-Host "  ║  ⚠ Sursa HDR10+ (metadata dinamica)          ║" -ForegroundColor Yellow
-            Write-Host "  ║  HW nu transmite HDR10+ dinamic.             ║" -ForegroundColor Yellow
-            Write-Host "  ║  Iese HDR10 static (mastering + MaxCLL OK).   ║" -ForegroundColor Yellow
-            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-            Write-Host "  ║  1) Continua HW — HDR10 static (drop dinamic) ║" -ForegroundColor White
-            Write-Host "  ║  2) Skip (pt HDR10+ complet: encoder SW)      ║" -ForegroundColor White
-            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-            $hp10c = ""
-            if ($env:HW_HDR_POLICY) {
-                if ($env:HW_HDR_POLICY -eq "skip") { $hp10c = "2"; Write-Host "  HW HDR policy: skip" -ForegroundColor Cyan }
-                else { $hp10c = "1" }
+            Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Magenta
+            Write-Host "  ║  HDR10+ detectat (metadata dinamica)         ║" -ForegroundColor Magenta
+            Write-Host "  ║  HW $hwEncCodec — optiuni:" -ForegroundColor Magenta
+            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Magenta
+            $maxHp = 3
+            if ($hwCanHpPreserve) {
+                Write-Host "  ║  1) HW — preserve HDR10+ via inject (recomandat)" -ForegroundColor White
+                Write-Host "  ║     HW encode HDR10 base → re-inject metadata" -ForegroundColor DarkGray
+                Write-Host "  ║  2) HW — HDR10 static (drop dinamic)         ║" -ForegroundColor White
+                Write-Host "  ║  3) HW — SDR tonemap 8-bit                   ║" -ForegroundColor White
+                Write-Host "  ║  4) Skip (pt HDR10+ complet: reruleaza cu SW)" -ForegroundColor White
+                $maxHp = 4
             } else {
-                $hp10c = Read-Host "  Alege 1-2 [implicit: 1]"
+                Write-Host "  ║  1) HW — HDR10 static (drop dinamic)         ║" -ForegroundColor White
+                Write-Host "  ║  2) HW — SDR tonemap 8-bit                   ║" -ForegroundColor White
+                Write-Host "  ║  3) Skip (pt HDR10+ complet: reruleaza cu SW)" -ForegroundColor White
+            }
+            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Magenta
+            $hpPolicy = if ($env:HW_HDR_POLICY) { $env:HW_HDR_POLICY } else { "" }
+            $hp10c = ""
+            if ($hpPolicy) {
+                switch ($hpPolicy) {
+                    "hw_preserve" { $hp10c = "1"; if ($hwCanHpPreserve) { Write-Host "  HW HDR policy: hw_preserve (HDR10+)" -ForegroundColor Cyan } else { Write-Host "  HW policy=hw_preserve dar tool indisponibil — HDR10 static" -ForegroundColor Yellow } }
+                    "hw_hdr10"    { $hp10c = if ($hwCanHpPreserve) { "2" } else { "1" }; Write-Host "  HW HDR policy: hw_hdr10" -ForegroundColor Cyan }
+                    "hw_sdr"      { $hp10c = if ($hwCanHpPreserve) { "3" } else { "2" }; Write-Host "  HW HDR policy: hw_sdr" -ForegroundColor Cyan }
+                    "skip"        { $hp10c = if ($hwCanHpPreserve) { "4" } else { "3" }; Write-Host "  HW HDR policy: skip" -ForegroundColor Cyan }
+                    default       { $hp10c = "1" }
+                }
+            } else {
+                $hp10c = Read-Host "  Alege 1-$maxHp [implicit: 1]"
                 if (-not $hp10c) { $hp10c = "1" }
             }
-            if ($hp10c -eq "2") { $totalSkipped++; continue }
-            # HDR10 static: re-afirma VUI prin BSF (robust, inclusiv AMF) + 10-bit
-            $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
-            if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+            $isHpSkip = ($hwCanHpPreserve -and $hp10c -eq "4") -or ((-not $hwCanHpPreserve) -and $hp10c -eq "3")
+            if ($isHpSkip) { $totalSkipped++; continue }
+
+            if ($hwCanHpPreserve -and $hp10c -eq "1") {
+                # v76: extract HDR10+ JSON + setup inject; HW produce baza HDR10
+                Write-Host "  v76 HW HDR10+ preserve: Extrag metadata sursa ($hpSrcCodec)..." -ForegroundColor Cyan
+                $hpJsonTmp = Extract-Hdr10PlusMetadata $f.FullName
+                if ($hpJsonTmp -and (Test-Path $hpJsonTmp)) {
+                    $hdr10PlusJson = $hpJsonTmp
+                    $hwHdr10PlusInject = $true
+                    $hwHdr10PlusCodec = $hpTargetCodec
+                    Write-Host "  v76 HW HDR10+ preserve: JSON extras — HW encode + inject post-encode ($hpTargetCodec)" -ForegroundColor Green
+                } else {
+                    Write-Host "  v76 HW HDR10+ preserve: Extract JSON esuat — fallback HDR10 static" -ForegroundColor Yellow
+                }
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
+                if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+            }
+            elseif (($hwCanHpPreserve -and $hp10c -eq "3") -or ((-not $hwCanHpPreserve) -and $hp10c -eq "2")) {
+                # SDR tonemap 8-bit
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "sdr"
+                $hwPixFmt = "yuv420p"
+                $tmHpVf = "zscale=t=linear:npl=100,tonemap=hable:desat=0,zscale=t=bt709:p=bt709:m=bt709:r=tv,format=yuv420p"
+                if ($videoFilter.Count -gt 0) { $videoFilter = @("-vf","$tmHpVf,$($videoFilter[1])") }
+                else { $videoFilter = @("-vf",$tmHpVf) }
+            }
+            else {
+                # HDR10 static (drop dinamic): re-afirma VUI prin BSF (robust, inclusiv AMF) + 10-bit
+                $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
+                if ($hwSupports10bit) { $hwPixFmt = "p010le" }
+            }
         }
 
         # v39: HLG dialog pentru HW encode (signaling via color_trc, fara SEI repair)
@@ -8687,7 +8972,7 @@ foreach ($f in $inputFiles) {
             if ($dvc -eq "3" -and $canDvPreserve) {
                 $srcRpu = Join-Path $AV_TEMP_DIR ("rpu_"+[guid]::NewGuid().ToString("N")+".bin")
                 Write-Host "  DV preserve (HEVC): Extrag RPU din sursa ($dvSrcCodec)..." -ForegroundColor Cyan
-                if (Get-DvRpu -InputFile $f.FullName -RpuOut $srcRpu -SourceCodec $dvSrcCodec) {
+                if (Get-PreserveRpu -File $f.FullName -RpuOut $srcRpu -Codec $dvSrcCodec) {
                     $doviRpuFile = $srcRpu
                     $tripleLayerMode = $true
                     $tripleLayerTargetCodec = "hevc"
@@ -8967,6 +9252,8 @@ foreach ($f in $inputFiles) {
         # v69: si JSON-ul APV HDR10+ (paritate cu calea de eroare bash)
         if ($script:apvHdr10PlusJson -and (Test-Path $script:apvHdr10PlusJson)) { Remove-Item $script:apvHdr10PlusJson -Force -ErrorAction SilentlyContinue }
         $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
+        # v76: reset state HW HDR10+ preserve pe calea de eroare ($hdr10PlusJson sters mai sus)
+        $hwHdr10PlusInject = $false; $hwHdr10PlusCodec = ""
         $totalErrors++; continue
     }
     if (Test-Path $errFile) { Remove-Item $errFile -Force -ErrorAction SilentlyContinue }
@@ -8985,8 +9272,22 @@ foreach ($f in $inputFiles) {
         }
         & ffmpeg -v error -i $outFile @extractArgs 2>>"$LogFile"
         if ($LASTEXITCODE -eq 0 -and (Test-Path $rawTemp)) {
+            # v76 F3: hibrid DV+HDR10+ — injecteaza HDR10+ in raw INAINTE de DV RPU, in ACELASI
+            # lant (re-mux cu dvcC ramane pasul final → DV activabil pe TV). Pe AV1 repair-urile
+            # T.35 sunt mod-specifice (HDR10+→0x003C, DV→0x003B sare 0x003C) → ambele OBU corecte.
+            $dvSrc = $rawTemp; $hybHp = ""
+            if ($hwHdr10PlusInject -and $hdr10PlusJson -and (Test-Path $hdr10PlusJson)) {
+                $hybHp = Join-Path $AV_TEMP_DIR ("hyb_"+[guid]::NewGuid().ToString("N")+".$rawExt")
+                if (Inject-Hdr10PlusMetadata -StreamFile $rawTemp -JsonFile $hdr10PlusJson -OutputFile $hybHp -TargetCodec $tlCodec) {
+                    $dvSrc = $hybHp
+                    Write-Host "  Triple-layer: HDR10+ injectat in lant (hibrid) inaintea DV RPU" -ForegroundColor Cyan
+                } else {
+                    Remove-Item $hybHp -Force -ErrorAction SilentlyContinue; $hybHp = ""
+                    Write-Host "  Triple-layer: inject HDR10+ esuat — continui doar cu DV" -ForegroundColor Yellow
+                }
+            }
             $injectedTemp = Join-Path $AV_TEMP_DIR ("injected_"+[guid]::NewGuid().ToString("N")+".$rawExt")
-            if (Inject-DvRpu $rawTemp $doviRpuFile $injectedTemp -TargetCodec $tlCodec) {
+            if (Inject-DvRpu $dvSrc $doviRpuFile $injectedTemp -TargetCodec $tlCodec) {
                 $finalTemp = Join-Path $AV_TEMP_DIR ("final_"+[guid]::NewGuid().ToString("N")+".$container")
                 $tlContFlags = Get-ContainerFlags $container
                 # v69 audit FIX: HEVC annexb brut nu are PTS pe B-frames → muxerul
@@ -9043,7 +9344,59 @@ foreach ($f in $inputFiles) {
             Write-Host "  Triple-layer: Extractie raw $tlCodec esuata" -ForegroundColor Yellow
         }
         Remove-Item $rawTemp -Force -ErrorAction SilentlyContinue
+        if ($hybHp) { Remove-Item $hybHp -Force -ErrorAction SilentlyContinue }
     }
+
+    # ── v76: HW HDR10+ preserve — injecteaza dinamicul in baza HDR10 produsa de HW ──
+    # (post-encode, ca triple-layer; state setat in dialogul HDR10+ HW). HW dropeaza
+    # SMPTE2094-40 → re-injectam JSON-ul extras din sursa. HDR10+ e SEI/OBU inline (NU
+    # cere dvcC de container ca DV). Garda raw→MKV (clasa v69): HEVC fara PTS → pas MP4.
+    # v76 F3: in hibrid DV+HDR10+ ($tripleLayerMode) HDR10+ a fost DEJA injectat in lantul DV
+    # de mai sus (cu dvcC final) → NU rula a doua oara aici (ar pierde dvcC la re-mux plain).
+    if ($hwHdr10PlusInject -and $hdr10PlusJson -and (Test-Path $hdr10PlusJson) -and -not $tripleLayerMode) {
+        $hpCodec = if ($hwHdr10PlusCodec) { $hwHdr10PlusCodec } else { "hevc" }
+        $hpExt = if ($hpCodec -eq "av1") { "ivf" } else { "hevc" }
+        Write-Host "  HW HDR10+: re-injectez metadata dinamica in baza HDR10 ($hpCodec)..." -ForegroundColor Cyan
+        $hpRaw = Join-Path $AV_TEMP_DIR ("hpraw_"+[guid]::NewGuid().ToString("N")+".$hpExt")
+        $hpXargs = if ($hpCodec -eq "av1") { @("-c:v","copy","-f","ivf",$hpRaw) } else { @("-c:v","copy","-bsf:v","hevc_mp4toannexb","-f","hevc",$hpRaw) }
+        & ffmpeg -v error -i $outFile @hpXargs 2>>"$LogFile"
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $hpRaw)) {
+            $hpInj = Join-Path $AV_TEMP_DIR ("hpinj_"+[guid]::NewGuid().ToString("N")+".$hpExt")
+            if (Inject-Hdr10PlusMetadata -StreamFile $hpRaw -JsonFile $hdr10PlusJson -OutputFile $hpInj -TargetCodec $hpCodec) {
+                $hpFinal = Join-Path $AV_TEMP_DIR ("hpfinal_"+[guid]::NewGuid().ToString("N")+".$container")
+                $hpContFlags = Get-ContainerFlags $container
+                if ($hpCodec -ne "av1" -and $container -eq "mkv") {
+                    # HEVC annexb brut nu are PTS → MKV refuza → pas intermediar MP4
+                    $hpStep = Join-Path $AV_TEMP_DIR ("hpstep_"+[guid]::NewGuid().ToString("N")+".mp4")
+                    $hpA1 = @("-v","error","-y","-i",$hpInj,"-i",$outFile,"-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?","-c","copy") + @($hpStep)
+                    & ffmpeg @hpA1 2>>"$LogFile"
+                    if ($LASTEXITCODE -eq 0 -and (Test-Path $hpStep) -and (Get-Item $hpStep).Length -gt 0) {
+                        & ffmpeg -v error -y -i $hpStep -c copy $hpFinal 2>>"$LogFile"
+                    }
+                    Remove-Item $hpStep -Force -ErrorAction SilentlyContinue
+                } else {
+                    $hpA2 = @("-v","error","-y","-i",$hpInj,"-i",$outFile,"-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?","-c","copy") + $hpContFlags + @($hpFinal)
+                    & ffmpeg @hpA2 2>>"$LogFile"
+                }
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $hpFinal) -and (Get-Item $hpFinal).Length -gt 0) {
+                    Move-Item -Force $hpFinal $outFile
+                    Write-Host "  HW HDR10+: dinamicul restaurat in output ($hpCodec via $hwEncCodec)" -ForegroundColor Green
+                    "  HW HDR10+: dinamic restaurat ($hpCodec)" | Out-File $LogFile -Append -Encoding UTF8
+                } else {
+                    Write-Host "  HW HDR10+: re-mux esuat — output ramane HDR10 static" -ForegroundColor Yellow
+                    Remove-Item $hpFinal -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                Write-Host "  HW HDR10+: inject esuat — output ramane HDR10 static" -ForegroundColor Yellow
+            }
+            Remove-Item $hpInj -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Host "  HW HDR10+: extractie raw esuata — output ramane HDR10 static" -ForegroundColor Yellow
+        }
+        Remove-Item $hpRaw -Force -ErrorAction SilentlyContinue
+    }
+    $hwHdr10PlusInject = $false; $hwHdr10PlusCodec = ""
+
     # Cleanup HDR10+ / DV temp files
     if ($hdr10PlusJson -and (Test-Path $hdr10PlusJson)) { Remove-Item $hdr10PlusJson -Force -ErrorAction SilentlyContinue }
     if ($doviRpuFile -and (Test-Path $doviRpuFile)) { Remove-Item $doviRpuFile -Force -ErrorAction SilentlyContinue }

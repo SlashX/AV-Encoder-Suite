@@ -135,7 +135,7 @@ encoder_setup_file() {
                         # v46: MC AV1 encode + repair + inject DV RPU post-encode
                         local _rpu_tmp
                         _rpu_tmp=$(av_mktemp_ext "rpu.bin")
-                        if extract_dv_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
+                        if _extract_preserve_rpu "$file" "$_rpu_tmp" "$_mc_src_codec"; then
                             DOVI_RPU_FILE="$_rpu_tmp"
                             TRIPLE_LAYER_MODE=1
                             TRIPLE_LAYER_TARGET_CODEC="av1"
@@ -209,8 +209,8 @@ encoder_setup_file() {
         case "${dv_choice:-2}" in
             3)
                 if _check_av1_dovi_tool && [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
-                    # Detect source codec si foloseste extract_dv_rpu codec-aware
-                    # (dovi_tool pt HEVC, av1dovi_tool pt AV1)
+                    # Detect source codec + extrage RPU P7-aware (_extract_preserve_rpu:
+                    # dovi_tool/av1dovi_tool codec-aware; P7 HEVC → convert 7→8.1)
                     local _src_codec
                     _src_codec=$(detect_source_codec "$file")
                     if ! _check_dovi_tool_for "$_src_codec"; then
@@ -219,7 +219,7 @@ encoder_setup_file() {
                         local _src_rpu
                         _src_rpu=$(av_mktemp_ext bin)
                         log "  DV (AV1 P10): Extrag RPU din sursa ($_src_codec)..."
-                        if extract_dv_rpu "$file" "$_src_rpu" "$_src_codec"; then
+                        if _extract_preserve_rpu "$file" "$_src_rpu" "$_src_codec"; then
                             DOVI_RPU_FILE="$_src_rpu"
                             TRIPLE_LAYER_MODE=1
                             TRIPLE_LAYER_TARGET_CODEC="av1"

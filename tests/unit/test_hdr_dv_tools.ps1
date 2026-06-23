@@ -187,9 +187,9 @@ $PS1_TEXT   = Get-Content $PS1_SCRIPT -Raw
 $helperDefs = ([regex]::Matches($PS1_TEXT, 'function Invoke-HdvCombineWithOriginal\b')).Count
 Assert-Eq 1 $helperDefs "Invoke-HdvCombineWithOriginal definit exact o data"
 
-# 4 call-site-uri (cele 4 flow-uri)
+# 5 call-site-uri (cele 4 flow-uri + v76 P7→8.1)
 $helperCalls = ([regex]::Matches($PS1_TEXT, '\$ok\s*=\s*Invoke-HdvCombineWithOriginal\b')).Count
-Assert-Eq 4 $helperCalls "4 call-site-uri Invoke-HdvCombineWithOriginal"
+Assert-Eq 5 $helperCalls "5 call-site-uri Invoke-HdvCombineWithOriginal (4 flow-uri + P7→8.1)"
 
 # Zero `-map 0:v:0 -map 1:a?` direct in flows hdr_dv (toate trec prin helper)
 # Verifica pe blocul Invoke-(TransformRpu|Hdr10PlusToDv|RemoveDv|RemoveHdr10Plus)

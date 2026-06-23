@@ -200,9 +200,9 @@ assert_file_exists "$HDV_SCRIPT" "av_hdr_dv_tools.sh prezent"
 HELPER_DEFS=$(grep -c "^_hdv_combine_with_original()" "$HDV_SCRIPT")
 assert_eq "1" "$HELPER_DEFS" "_hdv_combine_with_original definit exact o data"
 
-# 4 call-site-uri (cele 4 flow-uri: transform / hybrid / remove DV / remove HDR10+)
+# 5 call-site-uri (transform / hybrid / remove DV / remove HDR10+ / v76 P7→8.1)
 HELPER_CALLS=$(grep -c "_hdv_combine_with_original \"" "$HDV_SCRIPT")
-assert_eq "4" "$HELPER_CALLS" "4 call-site-uri _hdv_combine_with_original (paritate cu 4 flow-uri)"
+assert_eq "5" "$HELPER_CALLS" "5 call-site-uri _hdv_combine_with_original (4 flow-uri + P7→8.1)"
 
 # Zero invocari ffmpeg directe pentru combine (acceptabil pt extract/bsf/etc, dar nu pt -c copy mux final)
 DIRECT_COMBINE=$(grep -c "^[[:space:]]*ffmpeg .* -map 0:v:0 -map 1:a?" "$HDV_SCRIPT")

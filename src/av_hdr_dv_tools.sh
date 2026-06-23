@@ -81,6 +81,70 @@ _hdv_combine_with_original() {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# v76: orchestrator P7 → 8.1 (dual-layer aware). Helperii puri (_dv_extract_full_hevc /
+# _classify_p7_el / _dv_bl_peak_nits) traiesc in av_common.sh. Pasi: extract stream complet
+# O DATA → clasifica EL → gate (MEL/FEL_SAFE direct; FEL_COMPLEX/UNKNOWN → prompt sau
+# DV_P7_FORCE) → dovi_tool -m 2 convert --discard → re-mux cu dvcC (_hdv_combine_with_original).
+# Return: 0=ok, 1=eroare, 2=refuzat (EL complex/nedeterminat, fara force).
+#   $1 = fisier P7 sursa   $2 = output final
+convert_p7_to_81() {
+    local file="$1" final_out="$2"
+    local full_hevc; full_hevc=$(av_mktemp_ext hevc)
+    echo "  [1/3] Extract stream complet (BL+EL+RPU)..."
+    if ! _dv_extract_full_hevc "$file" "$full_hevc"; then
+        echo "  EROARE: extract stream esuat (P7 in MKV cere $AV_TOOL_MKVEXTRACT)."
+        rm -f "$full_hevc"; return 1
+    fi
+
+    echo "  [2/3] Analiza strat de imbunatatire (EL)..."
+    local verdict vkey
+    verdict=$(_classify_p7_el "$full_hevc" "$file")
+    vkey="${verdict%% *}"
+    echo "    EL: $verdict"
+    case "$vkey" in
+        MEL)      echo "    → MEL (minimal): discard LOSSLESS." ;;
+        FEL_SAFE) echo "    → FEL fara expansiune de luminozitate: discard SIGUR." ;;
+        FEL_COMPLEX|UNKNOWN)
+            echo "    ⚠ $vkey: EL-ul poarta (posibil) expansiune de luminozitate."
+            echo "      Aruncarea lui ar putea strica tone-mapping-ul (highlight-uri pierdute)."
+            if [[ "${DV_P7_FORCE:-0}" == "1" ]]; then
+                echo "      DV_P7_FORCE=1 → convertesc oricum."
+            elif [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [ ! -t 0 ]; then
+                echo "      Refuzat (non-interactiv). Forteaza cu DV_P7_FORCE=1."
+                rm -f "$full_hevc"; return 2
+            else
+                read -p "      Convertesc oricum (pierzi highlight-urile)? [y/N]: " _ans
+                if [[ ! "$_ans" =~ ^[Yy] ]]; then
+                    echo "      Anulat."; rm -f "$full_hevc"; return 2
+                fi
+            fi ;;
+    esac
+
+    echo "  [3/3] Conversie P7→8.1 (discard EL) + re-mux dvcC..."
+    local bl81; bl81=$(av_mktemp_ext hevc)
+    local dovi_bin; dovi_bin=$(tool_for_inject hevc dovi)
+    "$dovi_bin" -m 2 convert --discard -i "$full_hevc" -o "$bl81" >/dev/null 2>&1
+    if [ ! -s "$bl81" ]; then
+        echo "  EROARE: $dovi_bin convert --discard esuat."
+        rm -f "$full_hevc" "$bl81"; return 1
+    fi
+    rm -f "$full_hevc"
+
+    local out_ext="${final_out##*.}"; out_ext="${out_ext,,}"
+    local CONTAINER="$out_ext"   # consumat de get_container_flags in _hdv_combine_with_original
+    local vtag=()
+    case "$out_ext" in mp4|mov|m4v) vtag=(-tag:v hvc1) ;; esac
+    _hdv_combine_with_original "$bl81" "$file" "$final_out" "${vtag[@]}"
+    local rc=$?
+    rm -f "$bl81"
+    if [ $rc -eq 0 ] && [ -s "$final_out" ]; then
+        return 0
+    fi
+    echo "  EROARE: re-mux final esuat."
+    rm -f "$final_out"; return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # UI helper — pick file from INPUT_DIR + numbered list
 # ─────────────────────────────────────────────────────────────────────
 _hdv_pick_file() {
@@ -136,6 +200,37 @@ hdv_flow_transform_rpu() {
         echo "    Conversia P5→8.1 NU e posibila (nu exista baza HDR10 de fabricat);"
         echo "    output-ul ar ramane Profil 5. Pentru a pastra DV-ul intact 1:1:"
         echo "    Mux tools → Remux (stream-copy)."
+    fi
+
+    # v76: Profil 7 = dual-layer (BL HDR10 + EL + RPU). Calea RPU-only de mai jos NU
+    # functioneaza pe P7 (RPU sta in EL, pe care extract_raw_video il pierde) → flux
+    # dedicat: extract stream complet (mkvextract) → discard EL → 8.1 single-layer + dvcC.
+    if [[ "$_dv_prof" == *"Profil 7"* ]]; then
+        echo ""
+        echo "  Profil 7 detectat → conversie la 8.1 (single-layer, compatibilitate universala)."
+        echo "  Pastreaza BL HDR10 + RPU (DV activ pe TV + PC), arunca EL."
+        local _ext7="${file##*.}"; _ext7="${_ext7,,}"
+        if [[ "$_ext7" == "mkv" ]] && ! command -v "$AV_TOOL_MKVEXTRACT" >/dev/null 2>&1; then
+            echo "  EROARE: P7 in MKV are EL in block additions → necesita $AV_TOOL_MKVEXTRACT"
+            echo "         (vine cu MKVToolNix). Instaleaza-l si reincearca."
+            return 1
+        fi
+        local _out7="${OUTPUT_DIR}/$(basename "${file%.*}")_dv81.${_ext7}"
+        mkdir -p "$OUTPUT_DIR"
+        echo ""
+        convert_p7_to_81 "$file" "$_out7"
+        local _rc7=$?
+        case $_rc7 in
+            0) echo ""
+               echo "  ✓ P7→8.1 complet: $_out7"
+               echo "    Profil rezultat: $(get_dv_profile "$_out7")"
+               return 0 ;;
+            2) echo ""
+               echo "  Conversie anulata (EL complex / nedeterminat). DV-ul P7 ramane intact in sursa."
+               echo "  Alternativa pastrare 1:1: Mux tools → Remux (stream-copy)."
+               return 1 ;;
+            *) echo "  EROARE: conversie P7→8.1 esuata."; return 1 ;;
+        esac
     fi
 
     echo ""

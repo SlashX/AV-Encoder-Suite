@@ -96,8 +96,10 @@ AV_TOOL_EXIFTOOL="${AV_TOOL_EXIFTOOL:-exiftool}"                # telemetrie (DJ
 AV_TOOL_OAPV_DEC="${AV_TOOL_OAPV_DEC:-oapv_app_dec}"            # decoder referinta OpenAPV (optional)
 AV_TOOL_SVTAV1ENCAPP="${AV_TOOL_SVTAV1ENCAPP:-SvtAv1EncApp}"    # SVT-AV1 standalone (doar caps-probe)
 AV_TOOL_MKVMERGE="${AV_TOOL_MKVMERGE:-mkvmerge}"               # MKVToolNix (dvcC de container pe hibride HEVC DV pe MKV, v70)
+AV_TOOL_MKVEXTRACT="${AV_TOOL_MKVEXTRACT:-mkvextract}"          # MKVToolNix (extract BL+EL+RPU din P7 MKV pt conversia P7->8.1, v76)
 AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"                      # GPAC MP4Box (dvcC de container pe hibride HEVC DV pe MP4/MOV, v71)
 AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
+AV_ENGINE_DV_P7="${AV_ENGINE_DV_P7:-$SCRIPT_DIR/dv_p7_analyze.py}"  # clasificator EL (MEL/FEL) pt P7->8.1 (v76)
 
 # ══════════════════════════════════════════════════════════════════════
 # Cross-platform wrappers (v41) — abstractizeaza GNU vs BSD coreutils
@@ -1762,26 +1764,29 @@ _apv_hdr10plus_inject_output() {
 # In-place pe fisierul IVF dat. Soft-fail: daca python/engine lipsesc, doar
 # avertizeaza (verify_dv_survived prinde pierderea ulterior).
 _repair_av1_dv_t35() {
-    local f="$1"
+    local f="$1" mode="${2:-dv}"   # v76: mode = dv | hdr10plus | both
+    local lbl="DV"
+    [[ "$mode" == "hdr10plus" ]] && lbl="HDR10+"
+    [[ "$mode" == "both" ]] && lbl="DV+HDR10+"
     local engine="$SCRIPT_DIR/av1_dv_t35_repair.py"
     local py
     py=$(_av_python) || {
-        echo "  DV: ⚠ repair T.35 AV1 sarit (Python 3 indisponibil) — DV poate fi pierdut la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        echo "  $lbl: ⚠ repair T.35 AV1 sarit (Python 3 indisponibil) — metadata poate fi pierduta la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 1
     }
     if [[ ! -f "$engine" ]]; then
-        echo "  DV: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        echo "  $lbl: ⚠ repair T.35 AV1 sarit (engine lipsa: $engine)" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 1
     fi
     local fixed
     fixed=$(av_mktemp_ext ivf)
-    if "$py" "$engine" "$f" "$fixed" >>"${LOG_FILE:-/dev/null}" 2>&1 && [ -s "$fixed" ]; then
+    if "$py" "$engine" "$f" "$fixed" "$mode" >>"${LOG_FILE:-/dev/null}" 2>&1 && [ -s "$fixed" ]; then
         mv -f "$fixed" "$f"
-        echo "  DV: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        echo "  $lbl: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 0
     fi
     rm -f "$fixed"
-    echo "  DV: ⚠ repair T.35 AV1 esuat — DV poate fi pierdut la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
+    echo "  $lbl: ⚠ repair T.35 AV1 esuat — metadata poate fi pierduta la dav1d" | tee -a "${LOG_FILE:-/dev/null}" >&2
     return 1
 }
 
@@ -1801,6 +1806,36 @@ inject_dv_rpu() {
         return 0
     else
         echo "  DV: Injectare RPU esuata" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        return 1
+    fi
+}
+
+# v76: injecteaza HDR10+ dynamic metadata (SMPTE ST 2094-40) intr-un bitstream HEVC/AV1
+# brut, prin hdr10plus_tool (HEVC) / av1hdr10plus_tool (AV1) — oglinda lui inject_dv_rpu
+# pentru calea HW-preserve. Encoderele HW dropeaza dinamicul (iese HDR10 static); re-injectam
+# JSON-ul extras din sursa in bitstream-ul HDR10 produs de HW → HDR10+ restaurat (PoC QSV).
+# Sintaxa identica ambele tool-uri: `inject -i <raw> -j <json> -o <out>` (validat CLI).
+# stdout redirectat (quietvoid scrie progres pe stdout — vezi What NOT to do).
+# NB: spre deosebire de DV/AV1 (inject-rpu omite trailing-byte-ul T.35 → _repair_av1_dv_t35),
+#   OBU-ul HDR10+ AV1 (0x003C) e scris de av1hdr10plus_tool — repararea T.35 (DV, 0x003B) il
+#   sare; daca dav1d respinge HDR10+ AV1 se evalueaza in F2 (azi calea dovedita = HEVC).
+# $1 = raw stream (.hevc/.ivf)  $2 = JSON HDR10+  $3 = output raw  $4 = target_codec (hevc|av1)
+inject_hdr10plus_metadata() {
+    local stream_file="$1" json_file="$2" output_file="$3"
+    local target_codec="${4:-hevc}"
+    local hp_bin
+    hp_bin=$(tool_for_inject "$target_codec" hdr10plus)
+    [[ -z "$hp_bin" ]] && { echo "  HDR10+: tool inject indisponibil ($target_codec)" | tee -a "${LOG_FILE:-/dev/null}" >&2; return 1; }
+    echo "  HDR10+: Injectez metadata in bitstream $target_codec (tool=$hp_bin)..." | tee -a "${LOG_FILE:-/dev/null}" >&2
+    "$hp_bin" inject -i "$stream_file" -j "$json_file" -o "$output_file" >/dev/null 2>&1
+    if [ $? -eq 0 ] && [ -s "$output_file" ]; then
+        # v76: AV1 — av1hdr10plus_tool omite acelasi trailing-byte T.35 (0x80) ca av1dovi_tool
+        # (dav1d: "Malformed ITU-T T.35") → repara OBU-ul HDR10+ (provider 0x003C).
+        [[ "$target_codec" == "av1" ]] && _repair_av1_dv_t35 "$output_file" hdr10plus
+        echo "  HDR10+: Injectare reusita" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        return 0
+    else
+        echo "  HDR10+: Injectare esuata" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 1
     fi
 }
@@ -2122,6 +2157,108 @@ extract_raw_video() {
             ;;
     esac
     [ $? -eq 0 ] && [ -s "$output" ] && return 0 || return 1
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v76 — Conversie DV Profile 7 → 8.1 (dual-layer aware): helperi puri
+# P7 = dual-layer (BL HDR10 + EL [MEL/FEL] + RPU). Conversia la 8.1 (single-layer)
+# pastreaza BL + RPU, ARUNCA EL. MEL → lossless; FEL "simplu" → sigur; FEL "complex"
+# (EL cu expansiune de luminozitate peste BL) → pierde highlight-uri → gate de siguranta.
+# Orchestratorul (convert_p7_to_81) + branch-ul UI traiesc in av_hdr_dv_tools.sh.
+# ══════════════════════════════════════════════════════════════════════
+
+# Peak-ul base-layer in niti (MaxCLL real al BL din container) — pragul gate-ului FEL.
+# Echo: numar niti (>0). Fallback 1000 cand MaxCLL lipseste/0 (conservator: prag jos →
+# expansiunea FEL e prinsa). NU folosim mastering display ca fallback (poate fi setat la
+# masterul DV, ex. 4000, mascand un FEL complex).
+_dv_bl_peak_nits() {
+    local file="$1" maxcll
+    maxcll=$(ffprobe -v error -select_streams v:0 -show_frames -read_intervals "0%+#1" \
+        -show_entries frame_side_data=max_content -of default=noprint_wrappers=1:nokey=1 \
+        "$file" 2>/dev/null | grep -E '^[0-9]+$' | head -1 | tr -d '\r')
+    if [[ "$maxcll" =~ ^[1-9][0-9]*$ ]]; then echo "$maxcll"; else echo "1000"; fi
+}
+
+# Extrage stream-ul HEVC complet (BL+EL+RPU) dintr-un P7. MKV: EL sta in block additions
+# → necesita $AV_TOOL_MKVEXTRACT (ffmpeg -c copy ar pierde EL+RPU → "Invalid RPU"). Alte
+# containere (mp4/ts): EL interleaved → ffmpeg. $1=input, $2=output .hevc. Return 0/1.
+_dv_extract_full_hevc() {
+    local file="$1" out="$2"
+    local ext="${file##*.}"; ext="${ext,,}"
+    if [[ "$ext" == "mkv" ]] && command -v "$AV_TOOL_MKVEXTRACT" >/dev/null 2>&1; then
+        # track id din $AV_TOOL_MKVMERGE -i (id mkvextract == id mkvmerge, NU index ffprobe)
+        local vid
+        vid=$("$AV_TOOL_MKVMERGE" -i "$file" 2>/dev/null \
+              | sed -n 's/^Track ID \([0-9]*\): video.*/\1/p' | head -1)
+        [[ "$vid" =~ ^[0-9]+$ ]] || vid=0
+        rm -f "$out"   # tinta noua (tool-ul scrie fisier nou)
+        "$AV_TOOL_MKVEXTRACT" "$file" tracks "${vid}:${out}" >/dev/null 2>&1
+    else
+        ffmpeg -y -v error -i "$file" -map 0:v:0 -c:v copy -bsf:v hevc_mp4toannexb -f hevc "$out" 2>/dev/null
+    fi
+    [ -s "$out" ] && return 0 || return 1
+}
+
+# Clasifica EL-ul unui P7 (pe stream HEVC complet) via engine dv_p7_analyze.py.
+# Echo (stdout, DOAR linia verdictului): "<MEL|FEL_SAFE|FEL_COMPLEX|UNKNOWN> l1_nits=.. bl_peak=.. thr=.."
+# Soft-fail → "UNKNOWN ..." cand lipseste python/engine/tool sau extract-rpu esueaza.
+#   $1 = stream HEVC complet (BL+EL+RPU)   $2 = fisier original (pt bl_peak)
+_classify_p7_el() {
+    local stream="$1" orig="$2"
+    local engine="$AV_ENGINE_DV_P7" py
+    py=$(_av_python) || { echo "UNKNOWN l1_nits=0 bl_peak=0 thr=0"; return 0; }
+    [[ -f "$engine" ]] || { echo "UNKNOWN l1_nits=0 bl_peak=0 thr=0"; return 0; }
+    local dovi_bin; dovi_bin=$(tool_for_extract hevc dovi)
+    [[ -z "$dovi_bin" ]] && { echo "UNKNOWN l1_nits=0 bl_peak=0 thr=0"; return 0; }
+    local rpu json
+    rpu=$(av_mktemp_ext bin); json=$(av_mktemp_ext json)
+    "$dovi_bin" extract-rpu "$stream" -o "$rpu" >/dev/null 2>&1
+    if [ ! -s "$rpu" ]; then
+        rm -f "$rpu" "$json"; echo "UNKNOWN l1_nits=0 bl_peak=0 thr=0"; return 0
+    fi
+    "$dovi_bin" export -i "$rpu" -d "all=$json" >/dev/null 2>&1
+    local bl_peak; bl_peak=$(_dv_bl_peak_nits "$orig")
+    local out; out=$("$py" "$engine" "$json" "$bl_peak" 2>/dev/null)
+    rm -f "$rpu" "$json"
+    [[ -n "$out" ]] && echo "$out" || echo "UNKNOWN l1_nits=0 bl_peak=0 thr=0"
+}
+
+# v76: extrage RPU-ul pt DV PRESERVE pe calea de ENCODE (baza re-encodata e mereu
+# single-layer HDR10). Pe sursa P7 (dual-layer HEVC), extract_dv_rpu standard fie
+# ESUEAZA (RPU sta in EL → ffmpeg -c copy il pierde, ex. P7 MKV) fie da un RPU profil-7
+# care, injectat intr-o baza single-layer, produce un stream DV INVALID (profil 7 cere
+# un EL care nu mai exista). Deci pt P7: extragem stream-ul COMPLET (mkvextract pt MKV via
+# _dv_extract_full_hevc), convertim STREAM-ul la 8.1 (`-m 2 convert --discard`) si extragem
+# RPU-ul profil-8 din el (EL pierdut oricum la re-encode → 8.1 e profilul corect; conversia
+# e de STREAM, NU de RPU — `-m 2 editor` pe RPU P7 e no-op). Restul (P8.x / AV1 P10): normal.
+# Folosit la TOATE siturile de DV-preserve pe encode (x265/av1/HW/MediaCodec).
+#   $1 = fisier sursa   $2 = RPU out   $3 = src_codec (hevc|av1)   Return: 0=OK, 1=fail.
+_extract_preserve_rpu() {
+    local file="$1" rpu_out="$2" codec="${3:-hevc}"
+    if [[ "$codec" != "hevc" ]] || [[ "$(get_dv_profile "$file")" != *"Profil 7"* ]]; then
+        extract_dv_rpu "$file" "$rpu_out" "$codec"
+        return $?
+    fi
+    local full conv dovi_bin
+    full=$(av_mktemp_ext hevc); conv=$(av_mktemp_ext hevc)
+    if ! _dv_extract_full_hevc "$file" "$full"; then rm -f "$full" "$conv"; return 1; fi
+    dovi_bin=$(tool_for_extract hevc dovi)
+    # P7→8.1 e o operatie de STREAM (discard EL), NU de RPU: `dovi_tool -m 2 editor` pe un
+    # RPU P7 e NO-OP (ramane profil 7 → injectat intr-o baza single-layer = DV invalid).
+    # Convertim STREAM-ul complet (`-m 2 convert --discard` → BL HDR10 + RPU single-layer 8.1),
+    # apoi extragem RPU-ul profil-8 din el (injectat in baza re-encodata → DV 8.1 valid).
+    if ! "$dovi_bin" -m 2 convert --discard -i "$full" -o "$conv" >/dev/null 2>&1 || [ ! -s "$conv" ]; then
+        rm -f "$full" "$conv"; return 1
+    fi
+    rm -f "$full"
+    "$dovi_bin" extract-rpu "$conv" -o "$rpu_out" >/dev/null 2>&1
+    rm -f "$conv"
+    if [ -s "$rpu_out" ]; then
+        log "  DV preserve: sursa P7 → stream convertit 8.1 + RPU profil-8 extras (baza re-encodata single-layer; EL pierdut la re-encode)"
+        return 0
+    fi
+    rm -f "$rpu_out"
+    return 1
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -5119,6 +5256,13 @@ show_hdr_hw_dialog() {
             _can_hw_preserve=1
         fi
     fi
+    # v76: gate pentru hw_preserve_hdr10plus (HDR10+ dinamic preserve via HW + post-encode inject)
+    local _can_hw_preserve_hp=0
+    if [[ "$src_type" == "hdr10plus" ]] && [[ "$enc_codec" == "hevc" || "$enc_codec" == "av1" ]]; then
+        if _check_hdr10plus_tool_for "${src_codec:-hevc}" && _check_hdr10plus_tool_for "$enc_codec"; then
+            _can_hw_preserve_hp=1
+        fi
+    fi
 
     local policy="${HW_HDR_POLICY:-}"
     [[ "$backend" == "mediacodec" ]] && [[ -n "${MEDIACODEC_HDR_POLICY:-}" ]] && policy="$MEDIACODEC_HDR_POLICY"
@@ -5130,13 +5274,17 @@ show_hdr_hw_dialog() {
                 log "  HW HDR policy din profil: $HW_HDR_MODE"
                 return 0 ;;
             hw_preserve)
-                if [ $_can_hw_preserve -eq 1 ]; then
+                if [[ "$src_type" == "hdr10plus" ]] && [ $_can_hw_preserve_hp -eq 1 ]; then
+                    HW_HDR_MODE="hw_preserve_hdr10plus"
+                    log "  HW HDR policy: hw_preserve (HDR10+ preserve via $backend)"
+                    return 0
+                elif [ $_can_hw_preserve -eq 1 ]; then
                     HW_HDR_MODE="hw_preserve"
                     log "  HW HDR policy: hw_preserve (DV preserve via $backend)"
                     return 0
                 else
                     HW_HDR_MODE="hw_hdr10"
-                    log "  HW HDR policy=hw_preserve dar tool DV indisponibil — fallback hw_hdr10"
+                    log "  HW HDR policy=hw_preserve dar tool indisponibil — fallback hw_hdr10"
                     return 0
                 fi ;;
             skip)
@@ -5187,22 +5335,45 @@ show_hdr_hw_dialog() {
             ;;
         hdr10plus)
             echo "  |  ! Sursa este HDR10+ (cu dynamic metadata)"
-            echo "  |  $bl nu transmite dynamic metadata. Optiuni:"
+            echo "  |  $bl nu transmite dynamic metadata nativ. Optiuni:"
             echo "  +------------------------------------------------------+"
-            echo "  |  1) SW - pastreaza HDR10+ complet (recomandat)"
-            echo "  |  2) SW - encode ca HDR10 static (drop dynamic)"
-            echo "  |  3) $bl - HDR10 10-bit (drop dynamic)"
-            echo "  |  4) $bl - SDR tonemap 8-bit"
-            echo "  |  5) Skip fisier"
-            echo "  +======================================================+"
-            read -p "  Alege 1-5 [implicit: 1]: " _ch
-            case "${_ch:-1}" in
-                2) HW_HDR_MODE="sw_degraded" ;;
-                3) HW_HDR_MODE="hw_hdr10"    ;;
-                4) HW_HDR_MODE="hw_sdr"      ;;
-                5) return 98 ;;
-                *) HW_HDR_MODE="sw_full"     ;;
-            esac ;;
+            if [ $_can_hw_preserve_hp -eq 1 ]; then
+                # v76: pe calea HW, preserve via inject e recomandat (userul a ales HW;
+                # dinamicul e re-injectat byte-exact → HW speed + HDR10+ pastrat). SW-full
+                # ramane disponibil (encoder SW). Default = HW preserve.
+                echo "  |  1) $bl - preserve HDR10+ via inject (recomandat)"
+                echo "  |     HW encode HDR10 base -> re-inject metadata sursa"
+                echo "  |  2) SW - pastreaza HDR10+ complet (encoder SW)"
+                echo "  |  3) SW - HDR10 static (drop dynamic)"
+                echo "  |  4) $bl - HDR10 10-bit (drop dynamic)"
+                echo "  |  5) $bl - SDR tonemap 8-bit"
+                echo "  |  6) Skip fisier"
+                echo "  +======================================================+"
+                read -p "  Alege 1-6 [implicit: 1]: " _ch
+                case "${_ch:-1}" in
+                    2) HW_HDR_MODE="sw_full"     ;;
+                    3) HW_HDR_MODE="sw_degraded" ;;
+                    4) HW_HDR_MODE="hw_hdr10"    ;;
+                    5) HW_HDR_MODE="hw_sdr"      ;;
+                    6) return 98 ;;
+                    *) HW_HDR_MODE="hw_preserve_hdr10plus" ;;
+                esac
+            else
+                echo "  |  1) SW - pastreaza HDR10+ complet (recomandat)"
+                echo "  |  2) SW - encode ca HDR10 static (drop dynamic)"
+                echo "  |  3) $bl - HDR10 10-bit (drop dynamic)"
+                echo "  |  4) $bl - SDR tonemap 8-bit"
+                echo "  |  5) Skip fisier"
+                echo "  +======================================================+"
+                read -p "  Alege 1-5 [implicit: 1]: " _ch
+                case "${_ch:-1}" in
+                    2) HW_HDR_MODE="sw_degraded" ;;
+                    3) HW_HDR_MODE="hw_hdr10"    ;;
+                    4) HW_HDR_MODE="hw_sdr"      ;;
+                    5) return 98 ;;
+                    *) HW_HDR_MODE="sw_full"     ;;
+                esac
+            fi ;;
         hlg)
             echo "  |  ! Sursa este HLG (BT.2100 HLG)"
             echo "  |  $bl suporta signaling HLG nativ. Optiuni:"
@@ -5302,11 +5473,27 @@ hw_dispatch_sdr() {
                 # v46: HW backend produce HDR10 base layer; post-encode injecteaza RPU
                 local rpu_tmp
                 rpu_tmp=$(av_mktemp_ext "rpu.bin")
-                if extract_dv_rpu "$file" "$rpu_tmp" "$src_codec"; then
+                if _extract_preserve_rpu "$file" "$rpu_tmp" "$src_codec"; then
                     DOVI_RPU_FILE="$rpu_tmp"
                     TRIPLE_LAYER_MODE=1
                     TRIPLE_LAYER_TARGET_CODEC="$enc_codec"
                     log "  v46 HW DV preserve: RPU extras ($src_codec) -> inject post-encode ($enc_codec via $HW_BACKEND)"
+                    # v76 F3: hibrid DV+HDR10+ — sursa DV cu HDR10+ co-existent (P8.1 hybrid /
+                    # AV1 DV+HDR10+). DV are prioritate la detectie (src_type=dv), dar HW dropeaza
+                    # SI dinamicul HDR10+ → extragem SI JSON-ul ca sa-l re-injectam in lantul DV
+                    # (HDR10+ INAINTE de DV RPU, re-mux cu dvcC = pasul final). Gateat pe tool.
+                    if [[ "${HDR_PLUS:-}" == *"HDR10+"* ]] && _check_hdr10plus_tool_for "$enc_codec"; then
+                        local hp_json_hyb
+                        if hp_json_hyb=$(extract_hdr10plus_metadata "$file") && [ -s "$hp_json_hyb" ]; then
+                            HDR10PLUS_JSON="$hp_json_hyb"
+                            HW_HDR10PLUS_INJECT=1
+                            HW_HDR10PLUS_CODEC="$enc_codec"
+                            log "  v76 HW hibrid DV+HDR10+ preserve: JSON HDR10+ extras -> inject inaintea DV RPU"
+                        else
+                            [[ -n "${hp_json_hyb:-}" ]] && rm -f "$hp_json_hyb"
+                            log "  v76 HW hibrid: extract JSON HDR10+ esuat -> doar DV preserve"
+                        fi
+                    fi
                     # Build HW cmd ca HDR10 base layer
                     HW_HDR_MODE="hw_hdr10"
                     # MediaCodec necesita SEI repair inainte de inject
@@ -5317,7 +5504,34 @@ hw_dispatch_sdr() {
                     HW_HDR_MODE="hw_hdr10"
                 fi
                 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-                    dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} (DV preserve)" \
+                    local _dvlbl="DV preserve"
+                    [[ "${HW_HDR10PLUS_INJECT:-0}" == "1" ]] && _dvlbl="DV+HDR10+ preserve"
+                    dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} ($_dvlbl)" \
+                        "$WIDTH" "$DURATION" "$src_type"
+                    return 0
+                fi
+                hw_build_cmd "$file" "$enc_codec"
+                return 0
+                ;;
+            hw_preserve_hdr10plus)
+                # v76: HW backend produce HDR10 base layer; post-encode injecteaza HDR10+
+                # dinamic (oglinda hw_preserve DV). HW dropeaza SMPTE2094-40 → re-injectam
+                # JSON-ul extras din sursa in bitstream-ul HDR10 produs (PoC QSV).
+                local hp_json
+                if hp_json=$(extract_hdr10plus_metadata "$file") && [ -s "$hp_json" ]; then
+                    HDR10PLUS_JSON="$hp_json"
+                    HW_HDR10PLUS_INJECT=1
+                    HW_HDR10PLUS_CODEC="$enc_codec"
+                    log "  v76 HW HDR10+ preserve: JSON extras ($src_codec) -> inject post-encode ($enc_codec via $HW_BACKEND)"
+                else
+                    log "  v76 HW HDR10+ preserve: extract JSON esuat -> fallback HDR10 static"
+                    HW_HDR10PLUS_INJECT=0
+                    [[ -n "${hp_json:-}" ]] && rm -f "$hp_json"
+                fi
+                # Build HW cmd ca HDR10 base layer (acelasi setup ca hw_hdr10)
+                HW_HDR_MODE="hw_hdr10"
+                if [[ "${DRY_RUN:-0}" == "1" ]]; then
+                    dry_run_report "$file" "$output" "${enc_codec}_${HW_BACKEND} (HDR10+ preserve)" \
                         "$WIDTH" "$DURATION" "$src_type"
                     return 0
                 fi
@@ -5739,6 +5953,8 @@ run_encode_loop() {
         # v69: APV HDR10+ state (setat de av_encoder_apv encoder_setup_file)
         [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"
         APV_HDR10PLUS_JSON=""; APV_HDR10PLUS_INJECT=0
+        # v76: HW HDR10+ preserve state (setat de hw_dispatch_sdr/hw_preserve_hdr10plus)
+        HW_HDR10PLUS_INJECT=0; HW_HDR10PLUS_CODEC=""
         HW_HDR_MODE=""
         HLG_DIALOG_MODE=""
         HDR10_MEASURE_CLL="${HDR10_MEASURE_CLL_BASE:-0}"   # v63: revine la baza env/profil per fisier
@@ -5896,8 +6112,24 @@ run_encode_loop() {
             # shellcheck disable=SC2086
             ffmpeg -v error -i "$output" $_extract_args "$raw_temp" 2>>"$LOG_FILE"
             if [ $? -eq 0 ]; then
+                # v76 F3: hibrid DV+HDR10+ — injecteaza HDR10+ in raw INAINTE de DV RPU, in
+                # ACELASI lant (re-mux cu dvcC ramane pasul final → DV activabil pe TV). Pe AV1
+                # repair-urile T.35 sunt mod-specifice (inject_hdr10plus→0x003C, inject_dv_rpu→0x003B
+                # sare 0x003C) → ambele OBU-uri raman corecte (av1dovi_tool paseaza HDR10+ verbatim,
+                # ca in hibridul SW v72). _dv_src = sursa pt inject_dv_rpu (raw direct, sau cel cu HDR10+).
+                local _dv_src="$raw_temp" _hyb_hp=""
+                if [[ "${HW_HDR10PLUS_INJECT:-0}" == "1" ]] && [[ -n "${HDR10PLUS_JSON:-}" ]]; then
+                    _hyb_hp=$(av_mktemp_ext "$_ext")
+                    if inject_hdr10plus_metadata "$raw_temp" "$HDR10PLUS_JSON" "$_hyb_hp" "$_tl_codec"; then
+                        _dv_src="$_hyb_hp"
+                        log "  Triple-layer: HDR10+ injectat in lant (hibrid) inaintea DV RPU"
+                    else
+                        rm -f "$_hyb_hp"; _hyb_hp=""
+                        log "  Triple-layer: inject HDR10+ esuat — continui doar cu DV"
+                    fi
+                fi
                 injected_temp=$(av_mktemp_ext "$_ext")
-                if inject_dv_rpu "$raw_temp" "$DOVI_RPU_FILE" "$injected_temp" "$_tl_codec"; then
+                if inject_dv_rpu "$_dv_src" "$DOVI_RPU_FILE" "$injected_temp" "$_tl_codec"; then
                     # Re-mux: video cu DV + audio/sub/attachments originale din output
                     local final_temp
                     final_temp=$(av_mktemp_ext "$CONTAINER")
@@ -5958,10 +6190,73 @@ run_encode_loop() {
                 log "  Triple-layer: Extractie raw $_tl_codec esuata — output fara DV (HDR10+ pastrat)"
             fi
             rm -f "$raw_temp"
+            [[ -n "$_hyb_hp" ]] && rm -f "$_hyb_hp"
         fi
+
+        # ── v76: HW HDR10+ preserve — injecteaza dinamicul in baza HDR10 produsa de HW ──
+        # (post-encode, ca triple-layer; state setat de hw_dispatch_sdr/hw_preserve_hdr10plus).
+        # HW dropeaza SMPTE2094-40 → re-injectam JSON-ul extras din sursa. HDR10+ e SEI/OBU
+        # inline (NU cere dvcC de container ca DV). Garda raw→MKV (clasa v69): HEVC annexb
+        # fara PTS → pas MP4 intermediar; AV1/IVF poarta PTS → ffmpeg direct.
+        # v76 F3: in hibrid DV+HDR10+ (TRIPLE_LAYER_MODE=1) HDR10+ a fost DEJA injectat in lantul
+        # DV de mai sus (cu dvcC final) → NU rula a doua oara aici (ar pierde dvcC la re-mux plain).
+        if [[ "${HW_HDR10PLUS_INJECT:-0}" == "1" ]] && [[ -n "${HDR10PLUS_JSON:-}" ]] \
+           && [[ "${TRIPLE_LAYER_MODE:-0}" != "1" ]]; then
+            local _hp_codec="${HW_HDR10PLUS_CODEC:-hevc}" _hp_ext _hp_xargs
+            case "$_hp_codec" in
+                av1) _hp_ext="ivf";  _hp_xargs="-c:v copy -f ivf" ;;
+                *)   _hp_ext="hevc"; _hp_xargs="-c:v copy -bsf:v hevc_mp4toannexb -f hevc" ;;
+            esac
+            log "  HW HDR10+: re-injectez metadata dinamica in baza HDR10 ($_hp_codec)..."
+            local _hp_raw _hp_inj _hp_final
+            _hp_raw=$(av_mktemp_ext "$_hp_ext")
+            # shellcheck disable=SC2086
+            ffmpeg -v error -i "$output" $_hp_xargs "$_hp_raw" 2>>"$LOG_FILE"
+            if [ $? -eq 0 ] && [ -s "$_hp_raw" ]; then
+                _hp_inj=$(av_mktemp_ext "$_hp_ext")
+                if inject_hdr10plus_metadata "$_hp_raw" "$HDR10PLUS_JSON" "$_hp_inj" "$_hp_codec"; then
+                    _hp_final=$(av_mktemp_ext "$CONTAINER")
+                    local _hp_cont_flags
+                    _hp_cont_flags=$(get_container_flags)
+                    if [[ "$_hp_codec" != "av1" && "$CONTAINER" == "mkv" ]]; then
+                        # HEVC annexb brut nu are PTS → MKV refuza → pas intermediar MP4
+                        local _hp_step _hp_rc=1
+                        _hp_step=$(av_mktemp_ext mp4)
+                        if ffmpeg -v error -y -i "$_hp_inj" -i "$output" \
+                              -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+                              -c copy "$_hp_step" 2>>"$LOG_FILE" && [ -s "$_hp_step" ]; then
+                            ffmpeg -v error -y -i "$_hp_step" -c copy "$_hp_final" 2>>"$LOG_FILE" && _hp_rc=0
+                        fi
+                        rm -f "$_hp_step"
+                        [ "$_hp_rc" -ne 0 ] && rm -f "$_hp_final"
+                        test "$_hp_rc" -eq 0
+                    else
+                        # shellcheck disable=SC2086
+                        ffmpeg -v error -y -i "$_hp_inj" -i "$output" \
+                            -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
+                            -c copy $_hp_cont_flags "$_hp_final" 2>>"$LOG_FILE"
+                    fi
+                    if [ $? -eq 0 ] && [ -s "$_hp_final" ]; then
+                        mv -f "$_hp_final" "$output"
+                        log "  HW HDR10+: dinamicul restaurat in output ($_hp_codec via ${HW_BACKEND:-hw})"
+                    else
+                        log "  HW HDR10+: re-mux esuat — output ramane HDR10 static"
+                        rm -f "$_hp_final"
+                    fi
+                else
+                    log "  HW HDR10+: inject esuat — output ramane HDR10 static"
+                fi
+                rm -f "$_hp_inj"
+            else
+                log "  HW HDR10+: extractie raw esuata — output ramane HDR10 static"
+            fi
+            rm -f "$_hp_raw"
+        fi
+
         [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+        HW_HDR10PLUS_INJECT=0; HW_HDR10PLUS_CODEC=""
 
         # ── v69: APV HDR10+ — injecteaza T.35 + MDCV/CLL in bitstream-ul APV ──
         # (post-encode, ca triple-layer; state setat de av_encoder_apv)
