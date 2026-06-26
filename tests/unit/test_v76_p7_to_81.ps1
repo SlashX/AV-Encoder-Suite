@@ -76,7 +76,7 @@ $haveTools = (Test-Path $sample) -and $py `
     -and (Get-Command dovi_tool  -EA SilentlyContinue) `
     -and (Get-Command mkvmerge   -EA SilentlyContinue)
 if ($haveTools) {
-    Import-AvEncodeFunctions -Names @('Convert-P7ToProfile81','Get-DvFullHevc','Get-P7ElClass','Get-DvBlPeakNits','Get-DvP7EnginePath','Get-ToolForExtract','_Get-AvPython','Invoke-HdvCombineWithOriginal','Invoke-DvMkvMux','Get-ContainerFlags','Ensure-TempDir','Get-PreserveRpu','Get-DVProfile','Get-DvRpu','Get-ToolForInject') | Out-Null
+    Import-AvEncodeFunctions -Names @('Convert-P7ToProfile81','Get-DvFullHevc','Get-P7ElClass','Get-DvBlPeakNits','Get-DvP7EnginePath','Get-ToolForExtract','_Get-AvPython','Invoke-HdvCombineWithOriginal','Invoke-DvMkvMux','Get-ContainerFlags','Ensure-TempDir','Get-PreserveRpu','Get-DVProfile','Get-DvRpu','Get-ToolForInject','Test-VfrSource') | Out-Null
     $env:AV_ENGINE_DV_P7 = $engine
     $global:AV_TEMP_DIR = Join-Path ([IO.Path]::GetTempPath()) ("v76p7f_" + [guid]::NewGuid().ToString('N').Substring(0,8))
     New-Item -ItemType Directory -Force $global:AV_TEMP_DIR | Out-Null

@@ -3,9 +3,63 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v76 | 142 bug-uri fixate | 266+ features
-  194 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 140 teste [133 test_* + 7 infra]) | ~43000 linii cod+teste | ~7200 linii documentatie
+  TOTAL: v77 | 144 bug-uri fixate | 268+ features
+  205 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 151 teste [144 test_* + 7 infra]) | ~43000 linii cod+teste | ~7300 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v77 — Detectie AV1 hardware mai robusta + avertisment frame-rate
+        variabil (VFR) + aliniere profile/preseturi
+═══════════════════════════════════════════════════════════════
+
+  ADD Detectarea encoderului AV1 hardware verifica acum capabilitatea
+        REALA a placii, nu doar numele / generatia ei. Daca o placa
+        AV1-capabila are un nume pe care suita nu-l recunoaste inca, e
+        detectata automat printr-un test scurt pe GPU la pornire — fara
+        liste de modele de actualizat. Pana acum acest test exista doar
+        pe Intel (Linux, v75); acum acopera toate placile: NVIDIA, AMD,
+        Apple Silicon si calea Windows. Daca testul esueaza, encodarea
+        cade curat pe AV1 software, fara eroare. (Testul ruleaza doar
+        cand numele placii nu e recunoscut — cost zero pe placile stiute.)
+
+  ADD Pe sursele cu frame-rate variabil (VFR), la pastrarea metadatei
+        dinamice (HDR10+ sau Dolby Vision) pe encodare hardware, suita
+        avertizeaza acum ca metadata se aliniaza pe pozitie la cadrele de
+        output: uneltele pot raporta o mica diferenta de cadre la coada,
+        ajustata automat, fara impact vizibil. APV pastreaza si el acum
+        metadata dinamica pe diferente mici de cadre (se aliniaza la
+        coada, ca celelalte cai) — pana acum o pierdea (cadea pe HDR10
+        static) la orice diferenta; ramane pe static doar pe o nepotrivire
+        mare (semn ca metadata nu provine din acelasi fisier). Pe caile
+        hardware comportamentul de baza nu s-a schimbat (era deja tratat
+        corect, fara pierderi); doar nu mai e tacut, ca sa stii la ce sa
+        te astepti pe o sursa VFR.
+
+  UPDATE Profilele incluse (cele 5 DJI Osmo Action 6 + exemplul documentat)
+        au fost aduse la forma curenta de salvare — campurile APV noi
+        (v65), optiunile hardware corectate (v75) si masurarea MaxCLL
+        (v63); preseturile de burn-in au fost curatate de cateva campuri
+        nefolosite. Un test nou verifica permanent ca toate profilele
+        incluse trec validarea fara campuri necunoscute.
+
+  FIX Pe Termux / Linux / macOS, pastrarea metadatei dinamice (HDR10+ sau
+        Dolby Vision) la encodarea hardware — si repararea semnalizarii
+        HDR10 pe Android (MediaCodec) — putea bloca encodarea sau, in
+        rulare automata, putea cadea tacut pe HDR10 static (pierzand
+        metadata dinamica, desi uneltele erau disponibile). Reparat pe
+        toate caile afectate (HW HDR10+, Dolby Vision / hibrid, re-mux de
+        rezerva, reparatie MediaCodec). Pe Windows problema nu aparea,
+        motiv pentru care validarea anterioara pe Windows nu a prins-o.
+
+  FIX Pe Termux / Linux / macOS, encodarea SOFTWARE (x265 sau AV1) a
+        surselor HDR — HDR10, HDR10+, HLG, Log si Dolby Vision cu pastrare —
+        esua tacut, cu fisier de iesire gol (encodarea SDR si cea hardware
+        NU erau afectate). Cauza tinea de felul in care datele de mastering
+        display erau transmise encoderului pe aceste platforme. Reparat. Pe
+        Windows nu se manifesta (alt mecanism de lansare a comenzii). Bug
+        vechi — de la introducerea metadatei HDR10 statice — nedepistat
+        fiindca pastrarea HDR se valida pe Windows.
 
 
 ═══════════════════════════════════════════════════════════════

@@ -122,6 +122,10 @@ encoder_setup_file() {
                 2) log "  HDR10+: Re-encode ca HDR10 static (fara metadata dinamica)" ;;
                 3) log "  HDR10+: Skip fisier"; return 98 ;;
                 *)
+                    # v77 bounded-graceful: engine-ul apv_hdr10plus.py aliniaza la coada pe decalaj
+                    # MIC (jitter VFR / cadre-sursa fara SEI), ca hdr10plus_tool/dovi_tool; honest-fail
+                    # -> HDR10 static doar pe decalaj MARE (bug de pipeline). Vezi apv_hdr10plus.py.
+                    _is_vfr_source "$file" && log "  ⚠ Sursa e VFR — HDR10+ pe APV se aliniaza la coada pe decalaj mic (fara impact vizibil); pe decalaj mare iese HDR10 static."
                     APV_HDR10PLUS_JSON=$(extract_hdr10plus_metadata "$file")
                     if [[ -n "$APV_HDR10PLUS_JSON" ]]; then
                         APV_HDR10PLUS_INJECT=1

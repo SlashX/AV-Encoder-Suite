@@ -57,6 +57,16 @@ META_MDCV = 5
 META_CLL = 6
 HDR10P_PREFIX = bytes.fromhex("b5003c0001")  # country B5 | provider 003C | code 0001
 
+# bounded-graceful (v77): la inject, cand numarul de AU-uri (cadre encodate) difera de
+# numarul de scene (cadre din JSON HDR10+), aliniem la coada (trunc/dup) DOAR daca decalajul
+# e MIC — jitter VFR sau cadre-sursa fara SEI HDR10+, eroarea sta doar la coada (invizibil),
+# exact ca hdr10plus_tool/dovi_tool fac intern. Pe decalaj MARE = bug de pipeline (JSON din
+# ALTA sursa / encode trunchiat / JSON corupt) → honest-fail (return 1) → apelantul cade pe
+# HDR10 static, onest. E codul NOSTRU (nu un tool extern de neoprit) → pastram plasa de
+# siguranta pe count: aliniem ce e jitter, refuzam ce e bug.
+APV_ALIGN_MIN_FRAMES = 8     # floor absolut (clipuri scurte; jitter de cateva cadre)
+APV_ALIGN_MAX_RATIO = 0.02   # + prag relativ: 2% din max(AU, scene)
+
 
 def err(msg):
     sys.stderr.write(f"apv_hdr10plus: {msg}\n")
@@ -352,10 +362,23 @@ def cmd_inject(args):
     if not scenes:
         err("JSON fara SceneInfo"); return 1
     aus = list(walk_aus(data))
-    if len(aus) != len(scenes):
-        err(f"numar AU-uri ({len(aus)}) != frames in JSON ({len(scenes)}) — "
-            "extrage JSON-ul din ACEEASI sursa din care ai encodat APV-ul")
-        return 1
+    n_au, n_sc = len(aus), len(scenes)
+    if n_au != n_sc:
+        diff = abs(n_au - n_sc)
+        tol = max(APV_ALIGN_MIN_FRAMES, int(max(n_au, n_sc) * APV_ALIGN_MAX_RATIO))
+        if diff > tol:
+            err(f"numar AU-uri ({n_au}) != frames in JSON ({n_sc}), decalaj {diff} > "
+                f"toleranta {tol} — probabil JSON extras din ALTA sursa / encode trunchiat; "
+                "extrage JSON-ul din ACEEASI sursa din care ai encodat APV-ul")
+            return 1
+        # decalaj mic (jitter VFR / cadre-sursa fara SEI HDR10+) → aliniere la coada, byte-safe:
+        # re-emitem acelasi payload de scena, doar cateva cadre la coada il repeta/pierd (invizibil).
+        if n_sc > n_au:
+            scenes = scenes[:n_au]
+        else:
+            scenes = scenes + [scenes[-1]] * (n_au - n_sc)
+        err(f"aliniere HDR10+ pe decalaj mic ({diff} <= {tol}): AU={n_au} scene={n_sc} -> "
+            + ("scene trunchiate la coada" if n_au < n_sc else "ultima scena duplicata la coada"))
     static = []
     if args.max_cll:
         static.append((META_CLL, parse_max_cll(args.max_cll)))

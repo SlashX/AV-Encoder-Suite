@@ -47,7 +47,8 @@ build_x265_params() {
 _set_x265_hdr10_static() {
     X265_HDR10_STATIC_PARAMS=""
     [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ] || return 1
-    X265_HDR10_STATIC_PARAMS="master-display=${HDR10_MASTER_DISPLAY_X265}"
+    # v77: parantezele master-display escapate — string-ul intra in FFMPEG_CMD rulat prin `eval`
+    X265_HDR10_STATIC_PARAMS="master-display=$(_esc_eval_parens "$HDR10_MASTER_DISPLAY_X265")"
     [[ -n "$HDR10_MAX_CLL" ]] && X265_HDR10_STATIC_PARAMS="${X265_HDR10_STATIC_PARAMS}:max-cll=${HDR10_MAX_CLL}"
     log "  HDR10 static: $HDR10_STATIC_SOURCE | max-cll=${HDR10_MAX_CLL:-default}"
     return 0

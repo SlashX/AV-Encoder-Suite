@@ -5,7 +5,7 @@
 #   detect_source_info, hook post-encode + reset defensiv in run_encode_loop,
 #   dialog av_encoder_apv (env APV_HDR10PLUS_POLICY), av_check upgrade TYPE.
 #   Functional (hermetic): encode liboapv sintetic → inject (JSON sintetic) →
-#   probe/extract round-trip + CBS passthrough + idempotenta + count mismatch.
+#   probe/extract round-trip + CBS passthrough + idempotenta + bounded (aliniere decalaj mic / honest-fail mare).
 source "$(dirname "${BASH_SOURCE[0]}")/../framework.sh"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SCRIPT_DIR="$PROJECT_ROOT/src"
@@ -123,15 +123,23 @@ print('OK' if ok else 'FAIL')" "$tmpd/meta.json" "$ej" 2>/dev/null)
         pr=$("$PY" "$SCRIPT_DIR/apv_hdr10plus.py" probe -i "$raw2" 2>/dev/null)
         assert_eq "hdr10plus frames=2 hdr10plus=2 mdcv=2 cll=2" "$pr" "functional: idempotent — 1 set metadata per AU dupa dublu inject"
 
-        # count mismatch → eroare onesta (JSON 1 entry vs 2 AU)
+        ffmpeg -v error -y -i "$tmpd/src.mp4" -map 0:v:0 -c:v copy -f apv "$tmpd/raw.apv" 2>/dev/null
+        # v77 bounded-graceful — decalaj MIC (1 JSON vs 2 AU, diff 1 <= tol) → aliniere la coada
         cat > "$tmpd/meta1.json" <<'EOF'
 {"SceneInfo":[{"LuminanceParameters":{"AverageRGB":500,"LuminanceDistributions":{"DistributionIndex":[1,50,99],"DistributionValues":[1,5,9]},"MaxScl":[1000,1100,1200]},"NumberOfWindows":1,"TargetedSystemDisplayMaximumLuminance":400}]}
 EOF
-        ffmpeg -v error -y -i "$tmpd/src.mp4" -map 0:v:0 -c:v copy -f apv "$tmpd/raw.apv" 2>/dev/null
-        if "$PY" "$SCRIPT_DIR/apv_hdr10plus.py" inject -i "$tmpd/raw.apv" -j "$tmpd/meta1.json" -o "$tmpd/bad.apv" 2>/dev/null; then
-            assert_eq "fail" "ok" "functional: count mismatch trebuia sa esueze"
+        if "$PY" "$SCRIPT_DIR/apv_hdr10plus.py" inject -i "$tmpd/raw.apv" -j "$tmpd/meta1.json" -o "$tmpd/aligned.apv" 2>/dev/null; then
+            pa=$("$PY" "$SCRIPT_DIR/apv_hdr10plus.py" probe -i "$tmpd/aligned.apv" 2>/dev/null)
+            assert_contains "$pa" "hdr10plus=2" "functional bounded: decalaj mic (1 JSON vs 2 AU) → aliniat la coada (HDR10+ pe ambele AU)"
         else
-            assert_eq 1 1 "functional: count mismatch (1 JSON vs 2 AU) → eroare onesta"
+            assert_eq "ok" "fail" "functional bounded: decalaj mic trebuia aliniat, nu honest-fail"
+        fi
+        # v77 bounded-graceful — decalaj MARE (20 JSON vs 2 AU, diff 18 > tol 8) → honest-fail (HDR10 static; prinde bug de pipeline)
+        "$PY" -c "import json,sys; e={'LuminanceParameters':{'AverageRGB':500,'LuminanceDistributions':{'DistributionIndex':[1,50,99],'DistributionValues':[1,5,9]},'MaxScl':[1000,1100,1200]},'NumberOfWindows':1,'TargetedSystemDisplayMaximumLuminance':400}; json.dump({'SceneInfo':[e]*20}, open(sys.argv[1],'w'))" "$tmpd/meta20.json" 2>/dev/null
+        if "$PY" "$SCRIPT_DIR/apv_hdr10plus.py" inject -i "$tmpd/raw.apv" -j "$tmpd/meta20.json" -o "$tmpd/bad.apv" 2>/dev/null; then
+            assert_eq "fail" "ok" "functional bounded: decalaj mare (20 vs 2) trebuia honest-fail"
+        else
+            assert_eq 1 1 "functional bounded: decalaj mare (20 JSON vs 2 AU) → honest-fail (HDR10 static)"
         fi
     else
         skip_test "liboapv nu a produs fisierul sintetic"

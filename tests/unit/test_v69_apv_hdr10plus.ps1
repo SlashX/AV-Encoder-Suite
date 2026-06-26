@@ -3,7 +3,7 @@
 #   dispatch apv (Test-Hdr10PlusToolFor + Extract-Hdr10PlusMetadata), probe in
 #   Get-SourceInfo/Get-SourceInfoExtended, dialog APV (if/elseif, NU switch),
 #   hook post-encode + reset, av_check.ps1 upgrade TYPE.
-#   Functional: probe/extract/inject pe APV sintetic (AST import).
+#   Functional: probe/extract/inject + bounded (aliniere decalaj mic / honest-fail mare) pe APV sintetic.
 . "$PSScriptRoot\..\framework.ps1"
 
 $ROOT = if ($env:PROJECT_ROOT) { $env:PROJECT_ROOT } else { (Resolve-Path "$PSScriptRoot\..\..").Path }
@@ -92,6 +92,24 @@ if ($apvEncOk -and $pyOk) {
         }
         & ffmpeg -v error -y -i $outSim -c:v copy -bsf:v apv_metadata -f apv (Join-Path $tmp "cbs.apv") 2>$null
         Assert-Eq 0 $LASTEXITCODE "functional: CBS apv_metadata passthrough exit 0"
+
+        # v77 bounded-graceful (engine direct): decalaj mic → aliniere la coada / decalaj mare → honest-fail
+        $py = (Get-Command python3 -EA SilentlyContinue).Source; if (-not $py) { $py = (Get-Command python -EA SilentlyContinue).Source }
+        $eng = Join-Path $SRC "apv_hdr10plus.py"
+        $rawb = Join-Path $tmp "rawb.apv"
+        & ffmpeg -v error -y -i $outSim -map 0:v:0 -c:v copy -f apv $rawb 2>$null
+        if ((Test-Path $rawb) -and $py) {
+            $m1 = Join-Path $tmp "m1.json"
+            [IO.File]::WriteAllText($m1, '{"SceneInfo":[{"LuminanceParameters":{"AverageRGB":500,"LuminanceDistributions":{"DistributionIndex":[1,50,99],"DistributionValues":[1,5,9]},"MaxScl":[1000,1100,1200]},"NumberOfWindows":1,"TargetedSystemDisplayMaximumLuminance":400}]}')
+            & $py $eng inject -i $rawb -j $m1 -o (Join-Path $tmp "aligned.apv") 2>$null
+            Assert-Eq 0 $LASTEXITCODE "functional bounded: decalaj mic (1 JSON vs 2 AU) -> aliniat la coada (exit 0)"
+            $pa = "$(& $py $eng probe -i (Join-Path $tmp 'aligned.apv') 2>$null)"
+            Assert-Match $pa 'hdr10plus=2' "functional bounded: aliniat -> HDR10+ pe ambele AU"
+            $m20 = Join-Path $tmp "m20.json"
+            & $py -c "import json,sys; e={'LuminanceParameters':{'AverageRGB':500,'LuminanceDistributions':{'DistributionIndex':[1,50,99],'DistributionValues':[1,5,9]},'MaxScl':[1000,1100,1200]},'NumberOfWindows':1,'TargetedSystemDisplayMaximumLuminance':400}; json.dump({'SceneInfo':[e]*20}, open(sys.argv[1],'w'))" $m20 2>$null
+            & $py $eng inject -i $rawb -j $m20 -o (Join-Path $tmp "bad.apv") 2>$null
+            Assert-Eq 1 $LASTEXITCODE "functional bounded: decalaj mare (20 vs 2) -> honest-fail (exit 1)"
+        }
     }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 } else {

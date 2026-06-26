@@ -278,7 +278,8 @@ encoder_setup_file() {
         hdr10_static_av1_param=""
         [[ "$AV1_ENCODER" != "libsvtav1" ]] && return 1
         [ "${HDR10_STATIC_AVAILABLE:-0}" = "1" ] || return 1
-        hdr10_static_av1_param=":mastering-display=${HDR10_MASTER_DISPLAY_SVTAV1}"
+        # v77: parantezele mastering-display escapate — av1_params intra in FFMPEG_CMD rulat prin `eval`
+        hdr10_static_av1_param=":mastering-display=$(_esc_eval_parens "$HDR10_MASTER_DISPLAY_SVTAV1")"
         [[ -n "$HDR10_MAX_CLL" ]] && hdr10_static_av1_param="${hdr10_static_av1_param}:content-light=${HDR10_MAX_CLL}"
         log "  HDR10 static (AV1): $HDR10_STATIC_SOURCE | content-light=${HDR10_MAX_CLL:-default}"
         return 0

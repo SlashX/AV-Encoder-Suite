@@ -2267,6 +2267,21 @@ function Get-DVProfile {
 
 # v35: Detectie capabilitati GPU (NVIDIA/Intel/AMD) + suport AV1 per-generatie
 # Filtreaza adaptoare virtuale (RDP/VM/DisplayLink) — doar GPU-uri fizice reale
+# v77: probe functional AV1 HW pe Windows (oglinda _hw_av1_*_works din bash; principiul
+# "capabilitate reala > model" — pana acum Get-GPUCapabilities ghicea PUR pe regex WMI).
+# Micro-encode real: testsrc -> encoder HW AV1 -> null; exit 0 = HW capabil. `format=nv12`
+# OBLIGATORIU (testsrc raw face QSV sa pice "query encoder params" chiar pe encoder capabil —
+# finding v75). NU poate da fals-POZITIV (encoder incapabil pica clar -22). Folosit `regex || probe`
+# -> ruleaza DOAR cand regex-ul zice NU. `*>$null` (NU pipe cu Select-Object -First → ar opri
+# pipeline-ul devreme si ar corupe $LASTEXITCODE; finding v75).
+function Test-HwAv1Encoder {
+    param([string]$Enc)
+    if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return $false }
+    & ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" `
+        -vf format=nv12 -c:v $Enc -f null - *>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Get-GPUCapabilities {
     $virtualRx = "Basic Display|Remote Display|Virtual|VMware|VirtualBox|Hyper-V|Citrix|DisplayLink|Parsec|Oracle"
     $allAdapters = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
@@ -2299,6 +2314,18 @@ function Get-GPUCapabilities {
             if ($av1) { $amdAv1 = $true }
             $gpuList += @{ vendor="AMD"; name=$n; av1=$av1 }
         }
+    }
+
+    # v77: forward-compat — daca regex-ul NU a recunoscut AV1 pe un vendor PREZENT dar encoderul HW
+    # exista in ffmpeg, probeaza functional (prinde un GPU viitor nerecunoscut, fara update de
+    # whitelist; oglinda bash `model || probe`). Short-circuit `-and (Test-...)` -> probe-ul ruleaza
+    # DOAR pe edge (regex NU + vendor prezent + encoder listat) -> cost ~0.2s o data, doar atunci.
+    if ($hasNvidia -or $hasIntel -or $hasAmd) {
+        $hwAv1Enc = @()
+        try { $hwAv1Enc = @(& ffmpeg -hide_banner -encoders 2>$null | Select-String -Pattern 'av1_(nvenc|qsv|amf)' -AllMatches | ForEach-Object { $_.Matches.Value }) } catch {}
+        if ($hasNvidia -and -not $nvAv1    -and ($hwAv1Enc -contains 'av1_nvenc') -and (Test-HwAv1Encoder 'av1_nvenc')) { $nvAv1    = $true }
+        if ($hasIntel  -and -not $intelAv1 -and ($hwAv1Enc -contains 'av1_qsv')   -and (Test-HwAv1Encoder 'av1_qsv'))   { $intelAv1 = $true }
+        if ($hasAmd    -and -not $amdAv1   -and ($hwAv1Enc -contains 'av1_amf')   -and (Test-HwAv1Encoder 'av1_amf'))   { $amdAv1   = $true }
     }
 
     return @{
@@ -2873,6 +2900,33 @@ function Get-SourceCodec {
     # v61 audit: [0] (prima linie) — DJI Action 6 v:0 dublu-listat → array.Trim() returna
     # array ["hevc","hevc"] → switch/`-eq` se comporta gresit (paritate cu head -1 bash).
     return "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null)[0])".Trim()
+}
+
+# v77: detectie VFR (variable frame rate) — r_frame_rate vs avg_frame_rate (container, fara
+# decode). Oglinda bash _is_vfr_source. Avertisment pe calea HW HDR10+ preserve (extract->inject):
+# sursa VFR are alt numar de cadre CODATE vs DECODATE -> hdr10plus_tool aliniaza la coada
+# (trunc/dup) -> output valid, metadata cozii aproximativa. NU normalizam CFR (ar schimba output-ul
+# pe preservare) — doar informam userul. Citire single-field [0]+.Trim() (paritate Get-SourceCodec).
+function Test-VfrSource {
+    param([string]$File)
+    if (-not $File -or -not (Test-Path -LiteralPath $File)) { return $false }
+    if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { return $false }
+    $rfr = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null)[0])".Trim()
+    $afr = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 -- "$File" 2>$null)[0])".Trim()
+    if (-not $rfr -or -not $afr -or $afr -eq "0/0" -or $rfr -eq $afr) { return $false }
+    $toVal = {
+        param($x)
+        $p = $x.IndexOf('/')
+        if ($p -ge 0) {
+            $d = [double]($x.Substring($p + 1))
+            if ($d -eq 0) { return 0.0 }
+            return ([double]($x.Substring(0, $p))) / $d
+        }
+        return [double]$x
+    }
+    $rv = & $toVal $rfr; $av = & $toVal $afr
+    if ($av -le 0 -or $rv -le 0) { return $false }
+    return (([math]::Abs($rv - $av) / $av) -gt 0.01)
 }
 
 # Get-ToolForExtract -Codec <hevc|av1|...> -Kind <dovi|hdr10plus>
@@ -4256,6 +4310,10 @@ function Convert-P7ToProfile81 {
 #   Return: $true=OK, $false=fail.
 function Get-PreserveRpu {
     param([string]$File, [string]$RpuOut, [string]$Codec = "hevc")
+    # v77: chokepoint DRY pt toate caile DV-preserve la ENCODE (HW + SW + hibrid). Pe sursa VFR,
+    # numarul de cadre din RPU (cadre CODATE) difera de baza re-encodata (cadre DECODATE) →
+    # dovi_tool inject-rpu aliniaza pe pozitie (trunc/dup la coada), gratios. Avertizam userul.
+    if (Test-VfrSource $File) { Write-Host "  ⚠ Sursa e VFR (r_frame_rate != avg_frame_rate) — RPU DV se aliniaza pe pozitie la cadrele de output; tool-ul poate raporta o mica diferenta de cadre la coada, ajustata automat (fara impact vizibil)." -ForegroundColor Yellow }
     if ($Codec -ne "hevc" -or (Get-DVProfile $File) -notlike "*Profil 7*") {
         return (Get-DvRpu -InputFile $File -RpuOut $RpuOut -SourceCodec $Codec)
     }
@@ -8552,6 +8610,8 @@ foreach ($f in $inputFiles) {
                     # extragem SI JSON-ul ca sa-l re-injectam in lantul DV (HDR10+ INAINTE de DV RPU,
                     # re-mux cu dvcC = pasul final). Gateat pe hdr10plus_tool (target codec).
                     if ($si.isHDRPlus -and (Test-Hdr10PlusToolFor -Codec $hwTargetCodec)) {
+                        # v77: avertismentul VFR a fost emis deja de Get-PreserveRpu (DV) mai sus —
+                        # pe hibrid DV+HDR10+ amandoua straturile se aliniaza pe pozitie identic.
                         Write-Host "  v76 HW hibrid DV+HDR10+: Extrag metadata HDR10+..." -ForegroundColor Cyan
                         $hpJsonHyb = Extract-Hdr10PlusMetadata $f.FullName
                         if ($hpJsonHyb -and (Test-Path $hpJsonHyb)) {
@@ -8636,6 +8696,7 @@ foreach ($f in $inputFiles) {
 
             if ($hwCanHpPreserve -and $hp10c -eq "1") {
                 # v76: extract HDR10+ JSON + setup inject; HW produce baza HDR10
+                if (Test-VfrSource $f.FullName) { Write-Host "  ⚠ Sursa e VFR (r_frame_rate != avg_frame_rate) — HDR10+ se aliniaza pe pozitie la cadrele de output; tool-ul poate raporta o mica diferenta de cadre la coada, ajustata automat (fara impact vizibil)." -ForegroundColor Yellow }
                 Write-Host "  v76 HW HDR10+ preserve: Extrag metadata sursa ($hpSrcCodec)..." -ForegroundColor Cyan
                 $hpJsonTmp = Extract-Hdr10PlusMetadata $f.FullName
                 if ($hpJsonTmp -and (Test-Path $hpJsonTmp)) {
@@ -8899,6 +8960,10 @@ foreach ($f in $inputFiles) {
                     Write-Host "  HDR10+: Skip fisier" -ForegroundColor Yellow
                     $apvHpSkipFile = $true
                 } else {
+                    # v77 bounded-graceful: engine-ul apv_hdr10plus.py aliniaza la coada pe decalaj
+                    # MIC (jitter VFR / cadre-sursa fara SEI), ca hdr10plus_tool/dovi_tool; honest-fail
+                    # -> HDR10 static doar pe decalaj MARE (bug de pipeline). Vezi apv_hdr10plus.py.
+                    if (Test-VfrSource $f.FullName) { Write-Host "  ⚠ Sursa e VFR — HDR10+ pe APV se aliniaza la coada pe decalaj mic (fara impact vizibil); pe decalaj mare iese HDR10 static." -ForegroundColor Yellow }
                     $script:apvHdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                     if ($script:apvHdr10PlusJson) {
                         $script:apvHdr10PlusInject = $true
@@ -9270,7 +9335,7 @@ foreach ($f in $inputFiles) {
         } else {
             @("-c:v","copy","-bsf:v","hevc_mp4toannexb","-f","hevc",$rawTemp)
         }
-        & ffmpeg -v error -i $outFile @extractArgs 2>>"$LogFile"
+        & ffmpeg -v error -y -i $outFile @extractArgs 2>>"$LogFile"
         if ($LASTEXITCODE -eq 0 -and (Test-Path $rawTemp)) {
             # v76 F3: hibrid DV+HDR10+ — injecteaza HDR10+ in raw INAINTE de DV RPU, in ACELASI
             # lant (re-mux cu dvcC ramane pasul final → DV activabil pe TV). Pe AV1 repair-urile
@@ -9316,7 +9381,7 @@ foreach ($f in $inputFiles) {
                     "  Triple-layer: dvcC de container scris (DV activabil pe TV)" | Out-File $LogFile -Append -Encoding UTF8
                 } else {
                     # AV1+MKV fara mkvmerge (IVF poarta timing) / MP4Box lipsa → ffmpeg direct
-                    $tlArgs = @("-v","error","-i",$injectedTemp,"-i",$outFile,
+                    $tlArgs = @("-v","error","-y","-i",$injectedTemp,"-i",$outFile,
                                "-map","0:v:0","-map","1:a?","-map","1:s?","-map","1:t?",
                                "-c","copy") + $tlContFlags + @($finalTemp)
                     & ffmpeg @tlArgs 2>>"$LogFile"
@@ -9359,7 +9424,7 @@ foreach ($f in $inputFiles) {
         Write-Host "  HW HDR10+: re-injectez metadata dinamica in baza HDR10 ($hpCodec)..." -ForegroundColor Cyan
         $hpRaw = Join-Path $AV_TEMP_DIR ("hpraw_"+[guid]::NewGuid().ToString("N")+".$hpExt")
         $hpXargs = if ($hpCodec -eq "av1") { @("-c:v","copy","-f","ivf",$hpRaw) } else { @("-c:v","copy","-bsf:v","hevc_mp4toannexb","-f","hevc",$hpRaw) }
-        & ffmpeg -v error -i $outFile @hpXargs 2>>"$LogFile"
+        & ffmpeg -v error -y -i $outFile @hpXargs 2>>"$LogFile"
         if ($LASTEXITCODE -eq 0 -and (Test-Path $hpRaw)) {
             $hpInj = Join-Path $AV_TEMP_DIR ("hpinj_"+[guid]::NewGuid().ToString("N")+".$hpExt")
             if (Inject-Hdr10PlusMetadata -StreamFile $hpRaw -JsonFile $hdr10PlusJson -OutputFile $hpInj -TargetCodec $hpCodec) {

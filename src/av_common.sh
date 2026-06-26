@@ -1810,6 +1810,28 @@ inject_dv_rpu() {
     fi
 }
 
+# v77: detectie VFR (variable frame rate) — compara r_frame_rate cu avg_frame_rate (citire de
+# container, FARA decode → ieftin). Folosit pentru avertismentul de pe calea HW HDR10+ preserve
+# (extract→inject): pe sursa VFR numarul de cadre CODATE (din care se extrage JSON-ul) difera de
+# cele DECODATE (baza HW) → hdr10plus_tool aliniaza la coada (trunc/dup) → output valid, dar
+# metadata cozii poate fi aproximativa. NU normalizam CFR (ar schimba output-ul pe o cale de
+# preservare) — doar informam userul. Return 0 = VFR, 1 = CFR/necunoscut (fara fals-pozitiv cand
+# avg lipseste). Citire conform regulii ffprobe single-field (default= + head -1 + tr -d '\r').
+_is_vfr_source() {
+    local f="$1" rfr afr
+    rfr=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate \
+          -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null | head -1 | tr -d '\r')
+    afr=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate \
+          -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null | head -1 | tr -d '\r')
+    [ -z "$rfr" ] && return 1
+    [ -z "$afr" ] && return 1
+    [ "$afr" = "0/0" ] && return 1
+    [ "$rfr" = "$afr" ] && return 1
+    awk -v r="$rfr" -v a="$afr" '
+        function val(x,   n,d,p){n=x;d=1;p=index(x,"/");if(p){n=substr(x,1,p-1);d=substr(x,p+1)}if(d+0==0)return 0;return (n+0)/(d+0)}
+        BEGIN{rv=val(r);av=val(a);if(av<=0||rv<=0)exit 1;diff=(rv>av)?(rv-av):(av-rv);if(diff/av>0.01)exit 0;exit 1}'
+}
+
 # v76: injecteaza HDR10+ dynamic metadata (SMPTE ST 2094-40) intr-un bitstream HEVC/AV1
 # brut, prin hdr10plus_tool (HEVC) / av1hdr10plus_tool (AV1) — oglinda lui inject_dv_rpu
 # pentru calea HW-preserve. Encoderele HW dropeaza dinamicul (iese HDR10 static); re-injectam
@@ -2235,6 +2257,10 @@ _classify_p7_el() {
 #   $1 = fisier sursa   $2 = RPU out   $3 = src_codec (hevc|av1)   Return: 0=OK, 1=fail.
 _extract_preserve_rpu() {
     local file="$1" rpu_out="$2" codec="${3:-hevc}"
+    # v77: chokepoint DRY pt toate caile de DV-preserve la ENCODE (HW + SW + hibrid). Pe sursa VFR,
+    # numarul de cadre din RPU (extras din cadrele CODATE) difera de baza re-encodata (cadre DECODATE)
+    # → dovi_tool inject-rpu aliniaza pe pozitie (trunc/dup la coada), gratios. Avertizam userul.
+    _is_vfr_source "$file" && log "  ⚠ Sursa e VFR (r_frame_rate != avg_frame_rate) — RPU DV se aliniaza pe pozitie la cadrele de output; tool-ul poate raporta o mica diferenta de cadre la coada, ajustata automat (fara impact vizibil)."
     if [[ "$codec" != "hevc" ]] || [[ "$(get_dv_profile "$file")" != *"Profil 7"* ]]; then
         extract_dv_rpu "$file" "$rpu_out" "$codec"
         return $?
@@ -3011,7 +3037,7 @@ repair_hdr10_signaling() {
     local tmp_out
     tmp_out=$(av_mktemp_ext "${encoded##*.}")
     log "  HDR10 signaling repair: injectez mastering_display + max_cll..."
-    ffmpeg -v error -i "$encoded" -c copy \
+    ffmpeg -v error -y -i "$encoded" -c copy \
         -bsf:v "hevc_metadata=mastering_display=${md_str}:max_content=${cll_str%,*}:max_average=${cll_str#*,}:colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9" \
         -movflags +faststart "$tmp_out" 2>>"${LOG_FILE:-/dev/null}"
     local rc=$?
@@ -3847,6 +3873,19 @@ suggest_vbv_for_target() {
 }
 
 # ══════════════════════════════════════════════════════════════════════
+# v77: escapeaza parantezele dintr-un fragment de params (ex. master-display=G(..)B(..))
+# pentru caile rulate prin `eval` (FFMPEG_CMD in run_encode_loop / run_2pass_encode).
+# Fara escapare, `eval` interpreteaza `(` ca subshell → "syntax error near unexpected
+# token (" → encode 0 octeti (bug latent de la v51, mascat fiindca validarea HDR e pe
+# Windows/PS1 care NU foloseste eval). Aplicat DOAR pe calea eval (encoder x265/av1);
+# var-urile partajate HDR10_MASTER_DISPLAY_* raman RAW pentru consumatorii directi
+# (burn-in / trim-concat ffmpeg direct + dovi_tool generate `--master-display "$.."`),
+# care paseaza valoarea ca UN argument (fara eval) si au nevoie de parantezele brute.
+_esc_eval_parens() {
+    local s="$1"; s="${s//(/\\(}"; s="${s//)/\\)}"; printf '%s' "$s"
+}
+
+# ══════════════════════════════════════════════════════════════════════
 # v51: HDR10 STATIC METADATA EXTRACTION (Mastering Display + MaxCLL/MaxFALL)
 # Extrage din ffprobe side_data_list (frame 0) si formateaza pentru:
 #   - x265-params: chromaticity ×50000, luminance ×10000 (integer)
@@ -4281,6 +4320,25 @@ _hw_av1_vaapi_works() {
         -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
         -vf "format=nv12,hwupload" -c:v av1_vaapi -f null - >/dev/null 2>&1
 }
+# v77: acelasi probe extins la NVENC / AMF / VideoToolbox (uniformizeaza principiul
+# "capabilitate reala > model" pe TOATE backend-urile desktop — v75 il avea doar pe Intel
+# QSV/VAAPI; NVENC/AMF/VT ramasesera pe regex de arhitectura). NVENC/AMF iau cadre de sistem
+# (upload intern) → fara device, ca QSV. `model || probe` → ruleaza DOAR cand regex-ul zice NU.
+_hw_av1_nvenc_works() {
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
+        -vf format=nv12 -c:v av1_nvenc -f null - >/dev/null 2>&1
+}
+_hw_av1_amf_works() {
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
+        -vf format=nv12 -c:v av1_amf -f null - >/dev/null 2>&1
+}
+_hw_av1_vt_works() {
+    command -v ffmpeg >/dev/null 2>&1 || return 1
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc=size=320x240:rate=25:duration=0.2" \
+        -vf format=nv12 -c:v av1_videotoolbox -f null - >/dev/null 2>&1
+}
 
 # ── VAAPI (Linux Intel iGPU + AMD Mesa) ───────────────────────────────
 detect_vaapi_caps() {
@@ -4437,8 +4495,8 @@ detect_nvenc_caps() {
     NVENC_CAP_HDR10=1   # Turing+ HDR10 solid
     # AV1 NVENC: doar RTX 40+ (Ada Lovelace, AD102/AD103/AD104/AD106/AD107)
     if [[ "$NVENC_ENCODERS" == *"av1_nvenc"* ]]; then
-        if [[ "$NVENC_GPU_MODEL" =~ RTX[[:space:]]*(40|50)[0-9]{2} ]] || [[ "$NVENC_GPU_MODEL" =~ Ada|Blackwell ]]; then
-            NVENC_CAP_AV1=1
+        if [[ "$NVENC_GPU_MODEL" =~ RTX[[:space:]]*(40|50)[0-9]{2} ]] || [[ "$NVENC_GPU_MODEL" =~ Ada|Blackwell ]] || _hw_av1_nvenc_works; then
+            NVENC_CAP_AV1=1   # v77: || probe → prinde un GPU NVIDIA viitor nerecunoscut de regex
         fi
     fi
 
@@ -4483,8 +4541,8 @@ detect_videotoolbox_caps() {
         VT_CAP_PRORES=1   # Apple Silicon are HW ProRes (foarte rapid)
         # AV1 VideoToolbox: doar M3 si mai noi
         if [[ "$VT_ENCODERS" == *"av1_videotoolbox"* ]]; then
-            if [[ "$chip" =~ M[3-9] ]] || [[ "$chip" =~ M[1-9][0-9] ]]; then
-                VT_CAP_AV1=1
+            if [[ "$chip" =~ M[3-9] ]] || [[ "$chip" =~ M[1-9][0-9] ]] || _hw_av1_vt_works; then
+                VT_CAP_AV1=1   # v77: || probe → prinde un Apple Silicon viitor nerecunoscut de regex
             fi
         fi
     else
@@ -4562,6 +4620,7 @@ detect_amf_caps() {
     if [[ "$AMF_ENCODERS" == *"av1_amf"* ]]; then
         case "$AMF_GPU_ARCH" in
             rdna3|rdna4) AMF_CAP_AV1=1 ;;
+            *) _hw_av1_amf_works && AMF_CAP_AV1=1 ;;  # v77: arch nerecunoscuta → probe (prinde RDNA viitor)
         esac
     fi
 
@@ -5484,6 +5543,8 @@ hw_dispatch_sdr() {
                     # (HDR10+ INAINTE de DV RPU, re-mux cu dvcC = pasul final). Gateat pe tool.
                     if [[ "${HDR_PLUS:-}" == *"HDR10+"* ]] && _check_hdr10plus_tool_for "$enc_codec"; then
                         local hp_json_hyb
+                        # v77: avertismentul VFR a fost emis deja de _extract_preserve_rpu (DV) mai sus
+                        # — pe hibrid DV+HDR10+ amandoua straturile se aliniaza pe pozitie identic.
                         if hp_json_hyb=$(extract_hdr10plus_metadata "$file") && [ -s "$hp_json_hyb" ]; then
                             HDR10PLUS_JSON="$hp_json_hyb"
                             HW_HDR10PLUS_INJECT=1
@@ -5518,6 +5579,7 @@ hw_dispatch_sdr() {
                 # dinamic (oglinda hw_preserve DV). HW dropeaza SMPTE2094-40 → re-injectam
                 # JSON-ul extras din sursa in bitstream-ul HDR10 produs (PoC QSV).
                 local hp_json
+                _is_vfr_source "$file" && log "  ⚠ Sursa e VFR (r_frame_rate != avg_frame_rate) — HDR10+ se aliniaza pe pozitie la cadrele de output; tool-ul poate raporta o mica diferenta de cadre la coada, ajustata automat (fara impact vizibil)."
                 if hp_json=$(extract_hdr10plus_metadata "$file") && [ -s "$hp_json" ]; then
                     HDR10PLUS_JSON="$hp_json"
                     HW_HDR10PLUS_INJECT=1
@@ -6110,7 +6172,7 @@ run_encode_loop() {
             esac
             raw_temp=$(av_mktemp_ext "$_ext")
             # shellcheck disable=SC2086
-            ffmpeg -v error -i "$output" $_extract_args "$raw_temp" 2>>"$LOG_FILE"
+            ffmpeg -v error -y -i "$output" $_extract_args "$raw_temp" 2>>"$LOG_FILE"
             if [ $? -eq 0 ]; then
                 # v76 F3: hibrid DV+HDR10+ — injecteaza HDR10+ in raw INAINTE de DV RPU, in
                 # ACELASI lant (re-mux cu dvcC ramane pasul final → DV activabil pe TV). Pe AV1
@@ -6165,7 +6227,7 @@ run_encode_loop() {
                         true  # garanteaza $?=0 pt verificarea [-s final_temp] de mai jos
                     else
                         # AV1+MKV fara mkvmerge (IVF poarta timing) / MP4Box lipsa → ffmpeg direct
-                        ffmpeg -v error -i "$injected_temp" -i "$output" \
+                        ffmpeg -v error -y -i "$injected_temp" -i "$output" \
                             -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
                             -c copy $cont_flags "$final_temp" 2>>"$LOG_FILE"
                     fi
@@ -6211,7 +6273,7 @@ run_encode_loop() {
             local _hp_raw _hp_inj _hp_final
             _hp_raw=$(av_mktemp_ext "$_hp_ext")
             # shellcheck disable=SC2086
-            ffmpeg -v error -i "$output" $_hp_xargs "$_hp_raw" 2>>"$LOG_FILE"
+            ffmpeg -v error -y -i "$output" $_hp_xargs "$_hp_raw" 2>>"$LOG_FILE"
             if [ $? -eq 0 ] && [ -s "$_hp_raw" ]; then
                 _hp_inj=$(av_mktemp_ext "$_hp_ext")
                 if inject_hdr10plus_metadata "$_hp_raw" "$HDR10PLUS_JSON" "$_hp_inj" "$_hp_codec"; then
