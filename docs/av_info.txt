@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v77
+  Documentatie Setup & Utilizare — v78
 ═══════════════════════════════════════════════════════════════
 
 
@@ -282,7 +282,8 @@ CUPRINS
 
   PASII LOGICI (per fisier video, simplificat):
     1. Verifica daca output-ul exista deja (skip / re-do)
-    2. Detecteaza track-uri DJI (djmd/dbgi/tmcd/cover) → dialog daca gaseste
+    2. Detecteaza track-uri DJI (djmd/dbgi/tmcd/cover) → se elimina la
+       encode, GPS-ul nativ se re-adauga dupa (MP4/MOV, v78 — vezi 8.6)
     3. Detecteaza HDR (color_transfer + side_data + codec_tag)
     4. Detecteaza Dolby Vision / HDR10+ / LOG / HLG → dialog dedicat
     5. Smart stream copy detection (v38): daca codec source == target si
@@ -356,10 +357,12 @@ CUPRINS
 
   ─── 7.2. Container ───
 
-  mkv   — Flexibil, suporta orice codec / subtitlu / DV / track-uri DJI.
-          Recomandat default.
+  mkv   — Flexibil, suporta orice codec / subtitlu / DV. Recomandat default.
+          (Track-urile de date DJI au codec "none" → nu intra in niciun
+          container; GPS-ul nativ se pastreaza altfel — vezi 8.6.)
   mp4   — Compatibil maxim (web, Smart TV, telefoane). +faststart.
-          Incompatibil cu PGS/DVDSUB si track-uri DJI (codec "none").
+          Incompatibil cu PGS/DVDSUB. GPS-ul nativ DJI se re-adauga
+          automat dupa encodare (v78, vezi 8.6).
   mov   — Apple / Final Cut Pro. Aceleasi limitari ca mp4. + E-AC3 / AC3
           incompat.
   mxf   — Avid native. Folosit exclusiv cu DNxHR.
@@ -1165,34 +1168,33 @@ CUPRINS
   cu telefoanele / broadcast-ul.
 
 
-  ─── 8.6. DJI tracks ───
+  ─── 8.6. DJI tracks (GPS nativ) ───
 
-  Detectie: codec tags djmd, dbgi, tmcd, cover JPEG.
-  Track-urile DJI au codec "none" — incompatibile cu mp4/mov.
-  Doar mkv poate pastra aceste track-uri.
+  Detectie: codec tags djmd (GPS / telemetrie), dbgi (debug), tmcd
+  (timecode), cover JPEG.
 
-  Daca container = mp4 / mov:
-    1) Schimba la MKV — pastreaza track-urile (trece la dialogul MKV).
-    2) Continua mp4/mov fara track-uri DJI (doar video + audio).
-       Metadatele GPS/telemetrie raman in fisierul original.
+  Track-urile de date DJI au codec "none" — ffmpeg NU le poate pune in
+  niciun container (nici mp4/mov, nici mkv). Prin urmare sunt eliminate
+  mereu la encodare. GPS-ul nativ se pastreaza in schimb prin re-adaugare
+  dupa encodare (v78):
 
-  Daca container = mkv (sau dupa switch):
-    Dialog selectie track-uri DJI in output:
-      Cu dbgi (4 optiuni, default 2):
-        1) Pastreaza tot (djmd + dbgi + tmcd)
-        2) Fara debug (dbgi ~295 MB) [recomandat]
-        3) Fara GPS/locatie (elimina djmd + dbgi, pastreaza tmcd)
-        4) Elimina tot
-      Fara dbgi (3 optiuni, default 1):
-        1) Pastreaza tot (djmd + tmcd)
-        2) Fara GPS/locatie
-        3) Elimina tot
+    Pe MP4 / MOV: pista GPS (djmd) e re-adaugata automat peste fisierul
+      encodat, prin MP4Box — traseul GPS ramane intact, fara pasi manuali.
+      Functioneaza pe encodare completa, pe copierea rapida (video 1:1) si
+      pe encodarea doar-audio. Pista voluminoasa de debug (dbgi) e lasata
+      deoparte — nu aduce nimic util si ar umfla fisierul.
+
+    Pe MKV (sau alt container): pastrarea nativa nu e posibila. Foloseste
+      meniul Telemetrie → "Embed lossless" pentru a pastra GPS-ul ca
+      subtitrare / date, sau pastreaza output-ul pe MP4/MOV.
+
+  Setare (profil): DJI_PRESERVE_META = auto (implicit — intreaba per fisier)
+  / on (mereu pastreaza, fara intrebare) / off (niciodata). In rulare
+  automata / fara terminal interactiv, "auto" pastreaza GPS-ul (alegere
+  sigura). Necesita MP4Box (installer in tools/).
 
   Cover JPEG (thumbnail DJI) NU se copiaza niciodata — ar cauza re-encode
   MJPEG→libx265 (codec conflict).
-
-  Containerul se reseteaza per fisier — batch mixt cu DJI + non-DJI
-  primeste dialog individual.
 
 
   ─── 8.7. Subtitrari PGS / DVDSUB + container MP4/MOV ───
@@ -1943,11 +1945,12 @@ CUPRINS
                         DJI: djmd / dbgi / tmcd / cover
                         GoPro: gpmd / Sony: nmea / Garmin: fdsc
                         QuickTime: N/A (single point)
-    6) Strip metadata — remux fara re-encode (sterge tracks)
+    6) Strip metadata — remux fara re-encode (dropeaza track-urile de date)
                         DJI sub-dialog:
-                          1) Doar dbgi (~295 MB) [implicit]
-                          2) djmd + dbgi
-                          3) djmd + dbgi + tmcd + cover
+                          1) Sterge telemetria (djmd/dbgi/tmcd) [implicit]
+                          2) Sterge telemetria + cover (mjpeg)
+                          3) Pastreaza GPS nativ (djmd) — elimina doar
+                             cover-ul si re-adauga GPS-ul cu MP4Box (v78)
                         Restul branduri: orice optiune sterge track-ul telemetry.
     7) Embed lossless — extract + re-mux in container nou.
                         Sub-meniu cu 4 profile:
@@ -2547,7 +2550,8 @@ CUPRINS
   Contine: encoder, container, CRF, preset, audio, filtre, loudnorm,
   ProRes profile, Force LOG detection, Interactive Mode, HW_BACKEND,
   HW_PRESET_SLOT, HW_HDR_POLICY, HW_FORCE, MEDIACODEC_HDR_POLICY,
-  DOVI_PRESERVE_POLICY (v45), LOG_PROFILE, LUT_PATH.
+  DOVI_PRESERVE_POLICY (v45), LOG_PROFILE, LUT_PATH,
+  DJI_PRESERVE_META (v78 — auto/on/off, pastrare GPS nativ DJI).
 
   NOTA: Profilurile NU sunt cross-platform — bash si PS1 folosesc
   field-uri diferite (ENCODER_NAME vs ENCODER, AUDIO_CODEC_ARG vs

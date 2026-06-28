@@ -560,9 +560,15 @@ detect_dji_tracks() {
     echo "${has_djmd}|${has_dbgi}|${has_tc}|${has_cover}"
 }
 
-# Seteaza: MAP_FLAGS, IS_DJI, KEEP_DJMD, KEEP_DBGI, KEEP_TMCD; poate modifica CONTAINER/output
+# Seteaza: MAP_FLAGS, IS_DJI (+ KEEP_* la 0, ramase doar pt contractul de stare).
+# Pistele de date DJI (djmd/dbgi/tmcd, codec=none) NU pot fi muxate de ffmpeg in NICIUN
+# container (matroska "Only audio/video/subtitles"; mp4 "tag for codec none") → mereu
+# eliminate la encode. GPS-ul nativ (djmd) se re-grefeaza POST-encode pe MP4/MOV via MP4Box
+# (_dji_preserve_meta_postencode, v78). Pe MKV pastrarea nativa e imposibila → ramane embed
+# SRT/CSV/GPX (meniul Telemetrie opt 7). Vechiul "Schimba la MKV (pastreaza tot)" era rupt
+# (ffmpeg refuza codec=none + index pe pozitie de linie gresit pe blocul fantoma ffprobe).
 handle_dji_full() {
-    local file="$1" out_suffix="$2"
+    local file="$1" out_suffix="$2"   # out_suffix pastrat pt compat call-site (neutilizat)
     local dji_info
     dji_info=$(detect_dji_tracks "$file")
     IS_DJI=0; KEEP_DJMD=0; KEEP_DBGI=0; KEEP_TMCD=0
@@ -572,130 +578,18 @@ handle_dji_full() {
 
     if [ "$IS_DJI" -eq 1 ]; then
         log "  Fisier DJI detectat"
-        if [[ "${ENCODER_TYPE:-}" == "dnxhr" ]]; then
-            log "  Track-uri DJI omise (.mov/.mxf incompatibile)"
-            MAP_FLAGS="-map 0:v:0 -map 0:a? -map 0:s? -map_metadata 0 -map_chapters 0"
-        else
-            local dji_result switch_mkv
-            dji_result=$(_dji_dialog "$file" "$dji_info" "$CONTAINER")
-            KEEP_DJMD=$(echo "$dji_result" | grep -o 'KEEP_DJMD=[0-9]' | cut -d= -f2)
-            [ -z "$KEEP_DJMD" ] && KEEP_DJMD=1
-            KEEP_DBGI=$(echo "$dji_result" | grep -o 'KEEP_DBGI=[0-9]' | cut -d= -f2)
-            [ -z "$KEEP_DBGI" ] && KEEP_DBGI=0
-            KEEP_TMCD=$(echo "$dji_result" | grep -o 'KEEP_TMCD=[0-9]' | cut -d= -f2)
-            [ -z "$KEEP_TMCD" ] && KEEP_TMCD=1
-            switch_mkv=$(echo "$dji_result" | grep -o 'SWITCH_MKV=[0-9]' | cut -d= -f2)
-            if [ "${switch_mkv:-0}" -eq 1 ]; then
-                CONTAINER="mkv"; CONTAINER_FLAGS=""
-                output="$OUTPUT_DIR/${name}${out_suffix}.mkv"
-                log "  Container schimbat la mkv (track-uri DJI pastrate)"
-            fi
-            log "  DJI tracks — djmd:$([ "$KEEP_DJMD" -eq 1 ] && echo 'da' || echo 'nu') dbgi:$([ "$KEEP_DBGI" -eq 1 ] && echo 'da' || echo 'nu') tmcd:$([ "$KEEP_TMCD" -eq 1 ] && echo 'da' || echo 'nu')"
-            MAP_FLAGS=$(build_map_flags "$file" "$KEEP_DJMD" "$KEEP_DBGI" "$KEEP_TMCD" "$dji_info")
-        fi
+        MAP_FLAGS="-map 0:v:0 -map 0:a? -map 0:s? -map_metadata 0 -map_chapters 0"
+        local _ct="${CONTAINER:-mp4}"
+        case "$_ct" in
+            mp4|mov|m4v|qt)
+                log "  Track-uri DJI eliminate la encode; GPS-ul djmd se re-grefeaza automat in output (MP4Box, v78)" ;;
+            *)
+                log "  Track-uri DJI eliminate; pe .$_ct GPS-ul nativ nu poate fi pastrat — foloseste Telemetrie opt 7 (SRT/CSV/GPX embed)" ;;
+        esac
     else
         MAP_FLAGS="-map 0:v -map 0:a? -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"
     fi
     log "  Map flags: $MAP_FLAGS"
-}
-
-_dji_dialog() {
-    local file="$1" dji_info="$2" container="$3"
-    local has_djmd has_dbgi has_tc has_cover
-    has_djmd=$(echo "$dji_info" | cut -d'|' -f1)
-    has_dbgi=$(echo "$dji_info"  | cut -d'|' -f2)
-    has_tc=$(echo "$dji_info"    | cut -d'|' -f3)
-    has_cover=$(echo "$dji_info" | cut -d'|' -f4)
-    local is_dji=0
-    [ "$has_djmd" -eq 1 ] || [ "$has_dbgi" -eq 1 ] && is_dji=1
-    if [ "$is_dji" -eq 0 ]; then echo "KEEP_DJMD=0|KEEP_DBGI=0|KEEP_TMCD=0|IS_DJI=0|SWITCH_MKV=0"; return; fi
-    {
-        echo ""; echo "  ╔══════════════════════════════════════════════╗"
-        echo "  ║  FISIER DJI DETECTAT                         ║"
-        echo "  ╠══════════════════════════════════════════════╣"
-        [ "$has_djmd"  -eq 1 ] && echo "  ║  ✅ djmd — GPS, telemetrie, setari camera    ║"
-        [ "$has_tc"    -eq 1 ] && echo "  ║  ✅ tmcd — Timecode sincronizare              ║"
-        [ "$has_dbgi"  -eq 1 ] && echo "  ║  ⚠️  dbgi — date debug DJI (~295 MB)          ║"
-        [ "$has_cover" -eq 1 ] && echo "  ║  ℹ️  Cover JPEG — nu se copiaza (re-encode)   ║"
-    } >/dev/tty
-    local keep_djmd=1 keep_dbgi=0 keep_tmcd=1 switch_mkv=0
-    if [[ "$container" != "mkv" ]]; then
-        {
-            echo "  ╠══════════════════════════════════════════════╣"
-            echo "  ║  Track-urile DJI nu pot fi copiate in $container   ║"
-            echo "  ║  (codec 'none' incompatibil cu mp4/mov).     ║"
-            echo "  ║  Metadatele raman in fisierul original.      ║"
-            echo "  ╠══════════════════════════════════════════════╣"
-            echo "  ║  1) Schimba la MKV (pastreaza tot)           ║"
-            echo "  ║  2) Continua $container fara track-uri DJI [impl] ║"
-            echo "  ╚══════════════════════════════════════════════╝"
-        } >/dev/tty
-        local cont_ch; read -p "  Alege 1 sau 2 [implicit: 2]: " cont_ch </dev/tty
-        if [[ "${cont_ch:-2}" == "1" ]]; then
-            switch_mkv=1
-        else
-            echo "KEEP_DJMD=0|KEEP_DBGI=0|KEEP_TMCD=0|IS_DJI=1|SWITCH_MKV=0"; return
-        fi
-    fi
-    # MKV: dialog selectie track-uri DJI in output
-    if [ "$has_dbgi" -eq 1 ]; then
-        {
-            echo "  ╠══════════════════════════════════════════════╣"
-            echo "  ║  Track-uri DJI in output:                    ║"
-            echo "  ║  1) Pastreaza tot                             ║"
-            echo "  ║  2) Fara debug (dbgi ~295 MB) [recomandat]    ║"
-            echo "  ║  3) Fara GPS/locatie (elimina djmd + dbgi)    ║"
-            echo "  ║  4) Elimina tot (fara track-uri DJI)          ║"
-            echo "  ╚══════════════════════════════════════════════╝"
-        } >/dev/tty
-        local dji_ch; read -p "  Alege 1-4 [implicit: 2]: " dji_ch </dev/tty
-        case "${dji_ch:-2}" in
-            1) keep_djmd=1; keep_dbgi=1; keep_tmcd=1 ;;
-            3) keep_djmd=0; keep_dbgi=0; keep_tmcd=1 ;;
-            4) keep_djmd=0; keep_dbgi=0; keep_tmcd=0 ;;
-            *) keep_djmd=1; keep_dbgi=0; keep_tmcd=1 ;;
-        esac
-    else
-        {
-            echo "  ╠══════════════════════════════════════════════╣"
-            echo "  ║  Track-uri DJI in output:                    ║"
-            echo "  ║  1) Pastreaza tot [implicit]                  ║"
-            echo "  ║  2) Fara GPS/locatie (elimina djmd)           ║"
-            echo "  ║  3) Elimina tot (fara track-uri DJI)          ║"
-            echo "  ╚══════════════════════════════════════════════╝"
-        } >/dev/tty
-        local dji_ch; read -p "  Alege 1-3 [implicit: 1]: " dji_ch </dev/tty
-        case "${dji_ch:-1}" in
-            2) keep_djmd=0; keep_dbgi=0; keep_tmcd=1 ;;
-            3) keep_djmd=0; keep_dbgi=0; keep_tmcd=0 ;;
-            *) keep_djmd=1; keep_dbgi=0; keep_tmcd=1 ;;
-        esac
-    fi
-    echo "KEEP_DJMD=${keep_djmd}|KEEP_DBGI=${keep_dbgi}|KEEP_TMCD=${keep_tmcd}|IS_DJI=1|SWITCH_MKV=${switch_mkv}"
-}
-
-build_map_flags() {
-    local file="$1" keep_djmd="$2" keep_dbgi="$3" keep_tmcd="$4" dji_info="$5"
-    local has_djmd has_dbgi has_tc
-    has_djmd=$(echo "$dji_info" | cut -d'|' -f1)
-    has_dbgi=$(echo "$dji_info"  | cut -d'|' -f2)
-    has_tc=$(echo "$dji_info"    | cut -d'|' -f3)
-    local is_dji=0
-    [ "$has_djmd" -eq 1 ] || [ "$has_dbgi" -eq 1 ] && is_dji=1
-    if [ "$is_dji" -eq 0 ]; then
-        echo "-map 0:v -map 0:a? -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0"; return
-    fi
-    local maps="-map 0:v:0 -map 0:a? -map 0:s? -map 0:t?"
-    if [[ "$CONTAINER" == "mkv" ]]; then
-        local idx=0
-        while IFS= read -r tag; do
-            echo "$tag" | grep -qi "djmd" && [ "$keep_djmd" -eq 1 ] && maps="$maps -map 0:$idx"
-            echo "$tag" | grep -qi "dbgi" && [ "$keep_dbgi" -eq 1 ] && maps="$maps -map 0:$idx"
-            echo "$tag" | grep -qi "tmcd" && [ "$keep_tmcd" -eq 1 ] && maps="$maps -map 0:$idx"
-            idx=$((idx + 1))
-        done < <(ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null)
-    fi
-    echo "$maps -map_metadata 0 -map_chapters 0"
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1639,6 +1533,107 @@ _detect_dji_dlogm() {
     fi
     rm -f "$dump"
     echo "unknown"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v78: pastrarea metadata-ului nativ DJI (djmd GPS) prin GRAFT MP4Box.
+# Pistele de date proprietare DJI (djmd=telemetrie GPS, dbgi=debug; codec_type=data,
+# codec=none) NU pot fi re-muxate de ffmpeg ("Could not find tag for codec none") →
+# la orice encode/remux ffmpeg se pierd TACUT. Grefam DOAR djmd (GPS); dbgi (debug, poate
+# fi mare) se omite — suita il trateaza ca drop-by-default. MP4Box (GPAC) le poate GREFA pe un
+# output ISO (MP4/MOV): importa output-ul intreg (video+audio+tmcd, cu colr/HDR/dvcC
+# intacte — validat empiric) + adauga pistele de date din original dupa track ID ISO.
+# Validat pe DJI Action 6: djmd 16473 sample → 16473 (byte-identic) + HDR10+ side_data
+# pastrat la `-add`. tmcd NU se grefeaza (muxer-ul mov il recreeaza pe encode → ar
+# duplica); cover-ul mjpeg ramane dropat. MKV n-are primitiva de pista timed-data →
+# DOAR MP4/MOV (pe MKV telemetria se pastreaza ca SRT/CSV embed, v47).
+# ══════════════════════════════════════════════════════════════════════
+
+# Echo: ID-ul ISO (decimal) al pistei djmd (GPS nativ DJI) din $1. djmd = telemetria GPS;
+# dbgi (debug, poate fi mare) NU se grefeaza — suita il trateaza ca drop-by-default si
+# pe calea de encode ar umfla output-ul; GPS-ul real e DOAR in djmd.
+# Parsing robust pe blocuri [STREAM] — ffprobe csv REORDONEAZA campurile (nu respecta
+# ordinea din -show_entries), deci pereche id↔tag in interiorul blocului, order-independent.
+# CRLF stripuit (ffprobe.exe pe Windows); hex 0xN → decimal prin $(( )).
+_dji_native_meta_ids() {
+    local file="$1"
+    ffprobe -v error -select_streams d -show_entries stream=id,codec_tag_string "$file" 2>/dev/null \
+      | awk -F= '
+          {gsub(/\r/,"")}
+          /^id=/{id=$2}
+          /^codec_tag_string=/{tag=$2}
+          /\[\/STREAM\]/{ if(tag=="djmd") print id; id="";tag="" }' \
+      | while IFS= read -r _h; do [[ -n "$_h" ]] && printf '%s ' "$(( _h ))"; done
+}
+
+# Return 0 daca sursa are pista djmd (telemetria GPS DJI) — gate pt graft (A si B).
+_dji_has_native_meta() {
+    local file="$1"
+    ffprobe -v error -select_streams d -show_entries stream=codec_tag_string \
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | grep -qi 'djmd'
+}
+
+# Grefeaza pista djmd (GPS nativ) din $original in $output (IN-PLACE via temp). Folosit de:
+#  A) telemetrie strip "pastreaza GPS nativ" (base = stream-copy fara cover)
+#  B) flux encode (base = output-ul encodat) — DJI MP4/MOV → encode → re-graft GPS.
+# Gate: MP4Box prezent + output MP4/MOV + djmd in original. Soft: indisponibil/incompat/
+# esec → return 1, $output NEATINS (apelantul pastreaza output-ul fara metadata + avertizeaza).
+# NB: nume FARA literalul "mp4box" (santinela no_hardcoded_tools); unealta via $AV_TOOL_MP4BOX.
+#   $1 = original (sursa cu djmd)   $2 = output (deja construit; grefat in-place)
+_dji_graft_native_meta() {
+    local original="$1" output="$2"
+    command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || return 1
+    local _oext="${output##*.}"; _oext="${_oext,,}"
+    case "$_oext" in mp4|mov|m4v|qt) : ;; *) return 1 ;; esac
+    _dji_has_native_meta "$original" || return 1
+    local _ids; _ids=$(_dji_native_meta_ids "$original")
+    [[ -n "${_ids// /}" ]] || return 1
+    local tmp; tmp=$(av_mktemp_ext "$_oext")
+    local -a add_args=("-add" "$output")
+    local _id
+    for _id in $_ids; do add_args+=("-add" "${original}#${_id}"); done
+    if "$AV_TOOL_MP4BOX" "${add_args[@]}" -new "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$output"
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# v78: hook post-encode (run_encode_loop) — re-grefeaza GPS-ul nativ DJI (djmd) pe
+# output-ul encodat MP4/MOV. ffmpeg pierde pistele de date proprietare la encode → le
+# re-adaugam din sursa cu MP4Box. Policy DJI_PRESERVE_META (env/profil): auto (default;
+# prompt interactiv, ON non-interactiv = "do no harm") | on (mereu) | off (niciodata).
+# Gate intern: sursa cu djmd + output ISO. NU se captureaza via $(...) (foloseste read/log).
+#   $1 = sursa (cu djmd)   $2 = output encodat
+_dji_preserve_meta_postencode() {
+    local source="$1" output="$2"
+    local policy="${DJI_PRESERVE_META:-auto}"
+    [[ "$policy" == "off" ]] && return 0
+    local _ot="${output##*.}"; _ot="${_ot,,}"
+    case "$_ot" in mp4|mov|m4v|qt) : ;; *) return 0 ;; esac
+    _dji_has_native_meta "$source" || return 0
+    local _do=0
+    case "$policy" in
+        on) _do=1 ;;
+        *)  # auto: prompt interactiv; non-interactiv → pastreaza (alegerea sigura)
+            if [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+                _do=1
+            else
+                echo "  Sursă DJI cu GPS nativ (djmd). Re-grefez telemetria GPS în output?"
+                local _ans; read -p "  1) Da (recomandat)  2) Nu  [implicit: 1]: " _ans
+                [[ "${_ans:-1}" != "2" ]] && _do=1
+            fi
+            ;;
+    esac
+    [[ "$_do" == "1" ]] || return 0
+    if _dji_graft_native_meta "$source" "$output"; then
+        log "  GPS nativ DJI (djmd) re-grefat in output"
+    else
+        log "  [Notă] GPS nativ DJI nu a putut fi re-grefat (MP4Box lipseste) — telemetria s-a"
+        log "         pierdut la encode; alternativa: meniul Telemetrie opt 7 (embed) sau MP4Box."
+    fi
+    return 0
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2717,6 +2712,9 @@ do_stream_copy() {
         # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de NEW_SIZE (re-mux).
         local _sc_ext="${output##*.}"; _sc_ext="${_sc_ext,,}"
         _dv_resignal_copy "$file" "$output" "$_sc_ext"
+        # v78: stream-copy al unei surse DJI → ffmpeg dropeaza djmd (codec=none) → re-grefeaza
+        # GPS-ul nativ pe MP4/MOV (acelasi hook ca pe calea de encode). No-op pe non-DJI / non-ISO.
+        _dji_preserve_meta_postencode "$file" "$output"
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
@@ -6328,6 +6326,10 @@ run_encode_loop() {
         [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"; APV_HDR10PLUS_JSON=""
         APV_HDR10PLUS_INJECT=0
 
+        # ── v78: re-grefeaza GPS-ul nativ DJI (djmd) pe output MP4/MOV ──
+        # (ULTIMUL post-process: dupa toate inject-urile de metadata; gate intern pe djmd)
+        _dji_preserve_meta_postencode "$file" "$output"
+
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
@@ -6397,6 +6399,7 @@ profile_schema_get() {
         HW_HDR_POLICY)        echo "enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,hw_preserve,skip" ;;
         MEDIACODEC_HDR_POLICY) echo "enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,hw_preserve,skip" ;;
         DOVI_PRESERVE_POLICY) echo "enum:,auto,preserve,convert,copy,skip" ;;
+        DJI_PRESERVE_META)    echo "enum:,auto,on,off" ;;
         HW_FORCE)             echo "enum:0,1" ;;
         AUDIO_NORMALIZE)      echo "enum:0,1" ;;
         ENCODE_MODE)          echo "enum:1,2,3" ;;

@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v77** — 144 bugs fixed · 268+ features · ~43 000 LoC · 205 files
+**v78** — 145 bugs fixed · 270+ features · ~43 000 LoC · 209 files
 
 ---
 
@@ -19,6 +19,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **HDR10+ on APV** (v69) — a first: dynamic HDR10+ metadata survives encoding to Samsung APV (ffmpeg alone drops it). A dedicated stdlib engine writes the ST 2094-40 metadata per frame straight into the APV bitstream alongside static mastering-display/MaxCLL, from any HDR10+ source (HEVC / AV1 / APV) — and back: an HDR10+ APV file re-encodes to x265/AV1 with metadata intact. Output validated byte-exact against the HDR10+ ecosystem reference tools and the official test clip; optional decode-check via the OpenAPV reference decoder (`tools/openapv_validator`)
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata)
+- **DJI native GPS preserved on encode** (v78) — encoding a DJI clip (Osmo Action 6 etc.) used to silently drop the native GPS telemetry track (its `codec=none` format can't pass through ffmpeg into *any* container). Now the suite re-grafts the GPS track onto the MP4/MOV output after encoding (via MP4Box) — on full re-encode, fast stream-copy, and audio-only alike (anywhere the picture stays 1:1). The bulky debug track is dropped; on MKV (which can't hold it either) the suite points you to the telemetry *embed* option. Controlled by `DJI_PRESERVE_META` (auto/on/off). The old "switch to MKV to keep tracks" option — which actually crashed the encode (those tracks can't enter MKV) — is gone, replaced by this honest, automatic path
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
 - **Hardware encoding correctness audit** (v75) — across all 6 backends: fixed inverted quality presets on VAAPI / VideoToolbox (picking "quality" no longer gave you "fast"), AV1 HW now offered only on GPUs that can actually run it (Intel Arc / Core Ultra+, with a live capability probe on Linux), NVENC constant-quality VBR, explicit HDR10 color signaling on every card, and an honest warning that HDR10+ degrades to static HDR10 on HW encode. MediaCodec recognizes modern Snapdragon (`QTI`) / Exynos (codename) SoCs and no longer claims nonexistent mobile AV1 HW encode (→ clean SW fallback). On Windows, Dolby Vision Profile 8.1 / 8.4 and AV1 DV — which carry a standard/empty codec tag rather than the DV-dedicated one — are now detected from side-data on the encode path, so the preserve dialog appears and DV is no longer silently lost; P8.4 (HLG-compatible) is also no longer mislabeled as Profile 5 in MP4/MOV
 - **HDR10+ preserved on hardware encode** (v76) — every HW encoder drops dynamic HDR10+ (only static HDR10 survives); when the HDR10+ tool is present the suite re-injects the per-scene metadata onto the HW-encoded bitstream, restoring dynamic HDR10+ intact on HEVC and AV1 — including hybrid DV + HDR10+ sources (both layers kept, DV signaled via the container record). On an HDR10+ source picked for HW, preserve-via-inject is the default. Also new: **Dolby Vision Profile 7 → 8.1** in HDR/DV tools — P7 (dual-layer, typical of UHD discs) isn't read by many TVs/players, so the suite converts to universal 8.1, keeping the HDR10 base + DV metadata and warning before discarding an enhancement layer that actually carries luminance (FEL-safe; `DV_P7_FORCE=1` to override). Same conversion is now applied automatically when re-encoding a P7 source with DV preserve, so the output is valid single-layer 8.1. Validated on QSV HEVC; other HW backends spec-level
@@ -172,7 +173,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 | **QuickTime** | `com.apple.quicktime.location.ISO6709` | ExifTool | ✅ (single point) | ✅ |
 
 - **Norm CSV** (24 cols, v54) — `timestamp,lat,lon,alt_m,speed_mps,speed_kmh,heading_deg,gforce_xyz,gyro_xyz,temp_c,hr_bpm,cadence_rpm,power_w,pitch_deg,roll_deg,yaw_deg,fix_quality,num_sats,hdop,source_brand`
-- **DJI strip** sub-modes — dbgi-only · djmd+dbgi · total
+- **DJI strip** sub-modes — strip telemetry · strip telemetry + cover · keep native GPS (drop cover only, re-graft djmd via MP4Box, v78)
 - **Excluded by design** — Insta360, Yi/Akaso/SJCAM
 - **External GPS import** — GPX/FIT/KML → CSV/SRT/GPX/KML via `av_extractor_gps`
 - **Embed lossless** (opt 7) — extract telemetry then re-mux as SRT subtitle track + attachments (MKV); video stream copy, no re-encode. Submenu with 4 profiles: `srt` (SRT only, any container) · `srt_csv` (SRT + norm CSV, MKV) · `srt_csv_gpx` (default, SRT + norm CSV + GPX, MKV) · `all` (SRT + basic + FULL + GPX + KML, MKV mandatory). KML auto-generated for profile `all` from norm CSV (or DJI exiftool template). Mimetypes: `text/csv`, `application/gpx+xml`, `application/vnd.google-earth.kml+xml`.
@@ -403,4 +404,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v77** — 144 bugs fixed · 268+ features · ~43 000 LoC · 205 files
+Current: **v78** — 145 bugs fixed · 270+ features · ~43 000 LoC · 209 files

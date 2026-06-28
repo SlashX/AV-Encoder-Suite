@@ -393,6 +393,9 @@ for file in "${FILES[@]}"; do
         # NB: nivel script (in for) → fara `local` (vezi regula v66).
         _au_ext="${output##*.}"; _au_ext="${_au_ext,,}"
         _dv_resignal_copy "$file" "$output" "$_au_ext"
+        # v78: audio-only copiaza video-ul 1:1 (-c:v copy) → djmd ramane valid temporal →
+        # re-grefeaza GPS-ul nativ DJI (ffmpeg dropeaza djmd codec=none). No-op pe non-DJI / non-ISO.
+        _dji_preserve_meta_postencode "$file" "$output"
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
         echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"

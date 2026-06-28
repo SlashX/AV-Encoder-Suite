@@ -3,9 +3,46 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v77 | 144 bug-uri fixate | 268+ features
-  205 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 151 teste [144 test_* + 7 infra]) | ~43000 linii cod+teste | ~7300 linii documentatie
+  TOTAL: v78 | 145 bug-uri fixate | 270+ features
+  209 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 155 teste [148 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v78 — GPS-ul nativ DJI pastrat la encodare + recunoastere
+        fisiere Dolby Vision in verificarea media
+═══════════════════════════════════════════════════════════════
+
+  ADD Cand encodezi un clip DJI (Osmo Action 6 si altele) cu telemetrie GPS
+        nativa, pista GPS e pastrata acum automat in fisierul rezultat. Pana
+        acum, orice encodare a unui clip DJI pierdea GPS-ul nativ (formatul
+        lui nu poate trece prin encodare). Acum suita re-adauga pista GPS
+        peste fisierul encodat (MP4 sau MOV), dupa encodare — asa pastrezi
+        traseul GPS fara pasi manuali. Functioneaza pe encodare completa, pe
+        copierea rapida (cand video-ul nu se re-encodeaza) si pe encodarea
+        doar-audio — adica oriunde imaginea ramane neschimbata. Pista
+        voluminoasa de debug (dbgi) e lasata deoparte: nu aduce nimic util
+        si ar umfla fisierul. Pe MKV pastrarea nativa nu e posibila →
+        foloseste optiunea de "embed" din meniul Telemetrie (GPS ca
+        subtitrare / date). Poate fi controlat printr-o setare in profil
+        (automat / mereu / niciodata); implicit, suita te intreaba.
+        (Necesita MP4Box — exista installer in tools/.)
+
+  ADD In meniul Telemetrie, o optiune noua pastreaza GPS-ul nativ DJI si
+        elimina doar imaginea de coperta (cover) — utila cand vrei fisierul
+        curat dar cu traseul GPS intact.
+
+  FIX Vechea optiune DJI "Schimba la MKV (pastreaza tot)" era defecta: bloca
+        encodarea, fiindca pistele de date DJI nu pot intra de fapt intr-un
+        MKV. A fost scoasa si inlocuita cu pastrarea automata a GPS-ului pe
+        MP4/MOV (de mai sus). Acum suita iti spune cinstit ca pe MKV GPS-ul
+        nativ nu poate ramane si te indruma spre optiunea de embed sau spre
+        pastrarea pe MP4/MOV.
+
+  ADD Verificarea fisierelor media (optiunea 3) recunoaste acum si numele de
+        iesire produse de uneltele Dolby Vision (transformarea de profil), ca
+        sa potriveasca corect fisierul de intrare cu cel de iesire in
+        comparatia de marime.
 
 
 ═══════════════════════════════════════════════════════════════

@@ -22,9 +22,10 @@ Assert-Eq 0 (CountOf $telp '"-map","0:d?"')    "embed PS1: nu mai mapeaza data"
 Assert-Eq 3 (CountOf $tel  'maps="-map 0 -dn"')   "strip bash: -dn in toate 3 caile (dji/gopro/telem)"
 Assert-Eq 3 (CountOf $telp '@("-map","0","-dn")') "strip PS1: -dn in toate 3 caile"
 
-# ── 3. meniul DJI nu mai promite fals 'keep GPS' (imposibil la re-mux) ─────
+# ── 3. meniul DJI ramane onest: opt 1/2 NU pot pastra djmd prin ffmpeg ─────
+#   (v78: opt 3 il pastreaza prin MP4Box — alta cale; nota ffmpeg ramane corecta)
 Assert-Eq 0 (CountOf $tel 'Doar debug (dbgi ~295 MB)') "meniu bash: optiunea inselatoare scoasa"
-Assert-Match $telp ([regex]::Escape('GPS-ul djmd NU poate ramane la re-mux')) "meniu PS1: nota onesta DJI"
+Assert-Match $telp ([regex]::Escape('ffmpeg nu re-muxeaza')) "meniu PS1: nota onesta (opt 1/2 ffmpeg nu pastreaza codec=none)"
 
 # ── 4. FUNCTIONAL — sample DJI cu data stream (codec none) → embed/strip reusesc ──
 $dji = Get-ChildItem $SRC -Filter 'DJI_*.MP4' -ErrorAction SilentlyContinue | Select-Object -First 1

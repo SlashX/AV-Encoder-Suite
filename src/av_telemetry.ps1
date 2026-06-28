@@ -178,19 +178,21 @@ if ($choice -eq "6") {
     Write-Host "`n╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
     Write-Host "║  ELIMINA METADATA (REMUX FARA RE-ENCODE)     ║" -ForegroundColor Yellow
     Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-    Write-Host "║  DJI (GPS-ul djmd NU poate ramane la re-mux): ║" -ForegroundColor White
-    Write-Host "║   1) Sterge telemetria (djmd/dbgi/tmcd)       ║" -ForegroundColor White
-    Write-Host "║   2) Sterge telemetria + cover (mjpeg)        ║" -ForegroundColor White
-    Write-Host "║  GoPro/Sony/Garmin: orice optiune sterge      ║" -ForegroundColor White
-    Write-Host "║   track-ul de telemetrie (gpmd/nmea/fdsc)     ║" -ForegroundColor White
-    Write-Host "║   3) Anulare                                  ║" -ForegroundColor White
+    Write-Host "║  DJI (pista de date proprietara):            ║" -ForegroundColor White
+    Write-Host "║   1) Sterge telemetria (djmd/dbgi/tmcd)      ║" -ForegroundColor White
+    Write-Host "║   2) Sterge telemetria + cover (mjpeg)       ║" -ForegroundColor White
+    Write-Host "║   3) Pastreaza GPS nativ (djmd) (-cover)     ║" -ForegroundColor White
+    Write-Host "║  GoPro/Sony/Garmin: orice optiune sterge     ║" -ForegroundColor White
+    Write-Host "║   track-ul de telemetrie (gpmd/nmea/fdsc)    ║" -ForegroundColor White
+    Write-Host "║   4) Anulare                                 ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-    Write-Host "  Nota DJI: ffmpeg nu poate re-muxa pistele de date proprietare" -ForegroundColor DarkGray
-    Write-Host "  (djmd/dbgi/tmcd, codec none) -> sunt eliminate. Pentru GPS," -ForegroundColor DarkGray
-    Write-Host "  extrage-l intai cu optiunile 1-5 din meniul telemetrie." -ForegroundColor DarkGray
-    $stripMode = Read-Host "Alege 1-3 [implicit: 1]"
+    Write-Host "  Nota DJI: opt 1/2 elimina telemetria (ffmpeg nu re-muxeaza" -ForegroundColor DarkGray
+    Write-Host "  pistele de date proprietare djmd/dbgi/tmcd, codec none)." -ForegroundColor DarkGray
+    Write-Host "  Opt 3 PASTREAZA GPS-ul nativ (djmd) prin MP4Box, eliminand" -ForegroundColor DarkGray
+    Write-Host "  doar cover-ul — necesita MP4Box (installer in tools/)." -ForegroundColor DarkGray
+    $stripMode = Read-Host "Alege 1-4 [implicit: 1]"
     if (-not $stripMode) { $stripMode = "1" }
-    if ($stripMode -eq "3") { exit }
+    if ($stripMode -eq "4") { exit }
 }
 
 # ── Verificare dependente conditional ────────────────────────────────
@@ -845,6 +847,55 @@ function Process-DJIRaw {
     }
 }
 
+# ── v78: GRAFT MP4Box pt GPS-ul nativ DJI (copie standalone a helperelor din av_common.sh
+# / av_encode.ps1; av_telemetry.ps1 e independent). ffmpeg pierde pistele de date proprietare
+# DJI (codec=none) → MP4Box le re-adauga pe output ISO. NB: nume FARA literalul "mp4box".
+function Get-DjiNativeMetaIds {
+    param([Parameter(Mandatory)][string]$File)
+    $lines = @(& ffprobe -v error -select_streams d -show_entries stream=id,codec_tag_string $File 2>$null)
+    $ids = New-Object System.Collections.Generic.List[int]
+    $curId = $null; $curTag = $null
+    foreach ($ln in $lines) {
+        $ln = "$ln".Trim()
+        if     ($ln -match '^id=(.+)$')                { $curId  = $matches[1].Trim() }
+        elseif ($ln -match '^codec_tag_string=(.+)$')  { $curTag = $matches[1].Trim() }
+        elseif ($ln -eq '[/STREAM]') {
+            # doar djmd (GPS); dbgi (debug) NU se grefeaza — drop-by-default + bloat pe encode
+            if ($curTag -eq 'djmd' -and $curId) {
+                $dec = if ($curId -like '0x*') { [Convert]::ToInt32($curId.Substring(2),16) } else { [int]$curId }
+                $ids.Add($dec)
+            }
+            $curId = $null; $curTag = $null
+        }
+    }
+    return $ids
+}
+function Test-DjiNativeMeta {
+    param([Parameter(Mandatory)][string]$File)
+    $tags = @(& ffprobe -v error -select_streams d -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    foreach ($t in $tags) { if ("$t".Trim() -eq 'djmd') { return $true } }
+    return $false
+}
+function Add-DjiNativeMeta {
+    param([Parameter(Mandatory)][string]$Original, [Parameter(Mandatory)][string]$Output)
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
+    $oext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    if ($oext -notin @('mp4','mov','m4v','qt')) { return $false }
+    if (-not (Test-DjiNativeMeta $Original)) { return $false }
+    $ids = @(Get-DjiNativeMetaIds $Original)
+    if (-not $ids -or $ids.Count -eq 0) { return $false }
+    $tmp = Join-Path (Split-Path $Output -Parent) ("djimeta_" + [guid]::NewGuid().ToString("N") + "." + $oext)
+    $addArgs = New-Object System.Collections.Generic.List[string]
+    $addArgs.Add("-add"); $addArgs.Add($Output)
+    foreach ($id in $ids) { $addArgs.Add("-add"); $addArgs.Add("${Original}#${id}") }
+    & $mux @addArgs -new $tmp 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0)
+    if ($ok) { Move-Item -Force $tmp $Output; return $true }
+    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    return $false
+}
+
 function Process-DJIStrip {
     param([System.IO.FileInfo]$f, [string]$name)
     $ext = $f.Extension
@@ -854,9 +905,31 @@ function Process-DJIStrip {
     if (-not $hasDjmd -and -not $hasDbgi) {
         Write-Host "  [SKIP] Nu e fisier DJI" -ForegroundColor DarkGray; return
     }
+    $outClean = Join-Path $OutputDir "${name}_clean$ext"
+
+    if ($stripMode -eq "3") {
+        # v78: PASTREAZA GPS-ul nativ (djmd). Baza curata (video real v:0 + audio, FARA
+        # cover/date) apoi graft djmd cu MP4Box (Add-DjiNativeMeta). Reverseaza v71 — pe
+        # MP4/MOV GPS-ul nativ POATE ramane (MP4Box, nu ffmpeg).
+        & ffmpeg -v error -i $f.FullName -map 0:v:0 -map "0:a?" -c copy -dn -map_metadata 0 $outClean -y 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outClean) -or (Get-Item $outClean).Length -eq 0) {
+            Write-Host "  [EROARE] Remux esuat" -ForegroundColor Red
+            Remove-Item $outClean -Force -ErrorAction SilentlyContinue; return
+        }
+        if (Add-DjiNativeMeta -Original $f.FullName -Output $outClean) {
+            Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green
+            Write-Host "  Nota: GPS nativ DJI (djmd) PASTRAT via MP4Box; cover eliminat." -ForegroundColor DarkGray
+        } else {
+            Write-Host "  [OK] ${name}_clean$ext (cover eliminat)" -ForegroundColor Green
+            Write-Host "  Nota: GPS nativ NU a putut fi pastrat (MP4Box lipseste/esec) -> telemetria s-a" -ForegroundColor Yellow
+            Write-Host "        pierdut. Instaleaza MP4Box (installer in tools/) sau extrage GPS cu opt 1-5." -ForegroundColor Yellow
+        }
+        return
+    }
+
     # -dn: pistele de date DJI (djmd/dbgi/tmcd) sunt codec=none -> ffmpeg NU le poate
-    # re-muxa (-c copy esueaza). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5).
-    # v71 audit: inainte modurile care PASTRAU date (1=keep djmd, 2=keep tmcd) esuau pe DJI.
+    # re-muxa (-c copy esueaza). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5)
+    # sau se pastreaza cu opt 3 (MP4Box). v71 audit: modurile ffmpeg care PASTRAU date esuau.
     $stripMaps = [System.Collections.Generic.List[string]]@("-map","0","-dn")
     if ($stripMode -eq "2") {
         # mode 2: elimina si cover-ul (mjpeg/jpeg). codec_tag al cover-ului DJI e
@@ -869,7 +942,6 @@ function Process-DJIStrip {
             }
         }
     }
-    $outClean = Join-Path $OutputDir "${name}_clean$ext"
     & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
         Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green

@@ -26,10 +26,11 @@ assert_eq "3" "$n" "strip bash: -dn in toate 3 caile (dji/gopro/telem)"
 np=$(grep -c '@("-map","0","-dn")' "$SRC/av_telemetry.ps1" || true)
 assert_eq "3" "$np" "strip PS1: -dn in toate 3 caile"
 
-# ── 3. meniul DJI nu mai promite fals 'keep GPS' (imposibil la re-mux) ─────
+# ── 3. meniul DJI ramane onest: opt 1/2 NU pot pastra djmd prin ffmpeg ─────
+#   (v78: opt 3 il pastreaza prin MP4Box — alta cale; nota ffmpeg ramane corecta)
 assert_not_contains "$TEL" 'Doar debug (dbgi ~295 MB)' "meniu bash: optiunea inselatoare scoasa"
-assert_contains "$TEL" 'GPS-ul djmd NU poate ramane la re-mux' "meniu bash: nota onesta DJI"
-assert_contains "$TELP" 'GPS-ul djmd NU poate ramane la re-mux' "meniu PS1: nota onesta DJI"
+assert_contains "$TEL" 'ffmpeg nu re-muxeaza' "meniu bash: nota onesta (opt 1/2 ffmpeg nu pastreaza codec=none)"
+assert_contains "$TELP" 'ffmpeg nu re-muxeaza' "meniu PS1: nota onesta (opt 1/2 ffmpeg nu pastreaza codec=none)"
 
 # ── 4. FUNCTIONAL — sample DJI cu data stream (codec none) → embed/strip reusesc ──
 DJI_SAMPLE="$(ls "$SRC"/DJI_*.MP4 "$SRC"/DJI_*.mp4 2>/dev/null | head -1 || true)"

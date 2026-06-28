@@ -173,19 +173,21 @@ if [ "$choice" == "6" ]; then
     echo "╔══════════════════════════════════════════════╗"
     echo "║  ELIMINA METADATA (REMUX FARA RE-ENCODE)     ║"
     echo "╠══════════════════════════════════════════════╣"
-    echo "║  DJI (GPS-ul djmd NU poate ramane la re-mux): ║"
-    echo "║   1) Sterge telemetria (djmd/dbgi/tmcd)       ║"
-    echo "║   2) Sterge telemetria + cover (mjpeg)        ║"
-    echo "║  GoPro/Sony/Garmin: orice optiune sterge      ║"
-    echo "║   track-ul de telemetrie (gpmd/nmea/fdsc)     ║"
-    echo "║   3) Anulare                                  ║"
+    echo "║  DJI (pista de date proprietara):            ║"
+    echo "║   1) Sterge telemetria (djmd/dbgi/tmcd)      ║"
+    echo "║   2) Sterge telemetria + cover (mjpeg)       ║"
+    echo "║   3) Pastreaza GPS nativ (djmd) (-cover)     ║"
+    echo "║  GoPro/Sony/Garmin: orice optiune sterge     ║"
+    echo "║   track-ul de telemetrie (gpmd/nmea/fdsc)    ║"
+    echo "║   4) Anulare                                 ║"
     echo "╚══════════════════════════════════════════════╝"
-    echo "  Notă DJI: ffmpeg nu poate re-muxa pistele de date proprietare"
-    echo "  (djmd/dbgi/tmcd, codec none) → sunt eliminate. Pentru GPS,"
-    echo "  extrage-l intai cu optiunile 1-5 din meniul telemetrie."
-    read -p "Alege 1-3 [implicit: 1]: " STRIP_MODE
+    echo "  Notă DJI: opt 1/2 elimina telemetria (ffmpeg nu re-muxeaza"
+    echo "  pistele de date proprietare djmd/dbgi/tmcd, codec none)."
+    echo "  Opt 3 PASTREAZA GPS-ul nativ (djmd) prin MP4Box, eliminand"
+    echo "  doar cover-ul — necesita MP4Box (installer in tools/)."
+    read -p "Alege 1-4 [implicit: 1]: " STRIP_MODE
     STRIP_MODE="${STRIP_MODE:-1}"
-    [ "$STRIP_MODE" == "3" ] && { echo "Anulat."; exit 0; }
+    [ "$STRIP_MODE" == "4" ] && { echo "Anulat."; exit 0; }
 fi
 
 # ── Template-uri ExifTool (DJI) ──────────────────────────────────────
@@ -797,10 +799,33 @@ process_dji_raw() {
 process_dji_strip() {
     local file="$1"; local name="$2"
     local ext="${file##*.}"
+    local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
+
+    if [ "$STRIP_MODE" == "3" ]; then
+        # v78: PASTREAZA GPS-ul nativ (djmd). ffmpeg singur nu il poate re-muxa →
+        # producem o baza curata (video real v:0 + audio, FARA cover/date) apoi grefam
+        # djmd inapoi cu MP4Box (_dji_graft_native_meta din av_common.sh). Reverseaza
+        # restrictia v71 — pe MP4/MOV GPS-ul nativ POATE ramane, prin MP4Box (nu ffmpeg).
+        ffmpeg -v error -i "$file" -map 0:v:0 -map 0:a? -c copy -dn -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+        if [ $? -ne 0 ] || [ ! -s "$out_clean" ]; then
+            echo "  [EROARE] Remux esuat"; rm -f "$out_clean"; return
+        fi
+        if _dji_graft_native_meta "$file" "$out_clean"; then
+            echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"
+            echo "  Notă: GPS nativ DJI (djmd) PASTRAT via MP4Box; cover eliminat."
+        else
+            echo "  [OK] ${name}_clean.${ext} (cover eliminat)"
+            echo "  Notă: GPS nativ NU a putut fi pastrat (MP4Box lipseste/esec) → telemetria"
+            echo "        s-a pierdut. Instaleaza MP4Box (installer in tools/) sau extrage"
+            echo "        GPS-ul cu optiunile 1-5 din meniul telemetrie."
+        fi
+        return
+    fi
+
     # -dn: pistele de date DJI (djmd/dbgi/tmcd) sunt codec=none → ffmpeg NU le poate
     # re-muxa (-c copy esueaza: "tag for codec none" pe MP4 / "Only ... Matroska" pe
-    # MKV). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5). v71 audit: inainte
-    # modurile care PASTRAU date (1=keep djmd, 2=keep tmcd) esuau pe DJI ("Remux esuat").
+    # MKV). Le eliminam mereu; GPS-ul se extrage separat (opt 1-5) sau se pastreaza cu
+    # opt 3 (MP4Box). v71 audit: inainte modurile ffmpeg care PASTRAU date esuau pe DJI.
     local maps="-map 0 -dn"
     if [ "$STRIP_MODE" == "2" ]; then
         # mode 2: elimina si cover-ul (mjpeg/jpeg — pista video secundara). NB: codec_tag
@@ -811,7 +836,6 @@ process_dji_strip() {
             [[ "$_vcodec" =~ ^(mjpeg|jpeg|png)$ ]] && maps="$maps -map -0:$_vidx"
         done < <(ffprobe -v error -select_streams v -show_entries stream=index,codec_name -of csv=p=0 "$file" 2>/dev/null)
     fi
-    local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
     ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
     if [ $? -eq 0 ] && [ -s "$out_clean" ]; then
         echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"

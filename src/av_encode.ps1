@@ -2363,30 +2363,17 @@ function Get-DJITracks {
 }
 
 function Get-DJIMapFlags {
-    param([string]$file, [bool]$keepDjmd, [bool]$keepDbgi, [bool]$keepTmcd, $djiInfo, [string]$cont)
+    param($djiInfo)
     if (-not $djiInfo.isDji) {
         return @("-map","0:v","-map","0:a?","-map","0:s?","-map","0:t?",
                  "-map_metadata","0","-map_chapters","0")
     }
-    # DJI: -map 0:v:0 (doar primul video) — cover JPEG NU se mapeaza
-    # djmd/dbgi: doar in mkv (codec 'none' incompatibil cu mp4/mov)
-    $maps = [System.Collections.Generic.List[string]]@(
-        "-map","0:v:0","-map","0:a?","-map","0:s?","-map","0:t?")
-    $idx = 0
-    # csv=p=0 cu un singur camp = exact o linie per stream = indexare corecta
-    $tags = & ffprobe -v error -show_entries stream=codec_tag_string `
-        -of csv=p=0 "$file" 2>$null
-    foreach ($tag in $tags) {
-        if     ($tag -imatch "djmd" -and $keepDjmd -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
-        elseif ($tag -imatch "djmd" -and $cont -ne "mkv")                     { Write-Host "  NOTA: djmd (GPS) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
-        elseif ($tag -imatch "dbgi" -and $keepDbgi -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
-        elseif ($tag -imatch "dbgi" -and $cont -ne "mkv")                     { Write-Host "  NOTA: dbgi (debug) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
-        elseif ($tag -imatch "tmcd" -and $keepTmcd -and $cont -eq "mkv")      { $maps.AddRange([string[]]@("-map","0:$idx")) }
-        elseif ($tag -imatch "tmcd" -and $cont -ne "mkv")                     { Write-Host "  NOTA: tmcd (timecode) omis — incompatibil cu $cont (doar mkv)" -ForegroundColor Yellow }
-        $idx++
-    }
-    $maps.AddRange([string[]]@("-map_metadata","0","-map_chapters","0"))
-    return $maps.ToArray()
+    # DJI: -map 0:v:0 (doar primul video, cover JPEG NU se mapeaza) + audio/subs.
+    # Pistele de date DJI (djmd/dbgi/tmcd, codec=none) NU pot fi muxate de ffmpeg in NICIUN
+    # container → eliminate la encode. GPS-ul djmd se re-grefeaza post-encode pe MP4/MOV
+    # (Invoke-DjiPreserveMetaPostEncode, v78); pe alte containere → embed SRT/CSV/GPX.
+    return @("-map","0:v:0","-map","0:a?","-map","0:s?",
+             "-map_metadata","0","-map_chapters","0")
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2852,6 +2839,9 @@ function Invoke-StreamCopy {
     # v71: stream-copy al unui DV HEVC -> ffmpeg pierde dvcC de container -> re-scrie
     # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de stats (re-mux).
     Invoke-DvResignalCopy -Source $fileInfo.FullName -Output $outFile -Target $container
+    # v78: stream-copy al unei surse DJI -> ffmpeg dropeaza djmd (codec=none) -> re-grefeaza
+    # GPS-ul nativ pe MP4/MOV (acelasi hook ca pe calea de encode). No-op pe non-DJI / non-ISO.
+    Invoke-DjiPreserveMetaPostEncode -Source $fileInfo.FullName -Output $outFile
 
     # Stats
     $newSize = (Get-Item $outFile).Length
@@ -4079,6 +4069,101 @@ function Invoke-DvMp4Mux {
         }
     } elseif (Test-Path $Output) { Remove-Item $Output -Force -ErrorAction SilentlyContinue }
     return $ok
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# v78: pastrarea metadata-ului nativ DJI (djmd GPS) prin GRAFT MP4Box.
+# Oglinda helperelor bash din av_common.sh (_dji_native_meta_ids / _dji_has_native_meta /
+# _dji_graft_native_meta / _dji_preserve_meta_postencode). ffmpeg pierde pistele de date
+# proprietare DJI (codec=none) la encode → MP4Box re-adauga djmd pe output-ul ISO (MP4/MOV).
+# Validat: djmd byte-identic + colr/HDR pastrat la `-add`. NB: nume FARA literalul "mp4box"
+# (santinela no_hardcoded_tools); unealta via $env:AV_TOOL_MP4BOX.
+# ══════════════════════════════════════════════════════════════════════
+
+# ID-ul ISO (decimal) al pistei djmd (GPS) din $File. Parsare pe blocuri [STREAM]
+# (ffprobe csv reordoneaza campurile) — id<->tag in interiorul blocului, order-independent.
+# dbgi (debug) NU se grefeaza (drop-by-default + bloat pe encode); GPS-ul real e in djmd.
+function Get-DjiNativeMetaIds {
+    param([Parameter(Mandatory)][string]$File)
+    $lines = @(& ffprobe -v error -select_streams d -show_entries stream=id,codec_tag_string $File 2>$null)
+    $ids = New-Object System.Collections.Generic.List[int]
+    $curId = $null; $curTag = $null
+    foreach ($ln in $lines) {
+        $ln = "$ln".Trim()
+        if     ($ln -match '^id=(.+)$')                { $curId  = $matches[1].Trim() }
+        elseif ($ln -match '^codec_tag_string=(.+)$')  { $curTag = $matches[1].Trim() }
+        elseif ($ln -eq '[/STREAM]') {
+            # doar djmd (GPS); dbgi (debug) NU se grefeaza — drop-by-default + bloat pe encode
+            if ($curTag -eq 'djmd' -and $curId) {
+                $dec = if ($curId -like '0x*') { [Convert]::ToInt32($curId.Substring(2),16) } else { [int]$curId }
+                $ids.Add($dec)
+            }
+            $curId = $null; $curTag = $null
+        }
+    }
+    return $ids
+}
+
+# Return $true daca sursa are pista djmd (telemetria GPS DJI) — gate pt graft (A si B).
+function Test-DjiNativeMeta {
+    param([Parameter(Mandatory)][string]$File)
+    $tags = @(& ffprobe -v error -select_streams d -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    foreach ($t in $tags) { if ("$t".Trim() -eq 'djmd') { return $true } }
+    return $false
+}
+
+# Grefeaza djmd (GPS) din $Original in $Output (IN-PLACE via temp). Gate: MP4Box prezent +
+# output MP4/MOV + djmd in original. $true/$false; pe esec $Output NEATINS.
+function Add-DjiNativeMeta {
+    param([Parameter(Mandatory)][string]$Original, [Parameter(Mandatory)][string]$Output)
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
+    $oext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    if ($oext -notin @('mp4','mov','m4v','qt')) { return $false }
+    if (-not (Test-DjiNativeMeta $Original)) { return $false }
+    $ids = @(Get-DjiNativeMetaIds $Original)
+    if (-not $ids -or $ids.Count -eq 0) { return $false }
+    # temp langa $Output (acelasi drive → fara copiere cross-drive; regula no-$env:TEMP)
+    $tmp = Join-Path (Split-Path $Output -Parent) ("djimeta_" + [guid]::NewGuid().ToString("N") + "." + $oext)
+    $addArgs = New-Object System.Collections.Generic.List[string]
+    $addArgs.Add("-add"); $addArgs.Add($Output)
+    foreach ($id in $ids) { $addArgs.Add("-add"); $addArgs.Add("${Original}#${id}") }
+    & $mux @addArgs -new $tmp 2>$null | Out-Null
+    $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0)
+    if ($ok) { Move-Item -Force $tmp $Output; return $true }
+    if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    return $false
+}
+
+# Hook post-encode (mirror _dji_preserve_meta_postencode): policy DJI_PRESERVE_META
+# (auto|on|off) + prompt interactiv + graft. Gate intern pe djmd + output ISO.
+function Invoke-DjiPreserveMetaPostEncode {
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Output)
+    $policy = if ($env:DJI_PRESERVE_META) { $env:DJI_PRESERVE_META } else { "auto" }
+    if ($policy -eq "off") { return }
+    $oext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    if ($oext -notin @('mp4','mov','m4v','qt')) { return }
+    if (-not (Test-DjiNativeMeta $Source)) { return }
+    $do = $false
+    if ($policy -eq "on") { $do = $true }
+    else {
+        # auto: prompt interactiv; non-interactiv → pastreaza (alegerea sigura)
+        $noninteractive = ($env:AV_NONINTERACTIVE -eq "1")
+        if (-not $noninteractive) { try { if ([System.Console]::IsInputRedirected) { $noninteractive = $true } } catch { $noninteractive = $true } }
+        if ($noninteractive) { $do = $true }
+        else {
+            Write-Host "  Sursa DJI cu GPS nativ (djmd). Re-grefez telemetria GPS in output?"
+            $ans = Read-Host "  1) Da (recomandat)  2) Nu  [implicit: 1]"
+            if ($ans -ne "2") { $do = $true }
+        }
+    }
+    if (-not $do) { return }
+    if (Add-DjiNativeMeta -Original $Source -Output $Output) {
+        Write-Host "  GPS nativ DJI (djmd) re-grefat in output" -ForegroundColor Green
+    } else {
+        Write-Host "  [Nota] GPS nativ DJI nu a putut fi re-grefat (MP4Box lipseste) — telemetria s-a" -ForegroundColor Yellow
+        Write-Host "         pierdut la encode; alternativa: meniul Telemetrie opt 7 (embed) sau MP4Box." -ForegroundColor Yellow
+    }
 }
 
 # v71: scrie dvcC de container pe un output DEJA construit ($Built), inlocuind video-ul
@@ -5720,6 +5805,9 @@ if ($mainChoice -eq "2") {
             # v71: audio-only pe DV HEVC -> -c:v copy pierde dvcC de container -> re-scrie
             # (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv. Inainte de size (re-mux).
             Invoke-DvResignalCopy -Source $f.FullName -Output $outFile -Target $eaContainer
+            # v78: audio-only copiaza video-ul 1:1 (-c:v copy) -> djmd ramane valid temporal ->
+            # re-grefeaza GPS-ul nativ DJI (ffmpeg dropeaza djmd codec=none). No-op pe non-DJI / non-ISO.
+            Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
             $ns = (Get-Item $outFile).Length
             Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
         }
@@ -6024,6 +6112,7 @@ function Get-ProfileSchema {
         'HW_HDR_POLICY'        { 'enum:,sw_full,sw_degraded,hw_hdr10,hw_hlg,hw_sdr,hw_repair,hw_preserve,skip'; return }
         'MEDIACODEC_HDR_POLICY'{ 'enum:,sw_full,sw_degraded,hw_repair,hw_hlg,hw_sdr,hw_preserve,skip'; return }
         'DOVI_PRESERVE_POLICY' { 'enum:,auto,preserve,convert,copy,skip'; return }
+        'DJI_PRESERVE_META'    { 'enum:,auto,on,off'; return }
         'HW_FORCE'             { 'enum:0,1'; return }
         'AUDIO_NORMALIZE'      { 'enum:0,1'; return }
         'ENCODE_MODE'          { 'enum:1,2,3'; return }
@@ -7359,6 +7448,7 @@ if ($saveProf -ieq "d") {
             "LUT_PATH=$lutPathSave"
             "INTERACTIVE_MODE=$(if ($interactiveMode) { '1' } else { '0' })"
             "DOVI_PRESERVE_POLICY=$(if ($env:DOVI_PRESERVE_POLICY) { $env:DOVI_PRESERVE_POLICY } else { '' })"
+            "DJI_PRESERVE_META=$(if ($env:DJI_PRESERVE_META) { $env:DJI_PRESERVE_META } else { '' })"
             "HW_HDR_POLICY=$(if ($env:HW_HDR_POLICY) { $env:HW_HDR_POLICY } else { '' })"
             "MEDIACODEC_HDR_POLICY=$(if ($env:MEDIACODEC_HDR_POLICY) { $env:MEDIACODEC_HDR_POLICY } else { '' })"
         ) | Out-File $profFile -Encoding UTF8
@@ -7547,7 +7637,6 @@ foreach ($f in $inputFiles) {
     }
 
     $dji = Get-DJITracks $f.FullName
-    $keepDjmd = $true; $keepDbgi = $false; $keepTmcd = $true
     if ($dji.isDji) {
         Write-Host ""
         Write-Host "  ╔══════════════════════════════════════════════╗" -ForegroundColor Yellow
@@ -7555,65 +7644,21 @@ foreach ($f in $inputFiles) {
         Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
         if ($dji.hasDjmd)  { Write-Host "  ║  ✅ djmd — GPS, telemetrie, setari camera    ║" -ForegroundColor Green }
         if ($dji.hasTC)    { Write-Host "  ║  ✅ tmcd — Timecode sincronizare              ║" -ForegroundColor Green }
-        if ($dji.hasDbgi)  { Write-Host "  ║  ⚠️  dbgi — date debug DJI (~295 MB)          ║" -ForegroundColor Yellow }
+        if ($dji.hasDbgi)  { Write-Host "  ║  ⚠️  dbgi — date debug DJI                     ║" -ForegroundColor Yellow }
         if ($dji.hasCover) { Write-Host "  ║  ℹ️  Cover JPEG — nu se copiaza (re-encode)   ║" -ForegroundColor DarkGray }
-
-        if ($container -ne "mkv") {
-            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-            Write-Host "  ║  Track-urile DJI nu pot fi copiate in $container       ║" -ForegroundColor White
-            Write-Host "  ║  (codec 'none' incompatibil cu mp4/mov).    ║" -ForegroundColor White
-            Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-            Write-Host "  ║  1) Schimba la MKV (pastreaza tot)          ║" -ForegroundColor White
-            Write-Host "  ║  2) Continua $container fara track-uri DJI [impl]  ║" -ForegroundColor White
-            Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-            $djiContChoice = Read-Host "  Alege [implicit: 2]"
-            if ($djiContChoice -eq "1") {
-                $container = "mkv"
-                $containerFlags = @()
-                $outFile = Join-Path $OutputDir ($f.BaseName + $outSuffix + ".mkv")
-                Write-Host "  Container schimbat la mkv (track-uri DJI pastrate)" -ForegroundColor Green
-            } else {
-                $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false
-            }
+        Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
+        # Pistele de date DJI (djmd/dbgi/tmcd, codec=none) NU pot fi muxate de ffmpeg in
+        # niciun container → eliminate la encode. GPS-ul djmd se re-grefeaza post-encode pe
+        # MP4/MOV (Invoke-DjiPreserveMetaPostEncode, v78); pe alt container → embed SRT/CSV/GPX.
+        if ($container -in @("mp4","mov","m4v","qt")) {
+            Write-Host "  Track-uri DJI eliminate la encode; GPS-ul djmd se re-grefeaza automat in output (MP4Box, v78)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  Track-uri DJI eliminate; pe .$container GPS-ul nativ nu poate fi pastrat — foloseste Telemetrie opt 7 (SRT/CSV/GPX embed)" -ForegroundColor DarkGray
         }
-        # MKV: dialog selectie track-uri DJI in output
-        if ($container -eq "mkv") {
-            if ($dji.hasDbgi) {
-                Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-                Write-Host "  ║  Track-uri DJI in output:                    ║" -ForegroundColor White
-                Write-Host "  ║  1) Pastreaza tot                             ║" -ForegroundColor White
-                Write-Host "  ║  2) Fara debug (dbgi ~295 MB) [recomandat]    ║" -ForegroundColor White
-                Write-Host "  ║  3) Fara GPS/locatie (elimina djmd + dbgi)    ║" -ForegroundColor White
-                Write-Host "  ║  4) Elimina tot (fara track-uri DJI)          ║" -ForegroundColor White
-                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-                $djiTrackChoice = Read-Host "  Alege 1-4 [implicit: 2]"
-                if (-not $djiTrackChoice) { $djiTrackChoice = "2" }
-                switch ($djiTrackChoice) {
-                    "1" { $keepDjmd = $true;  $keepDbgi = $true;  $keepTmcd = $true  }
-                    "3" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $true  }
-                    "4" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false }
-                    default { $keepDjmd = $true;  $keepDbgi = $false; $keepTmcd = $true  }
-                }
-            } else {
-                Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Yellow
-                Write-Host "  ║  Track-uri DJI in output:                    ║" -ForegroundColor White
-                Write-Host "  ║  1) Pastreaza tot [implicit]                  ║" -ForegroundColor White
-                Write-Host "  ║  2) Fara GPS/locatie (elimina djmd)           ║" -ForegroundColor White
-                Write-Host "  ║  3) Elimina tot (fara track-uri DJI)          ║" -ForegroundColor White
-                Write-Host "  ╚══════════════════════════════════════════════╝" -ForegroundColor Yellow
-                $djiTrackChoice = Read-Host "  Alege 1-3 [implicit: 1]"
-                if (-not $djiTrackChoice) { $djiTrackChoice = "1" }
-                switch ($djiTrackChoice) {
-                    "2" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $true  }
-                    "3" { $keepDjmd = $false; $keepDbgi = $false; $keepTmcd = $false }
-                    default { $keepDjmd = $true;  $keepDbgi = $false; $keepTmcd = $true  }
-                }
-            }
-        }
-        "DJI: djmd=$keepDjmd dbgi=$keepDbgi tmcd=$keepTmcd container=$container" | Out-File $LogFile -Append -Encoding UTF8
+        "DJI: track-uri de date eliminate la encode; djmd re-grefat post-encode pe mp4/mov | container=$container" | Out-File $LogFile -Append -Encoding UTF8
     }
 
-    $mapFlags  = Get-DJIMapFlags $f.FullName $keepDjmd $keepDbgi $keepTmcd $dji $container
+    $mapFlags  = Get-DJIMapFlags $dji
     $si        = Get-SourceInfo $f.FullName
     $width     = Get-FFprobeValue $f.FullName "v:0" "width"
     $height    = Get-FFprobeValue $f.FullName "v:0" "height"
@@ -9473,6 +9518,10 @@ foreach ($f in $inputFiles) {
     }
     if ($script:apvHdr10PlusJson -and (Test-Path $script:apvHdr10PlusJson)) { Remove-Item $script:apvHdr10PlusJson -Force -ErrorAction SilentlyContinue }
     $script:apvHdr10PlusJson = ""; $script:apvHdr10PlusInject = $false
+
+    # ── v78: re-grefeaza GPS-ul nativ DJI (djmd) pe output MP4/MOV ──
+    # (ULTIMUL post-process: dupa toate inject-urile de metadata; gate intern pe djmd)
+    Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
 
     $newSize   = (Get-Item $outFile).Length
     $saved     = [math]::Max(0, $f.Length - $newSize)

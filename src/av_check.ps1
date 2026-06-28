@@ -663,9 +663,11 @@ if ($outFiles -and $outFiles.Count -gt 0) {
         # (encoder outputs + Mux v49/v50 + Telemetry v47 + Burn-in v48 + HDR/DV v56)
         foreach ($sfx in @("_x265","_x264","_av1","_dnxhr","_prores","_apv","_audio","_hwenc",
                             "_remux","_mux","_telem","_hud","_subs","_preview",
-                            "_nodv","_nohdr10plus","_dvhybrid")) {
+                            "_nodv","_nohdr10plus","_dvhybrid","_dv81")) {
             $baseName = $baseName -replace [regex]::Escape($sfx),""
         }
+        # v78: _rpu<mode> (Transform RPU profile, mod 2/3/5) — sufix DINAMIC → regex (lista literala nu acopera)
+        $baseName = $baseName -replace '_rpu\d+$',''
         $origFound = $null
         foreach ($ext in @("mp4","mov","mkv","m2ts","mts","vob","mxf","apv")) {
             $candidate = Join-Path $InputDir "$baseName.$ext"

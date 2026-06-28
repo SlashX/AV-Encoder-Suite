@@ -756,10 +756,12 @@ if [ -d "$OUTPUT_DIR" ]; then
             base_name="$out_name"
             for suffix in _x265 _x264 _av1 _dnxhr _prores _apv _audio _hwenc \
                           _remux _mux _telem _hud _subs _preview \
-                          _nodv _nohdr10plus _dvhybrid; do
+                          _nodv _nohdr10plus _dvhybrid _dv81; do
                 base_name="${base_name/$suffix/}"
             done
             base_name="${base_name%.*}"  # elimina extensia output
+            # v78: _rpu<mode> (Transform RPU profile, mod 2/3/5) — sufix DINAMIC → regex (lista literala nu acopera)
+            [[ "$base_name" =~ ^(.+)_rpu[0-9]+$ ]] && base_name="${BASH_REMATCH[1]}"
 
             # Cauta originalul in Input
             orig_found=""
