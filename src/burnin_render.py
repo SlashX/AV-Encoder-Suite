@@ -243,8 +243,8 @@ def parse_pos(s):
         return "tl", 24, 24
 
 
-def render_frame(cfg, sample, route_xy, w, h, out_path):
-    """Render un frame HUD ca PNG (transparenta)."""
+def render_frame(cfg, sample, route_xy, w, h, out_path, grid=False):
+    """Render un frame HUD ca PNG (transparenta). grid=True → grila de pozitionare (design-aid still preview)."""
     dpi = 100
     fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -445,6 +445,18 @@ def render_frame(cfg, sample, route_xy, w, h, out_path):
                                     cfg_float(cfg, "MAP_DOT_SIZE", 8),
                                     color=cfg.get("MAP_DOT_COLOR", "#ff3333")))
 
+    # ── Positioning grid (design-aid pt still preview; --grid) ──────
+    if grid:
+        gc = "#00ff88"
+        for fx in (0.25, 0.5, 0.75):
+            ax.plot([w * fx, w * fx], [0, h], color=gc, linewidth=1, alpha=0.35)
+            ax.plot([0, w], [h * fx, h * fx], color=gc, linewidth=1, alpha=0.35)
+            ax.text(w * fx + 4, 16, str(int(w * fx)), color=gc, fontsize=font_label, alpha=0.85, ha="left", va="top")
+            ax.text(4, h * fx + 4, str(int(h * fx)), color=gc, fontsize=font_label, alpha=0.85, ha="left", va="top")
+        for lbl, lx, ly, lha, lva in (("tl", 8, 8, "left", "top"), ("tr", w - 8, 8, "right", "top"),
+                                      ("bl", 8, h - 8, "left", "bottom"), ("br", w - 8, h - 8, "right", "bottom")):
+            ax.text(lx, ly, lbl, color=gc, fontsize=font_label, alpha=0.9, ha=lha, va=lva)
+
     fig.savefig(out_path, dpi=dpi, transparent=True)
     plt.close(fig)
 
@@ -461,6 +473,10 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--offset", type=float, default=0)
     ap.add_argument("--brand", default="")
+    ap.add_argument("--single", type=float, default=None,
+                    help="Randeaza UN singur cadru la timpul video t (sec) — still layout preview")
+    ap.add_argument("--grid", action="store_true",
+                    help="Grila de pozitionare peste HUD (design-aid pt still preview)")
     args = ap.parse_args()
 
     if not os.path.isfile(args.csv):
@@ -482,6 +498,15 @@ def main():
         p["t"] = p["t"] - t0_csv
 
     route_xy = build_route_xy(points) if cfg_bool(cfg, "HUD_MAP") else None
+
+    # Still layout preview: UN singur cadru la timpul video --single (fara secventa)
+    if args.single is not None:
+        t_csv = args.single + args.offset
+        s = sample_at(points, t_csv)
+        out = os.path.join(args.output_dir, "frame_000001.png")
+        render_frame(cfg, s, route_xy, args.width, args.height, out, grid=args.grid)
+        print(f"[render] still frame @ t={args.single}s -> {out}")
+        return 0
 
     total_frames = max(1, int(math.ceil(args.duration * args.fps)))
     print(f"[render] {total_frames} frames @ {args.fps} fps, {args.width}x{args.height}, preset={cfg.get('PRESET_NAME','?')}, offset={args.offset}s")

@@ -130,8 +130,8 @@ grep -q 'PREVIEW_T_START='              "$BURNIN" && _pass || _fail "preview: PR
 grep -q 'PREVIEW_DURATION='             "$BURNIN" && _pass || _fail "preview: PREVIEW_DURATION flag"
 grep -q '5s clip la mid-point'          "$BURNIN" && _pass || _fail "preview: prompt text 5s mid-point"
 grep -q '_preview\.'                    "$BURNIN" && _pass || _fail "preview: output naming _preview"
-# 4 flow-uri trebuie sa cheme ask_preview
-[ "$(grep -c 'ask_preview$' "$BURNIN")" -ge 4 ] && _pass || _fail "preview: 4 flow-uri cheama ask_preview"
+# 4 flow-uri trebuie sa cheme ask_preview (HUD-ul il cheama cu arg: `ask_preview 1` pt still layout, v81)
+[ "$(grep -cE 'ask_preview( [0-9]+)?$' "$BURNIN")" -ge 4 ] && _pass || _fail "preview: 4 flow-uri cheama ask_preview"
 grep -q '"\${seek_args\[@\]}"'          "$BURNIN" && _pass || _fail "preview: seek_args expansiune"
 grep -q -- '-ss "\$PREVIEW_T_START"'    "$BURNIN" && _pass || _fail "preview: ffmpeg -ss PREVIEW_T_START"
 grep -q -- '-t "\$PREVIEW_DURATION"'    "$BURNIN" && _pass || _fail "preview: ffmpeg -t PREVIEW_DURATION"

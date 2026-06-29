@@ -3,9 +3,30 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v80 | 145 bug-uri fixate | 270+ features
-  213 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 159 teste [152 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v81 | 145 bug-uri fixate | 271+ features
+  215 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 161 teste [154 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v81 — Burn-in: previzualizare rapida a aspectului (o imagine)
+═══════════════════════════════════════════════════════════════
+
+  ADD La overlay-ul de burn-in (HUD-ul cu telemetrie), pe langa
+        previzualizarea sub forma de clip de 5 secunde ai acum o a
+        treia optiune, mai rapida: o singura imagine. Se ia un cadru
+        de la mijlocul clipului, se aseaza HUD-ul peste el si se
+        salveaza ca poza (<nume>_preview.png), care se deschide
+        automat. Vezi astfel imediat unde cad indicatoarele si cum se
+        citeste textul peste imagine, fara sa astepti o encodare
+        completa. Optional poti afisa si o grila de pozitionare (linii
+        la 25/50/75% si colturile marcate) — utila cand reglezi
+        pozitia elementelor din preset (POS_*).
+
+        Optiunea apare doar la fluxul HUD, ca meniu cu trei variante:
+        niciuna (render complet) / imagine / clip 5s. Restul (subtitrari
+        SRT/ASS/imagine) raman cu previzualizarea clip ca pana acum, iar
+        randarea completa nu se schimba cu nimic.
 
 
 ═══════════════════════════════════════════════════════════════

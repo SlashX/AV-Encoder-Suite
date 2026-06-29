@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v80** — 145 bugs fixed · 270+ features · ~43 000 LoC · 213 files
+**v81** — 145 bugs fixed · 271+ features · ~43 000 LoC · 215 files
 
 ---
 
@@ -35,7 +35,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
-- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it)
+- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it). **v81**: instant **still-layout preview** on the HUD flow — instead of a full render (or the 5s clip), composite one HUD frame over a real video frame from mid-clip, optionally with a positioning grid, to check element placement and readability fast (`<name>_preview.png`, auto-opened)
 
 ## Quick Start
 
@@ -405,4 +405,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v80** — 145 bugs fixed · 270+ features · ~43 000 LoC · 213 files
+Current: **v81** — 145 bugs fixed · 271+ features · ~43 000 LoC · 215 files

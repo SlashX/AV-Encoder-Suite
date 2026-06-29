@@ -37,15 +37,38 @@ escape_ffmpeg_filter_path() {
 PREVIEW_MODE=0
 PREVIEW_T_START=0
 PREVIEW_DURATION=0
+PREVIEW_STILL=0
+PREVIEW_GRID=0
 
+# ask_preview [allow_still]
+#   allow_still=1 (doar HUD): meniu 3-cai (niciunul / still layout 1 cadru / clip 5s).
+#   allow_still=0 (SRT/Image, default): comportamentul clasic y/N pt clip 5s (NEschimbat).
 ask_preview() {
+    local allow_still="${1:-0}"
+    PREVIEW_MODE=0
+    PREVIEW_STILL=0
+    PREVIEW_GRID=0
     echo ""
-    read -p "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]: " preview_choice
-    case "${preview_choice:-n}" in
-        [yY]*) PREVIEW_MODE=1
-               echo "  → Preview activ: 5s la 50% din durata. Output: <name>_preview.<ext>" ;;
-        *)     PREVIEW_MODE=0 ;;
-    esac
+    if [ "$allow_still" -eq 1 ]; then
+        echo "  Preview:  0) niciunul (render complet)   1) still layout (1 cadru, rapid)   2) clip 5s"
+        read -p "  Alege 0-2 [implicit 0]: " preview_choice
+        case "${preview_choice:-0}" in
+            1) PREVIEW_STILL=1
+               read -p "  Grila de pozitionare peste HUD? [y/N]: " _grid_choice
+               case "${_grid_choice:-n}" in [yY]*) PREVIEW_GRID=1 ;; esac
+               echo "  → Still layout$([ "$PREVIEW_GRID" -eq 1 ] && echo " + grila") la 50% din durata. Output: <name>_preview.png" ;;
+            2) PREVIEW_MODE=1
+               echo "  → Preview clip 5s la 50% din durata. Output: <name>_preview.<ext>" ;;
+            *) : ;;  # 0 / Enter → render complet
+        esac
+    else
+        read -p "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]: " preview_choice
+        case "${preview_choice:-n}" in
+            [yY]*) PREVIEW_MODE=1
+                   echo "  → Preview activ: 5s la 50% din durata. Output: <name>_preview.<ext>" ;;
+            *)     PREVIEW_MODE=0 ;;
+        esac
+    fi
 }
 
 # Calculeaza fereastra de preview (5s la mid-point) pe baza duratei totale.
@@ -527,7 +550,7 @@ hud_flow() {
     [ "$HUD_FPS" -gt 60 ] && HUD_FPS=60
 
     ask_encoder
-    ask_preview
+    ask_preview 1
 
     local ok=0 fail=0
     for idx in "${SELECTED[@]}"; do
@@ -572,6 +595,42 @@ hud_flow() {
         [ -z "$vid_dur" ] && vid_dur=0
         [ -z "$vid_w" ]   && vid_w=1920
         [ -z "$vid_h" ]   && vid_h=1080
+
+        # ── Still layout preview (Tier 1): 1 cadru compus, FARA encode video ──
+        if [ "$PREVIEW_STILL" -eq 1 ]; then
+            local _st_t=0
+            preview_compute_window "$vid_dur" && _st_t="$PREVIEW_T_START"
+            local _st_dir="$AV_TEMP_DIR/burnin_still_${name}_$$"
+            mkdir -p "$_st_dir"
+            local _st_grid=()
+            [ "$PREVIEW_GRID" -eq 1 ] && _st_grid=(--grid)
+            echo "  Still preview: 1 cadru la ${_st_t}s (preset=$PRESET$([ "$PREVIEW_GRID" -eq 1 ] && echo " + grila"))..."
+            if ! python3 "$RENDER_PY" \
+                --csv "$csv" --preset "$preset_file" --output-dir "$_st_dir" \
+                --fps "$HUD_FPS" --duration 1 --single "$_st_t" \
+                --width "$vid_w" --height "$vid_h" \
+                --offset "$sync_offset" --brand "$brand" "${_st_grid[@]}"; then
+                echo "  [EROARE] Render still esuat"; rm -rf "$_st_dir"; fail=$((fail+1)); continue
+            fi
+            local _st_out="$OUTPUT_DIR/${name}_preview.png"
+            local _st_fc
+            if [[ -n "$BURNIN_PRE_FILTER" ]]; then
+                _st_fc="[0:v]${BURNIN_PRE_FILTER}[bb];[bb][1:v]overlay=0:0[v]"
+            else
+                _st_fc="[0:v][1:v]overlay=0:0[v]"
+            fi
+            echo "  Compun still (cadru video la ${_st_t}s + HUD)..."
+            if ffmpeg -v error -ss "$_st_t" -i "$vid" -i "$_st_dir/frame_000001.png" \
+                -filter_complex "$_st_fc" -map "[v]" -frames:v 1 -y "$_st_out" </dev/null; then
+                echo "  [OK] $_st_out"; ok=$((ok+1))
+                av_open_path "$_st_out" 2>/dev/null || true
+            else
+                echo "  [EROARE] Compozitie still esuata"; rm -f "$_st_out"; fail=$((fail+1))
+            fi
+            rm -rf "$_st_dir"
+            [[ -n "$BURNIN_HDR10PLUS_JSON" ]] && rm -f "$BURNIN_HDR10PLUS_JSON"
+            continue
+        fi
 
         local frames_dir="$AV_TEMP_DIR/burnin_${name}_$$"
         mkdir -p "$frames_dir"

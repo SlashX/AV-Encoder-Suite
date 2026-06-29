@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v80
+  Documentatie Setup & Utilizare — v81
 ═══════════════════════════════════════════════════════════════
 
 
@@ -2243,10 +2243,23 @@ CUPRINS
 
   ─── 13.5. Preview mode (opt-in pe toate 4 flow-uri) ───
 
-  Dupa encoder dialog, fiecare flow promtea:
-    "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]"
+  Dupa encoder dialog, fiecare flow ofera o previzualizare:
+    - HUD: meniu cu 3 variante — 0) niciuna (render complet) /
+      1) still layout (o singura imagine, rapid; v81) / 2) clip 5s.
+    - SRT/ASS/Image: prompt y/N pentru clipul de 5s (ca pana acum).
 
-  Cand activ:
+  (1) Still layout (HUD, v81) — verificare INSTANT a aspectului:
+    - Se randeaza UN singur cadru HUD la mijlocul clipului si se
+      compune peste cadrul video extras din acelasi moment →
+      <name>_preview.png, deschis automat. Fara encodare video →
+      rezultat imediat.
+    - Optional, o grila de pozitionare (linii la 25/50/75% + px +
+      colturile tl/tr/bl/br) ajuta la reglarea POS_* din preset.
+    - Pe surse HDR in mod "preserve" imaginea poate fi usor mai
+      stinsa (un PNG nu poate purta HDR); aspectul si lizibilitatea
+      HUD-ului raman corecte, iar output-ul real pastreaza HDR.
+
+  (2) Clip 5s (toate flow-urile) — cand activ:
     - Output naming distinct: <name>_preview.<ext> (vs _hud / _subs)
     - HUD: render PNG seq doar pentru fereastra preview (5s la mid),
       cu --offset shiftat la t_start astfel ca frame 1 sa reprezinte

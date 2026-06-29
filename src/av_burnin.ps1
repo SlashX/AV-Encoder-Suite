@@ -33,15 +33,43 @@ function Get-EscapedFfmpegFilterPath {
 
 # ── Preview mode helpers (shared) ────────────────────────────────────
 $script:PreviewMode = $false
+$script:PreviewStill = $false
+$script:PreviewGrid = $false
 
+# Get-PreviewMode [-AllowStill]
+#   -AllowStill (doar HUD): meniu 3-cai (niciunul / still layout 1 cadru / clip 5s).
+#   fara -AllowStill (SRT/Image): comportamentul clasic y/N pt clip 5s (NEschimbat).
 function Get-PreviewMode {
+    param([switch]$AllowStill)
+    $script:PreviewMode = $false
+    $script:PreviewStill = $false
+    $script:PreviewGrid = $false
     Write-Host ""
-    $ans = Read-Host "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]"
-    if ($ans -match '^[yY]') {
-        $script:PreviewMode = $true
-        Write-Host "  -> Preview activ: 5s la 50% din durata. Output: <name>_preview.<ext>" -ForegroundColor Yellow
+    if ($AllowStill) {
+        Write-Host "  Preview:  0) niciunul (render complet)   1) still layout (1 cadru, rapid)   2) clip 5s"
+        $ans = Read-Host "  Alege 0-2 [implicit 0]"
+        switch ($ans) {
+            '1' {
+                $script:PreviewStill = $true
+                $g = Read-Host "  Grila de pozitionare peste HUD? [y/N]"
+                if ($g -match '^[yY]') { $script:PreviewGrid = $true }
+                $gridTxt = if ($script:PreviewGrid) { " + grila" } else { "" }
+                Write-Host "  -> Still layout$gridTxt la 50% din durata. Output: <name>_preview.png" -ForegroundColor Yellow
+            }
+            '2' {
+                $script:PreviewMode = $true
+                Write-Host "  -> Preview clip 5s la 50% din durata. Output: <name>_preview.<ext>" -ForegroundColor Yellow
+            }
+            default { }
+        }
     } else {
-        $script:PreviewMode = $false
+        $ans = Read-Host "Preview mode (5s clip la mid-point pentru verificare rapida) [y/N]"
+        if ($ans -match '^[yY]') {
+            $script:PreviewMode = $true
+            Write-Host "  -> Preview activ: 5s la 50% din durata. Output: <name>_preview.<ext>" -ForegroundColor Yellow
+        } else {
+            $script:PreviewMode = $false
+        }
     }
 }
 
@@ -851,7 +879,7 @@ function Invoke-HudFlow {
     } else { $hudFps = 10 }
 
     $enc = Get-Encoder
-    Get-PreviewMode
+    Get-PreviewMode -AllowStill
 
     $okCount = 0; $failCount = 0
     foreach ($idx in $selected) {
@@ -887,6 +915,49 @@ function Invoke-HudFlow {
         if (-not $vidW) { $vidW = 1920 }
         if (-not $vidH) { $vidH = 1080 }
         if (-not $vidDur) { $vidDur = 0 }
+
+        # ── Still layout preview (Tier 1): 1 cadru compus, FARA encode video ──
+        if ($script:PreviewStill) {
+            $vidDurNum = 0.0
+            [double]::TryParse($vidDur, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$vidDurNum) | Out-Null
+            $stT = "0"
+            $pw = Get-PreviewWindow -Duration $vidDurNum
+            if ($pw.Valid) { $stT = $pw.Start }
+            $stDir = Join-Path $TempBase ("burnin_still_{0}_{1}" -f $p.Name, [System.Diagnostics.Process]::GetCurrentProcess().Id)
+            New-Item -ItemType Directory -Force -Path $stDir | Out-Null
+            $gridTxt = if ($script:PreviewGrid) { " + grila" } else { "" }
+            Write-Host "  Still preview: 1 cadru la ${stT}s (preset=$preset$gridTxt)..." -ForegroundColor DarkGray
+            $stArgs = @("--csv", $p.Aux, "--preset", $presetFile, "--output-dir", $stDir,
+                        "--fps", $hudFps, "--duration", "1", "--single", $stT,
+                        "--width", $vidW, "--height", $vidH,
+                        "--offset", (Format-Inv ([double]$offset)), "--brand", $p.Meta)
+            if ($script:PreviewGrid) { $stArgs += "--grid" }
+            & $py3 $RenderPy @stArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  [EROARE] Render still esuat" -ForegroundColor Red
+                Remove-Item $stDir -Recurse -Force -ErrorAction SilentlyContinue
+                $failCount++; continue
+            }
+            $stOut = Join-Path $OutputDir ("{0}_preview.png" -f $p.Name)
+            $stFc = if ($script:BurninPreFilter) {
+                "[0:v]$($script:BurninPreFilter)[bb];[bb][1:v]overlay=0:0[v]"
+            } else {
+                "[0:v][1:v]overlay=0:0[v]"
+            }
+            Write-Host "  Compun still (cadru video la ${stT}s + HUD)..." -ForegroundColor DarkGray
+            Invoke-BurninEncode -v error -ss $stT -i $p.Video -i (Join-Path $stDir "frame_000001.png") `
+                -filter_complex $stFc -map "[v]" -frames:v 1 $stOut -y
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $stOut) -and (Get-Item $stOut).Length -gt 0) {
+                Write-Host "  [OK] $stOut" -ForegroundColor Green; $okCount++
+                try { Invoke-Item $stOut -ErrorAction SilentlyContinue } catch {}
+            } else {
+                Write-Host "  [EROARE] Compozitie still esuata" -ForegroundColor Red
+                Remove-Item $stOut -Force -ErrorAction SilentlyContinue; $failCount++
+            }
+            Remove-Item $stDir -Recurse -Force -ErrorAction SilentlyContinue
+            if ($script:BurninHdr10PlusJson -and (Test-Path $script:BurninHdr10PlusJson)) { Remove-Item $script:BurninHdr10PlusJson -Force -ErrorAction SilentlyContinue }
+            continue
+        }
 
         # Preview window (render doar 5s la mid)
         $renderDur = $vidDur
