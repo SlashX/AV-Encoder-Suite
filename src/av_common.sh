@@ -4006,9 +4006,10 @@ hdr10_static_defaults() {
 }
 
 # v63: Masoara MaxCLL/MaxFALL real din continut (1 pass de analiza) cand userul opteaza
-# (HDR10_MEASURE_CLL=1) si sursa NU are light-level inscris. Luma-based: signalstats YMAX/YAVG
-# pe semnal linearizat cu zscale; npl=10000 pt sursa PQ (smpte2084), 1000 pt HLG. Subestimeaza
-# usor vs max(R,G,B) per CTA-861.3 — acceptabil pt opt-in QC. Soft-fail → pastreaza default 1000,400.
+# (HDR10_MEASURE_CLL=1) si sursa NU are light-level inscris. v79 RGB-precis (CTA-861.3): signalstats
+# YMAX/YAVG pe planul max(R,G,B) per pixel (extractplanes + blend lighten), pe semnal linearizat cu
+# zscale; npl=10000 pt sursa PQ (smpte2084), 1000 pt HLG. (v63 era luma-based → subestima highlight-urile
+# colorate rosu/albastru.) Soft-fail → pastreaza default 1000,400.
 # Seteaza HDR10_MEASURED_CLL / HDR10_MEASURED_FALL (nits intregi). Return 0=ok, 1=esec.
 measure_hdr10_cll() {
     local file="$1"
@@ -4020,8 +4021,11 @@ measure_hdr10_cll() {
     local _npl=1000; [ "$_trc" = "smpte2084" ] && _npl=10000
     echo "  Masor MaxCLL/MaxFALL real (1 pass de analiza, poate dura)..." >&2
     local _res
+    # v79: RGB-precis (CTA-861.3) — max(R,G,B) per pixel via extractplanes+blend lighten,
+    # NU luma (care subestimeaza highlight-urile colorate rosu/albastru). signalstats vede
+    # planul max(R,G,B) ca "luma" → YMAX/YAVG + conversia in niti raman identice.
     _res=$(ffmpeg -hide_banner -v error -i "$file" \
-        -vf "zscale=t=linear:npl=${_npl},format=yuv444p16le,signalstats,metadata=print:file=-" \
+        -vf "zscale=t=linear:npl=${_npl},format=gbrp16le,extractplanes=r+g+b[r][g][b];[r][g]blend=all_mode=lighten[rg];[rg][b]blend=all_mode=lighten,signalstats,metadata=print:file=-" \
         -an -f null - 2>/dev/null | awk -F= -v npl="$_npl" '
             /YMAX=/{v=$2+0; if(v>ymax)ymax=v}
             /YAVG=/{v=$2+0; if(v>yavg)yavg=v}

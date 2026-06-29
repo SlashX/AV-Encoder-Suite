@@ -3,9 +3,31 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v78 | 145 bug-uri fixate | 270+ features
-  209 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 155 teste [148 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v79 | 145 bug-uri fixate | 270+ features
+  211 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 157 teste [150 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v79 — Masurarea MaxCLL/MaxFALL mai precisa (RGB real)
+═══════════════════════════════════════════════════════════════
+
+  UPDATE Cand alegi sa masori luminozitatea reala a unui clip HDR
+        (optiunea "Masoara MaxCLL/MaxFALL real din video", folosita mai
+        ales la conversia HLG -> HDR10, unde sursa nu are aceste valori
+        inscrise), masuratoarea tine cont acum de cea mai luminoasa
+        dintre cele trei culori — rosu, verde, albastru — din fiecare
+        punct al imaginii, nu doar de luminozitatea perceputa (luma).
+        Standardul CTA-861.3 cere exact acest calcul. In practica:
+        highlight-urile foarte colorate (un rosu sau un albastru
+        saturat si stralucitor) nu mai sunt subestimate, deci valoarea
+        MaxCLL scrisa in fisier reflecta corect varful real de
+        luminozitate. Restul ramane neschimbat: e tot o singura trecere
+        de analiza, optionala (flag HDR10_MEASURE_CLL); mastering
+        display ramane 1000; iar daca sursa are deja valorile de
+        light-level inscrise, acelea se folosesc (nu se masoara degeaba).
+        Imbunatatirea se aplica pe toate caile care masoara: HDR10
+        preserve si HLG -> HDR10, pe Termux/Linux/macOS si Windows.
 
 
 ═══════════════════════════════════════════════════════════════

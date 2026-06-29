@@ -1995,8 +1995,9 @@ function Set-Hdr10StaticDefaults {
 }
 
 # v63: Masoara MaxCLL/MaxFALL real din continut (1 pass de analiza) cand $script:hdr10MeasureCll
-# si sursa NU are light-level inscris. Luma-based (signalstats YMAX/YAVG, linearizat zscale);
-# npl=10000 PQ (smpte2084) / 1000 HLG. Soft-fail → pastreaza default. Seteaza $script:hdr10MeasuredCll.
+# si sursa NU are light-level inscris. v79 RGB-precis (CTA-861.3): signalstats YMAX/YAVG pe planul
+# max(R,G,B) per pixel (extractplanes + blend lighten), linearizat zscale; npl=10000 PQ / 1000 HLG.
+# (v63 era luma-based.) Soft-fail → pastreaza default. Seteaza $script:hdr10MeasuredCll.
 function Measure-Hdr10Cll {
     param([string]$File)
     $script:hdr10MeasuredCll = ""
@@ -2008,8 +2009,11 @@ function Measure-Hdr10Cll {
     Write-Host "  Masor MaxCLL/MaxFALL real (1 pass de analiza, poate dura)..." -ForegroundColor DarkGray
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $ymax = 0.0; $yavg = 0.0
+    # v79: RGB-precis (CTA-861.3) — max(R,G,B) per pixel via extractplanes+blend lighten,
+    # NU luma (care subestimeaza highlight-urile colorate). signalstats vede planul max(R,G,B)
+    # ca "luma" → YMAX/YAVG + conversia in niti raman identice (paritate cu masura bash).
     & ffmpeg -hide_banner -v error -i $File `
-        -vf "zscale=t=linear:npl=$npl,format=yuv444p16le,signalstats,metadata=print:file=-" `
+        -vf "zscale=t=linear:npl=$npl,format=gbrp16le,extractplanes=r+g+b[r][g][b];[r][g]blend=all_mode=lighten[rg];[rg][b]blend=all_mode=lighten,signalstats,metadata=print:file=-" `
         -an -f null - 2>$null | ForEach-Object {
         if ($_ -match 'YMAX=([\d.]+)') { $v = [double]::Parse($Matches[1], $inv); if ($v -gt $ymax) { $ymax = $v } }
         elseif ($_ -match 'YAVG=([\d.]+)') { $v = [double]::Parse($Matches[1], $inv); if ($v -gt $yavg) { $yavg = $v } }

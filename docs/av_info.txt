@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v78
+  Documentatie Setup & Utilizare — v79
 ═══════════════════════════════════════════════════════════════
 
 
@@ -859,12 +859,16 @@ CUPRINS
   light-level inscris, se folosesc valorile generice 1000,400. Cu optiunea
   "Masoara real din video" (flag HDR10_MEASURE_CLL — env / camp profil /
   prompt per-fisier in dialogul HDR10-preserve si HLG → HDR10), suita face o
-  trecere de analiza si scrie MaxCLL = peak luma real / MaxFALL = average.
-  Util mai ales la HLG → HDR10 (HLG nu are niciodata light-level inscris).
-  Mastering display ramane 1000 (descriptorul monitorului de gradare). Daca
-  sursa are deja CLL inscris, acela e folosit (nu se masoara degeaba).
-  Masuratoarea e luma-based (subestimeaza usor vs max(R,G,B) per CTA-861.3)
-  — potrivita pentru QC opt-in, fara costul implicit pe fiecare encodare.
+  trecere de analiza si scrie MaxCLL = varful real de luminozitate /
+  MaxFALL = media. Util mai ales la HLG → HDR10 (HLG nu are niciodata
+  light-level inscris). Mastering display ramane 1000 (descriptorul
+  monitorului de gradare). Daca sursa are deja CLL inscris, acela e folosit
+  (nu se masoara degeaba).
+  v79 — masuratoarea e acum RGB-precisa (CTA-861.3): tine cont de cea mai
+  luminoasa dintre cele trei culori (max R/G/B) in fiecare pixel, nu de luma.
+  Asa highlight-urile foarte colorate (rosu/albastru saturat) nu mai sunt
+  subestimate, cum erau cu masuratoarea luma-based de pana acum. Tot opt-in,
+  fara costul implicit pe fiecare encodare.
 
 
   ─── 7.11.3. NVENC 2-pass quality boost (v53) ───

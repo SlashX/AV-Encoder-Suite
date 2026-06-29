@@ -71,6 +71,13 @@ src/ffplay.exe
 src/tools/ffmpeg.exe
 src/tools/ffprobe.exe
 src/tools/ffplay.exe
+# v79: copii de backup la upgrade-uri (ffmpegOld/ffprobeOld/ffplayOld) — tot ~200MB
+src/ffmpegOld.exe
+src/ffprobeOld.exe
+src/ffplayOld.exe
+src/tools/ffmpegOld.exe
+src/tools/ffprobeOld.exe
+src/tools/ffplayOld.exe
 # ── Dolby Vision tools (quietvoid + sven-pke fork) ─────────────────
 src/dovi_tool.exe
 src/av1dovi_tool.exe
