@@ -3,9 +3,32 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v79 | 145 bug-uri fixate | 270+ features
-  211 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 157 teste [150 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v80 | 145 bug-uri fixate | 270+ features
+  213 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 159 teste [152 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v80 — Burn-in: font configurabil + indicatoare noi in colt
+═══════════════════════════════════════════════════════════════
+
+  ADD La overlay-ul de burn-in (HUD-ul cu telemetrie) poti acum sa alegi
+        fontul textului, prin setarea FONT_FAMILY in preset: fie un nume de
+        familie (ex. monospace, "DejaVu Sans"), fie calea catre un fisier de
+        font .ttf/.otf de pe calculatorul tau. Fontul se aplica la tot textul
+        de pe overlay (bara de date de jos + indicatoarele din colt). Daca
+        lasi gol sau pui un font care nu exista, se foloseste fontul implicit,
+        fara erori si fara mesaje deranjante.
+
+  ADD Trei indicatoare noi in coltul imaginii: altitudine (ALT), directie /
+        busola (HDG) si temperatura (TEMP) — pe langa ceasul si viteza care
+        existau deja. Sunt o alternativa la bara de date de jos (data-strip):
+        apar doar cand bara e oprita, ca sa nu se dubleze informatia (bara
+        afiseaza oricum aceleasi valori). Le activezi din preset (HUD_ALTITUDE
+        / HUD_HEADING / HUD_TEMPERATURE) si le pozitionezi cu POS_* (coltul +
+        decalajul in pixeli). Indicatoarele afiseaza "—" cand datele lipsesc
+        din telemetrie. Preseturile livrate raman la fel la afisare; cheile
+        noi sunt documentate (comentate) in minimal.conf si full.conf.
 
 
 ═══════════════════════════════════════════════════════════════

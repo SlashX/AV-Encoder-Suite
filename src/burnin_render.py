@@ -13,14 +13,19 @@ acel punct static pe toata durata.
 Sync offset (sec, +/-): adaugat la timpul HUD inainte de lookup CSV.
 """
 
-import sys, os, csv, argparse, math
+import sys, os, csv, argparse, math, logging
 from datetime import datetime, timezone
 
 try:
     import matplotlib
     matplotlib.use("Agg")
+    # FONT_FAMILY invalid (nume de familie negasit) → matplotlib cade pe default,
+    # dar logheaza "findfont: Font family X not found" la fiecare apel. Mut warning-ul
+    # ca fallback-ul sa fie TACUT (cale .ttf inexistenta e deja tacuta via os.path.isfile).
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle, Circle
+    from matplotlib.font_manager import FontProperties
     import numpy as np
 except ImportError as e:
     print(f"EROARE: dependenta lipsa ({e}). Instaleaza matplotlib + numpy + pillow.", file=sys.stderr)
@@ -256,11 +261,31 @@ def render_frame(cfg, sample, route_xy, w, h, out_path):
     shadow = cfg.get("SHADOW_COLOR", "black")
     shadow_off = cfg_int(cfg, "SHADOW_OFFSET", 2)
 
+    # FONT_FAMILY optional: nume de familie matplotlib (ex. "DejaVu Sans", "monospace")
+    # SAU cale catre un fisier .ttf/.otf/.ttc. Gol → default matplotlib. Fallback tacut
+    # (cale inexistenta / familie negasita → matplotlib cade pe default, fara crash).
+    _font_family = cfg.get("FONT_FAMILY", "").strip()
+    _font_path = ""
+    _font_name = ""
+    if _font_family:
+        if _font_family.lower().endswith((".ttf", ".otf", ".ttc")):
+            if os.path.isfile(_font_family):
+                _font_path = _font_family   # cale validata → FontProperties(fname=)
+        else:
+            _font_name = _font_family       # nume de familie → fontfamily=
+
     def draw_text(x, y, txt, size, color=font_color, ha="left", va="top"):
+        if _font_path:
+            fp = FontProperties(fname=_font_path); fp.set_size(size)
+            fkw = {"fontproperties": fp}     # NU pune fontsize alaturi (conflict)
+        else:
+            fkw = {"fontsize": size}
+            if _font_name:
+                fkw["fontfamily"] = _font_name
         # Soft shadow
-        ax.text(x + shadow_off, y + shadow_off, txt, fontsize=size, color=shadow,
-                ha=ha, va=va, alpha=0.7)
-        ax.text(x, y, txt, fontsize=size, color=color, ha=ha, va=va)
+        ax.text(x + shadow_off, y + shadow_off, txt, color=shadow,
+                ha=ha, va=va, alpha=0.7, **fkw)
+        ax.text(x, y, txt, color=color, ha=ha, va=va, **fkw)
 
     if sample is None:
         sample = {}
@@ -328,6 +353,30 @@ def render_frame(cfg, sample, route_xy, w, h, out_path):
         ha = "right" if a in ("tr","br") else "left"
         va = "bottom" if a in ("bl","br") else "top"
         draw_text(x, y, fmt_speed(sample.get("speed_mps"), sample.get("speed_kmh"), speed_unit), font_large, ha=ha, va=va)
+
+    # Altitude / Heading / Temperature in colt — alternativa la data-strip
+    # (gateate pe NOT HUD_DATA_STRIP ca timestamp/speed: aceste 3 campuri exista
+    # si in STRIP_FIELDS → cu strip pornit ar fi redundante).
+    if cfg_bool(cfg, "HUD_ALTITUDE") and not cfg_bool(cfg, "HUD_DATA_STRIP"):
+        a, ox, oy = parse_pos(cfg.get("POS_ALTITUDE", "tl:24,80"))
+        x, y = anchor_to_xy(a, w, h, ox, oy)
+        ha = "right" if a in ("tr","br") else "left"
+        va = "bottom" if a in ("bl","br") else "top"
+        draw_text(x, y, "ALT " + fmt_value(sample.get("alt_m"), "{:.1f}", " m"), font_medium, ha=ha, va=va)
+
+    if cfg_bool(cfg, "HUD_HEADING") and not cfg_bool(cfg, "HUD_DATA_STRIP"):
+        a, ox, oy = parse_pos(cfg.get("POS_HEADING", "tl:24,116"))
+        x, y = anchor_to_xy(a, w, h, ox, oy)
+        ha = "right" if a in ("tr","br") else "left"
+        va = "bottom" if a in ("bl","br") else "top"
+        draw_text(x, y, "HDG " + fmt_value(sample.get("heading_deg"), "{:.0f}", "°"), font_medium, ha=ha, va=va)
+
+    if cfg_bool(cfg, "HUD_TEMPERATURE") and not cfg_bool(cfg, "HUD_DATA_STRIP"):
+        a, ox, oy = parse_pos(cfg.get("POS_TEMPERATURE", "tl:24,152"))
+        x, y = anchor_to_xy(a, w, h, ox, oy)
+        ha = "right" if a in ("tr","br") else "left"
+        va = "bottom" if a in ("bl","br") else "top"
+        draw_text(x, y, "TEMP " + fmt_value(sample.get("temp_c"), "{:.1f}", "°C"), font_medium, ha=ha, va=va)
 
     # ── Extra gauges (G-force, HR) — afisate doar daca data exista ─
     if cfg_bool(cfg, "HUD_GFORCE") and sample.get("gforce_x") is not None:

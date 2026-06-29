@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v79
+  Documentatie Setup & Utilizare — v80
 ═══════════════════════════════════════════════════════════════
 
 
@@ -2158,11 +2158,15 @@ CUPRINS
 
   Presets format KEY=VALUE (src/burnin_presets/*.conf):
     HUD_TIMESTAMP/SPEED/DATA_STRIP/MAP/GFORCE/HR (toggle 0/1)
-    POS_TIMESTAMP/SPEED/GFORCE/HR (anchor:dx,dy — tl/tr/bl/br)
+    HUD_ALTITUDE/HEADING/TEMPERATURE (toggle 0/1, indicatoare colt v80 —
+                  active doar cand DATA_STRIP=0, non-redundant cu strip)
+    POS_TIMESTAMP/SPEED/GFORCE/HR + POS_ALTITUDE/HEADING/TEMPERATURE
+                  (anchor:dx,dy — tl/tr/bl/br)
     STRIP_FIELDS (timestamp,speed,altitude,heading,temperature,
                   gforce,satellites,hdop,attitude — ultimele 4 v54)
     MAP_SIZE / MAP_POSITION / MAP_ROUTE_COLOR / MAP_DOT_COLOR
     FONT_SIZE_LARGE/MEDIUM/LABEL, SHADOW_OFFSET, SPEED_UNIT (kmh/mph/mps)
+    FONT_FAMILY (v80 — nume de familie matplotlib SAU cale .ttf/.otf; gol=default)
 
   ─── 13.2. Flow Subtitrari SRT ───
 
