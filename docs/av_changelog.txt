@@ -3,9 +3,38 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v81 | 145 bug-uri fixate | 271+ features
-  215 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 161 teste [154 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v82 | 146 bug-uri fixate | 272+ features
+  217 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 163 teste [156 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v82 — Burn-in: preview HDR mai fidel + text pentru scripturi complexe
+═══════════════════════════════════════════════════════════════
+
+  UPDATE Previzualizarea sub forma de imagine (introdusa in v81) arata
+        acum corect si pe sursele HDR. Inainte, pe un clip HDR pastrat ca
+        HDR, imaginea de preview iesea intunecata — o poza obisnuita nu poate
+        reda gama HDR. Acum imaginea e adaptata automat pentru un ecran
+        normal, deci vezi luminozitatea si contrastul asa cum trebuie, ca sa
+        judeci corect unde cad indicatoarele si cat de lizibil e textul.
+        Se schimba DOAR poza de preview — fisierul final encodat pastreaza
+        HDR-ul intact, neatins. (Cine vrea poza bruta, netratata, poate seta
+        BURNIN_STILL_NO_TONEMAP=1.)
+
+  ADD La subtitrarile SRT si ASS poti alege acum "text shaping" pentru
+        scripturi complexe — araba, ebraica, limbi indice — unde forma
+        literelor depinde de vecini sau textul curge de la dreapta la stanga.
+        Trei variante: auto (implicit), simple, complex. Optiunea apare doar
+        daca versiunea ta de ffmpeg o suporta; pe "auto" nu se schimba nimic
+        fata de pana acum, deci subtitrarile latine obisnuite raman identice.
+
+  FIX Am scos optiunile de marire a fontului (1.25x / 1.5x) de la
+        subtitrarile ASS. Nu functionau de fapt (inca din v48) — nu redau
+        nimic — pentru ca fisierele ASS isi poarta deja propriul stil complet
+        (font, marime, culoare, pozitie), iar acest format nu accepta
+        suprascrierea marimii din exterior. Acum subtitrarile ASS se afiseaza
+        fidel, cu stilul lor original, plus optiunea de shaping de mai sus.
 
 
 ═══════════════════════════════════════════════════════════════

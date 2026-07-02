@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v81** — 145 bugs fixed · 271+ features · ~43 000 LoC · 215 files
+**v82** — 146 bugs fixed · 272+ features · ~43 000 LoC · 217 files
 
 ---
 
@@ -35,7 +35,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
-- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it). **v81**: instant **still-layout preview** on the HUD flow — instead of a full render (or the 5s clip), composite one HUD frame over a real video frame from mid-clip, optionally with a positioning grid, to check element placement and readability fast (`<name>_preview.png`, auto-opened)
+- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it). **v81**: instant **still-layout preview** on the HUD flow — instead of a full render (or the 5s clip), composite one HUD frame over a real video frame from mid-clip, optionally with a positioning grid, to check element placement and readability fast (`<name>_preview.png`, auto-opened). **v82**: the still preview is now tonemapped on HDR-preserve sources so it no longer looks dim (only the preview PNG — the real encode keeps HDR; `BURNIN_STILL_NO_TONEMAP=1` for the raw frame) + optional **text shaping** for complex scripts (Arabic / Hebrew / Indic) on SRT/ASS; the broken ASS font-scale options (1.25x/1.5x, dead since v48) were removed since ASS files carry their own styling
 
 ## Quick Start
 
@@ -213,11 +213,13 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
    | Flow | Source | ffmpeg pipeline |
    |---|---|---|
    | Telemetry HUD | `<name>_norm.csv` | `burnin_render.py` → PNG seq → `[0:v][1:v]overlay` |
-   | SRT | `<name>.srt` | `subtitles='<path>':force_style='FontSize=N,...'` (libass) |
-   | ASS | `<name>.ass` | `ass='<path>'[:force_style='ScaleX=N,ScaleY=N']` (libass) |
+   | SRT | `<name>.srt` | `subtitles='<path>':force_style='FontSize=N,...'[:shaping=<mode>]` (libass) |
+   | ASS | `<name>.ass` | `ass='<path>'[:shaping=<mode>]` (libass — ASS carries its own styling) |
    | Image subs | `<name>.sup` · `<name>.idx+.sub` · embedded PGS/VobSub | `[0:v][1:s]overlay` (ext) · `[0:v][0:s:N]overlay` (emb) |
 
-   **Preview mode** (opt-in per flow): generates 5s clip at mid-point as `<name>_preview.<ext>` — quick check before committing to full encode.
+   **Text shaping** (v82, SRT/ASS): optional `auto` / `simple` / `complex` for complex scripts (Arabic/Hebrew/Indic), gated on ffmpeg support; `auto` = unchanged default.
+
+   **Preview mode** (opt-in per flow): HUD offers a still-layout preview (one composited frame at mid-point, tonemapped on HDR-preserve sources so it isn't dim — v81/v82) or a 5s clip; SRT/ASS/Image offer the 5s clip. Output `<name>_preview.<ext>` (`.png` for the still) — a quick check before committing to full encode.
 
 ---
 
@@ -405,4 +407,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v81** — 145 bugs fixed · 271+ features · ~43 000 LoC · 215 files
+Current: **v82** — 146 bugs fixed · 272+ features · ~43 000 LoC · 217 files

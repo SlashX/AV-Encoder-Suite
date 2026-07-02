@@ -140,6 +140,43 @@ $script:BurninWorkDir = ""
 # Toate celelalte cai din comenzile de burn-in sunt absolute (video, secventa PNG,
 # subtitrare, output), deci schimbarea CWD nu afecteaza nimic. Fara param block →
 # $args capteaza verbatim toate argumentele (inclusiv flag-urile `-...`).
+# ── A (v82): filtru de display pentru still preview ───────────────────
+# Pre-filter existent (tonemap/LUT) are prioritate; pe HDR-preserve (pre-filter
+# gol) tonemapeaza DOAR pentru PNG ca sa nu iasa stins. BURNIN_STILL_NO_TONEMAP=1
+# -> sare tonemap-ul (raw). SDR -> gol.
+function Get-BurninStillDisplayFilter {
+    if ($script:BurninPreFilter) { return $script:BurninPreFilter }
+    if ($env:BURNIN_STILL_NO_TONEMAP -ne "1" -and
+        @("hdr10","hdr10plus","hlg") -contains $script:BurninSourceType) {
+        return "zscale=t=linear:npl=100,tonemap=tonemap=hable,zscale=t=bt709:m=bt709:p=bt709:r=tv,format=yuv420p"
+    }
+    return ""
+}
+
+# ── B (v82): text shaping pt subtitrari (libass HarfBuzz; subtitles/ass) ──
+# Optiunea `shaping` e NEW in ffmpeg -> gate de capabilitate. Pt scripturi
+# complexe (araba/ebraica/indic). Gol = auto (default-ul filtrului).
+$script:BurninShapingCap = $null
+function Test-BurninSubtitleShaping {
+    if ($null -eq $script:BurninShapingCap) {
+        $h = (& ffmpeg -hide_banner -h filter=subtitles 2>&1) -join "`n"
+        $script:BurninShapingCap = [bool]($h -match 'shaping')
+    }
+    return $script:BurninShapingCap
+}
+function Get-BurninShaping {
+    if (-not (Test-BurninSubtitleShaping)) { return "" }
+    Write-Host ""
+    Write-Host "  Text shaping (scripturi complexe: araba / ebraica / indic):"
+    Write-Host "    1) auto [implicit]   2) simple   3) complex"
+    $s = Read-Host "  Alege 1-3 [implicit 1]"
+    switch ($s) {
+        "2" { Write-Host "  -> shaping=simple" -ForegroundColor DarkGray; return "simple" }
+        "3" { Write-Host "  -> shaping=complex" -ForegroundColor DarkGray; return "complex" }
+        default { return "" }
+    }
+}
+
 function Invoke-BurninEncode {
     if ($script:BurninWorkDir) { Push-Location $script:BurninWorkDir }
     try { & ffmpeg @args } finally { if ($script:BurninWorkDir) { Pop-Location } }
@@ -939,10 +976,14 @@ function Invoke-HudFlow {
                 $failCount++; continue
             }
             $stOut = Join-Path $OutputDir ("{0}_preview.png" -f $p.Name)
-            $stFc = if ($script:BurninPreFilter) {
-                "[0:v]$($script:BurninPreFilter)[bb];[bb][1:v]overlay=0:0[v]"
+            $stDisp = Get-BurninStillDisplayFilter
+            $stFc = if ($stDisp) {
+                "[0:v]$($stDisp)[bb];[bb][1:v]overlay=0:0[v]"
             } else {
                 "[0:v][1:v]overlay=0:0[v]"
+            }
+            if ((-not $script:BurninPreFilter) -and $stDisp) {
+                Write-Host "  (still tonemapped pentru preview; output-ul real pastreaza HDR)" -ForegroundColor DarkGray
             }
             Write-Host "  Compun still (cadru video la ${stT}s + HUD)..." -ForegroundColor DarkGray
             Invoke-BurninEncode -v error -ss $stT -i $p.Video -i (Join-Path $stDir "frame_000001.png") `
@@ -1075,6 +1116,8 @@ function Invoke-SrtFlow {
         default { $forceStyle = "FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1" }
     }
 
+    $subShaping = Get-BurninShaping
+
     $enc = Get-Encoder
     Get-PreviewMode
 
@@ -1100,6 +1143,7 @@ function Invoke-SrtFlow {
         $srtEsc = Get-EscapedFfmpegFilterPath $p.Aux
         $vf = "subtitles='$srtEsc'"
         if ($forceStyle) { $vf = "${vf}:force_style='$forceStyle'" }
+        if ($subShaping) { $vf = "${vf}:shaping=$subShaping" }
         # v58: pre-filter (LUT/tonemap) prepended in -vf chain
         if ($script:BurninPreFilter) { $vf = "$($script:BurninPreFilter),$vf" }
 
@@ -1171,26 +1215,15 @@ function Invoke-AssFlow {
     Write-Host ""
     $selected = Select-Pairs -Pairs $pairs
 
+    # v82: ASS-urile isi poarta propriul styling (font, marime, culoare, pozitie)
+    # in fisier -> nu oferim override de scale. Optiunile vechi 1.25x/1.5x foloseau
+    # `force_style='ScaleX/Y'` pe filtrul `ass`, care NU are force_style -> erau
+    # rupte din v48 (nu redau nimic). Folosim filtrul nativ `ass` (respecta styling-ul)
+    # + shaping optional (filtrul `ass` suporta shaping nativ).
     Write-Host ""
-    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║  ASS FONT SCALE                               ║" -ForegroundColor Cyan
-    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host "║  1) 1.0x (embedded styling, fara override)    ║"
-    Write-Host "║     [implicit]                                ║"
-    Write-Host "║  2) 1.25x (TV mediu)                          ║"
-    Write-Host "║  3) 1.5x (TV mare)                            ║"
-    Write-Host "║  4) Anulare                                   ║"
-    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-    $scaleChoice = Read-Host "Alege 1-4 [implicit: 1]"
-    if (-not $scaleChoice) { $scaleChoice = "1" }
-    $extraStyle = ""
-    switch ($scaleChoice) {
-        "1" { $extraStyle = "" }
-        "2" { $extraStyle = ":force_style='ScaleX=125,ScaleY=125'" }
-        "3" { $extraStyle = ":force_style='ScaleX=150,ScaleY=150'" }
-        "4" { Write-Host "Anulat."; exit 0 }
-        default { $extraStyle = "" }
-    }
+    Write-Host "  ASS: styling embedded pastrat (font / marime / culoare din fisierul .ass)." -ForegroundColor DarkGray
+
+    $subShaping = Get-BurninShaping
 
     $enc = Get-Encoder
     Get-PreviewMode
@@ -1215,7 +1248,8 @@ function Invoke-AssFlow {
         }
 
         $assEsc = Get-EscapedFfmpegFilterPath $p.Aux
-        $vf = "ass='$assEsc'${extraStyle}"
+        $vf = "ass='$assEsc'"
+        if ($subShaping) { $vf = "${vf}:shaping=$subShaping" }
         # v58: pre-filter (LUT/tonemap) prepended in -vf chain
         if ($script:BurninPreFilter) { $vf = "$($script:BurninPreFilter),$vf" }
 

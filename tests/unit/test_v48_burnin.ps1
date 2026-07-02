@@ -100,10 +100,8 @@ if ($subsHits -ge 3) { _pass } else { _fail "srt/ass/img: subs suffix used (>=3 
 # ─────────────────────────────────────────────────────────────────
 Assert-Match $burninText 'function Invoke-AssFlow'    "Invoke-AssFlow defined"
 Assert-Match $burninText 'ASS BURN-IN'                "ass: banner"
-Assert-Match $burninText 'ASS FONT SCALE'             "ass: scale menu"
-Assert-Match $burninText 'ScaleX=125,ScaleY=125'      "ass: 1.25x option"
-Assert-Match $burninText 'ScaleX=150,ScaleY=150'      "ass: 1.5x option"
-Assert-Match $burninText 'ass=' "ass: ass= filter"
+Assert-Eq $true ($burninText.Contains("ass='`$assEsc'")) "ass: filtru nativ ass (v82: styling embedded)"
+Assert-Match $burninText 'styling embedded pastrat'   "ass: nota styling embedded (v82: fara meniu scale)"
 
 # ─────────────────────────────────────────────────────────────────
 # 7b) Image subs flow (PGS / VobSub, ext + embedded)

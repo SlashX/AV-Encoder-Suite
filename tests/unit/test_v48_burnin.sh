@@ -97,10 +97,8 @@ grep -q "subtitles=" "$BURNIN"                     && _pass || _fail "srt: subti
 # ─────────────────────────────────────────────────────────────────────
 grep -q 'ass_flow() {'                  "$BURNIN" && _pass || _fail "ass_flow() defined"
 grep -q 'ASS BURN-IN'                   "$BURNIN" && _pass || _fail "ass: header banner"
-grep -q 'ASS FONT SCALE'                "$BURNIN" && _pass || _fail "ass: scale menu"
-grep -q 'ScaleX=125,ScaleY=125'         "$BURNIN" && _pass || _fail "ass: 1.25x scale option"
-grep -q 'ScaleX=150,ScaleY=150'         "$BURNIN" && _pass || _fail "ass: 1.5x scale option"
-grep -q "ass_filter=\"ass\""            "$BURNIN" && _pass || _fail "ass: ass filter used"
+grep -q "vf=\"ass='"                    "$BURNIN" && _pass || _fail "ass: filtru nativ ass (v82: styling embedded)"
+grep -q 'styling embedded pastrat'      "$BURNIN" && _pass || _fail "ass: nota styling embedded (v82: fara meniu scale)"
 
 # ─────────────────────────────────────────────────────────────────────
 # 7b) Image subs flow markers (PGS / VobSub, ext + embedded)

@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v81
+  Documentatie Setup & Utilizare — v82
 ═══════════════════════════════════════════════════════════════
 
 
@@ -2182,22 +2182,20 @@ CUPRINS
 
   ffmpeg -vf "subtitles='<path>':force_style='FontSize=N,...'" cu path
   escape pentru Windows drive colons (C: → C\:) si backslash → forward
-  slash. Bake-in standard via libass.
+  slash. Bake-in standard via libass. Optional text shaping (vezi 13.5).
 
   ─── 13.3. Flow Subtitrari ASS ───
 
   Zero deps Python — ffmpeg + libass suficient.
   Scan: video + <name>.ass in OutputVideos/InputVideos.
 
-  Font scale (3 + Anulare):
-    1) 1.0x (embedded styling preservat, no override) [implicit]
-    2) 1.25x (TV mediu) — ScaleX=125,ScaleY=125
-    3) 1.5x (TV mare)  — ScaleX=150,ScaleY=150
-    4) Anulare
+  Fara optiuni de stil: fisierele ASS isi poarta propriul styling complet
+  (font, marime, culoare, pozitie, efecte karaoke), deci se randeaza fidel,
+  fara override. Optiunile vechi de scale 1.25x/1.5x au fost scoase in v82 —
+  nu functionau (formatul ASS nu accepta suprascrierea marimii din exterior).
 
-  ffmpeg -vf "ass='<path>':force_style='ScaleX=N,ScaleY=N'" (opt 2/3)
-  sau strict ass='<path>' (opt 1). Render libass nativ cu tot
-  styling-ul ASS (positioning, fonts, karaoke effects).
+  ffmpeg -vf "ass='<path>'" — render libass nativ cu tot styling-ul ASS
+  (positioning, fonts, karaoke effects). Optional text shaping (vezi 13.5).
 
   ─── 13.4. Flow Image subs (Bluray PGS / DVD VobSub) ───
 
@@ -2241,7 +2239,22 @@ CUPRINS
     - Output naming: <name>_subs.<ext> (acelasi ca SRT/ASS — toate
       sunt subtitle burn-in).
 
-  ─── 13.5. Preview mode (opt-in pe toate 4 flow-uri) ───
+  ─── 13.5. Text shaping (SRT + ASS, v82) ───
+
+  Pentru scripturi complexe — araba, ebraica, limbi indice — unde forma
+  literelor depinde de context sau textul curge dreapta→stanga, ffmpeg
+  (libass cu HarfBuzz) poate aseza corect glifele. Prompt la fluxurile
+  SRT si ASS, 3 variante:
+    1) auto [implicit]  — comportamentul de pana acum (fara override)
+    2) simple           — shaping de baza
+    3) complex          — shaping complet HarfBuzz (RTL, ligaturi)
+
+  Se adauga ca optiune de filtru: subtitles=...:shaping=<val> (SRT) sau
+  ass=...:shaping=<val> (ASS). Promptul apare DOAR daca ffmpeg-ul tau
+  suporta optiunea (gate pe "ffmpeg -h filter=subtitles"); altfel e sarit
+  tacut. Pe "auto" nu se schimba nimic fata de versiunile anterioare.
+
+  ─── 13.6. Preview mode (opt-in pe toate 4 flow-uri) ───
 
   Dupa encoder dialog, fiecare flow ofera o previzualizare:
     - HUD: meniu cu 3 variante — 0) niciuna (render complet) /
@@ -2255,9 +2268,11 @@ CUPRINS
       rezultat imediat.
     - Optional, o grila de pozitionare (linii la 25/50/75% + px +
       colturile tl/tr/bl/br) ajuta la reglarea POS_* din preset.
-    - Pe surse HDR in mod "preserve" imaginea poate fi usor mai
-      stinsa (un PNG nu poate purta HDR); aspectul si lizibilitatea
-      HUD-ului raman corecte, iar output-ul real pastreaza HDR.
+    - Pe surse HDR in mod "preserve" imaginea de preview e adaptata
+      automat pentru ecran normal (tonemap Hable, v82) ca sa nu iasa
+      stinsa — un PNG nu poate purta HDR. Se schimba DOAR poza; output-ul
+      real pastreaza HDR intact. Cu BURNIN_STILL_NO_TONEMAP=1 obtii poza
+      bruta, netratata.
 
   (2) Clip 5s (toate flow-urile) — cand activ:
     - Output naming distinct: <name>_preview.<ext> (vs _hud / _subs)
@@ -2280,7 +2295,7 @@ CUPRINS
   primeste propriul <name>_preview.<ext> de 5s.
 
 
-  ─── 13.6. Note generale importante ───
+  ─── 13.7. Note generale importante ───
 
     - Burn-in re-encodeaza videoul (lossy) pe toate 4 flow-uri.
       Pentru archive lossless foloseste v47 embed (opt 4 sub-opt 7).

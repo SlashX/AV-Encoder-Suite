@@ -477,6 +477,52 @@ pick_files() {
 # ──────────────────────────────────────────────────────────────────────
 # FLOW 1: HUD telemetrie
 # ──────────────────────────────────────────────────────────────────────
+# ── A (v82): filtru de display pentru still preview ───────────────────
+# Lantul aplicat cadrului video INAINTE de overlay, DOAR pentru PNG-ul de
+# preview (8-bit). Pre-filter existent (tonemap/LUT) are prioritate; pe
+# HDR-preserve (pre-filter gol) tonemapeaza ca PNG-ul sa nu iasa stins.
+# BURNIN_STILL_NO_TONEMAP=1 -> sare tonemap-ul (raw). SDR -> gol.
+_burnin_still_display_filter() {
+    if [[ -n "$BURNIN_PRE_FILTER" ]]; then
+        printf '%s' "$BURNIN_PRE_FILTER"; return 0
+    fi
+    if [[ "${BURNIN_STILL_NO_TONEMAP:-0}" != "1" ]] && \
+       [[ "$BURNIN_SOURCE_TYPE" == "hdr10" || "$BURNIN_SOURCE_TYPE" == "hdr10plus" || "$BURNIN_SOURCE_TYPE" == "hlg" ]]; then
+        printf '%s' "zscale=t=linear:npl=100,tonemap=tonemap=hable,zscale=t=bt709:m=bt709:p=bt709:r=tv,format=yuv420p"
+    fi
+    return 0
+}
+
+# ── B (v82): text shaping pt subtitrari (libass HarfBuzz; subtitles/ass) ──
+# Optiunea `shaping` e NEW in ffmpeg -> gate de capabilitate. Pt scripturi
+# complexe (araba/ebraica/indic). SUB_SHAPING gol = auto (default-ul filtrului).
+_BURNIN_SHAPING_CAP=""
+_burnin_subtitles_has_shaping() {
+    if [ -z "$_BURNIN_SHAPING_CAP" ]; then
+        if ffmpeg -hide_banner -h filter=subtitles 2>/dev/null | grep -q "shaping"; then
+            _BURNIN_SHAPING_CAP=1
+        else
+            _BURNIN_SHAPING_CAP=0
+        fi
+    fi
+    [ "$_BURNIN_SHAPING_CAP" = "1" ]
+}
+SUB_SHAPING=""
+ask_burnin_shaping() {
+    SUB_SHAPING=""
+    _burnin_subtitles_has_shaping || return 0
+    echo ""
+    echo "  Text shaping (scripturi complexe: araba / ebraica / indic):"
+    echo "    1) auto [implicit]   2) simple   3) complex"
+    read -p "  Alege 1-3 [implicit 1]: " _shp
+    case "${_shp:-1}" in
+        2) SUB_SHAPING="simple" ;;
+        3) SUB_SHAPING="complex" ;;
+        *) SUB_SHAPING="" ;;
+    esac
+    [ -n "$SUB_SHAPING" ] && echo "  → shaping=$SUB_SHAPING"
+}
+
 hud_flow() {
     # Deps Python+matplotlib (doar pt HUD)
     local have_python=0 have_matplotlib=0
@@ -613,12 +659,14 @@ hud_flow() {
                 echo "  [EROARE] Render still esuat"; rm -rf "$_st_dir"; fail=$((fail+1)); continue
             fi
             local _st_out="$OUTPUT_DIR/${name}_preview.png"
+            local _st_disp; _st_disp="$(_burnin_still_display_filter)"
             local _st_fc
-            if [[ -n "$BURNIN_PRE_FILTER" ]]; then
-                _st_fc="[0:v]${BURNIN_PRE_FILTER}[bb];[bb][1:v]overlay=0:0[v]"
+            if [[ -n "$_st_disp" ]]; then
+                _st_fc="[0:v]${_st_disp}[bb];[bb][1:v]overlay=0:0[v]"
             else
                 _st_fc="[0:v][1:v]overlay=0:0[v]"
             fi
+            [[ -z "$BURNIN_PRE_FILTER" && -n "$_st_disp" ]] && echo "  (still tonemapped pentru preview; output-ul real pastreaza HDR)"
             echo "  Compun still (cadru video la ${_st_t}s + HUD)..."
             if ffmpeg -v error -ss "$_st_t" -i "$vid" -i "$_st_dir/frame_000001.png" \
                 -filter_complex "$_st_fc" -map "[v]" -frames:v 1 -y "$_st_out" </dev/null; then
@@ -742,6 +790,8 @@ srt_flow() {
         *) force_style="FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1" ;;
     esac
 
+    ask_burnin_shaping
+
     ask_encoder
     ask_preview
 
@@ -771,6 +821,7 @@ srt_flow() {
         local srt_esc; srt_esc=$(escape_ffmpeg_filter_path "$srt")
         local vf="subtitles='${srt_esc}'"
         [ -n "$force_style" ] && vf="${vf}:force_style='${force_style}'"
+        [ -n "$SUB_SHAPING" ] && vf="${vf}:shaping=${SUB_SHAPING}"
         # v58: pre-filter (LUT/tonemap) prepended in -vf chain
         [ -n "$BURNIN_PRE_FILTER" ] && vf="${BURNIN_PRE_FILTER},${vf}"
 
@@ -836,27 +887,15 @@ ass_flow() {
     echo ""
     pick_files
 
-    # Font scale (ASS-uri au styling embedded; scale e doar adjustment)
+    # v82: ASS-urile isi poarta propriul styling (font, marime, culoare, pozitie)
+    # in fisier -> nu oferim override de scale. Optiunile vechi 1.25x/1.5x foloseau
+    # `force_style='ScaleX/Y'` pe filtrul `ass`, care NU are force_style -> erau
+    # rupte din v48 (nu redau nimic). Folosim filtrul nativ `ass` (respecta styling-ul)
+    # + shaping optional (filtrul `ass` suporta shaping nativ).
     echo ""
-    echo "╔══════════════════════════════════════════════╗"
-    echo "║  ASS FONT SCALE                               ║"
-    echo "╠══════════════════════════════════════════════╣"
-    echo "║  1) 1.0x (embedded styling, fara override)    ║"
-    echo "║     [implicit]                                ║"
-    echo "║  2) 1.25x (TV mediu)                          ║"
-    echo "║  3) 1.5x (TV mare)                            ║"
-    echo "║  4) Anulare                                   ║"
-    echo "╚══════════════════════════════════════════════╝"
-    read -p "Alege 1-4 [implicit: 1]: " scale_choice
-    local ass_filter="ass"
-    local extra_style=""
-    case "${scale_choice:-1}" in
-        1) extra_style="" ;;
-        2) extra_style=":force_style='ScaleX=125,ScaleY=125'" ;;
-        3) extra_style=":force_style='ScaleX=150,ScaleY=150'" ;;
-        4) echo "Anulat."; exit 0 ;;
-        *) extra_style="" ;;
-    esac
+    echo "  ASS: styling embedded pastrat (font / marime / culoare din fisierul .ass)."
+
+    ask_burnin_shaping
 
     ask_encoder
     ask_preview
@@ -885,7 +924,8 @@ ass_flow() {
         fi
 
         local ass_esc; ass_esc=$(escape_ffmpeg_filter_path "$ass")
-        local vf="${ass_filter}='${ass_esc}'${extra_style}"
+        local vf="ass='${ass_esc}'"
+        [ -n "$SUB_SHAPING" ] && vf="${vf}:shaping=${SUB_SHAPING}"
         # v58: pre-filter (LUT/tonemap) prepended in -vf chain
         [ -n "$BURNIN_PRE_FILTER" ] && vf="${BURNIN_PRE_FILTER},${vf}"
 
