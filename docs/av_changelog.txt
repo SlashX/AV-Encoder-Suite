@@ -3,9 +3,35 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v82 | 146 bug-uri fixate | 272+ features
-  217 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 163 teste [156 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v83 | 147 bug-uri fixate | 273+ features
+  219 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 165 teste [158 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v83 — LOG: LUT-uri potrivite automat pe brand (Apple / Samsung / DJI)
+═══════════════════════════════════════════════════════════════
+
+  UPDATE La sursele LOG (Apple Log de pe iPhone, Samsung Log, DJI D-Log M),
+        cand alegi sa aplici un LUT de conversie la Rec.709, suita recunoaste
+        acum LUT-urile dupa numele lor REAL (ex. "AppleLogToRec709",
+        "Samsung Log to Rec709", "...D-LogM...") si le aseaza PRIMELE in lista,
+        ca varianta implicita, marcate cu "potrivit brand". Inainte se baza pe o
+        denumire fixa (apple_log_*.cube) pe care fisierele descarcate n-o au
+        aproape niciodata, asa ca le amesteca pe toate alfabetic. Acum LUT-ul
+        potrivit brandului apare sus si e ales cu Enter — dar lista COMPLETA
+        ramane, deci poti alege manual orice alt LUT (inclusiv de alt brand),
+        exact ca inainte. Se aplica peste tot unde apare un LUT LOG: encodare
+        (x265 / x264 / AV1), burn-in si trim/concat.
+
+  FIX Pe Windows, la burn-in, LUT-urile LOG cu nume real nu erau gasite deloc
+        (se cautau doar dupa denumirea fixa apple_log_*.cube) → dialogul de
+        burn-in nu oferea nicio optiune de LUT pentru Apple / Samsung / DJI Log.
+        Acum sunt gasite corect, aliniat cu restul suitei.
+
+        Validat cap-coada pe un clip real Apple Log filmat cu iPhone 17 Pro Max
+        (ProRes 10-bit): recunoscut ca "Apple Log", convertit corect la Rec.709
+        pe toate caile (encodare x265 + AV1, burn-in, trim/concat).
 
 
 ═══════════════════════════════════════════════════════════════

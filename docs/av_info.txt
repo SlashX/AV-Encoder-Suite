@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v82
+  Documentatie Setup & Utilizare — v83
 ═══════════════════════════════════════════════════════════════
 
 
@@ -226,7 +226,7 @@ CUPRINS
     ├── Scripts/         ← toate scripturile bash + tools/
     ├── InputVideos/     ← surse video + fisiere GPS (.gpx, .fit, .kml)
     ├── OutputVideos/    ← rezultate + CSV/SRT
-    ├── Luts/            ← LUT-uri .cube (apple_log_*, dji_dlog_m_*, hlg_*, etc.)
+    ├── Luts/            ← LUT-uri .cube (AppleLog*/Samsung*Log*/*D-LogM*, hlg_*, etc.)
     ├── Luts/Creative/   ← LUT-uri creative (film emulation, teal&orange)
     ├── UserProfiles/    ← profile .conf salvate de utilizator
     └── Temp/            ← (lazy) folosit de Trim & Concat
@@ -1052,13 +1052,18 @@ CUPRINS
     Windows: $InputDir\Luts\ (langa script)
     Linux/macOS: $SCRIPT_DIR/Luts/
 
-    Conventia de denumire (prefix):
-      Rec.709 LUT → apple_log_*.cube / dji_dlog_m_*.cube / samsung_log_*.cube
-      HLG LUT     → hlg_apple_log_*.cube / hlg_dji_dlog_m_*.cube etc.
-      Creative    → creative_*.cube (sau in Luts/Creative/)
+    Potrivire pe brand (v83): suita recunoaste LUT-urile atat dupa NUMELE REAL
+    (asa cum sunt descarcate) cat si dupa prefixul conventional:
+      Apple   → *AppleLog*.cube        (sau prefix apple_log_*.cube)
+      Samsung → *Samsung*Log*.cube     (sau prefix samsung_log_*.cube)
+      DJI     → *D-LogM* / *DLog*.cube (sau prefix dji_dlog_m_*.cube)
+      HLG LUT → hlg_apple_log_*.cube / hlg_dji_dlog_m_*.cube etc.
+      Creative→ creative_*.cube (sau in Luts/Creative/)
 
-    Daca 1 LUT → auto-select. Daca mai multe → dialog. Daca nu exista LUT
-    cu prefixul brandului → cad pe TOATE .cube din Luts/ (orice brand).
+    Daca 1 LUT → auto-select. Daca mai multe → dialog: LUT-urile potrivite
+    brandului detectat apar PRIMELE (marcate "potrivit brand", alese cu Enter),
+    restul dupa — dar lista COMPLETA ramane selectabila (poti alege manual orice
+    LUT, inclusiv de alt brand). Fara niciun LUT de brand → toate .cube, alfabetic.
 
   SURSE LUT-uri:
     Apple:   developer.apple.com → "Apple Log Profile Delivery SDK"

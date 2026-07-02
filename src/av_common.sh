@@ -3052,7 +3052,9 @@ repair_hdr10_signaling() {
 # ══════════════════════════════════════════════════════════════════════
 # LOG FORMAT VIDEO — LUT search + dialog per fisier
 # Suporta: Apple Log, Samsung Log, DJI D-Log M, unknown Log
-# LUT-uri cautate cu prefix: apple_log_*, samsung_log_*, dji_dlog_m_*
+# v83: brand-aware — recunoaste NUME REALE (AppleLog*, *Samsung*Log*, *D-LogM*) pe langa
+# prefixele conventionale (apple_log_*, samsung_log_*, dji_dlog_m_*). LUT-urile brandului
+# ies PRIMELE (default = pozitia 1), restul dupa → lista COMPLETA ramane (manual = orice LUT).
 # ══════════════════════════════════════════════════════════════════════
 
 # Cauta fisiere .cube pentru brand-ul detectat.
@@ -3061,6 +3063,7 @@ repair_hdr10_signaling() {
 find_lut_for_brand() {
     LUT_FILES=()
     LUT_SEARCH_DIR=""
+    LUT_BRAND_COUNT=0
     local brand="$1"
     local prefix=""
     case "$brand" in
@@ -3073,26 +3076,29 @@ find_lut_for_brand() {
     local luts_dir="$LUTS_DIR"
     [[ ! -d "$luts_dir" ]] && return 1
 
-    local found=()
-    if [[ -n "$prefix" ]]; then
-        shopt -s nullglob nocaseglob
-        found=("$luts_dir"/${prefix}*.cube)
-        shopt -u nocaseglob nullglob
-    fi
-    # v62: daca nu exista LUT cu prefix de brand, cadem pe TOATE .cube din Luts/ (pentru
-    # ORICE brand, nu doar unknown). Acum ca LUT-ul e obligatoriu pentru transformare,
-    # userul poate folosi orice LUT are la indemana (vede numele in dialog si alege).
-    if [[ ${#found[@]} -eq 0 ]]; then
-        shopt -s nullglob nocaseglob
-        found=("$luts_dir"/*.cube)
-        shopt -u nocaseglob nullglob
-    fi
-    if [[ ${#found[@]} -gt 0 ]]; then
-        LUT_FILES=("${found[@]}")
-        LUT_SEARCH_DIR="$luts_dir"
-        return 0
-    fi
-    return 1
+    shopt -s nullglob nocaseglob
+    local all_cubes=("$luts_dir"/*.cube)
+    shopt -u nocaseglob nullglob
+    [[ ${#all_cubes[@]} -eq 0 ]] && return 1
+
+    # v83: partitioneaza in brand-matched (prefix conventional SAU nume real-world) + rest.
+    # Brand-matched ies primele (default), restul dupa → lista COMPLETA ramane selectabila
+    # (userul poate alege manual orice LUT). Fara brand cunoscut → toate (ca fallback-ul v62).
+    local brand_luts=() rest_luts=() c bn lb is_brand
+    for c in "${all_cubes[@]}"; do
+        bn=$(basename "$c"); lb="${bn,,}"; is_brand=0
+        case "$brand" in
+            apple)   [[ "$lb" == "$prefix"* || "$lb" == *apple*log* ]] && is_brand=1 ;;
+            samsung) [[ "$lb" == "$prefix"* || "$lb" == *samsung*log* ]] && is_brand=1 ;;
+            dji)     [[ "$lb" == "$prefix"* || "$lb" == *dlog* || "$lb" == *d-log* || "$lb" == *d_log* ]] && is_brand=1 ;;
+        esac
+        if [[ "$is_brand" -eq 1 ]]; then brand_luts+=("$c"); else rest_luts+=("$c"); fi
+    done
+
+    LUT_FILES=("${brand_luts[@]}" "${rest_luts[@]}")
+    LUT_BRAND_COUNT=${#brand_luts[@]}
+    LUT_SEARCH_DIR="$luts_dir"
+    return 0
 }
 
 # v39: Cauta LUT-uri Log → HLG (BT.2100). Nume convenite: hlg_<brand>_*.cube
@@ -3300,7 +3306,11 @@ handle_log_dialog() {
             echo "  LUT-uri disponibile:"
             local li=1
             for lf in "${LUT_FILES[@]}"; do
-                printf "  %d) %s\n" "$li" "$(basename "$lf")"
+                if [[ "$li" -le "${LUT_BRAND_COUNT:-0}" ]]; then
+                    printf "  %d) %s  ← potrivit brand\n" "$li" "$(basename "$lf")"
+                else
+                    printf "  %d) %s\n" "$li" "$(basename "$lf")"
+                fi
                 li=$((li + 1))
             done
             read -p "  Alege LUT [implicit: 1]: " lut_sel

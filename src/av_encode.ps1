@@ -2544,21 +2544,27 @@ function Find-LutForBrand {
     }
     # Single location: $InputDir/Luts/ (case-insensitive on Windows)
     $lutsDir = Join-Path $inputDir "Luts"
-    if (-not (Test-Path $lutsDir)) { return @{ files = @(); dir = "" } }
+    if (-not (Test-Path $lutsDir)) { return @{ files = @(); dir = ""; brandCount = 0 } }
 
-    $found = @()
-    if ($prefix) {
-        $found = @(Get-ChildItem -Path $lutsDir -Filter "${prefix}*.cube" -ErrorAction SilentlyContinue)
+    $all = @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -File -ErrorAction SilentlyContinue)
+    if ($all.Count -eq 0) { return @{ files = @(); dir = ""; brandCount = 0 } }
+
+    # v83: brand-aware — recunoaste NUME REALE (AppleLog*, *Samsung*Log*, *D-LogM*) pe
+    # langa prefixul conventional. Brand-matched ies PRIMELE (default), restul dupa →
+    # lista COMPLETA ramane (manual = orice LUT). Fara brand → toate (fallback v62).
+    $brandLuts = @(); $rest = @()
+    foreach ($f in $all) {
+        $lb = $f.Name.ToLower()
+        $isBrand = $false
+        switch ($brand) {
+            "apple"   { if ($lb.StartsWith($prefix) -or $lb -match 'apple.*log')      { $isBrand = $true } }
+            "samsung" { if ($lb.StartsWith($prefix) -or $lb -match 'samsung.*log')    { $isBrand = $true } }
+            "dji"     { if ($lb.StartsWith($prefix) -or $lb -match 'dlog|d-log|d_log') { $isBrand = $true } }
+        }
+        if ($isBrand) { $brandLuts += $f } else { $rest += $f }
     }
-    # v62: fara LUT cu prefix de brand → cadem pe TOATE .cube (orice brand, nu doar
-    # unknown). LUT-ul e obligatoriu pt transformare → userul poate folosi orice are.
-    if ($found.Count -eq 0) {
-        $found = @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -ErrorAction SilentlyContinue)
-    }
-    if ($found.Count -gt 0) {
-        return @{ files = $found; dir = $lutsDir }
-    }
-    return @{ files = @(); dir = "" }
+    $ordered = @($brandLuts) + @($rest)
+    return @{ files = $ordered; dir = $lutsDir; brandCount = $brandLuts.Count }
 }
 
 # ── v39: Find-HlgLutForBrand — cauta LUT-uri Log → HLG ─────────────
@@ -5183,8 +5189,13 @@ function Show-LogDialog {
         } else {
             Write-Host ""
             Write-Host "  LUT-uri disponibile:" -ForegroundColor Cyan
+            $bc = if ($lutResult.brandCount) { [int]$lutResult.brandCount } else { 0 }
             for ($li = 0; $li -lt $lutResult.files.Count; $li++) {
-                Write-Host "  $($li+1)) $($lutResult.files[$li].Name)" -ForegroundColor White
+                if ($li -lt $bc) {
+                    Write-Host "  $($li+1)) $($lutResult.files[$li].Name)  <- potrivit brand" -ForegroundColor White
+                } else {
+                    Write-Host "  $($li+1)) $($lutResult.files[$li].Name)" -ForegroundColor White
+                }
             }
             $lutSel = Read-Host "  Alege LUT [implicit: 1]"
             if (-not $lutSel) { $lutSel = "1" }

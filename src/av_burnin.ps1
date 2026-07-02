@@ -365,11 +365,24 @@ function Get-BurninLutFiles {
         "dji"     { "dji_dlog_m_" }
         default   { "" }
     }
-    if (-not $prefix) {
-        # Cazul "unknown" sau gol — accepta orice .cube
-        return @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $all = @(Get-ChildItem -Path $lutsDir -Filter "*.cube" -File -ErrorAction SilentlyContinue)
+    if ($all.Count -eq 0) { return @() }
+    # v83: brand-aware — recunoaste NUME REALE (AppleLog*, *Samsung*Log*, *D-LogM*) pe langa
+    # prefixul conventional; brand-matched primele, restul dupa (burn-in foloseste [0] = brand).
+    # FIX paritate: inainte, pe apple/samsung/dji cu nume real (fara prefix apple_log_) intorcea
+    # GOL (lipsea fallback-ul v62 pe care il au find_lut_for_brand/Find-LutForBrand).
+    $brandLuts = @(); $rest = @()
+    foreach ($f in $all) {
+        $lb = $f.Name.ToLower()
+        $isBrand = $false
+        switch ($Brand) {
+            "apple"   { if ($lb.StartsWith($prefix) -or $lb -match 'apple.*log')      { $isBrand = $true } }
+            "samsung" { if ($lb.StartsWith($prefix) -or $lb -match 'samsung.*log')    { $isBrand = $true } }
+            "dji"     { if ($lb.StartsWith($prefix) -or $lb -match 'dlog|d-log|d_log') { $isBrand = $true } }
+        }
+        if ($isBrand) { $brandLuts += $f.FullName } else { $rest += $f.FullName }
     }
-    return @(Get-ChildItem -Path $lutsDir -Filter "${prefix}*.cube" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    return @(@($brandLuts) + @($rest))
 }
 
 # Extrage master-display + max-cll/max-fall din side_data; format X265 (integer ×50000/×10000) + SVTAV1 (float).
