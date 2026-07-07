@@ -13,6 +13,7 @@ $OutputDir   = Join-Path $ScriptDir "OutputVideos"
 $TempBase    = Join-Path $ScriptDir "Temp"
 $PresetsDir  = Join-Path $ScriptDir "burnin_presets"
 $RenderPy    = Join-Path $ScriptDir "burnin_render.py"
+$DesignerPy  = Join-Path $ScriptDir "burnin_designer.py"
 
 New-Item -ItemType Directory -Force -Path $InputDir, $OutputDir, $TempBase | Out-Null
 
@@ -905,18 +906,45 @@ function Invoke-HudFlow {
     Write-Host "║  2) data-strip  — bottom bar gauges          ║"
     Write-Host "║  3) full        — data-strip + map + extras  ║"
     Write-Host "║     [implicit]                                ║"
-    Write-Host "║  4) Anulare                                   ║"
+    Write-Host "║  4) custom      — preset salvat (Designer)    ║"
+    Write-Host "║  5) Anulare                                   ║"
     Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-    $presetChoice = Read-Host "Alege 1-4 [implicit: 3]"
+    $presetChoice = Read-Host "Alege 1-5 [implicit: 3]"
     if (-not $presetChoice) { $presetChoice = "3" }
+    $presetFile = ""
     switch ($presetChoice) {
         "1" { $preset = "minimal" }
         "2" { $preset = "data-strip" }
         "3" { $preset = "full" }
-        "4" { Write-Host "Anulat."; exit 0 }
+        "4" {
+            # v84: preseturi salvate de Designer (UserProfiles/burnin/)
+            $custDir = Join-Path (Join-Path $ScriptDir "UserProfiles") "burnin"
+            $custConfs = @()
+            if (Test-Path $custDir) {
+                $custConfs = @(Get-ChildItem -Path $custDir -Filter "*.conf" -File -ErrorAction SilentlyContinue | Sort-Object Name)
+            }
+            if ($custConfs.Count -eq 0) {
+                Write-Host ""
+                Write-Host "Niciun preset custom in $custDir." -ForegroundColor Yellow
+                Write-Host "  Creeaza unul cu Designerul vizual (meniul Burn-in, optiunea 5)."
+                exit 0
+            }
+            for ($i = 0; $i -lt $custConfs.Count; $i++) {
+                "  {0,2}) {1}" -f ($i+1), $custConfs[$i].BaseName | Write-Host
+            }
+            Write-Host ""
+            $custIdx = Read-Host "Alege preset [implicit 1]"
+            if (-not $custIdx) { $custIdx = "1" }
+            if ($custIdx -notmatch '^\d+$') { Write-Host "Index invalid." -ForegroundColor Red; exit 1 }
+            $ci = [int]$custIdx - 1
+            if ($ci -lt 0 -or $ci -ge $custConfs.Count) { Write-Host "Index in afara range." -ForegroundColor Red; exit 1 }
+            $presetFile = $custConfs[$ci].FullName
+            $preset = $custConfs[$ci].BaseName
+        }
+        "5" { Write-Host "Anulat."; exit 0 }
         default { $preset = "full" }
     }
-    $presetFile = Join-Path $PresetsDir "${preset}.conf"
+    if (-not $presetFile) { $presetFile = Join-Path $PresetsDir "${preset}.conf" }
     if (-not (Test-Path $presetFile)) { Write-Host "EROARE: preset $preset nu exista." -ForegroundColor Red; exit 1 }
 
     Write-Host ""
@@ -1515,6 +1543,109 @@ function Invoke-ImgFlow {
 }
 
 # ─────────────────────────────────────────────────────────────────────
+# FLOW 5 (v84): Designer vizual layout HUD — browser local
+# Server Python stdlib (burnin_designer.py) + UI (burnin_designer.html);
+# randare cu engine-ul REAL (burnin_render) → preview fidel cu encode-ul.
+# Preseturile se salveaza in UserProfiles/burnin/ → apar la HUD opt "custom".
+# ─────────────────────────────────────────────────────────────────────
+function Invoke-DesignerFlow {
+    $py3 = $null
+    if (Get-Command "python3" -ErrorAction SilentlyContinue) { $py3 = "python3" }
+    elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
+        $pyVer = & python --version 2>&1
+        if ($pyVer -match "3\.") { $py3 = "python" }
+    }
+    if (-not $py3) {
+        Write-Host "EROARE: python3 nu este instalat (necesar pentru designer)." -ForegroundColor Red
+        exit 1
+    }
+    & $py3 -c "import matplotlib, numpy" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "EROARE: matplotlib / numpy lipsesc." -ForegroundColor Red
+        Write-Host "Instaleaza cu: $py3 -m pip install matplotlib numpy pillow" -ForegroundColor Yellow
+        exit 1
+    }
+    if (-not (Test-Path $DesignerPy)) { Write-Host "EROARE: $DesignerPy lipseste." -ForegroundColor Red; exit 1 }
+
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║  DESIGNER VIZUAL LAYOUT HUD (browser)         ║" -ForegroundColor Cyan
+    Write-Host "╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "║  1) Video + telemetrie reala (norm CSV)       ║"
+    Write-Host "║     [implicit]                                ║"
+    Write-Host "║  2) Doar video — date DEMO (doar layout)      ║"
+    Write-Host "║  3) Anulare                                   ║"
+    Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+    $dsMode = Read-Host "Alege 1-3 [implicit: 1]"
+    if (-not $dsMode) { $dsMode = "1" }
+    $vid = ""; $csv = ""
+    switch ($dsMode) {
+        "1" {
+            $pairs = Get-PairedFiles -PairedSuffix "_norm.csv" -MetaFn { param($c) Get-BrandFromCsv $c }
+            if ($pairs.Count -eq 0) {
+                Write-Host ""
+                Write-Host "Nu am gasit nicio pereche video + norm CSV." -ForegroundColor Yellow
+                Write-Host "  (Genereaza CSV cu av_telemetry / av_extractor_gps, sau foloseste"
+                Write-Host "   optiunea 2 — date DEMO, doar pentru aranjarea layoutului.)"
+                exit 0
+            }
+            for ($i = 0; $i -lt $pairs.Count; $i++) {
+                "  {0,2}) {1}" -f ($i+1), $pairs[$i].Label | Write-Host
+            }
+            Write-Host ""
+            $dsIdx = Read-Host "Alege UN index [implicit 1]"
+            if (-not $dsIdx) { $dsIdx = "1" }
+            if ($dsIdx -notmatch '^\d+$') { Write-Host "Index invalid." -ForegroundColor Red; exit 1 }
+            $di = [int]$dsIdx - 1
+            if ($di -lt 0 -or $di -ge $pairs.Count) { Write-Host "Index in afara range." -ForegroundColor Red; exit 1 }
+            $vid = $pairs[$di].Video; $csv = $pairs[$di].Aux
+        }
+        "2" {
+            $vids = New-Object System.Collections.Generic.List[string]
+            foreach ($dir in @($OutputDir, $InputDir)) {
+                if (-not (Test-Path $dir)) { continue }
+                Get-ChildItem -Path $dir -Recurse -Depth 1 -File -Include "*.mp4","*.mov","*.mkv","*.m4v" -ErrorAction SilentlyContinue | ForEach-Object {
+                    $name = $_.BaseName
+                    if ($name -like "*_hud" -or $name -like "*_telem" -or $name -like "*_subs" -or $name -like "*_preview") { return }
+                    $vids.Add($_.FullName)
+                }
+            }
+            if ($vids.Count -eq 0) { Write-Host "Niciun video gasit in $InputDir / $OutputDir."; exit 0 }
+            for ($i = 0; $i -lt $vids.Count; $i++) {
+                "  {0,2}) {1}" -f ($i+1), [System.IO.Path]::GetFileName($vids[$i]) | Write-Host
+            }
+            Write-Host ""
+            $dsIdx = Read-Host "Alege UN index [implicit 1]"
+            if (-not $dsIdx) { $dsIdx = "1" }
+            if ($dsIdx -notmatch '^\d+$') { Write-Host "Index invalid." -ForegroundColor Red; exit 1 }
+            $di = [int]$dsIdx - 1
+            if ($di -lt 0 -or $di -ge $vids.Count) { Write-Host "Index in afara range." -ForegroundColor Red; exit 1 }
+            $vid = $vids[$di]
+            Write-Host "  (fara CSV — designerul foloseste date DEMO sintetice)"
+        }
+        "3" { Write-Host "Anulat."; exit 0 }
+        default { Write-Host "Optiune invalida." -ForegroundColor Red; exit 1 }
+    }
+
+    $userDir = Join-Path (Join-Path $ScriptDir "UserProfiles") "burnin"
+    New-Item -ItemType Directory -Force -Path $userDir | Out-Null
+
+    Write-Host ""
+    Write-Host "Pornesc designerul... (inchide-l din browser — Salveaza & Inchide — sau cu Ctrl+C aici)"
+    $dsArgs = @($DesignerPy, "--video", $vid,
+                "--presets-dir", $PresetsDir, "--user-presets-dir", $userDir,
+                "--temp-dir", $TempBase)
+    if ($csv) { $dsArgs += @("--csv", $csv) }
+    & $py3 @dsArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [EROARE] designerul a iesit cu cod $LASTEXITCODE" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host ""
+    Write-Host "Preseturile salvate apar in fluxul HUD la optiunea 'custom' (LAYOUT PRESET → 4)."
+}
+
+# ─────────────────────────────────────────────────────────────────────
 # Test mode: skip interactive menu (allow dot-sourcing for tests)
 # ─────────────────────────────────────────────────────────────────────
 if ($env:AV_BURNIN_TEST_MODE -eq "1") { return }
@@ -1531,15 +1662,17 @@ Write-Host "║     Sursa: norm CSV                           ║"
 Write-Host "║  2) Subtitrari SRT (telemetry overlay/movies) ║"
 Write-Host "║  3) Subtitrari ASS (anime, styled subs)       ║"
 Write-Host "║  4) Image subs PGS/VobSub (Bluray/DVD)        ║"
-Write-Host "║  5) Anulare                                   ║"
+Write-Host "║  5) Designer vizual layout HUD (browser)      ║"
+Write-Host "║  6) Anulare                                   ║"
 Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
-$burninType = Read-Host "Alege 1-5 [implicit: 1]"
+$burninType = Read-Host "Alege 1-6 [implicit: 1]"
 if (-not $burninType) { $burninType = "1" }
 switch ($burninType) {
     "1" { Invoke-HudFlow }
     "2" { Invoke-SrtFlow }
     "3" { Invoke-AssFlow }
     "4" { Invoke-ImgFlow }
-    "5" { Write-Host "Anulat."; exit 0 }
+    "5" { Invoke-DesignerFlow }
+    "6" { Write-Host "Anulat."; exit 0 }
     default { Write-Host "Optiune invalida." -ForegroundColor Red; exit 1 }
 }

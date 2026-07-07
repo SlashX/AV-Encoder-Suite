@@ -10,6 +10,7 @@ source "$SCRIPT_DIR/av_common.sh"
 
 PRESETS_DIR="$SCRIPT_DIR/burnin_presets"
 RENDER_PY="$SCRIPT_DIR/burnin_render.py"
+DESIGNER_PY="$SCRIPT_DIR/burnin_designer.py"
 
 # In test mode skip ensure_temp_dir + ffmpeg dep check (functions only)
 if [[ "${AV_BURNIN_TEST_MODE:-0}" != "1" ]]; then
@@ -574,17 +575,43 @@ hud_flow() {
     echo "║  2) data-strip  — bottom bar gauges          ║"
     echo "║  3) full        — data-strip + map + extras  ║"
     echo "║     [implicit]                                ║"
-    echo "║  4) Anulare                                   ║"
+    echo "║  4) custom      — preset salvat (Designer)    ║"
+    echo "║  5) Anulare                                   ║"
     echo "╚══════════════════════════════════════════════╝"
-    read -p "Alege 1-4 [implicit: 3]: " preset_choice
+    read -p "Alege 1-5 [implicit: 3]: " preset_choice
+    local preset_file=""
     case "${preset_choice:-3}" in
         1) PRESET="minimal" ;;
         2) PRESET="data-strip" ;;
         3) PRESET="full" ;;
-        4) echo "Anulat."; exit 0 ;;
+        4)
+            # v84: preseturi salvate de Designer (UserProfiles/burnin/)
+            local _cust_dir="$USER_PROFILES_DIR/burnin"
+            shopt -s nullglob
+            local _cust_confs=("$_cust_dir"/*.conf)
+            shopt -u nullglob
+            if [ "${#_cust_confs[@]}" -eq 0 ]; then
+                echo ""
+                echo "Niciun preset custom in $_cust_dir."
+                echo "  Creeaza unul cu Designerul vizual (meniul Burn-in, optiunea 5)."
+                exit 0
+            fi
+            for i in "${!_cust_confs[@]}"; do
+                printf "  %2d) %s\n" "$((i+1))" "$(basename "${_cust_confs[$i]}" .conf)"
+            done
+            echo ""
+            read -p "Alege preset [implicit 1]: " _cust_idx
+            _cust_idx="${_cust_idx:-1}"
+            [[ "$_cust_idx" =~ ^[0-9]+$ ]] || { echo "Index invalid."; exit 1; }
+            local _ci=$((_cust_idx-1))
+            [ "$_ci" -ge 0 ] && [ "$_ci" -lt "${#_cust_confs[@]}" ] || { echo "Index in afara range."; exit 1; }
+            preset_file="${_cust_confs[$_ci]}"
+            PRESET="$(basename "$preset_file" .conf)"
+            ;;
+        5) echo "Anulat."; exit 0 ;;
         *) PRESET="full" ;;
     esac
-    local preset_file="$PRESETS_DIR/${PRESET}.conf"
+    [ -n "$preset_file" ] || preset_file="$PRESETS_DIR/${PRESET}.conf"
     [ -s "$preset_file" ] || { echo "EROARE: preset $PRESET nu exista ($preset_file)"; exit 1; }
 
     # HUD fps
@@ -1165,6 +1192,109 @@ img_flow() {
 }
 
 # ──────────────────────────────────────────────────────────────────────
+# FLOW 5 (v84): Designer vizual layout HUD — browser local
+# Server Python stdlib (burnin_designer.py) + UI (burnin_designer.html);
+# randare cu engine-ul REAL (burnin_render) → preview fidel cu encode-ul.
+# Preseturile se salveaza in UserProfiles/burnin/ → apar la HUD opt "custom".
+# ──────────────────────────────────────────────────────────────────────
+designer_flow() {
+    # Dependente: python3 + matplotlib (aceleasi ca fluxul HUD)
+    if ! command -v python3 &>/dev/null; then
+        echo "EROARE: python3 lipseste. Instaleaza cu: $(av_pkg_install_hint python)"
+        exit 1
+    fi
+    if ! python3 -c "import matplotlib, numpy" 2>/dev/null; then
+        echo "EROARE: matplotlib / numpy lipsesc (necesare pentru render HUD)."
+        echo "Instaleaza cu: pip install matplotlib numpy pillow"
+        echo "  Termux: pkg install python-numpy && pip install matplotlib pillow"
+        exit 1
+    fi
+    [ -f "$DESIGNER_PY" ] || { echo "EROARE: $DESIGNER_PY lipseste."; exit 1; }
+
+    echo ""
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  DESIGNER VIZUAL LAYOUT HUD (browser)         ║"
+    echo "╠══════════════════════════════════════════════╣"
+    echo "║  1) Video + telemetrie reala (norm CSV)       ║"
+    echo "║     [implicit]                                ║"
+    echo "║  2) Doar video — date DEMO (doar layout)      ║"
+    echo "║  3) Anulare                                   ║"
+    echo "╚══════════════════════════════════════════════╝"
+    read -p "Alege 1-3 [implicit: 1]: " ds_mode
+    local vid="" csv="" ds_idx di i
+    case "${ds_mode:-1}" in
+        1)
+            reset_pairs
+            scan_for_pairs "$OUTPUT_DIR" "OUT" "_norm.csv" extract_brand_from_csv
+            scan_for_pairs "$INPUT_DIR"  "IN"  "_norm.csv" extract_brand_from_csv
+            if [ "${#PAIRS_VIDEO[@]}" -eq 0 ]; then
+                echo ""
+                echo "Nu am gasit nicio pereche video + norm CSV."
+                echo "  (Genereaza CSV cu av_telemetry / av_extractor_gps, sau foloseste"
+                echo "   optiunea 2 — date DEMO, doar pentru aranjarea layoutului.)"
+                exit 0
+            fi
+            for i in "${!PAIRS_LABEL[@]}"; do
+                printf "  %2d) %s\n" "$((i+1))" "${PAIRS_LABEL[$i]}"
+            done
+            echo ""
+            read -p "Alege UN index [implicit 1]: " ds_idx
+            ds_idx="${ds_idx:-1}"
+            [[ "$ds_idx" =~ ^[0-9]+$ ]] || { echo "Index invalid."; exit 1; }
+            di=$((ds_idx-1))
+            [ "$di" -ge 0 ] && [ "$di" -lt "${#PAIRS_VIDEO[@]}" ] || { echo "Index in afara range."; exit 1; }
+            vid="${PAIRS_VIDEO[$di]}"; csv="${PAIRS_AUX[$di]}"
+            ;;
+        2)
+            local vids=() d f nm
+            for d in "$OUTPUT_DIR" "$INPUT_DIR"; do
+                [ -d "$d" ] || continue
+                while IFS= read -r -d '' f; do
+                    nm="$(basename "$f")"; nm="${nm%.*}"
+                    [[ "$nm" == *_hud || "$nm" == *_telem || "$nm" == *_subs || "$nm" == *_preview ]] && continue
+                    vids+=("$f")
+                done < <(find "$d" -maxdepth 2 -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.m4v" \) -print0 2>/dev/null)
+            done
+            [ "${#vids[@]}" -eq 0 ] && { echo "Niciun video gasit in $INPUT_DIR / $OUTPUT_DIR."; exit 0; }
+            for i in "${!vids[@]}"; do
+                printf "  %2d) %s\n" "$((i+1))" "$(basename "${vids[$i]}")"
+            done
+            echo ""
+            read -p "Alege UN index [implicit 1]: " ds_idx
+            ds_idx="${ds_idx:-1}"
+            [[ "$ds_idx" =~ ^[0-9]+$ ]] || { echo "Index invalid."; exit 1; }
+            di=$((ds_idx-1))
+            [ "$di" -ge 0 ] && [ "$di" -lt "${#vids[@]}" ] || { echo "Index in afara range."; exit 1; }
+            vid="${vids[$di]}"
+            echo "  (fara CSV — designerul foloseste date DEMO sintetice)"
+            ;;
+        3) echo "Anulat."; exit 0 ;;
+        *) echo "Optiune invalida."; exit 1 ;;
+    esac
+
+    local user_dir="$USER_PROFILES_DIR/burnin"
+    mkdir -p "$user_dir" 2>/dev/null || true
+    local csv_args=() open_args=()
+    [ -n "$csv" ] && csv_args=(--csv "$csv")
+    # Termux: webbrowser nu stie de browserul Android → termux-open-url
+    [ "${AV_IS_TERMUX:-0}" = "1" ] && command -v termux-open-url &>/dev/null && open_args=(--open-cmd termux-open-url)
+
+    echo ""
+    echo "Pornesc designerul... (inchide-l din browser — Salveaza & Inchide — sau cu Ctrl+C aici)"
+    local ds_rc=0
+    python3 "$DESIGNER_PY" --video "$vid" "${csv_args[@]}" \
+        --presets-dir "$PRESETS_DIR" --user-presets-dir "$user_dir" \
+        --temp-dir "$AV_TEMP_DIR" "${open_args[@]}" || ds_rc=$?
+    # 130 = Ctrl+C (oprire legitima a serverului) — nu e eroare
+    if [ "$ds_rc" -ne 0 ] && [ "$ds_rc" -ne 130 ]; then
+        echo "  [EROARE] designerul a iesit cu cod $ds_rc"
+        exit 1
+    fi
+    echo ""
+    echo "Preseturile salvate apar in fluxul HUD la optiunea 'custom' (LAYOUT PRESET → 4)."
+}
+
+# ──────────────────────────────────────────────────────────────────────
 # Test mode: skip interactive menu (allow sourcing for tests)
 # ──────────────────────────────────────────────────────────────────────
 if [[ "${AV_BURNIN_TEST_MODE:-0}" == "1" ]]; then
@@ -1183,14 +1313,16 @@ echo "║     Sursa: norm CSV                           ║"
 echo "║  2) Subtitrari SRT (telemetry overlay/movies) ║"
 echo "║  3) Subtitrari ASS (anime, styled subs)       ║"
 echo "║  4) Image subs PGS/VobSub (Bluray/DVD)        ║"
-echo "║  5) Anulare                                   ║"
+echo "║  5) Designer vizual layout HUD (browser)      ║"
+echo "║  6) Anulare                                   ║"
 echo "╚══════════════════════════════════════════════╝"
-read -p "Alege 1-5 [implicit: 1]: " burnin_type
+read -p "Alege 1-6 [implicit: 1]: " burnin_type
 case "${burnin_type:-1}" in
     1) hud_flow ;;
     2) srt_flow ;;
     3) ass_flow ;;
     4) img_flow ;;
-    5) echo "Anulat."; exit 0 ;;
+    5) designer_flow ;;
+    6) echo "Anulat."; exit 0 ;;
     *) echo "Optiune invalida."; exit 1 ;;
 esac

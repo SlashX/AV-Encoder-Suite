@@ -39,7 +39,7 @@ grep -q '1) Telemetry HUD' "$BURNIN"      && _pass || _fail "main menu opt 1 = T
 grep -q '2) Subtitrari SRT' "$BURNIN"     && _pass || _fail "main menu opt 2 = SRT"
 grep -q '3) Subtitrari ASS' "$BURNIN"     && _pass || _fail "main menu opt 3 = ASS"
 grep -q '4) Image subs PGS/VobSub' "$BURNIN" && _pass || _fail "main menu opt 4 = Image subs"
-grep -qE '5\) Anulare' "$BURNIN"          && _pass || _fail "main menu opt 5 = Anulare"
+grep -qE '6\) Anulare' "$BURNIN"          && _pass || _fail "main menu opt 6 = Anulare (v84: opt 5 = Designer)"
 grep -q 'burnin_type'   "$BURNIN"         && _pass || _fail "main dispatcher reads burnin_type"
 grep -q 'hud_flow'      "$BURNIN"         && _pass || _fail "main dispatcher calls hud_flow"
 grep -q 'srt_flow'      "$BURNIN"         && _pass || _fail "main dispatcher calls srt_flow"

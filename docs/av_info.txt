@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v83
+  Documentatie Setup & Utilizare — v84
 ═══════════════════════════════════════════════════════════════
 
 
@@ -19,7 +19,7 @@ CUPRINS
  11. HDR/DV Tools (transform / inspect / hybrid)
  12. Telemetrie multi-brand (DJI / GoPro / Sony / Garmin / QuickTime)
  13. Import GPS extern (GPX / FIT / KML)
- 14. Burn-in overlay — HUD telemetrie / SRT / ASS / Image subs
+ 14. Burn-in overlay — HUD telemetrie / SRT / ASS / Image subs + Designer vizual
  15. Hardware Encode (PS1 + MediaCodec + bash backends)
  16. Profile system + Tests
  17. Diferente intre platforme
@@ -259,6 +259,7 @@ CUPRINS
     7) Mux tools — remux container + demux streams + mux files (v49+v50)
     8) HDR/DV tools — transform / inspect / HDR10+→DV / remove / plot (v56)
     9) Burn-in overlay — HUD / SRT / ASS / Image (v48, HDR-aware v58)
+       + Designer vizual layout HUD in browser (v84)
    10) Anulare / iesire
 
   FISIERE OUTPUT:
@@ -2075,7 +2076,7 @@ CUPRINS
 
 
 ═══════════════════════════════════════════════════════════════
-14. BURN-IN OVERLAY (v48 + v58 HDR-aware — meniu principal opt 9)
+14. BURN-IN OVERLAY (v48 + v58 HDR-aware + v84 Designer — meniu opt 9)
 ═══════════════════════════════════════════════════════════════
 
   Script separat: src/av_burnin.sh + src/av_burnin.ps1 (mirror complet
@@ -2087,7 +2088,8 @@ CUPRINS
     2) Subtitrari SRT (hardcoded movies / telemetry overlay)
     3) Subtitrari ASS (anime, styled subs cu embedded styling)
     4) Image subs PGS/VobSub (Bluray/DVD, ext + embedded)
-    5) Anulare
+    5) Designer vizual layout HUD — browser local (v84, vezi 13.7)
+    6) Anulare
 
   Diferenta fata de v47 (complementare):
     v47 embed lossless (archive) = stream copy + SRT track + attachments
@@ -2138,11 +2140,13 @@ CUPRINS
     Interne (dji/gopro/sony/garmin/quicktime) → sync offset 0 automat.
     Externe (external_gpx/external_fit/external_kml) → prompt offset sec.
 
-  Layout preset (3 + Anulare):
+  Layout preset (4 + Anulare):
     1) minimal      — timestamp + speed corner overlay (no strip/map)
     2) data-strip   — bottom bar 80px (speed/alt/heading/temp)
     3) full         — data-strip + map M2 + G-force/HR gauges [implicit]
-    4) Anulare
+    4) custom       — preset salvat cu Designerul vizual (v84), din
+                      UserProfiles/burnin/*.conf (lista + alegere index)
+    5) Anulare
 
   HUD frame rate (default 10 fps, range 1-60). Higher fps = mai multe
   PNGs + render time, fara beneficiu vizibil cand telemetry e <30 Hz.
@@ -2300,7 +2304,51 @@ CUPRINS
   primeste propriul <name>_preview.<ext> de 5s.
 
 
-  ─── 13.7. Note generale importante ───
+  ─── 13.7. Designer vizual layout HUD (v84 — browser local) ───
+
+  Sub-meniul Burn-in, optiunea 5. Deschide o pagina LOCALA in browser
+  in care aranjezi vizual overlay-ul HUD, cu mouse-ul, direct pe un
+  cadru real din videoclipul tau — apoi salvezi aranjamentul ca preset
+  si il folosesti la ardere prin optiunea "custom" din LAYOUT PRESET.
+
+  Cum functioneaza:
+    1. Alegi sursa: video + norm CSV (telemetrie reala — vezi datele si
+       traseul tale) SAU doar video → date DEMO sintetice (viteza /
+       altitudine / traseu simulate), utile ca sa pregatesti layoutul
+       inainte de extragerea telemetriei.
+    2. Se porneste un mini-server local (Python, fara dependinte noi —
+       aceleasi ca HUD: matplotlib + numpy) si se deschide pagina in
+       browser automat (Termux: prin termux-open-url). Serverul asculta
+       DOAR pe 127.0.0.1 (localhost) — nimic nu pleaca pe internet.
+    3. In pagina: tragi elementele cu mouse-ul (timestamp, viteza,
+       ALT/HDG/TEMP, G-force, puls, data-strip, harta M2); pozitia se
+       scrie in cheile POS_* / MAP_* / STRIP_POSITION exact in formatul
+       preseturilor. Panou lateral: toggle per element, campurile
+       strip-ului (bifa + ordonare), culori, marimi font, FONT_FAMILY,
+       unitate viteza, grila de pozitionare. Slider de timp = derulezi
+       prin video (cadrul, valorile si punctul de pe harta se schimba).
+       Sagetile de la tastatura muta elementul selectat cu 1px
+       (Shift = 10px).
+    4. Salvezi cu nume → UserProfiles/burnin/<nume>.conf (format
+       KEY=VALUE identic cu burnin_presets/). "Salveaza & Inchide"
+       opreste si serverul; poti opri si cu Ctrl+C in terminal.
+
+  Fidelitate: previzualizarea foloseste ACELASI motor de desenare
+  (burnin_render.py) ca randarea finala — ce vezi e ce primesti.
+  Pe surse HDR cadrul e adaptat pentru ecran (tonemap, ca la still
+  preview v82) DOAR in pagina; arderea reala nu e influentata.
+  BURNIN_STILL_NO_TONEMAP=1 → cadru brut si in designer.
+
+  Note:
+    - Elementele de colt (timestamp/viteza/ALT/HDG/TEMP) sunt inactive
+      cat timp data-strip e pornit (sunt deja in strip) — pagina le
+      arata estompate, cu explicatie.
+    - Fara GPS in telemetrie → harta nu se poate desena (pagina te
+      anunta onest).
+    - Port implicit: efemer (liber automat); optional --port N la
+      lansare manuala: python3 src/burnin_designer.py --help.
+
+  ─── 13.8. Note generale importante ───
 
     - Burn-in re-encodeaza videoul (lossy) pe toate 4 flow-uri.
       Pentru archive lossless foloseste v47 embed (opt 4 sub-opt 7).

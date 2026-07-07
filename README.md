@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v83** — 147 bugs fixed · 273+ features · ~43 000 LoC · 219 files
+**v84** — 149 bugs fixed · 274+ features · ~44 500 LoC · 223 files
 
 ---
 
@@ -35,7 +35,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **`AV_PROFILE` env var** (v52) — non-interactive profile auto-load for CI/cron/batch; resolves `UserProfiles/` → `profiles/*/`, EXTENDS + schema validation preserved
 - **Batch resume + recursive folders + profile system** — quit anytime, re-run, picks up where it stopped; `.conf` profiles with `EXTENDS` inheritance and schema validation
 - **DJI Osmo Action 6 presets shipped** — Airsoft Indoor/Outdoor · Moto Outdoor/Cinematic · D-Log M with LUT
-- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it). **v81**: instant **still-layout preview** on the HUD flow — instead of a full render (or the 5s clip), composite one HUD frame over a real video frame from mid-clip, optionally with a positioning grid, to check element placement and readability fast (`<name>_preview.png`, auto-opened). **v82**: the still preview is now tonemapped on HDR-preserve sources so it no longer looks dim (only the preview PNG — the real encode keeps HDR; `BURNIN_STILL_NO_TONEMAP=1` for the raw frame) + optional **text shaping** for complex scripts (Arabic / Hebrew / Indic) on SRT/ASS; the broken ASS font-scale options (1.25x/1.5x, dead since v48) were removed since ASS files carry their own styling
+- **Burn-in overlay suite** (v48 + v58 HDR-aware) — 4 flows: telemetry HUD (Python+matplotlib, 3 presets + map M2), SRT/ASS (libass styling), Image subs PGS/VobSub (external + embedded); detects source HDR/HDR10+/HLG/LOG/DV per file and proposes the right path (preserve / tonemap / brand LUT / refuse on DV); `BURNIN_HDR_POLICY` env for batch bypass; opt-in 5s preview. **v80**: configurable overlay font (`FONT_FAMILY` — family name or `.ttf`/`.otf` path, applied to all overlay text) + three new corner readouts — altitude / heading / temperature (`HUD_ALTITUDE/HEADING/TEMPERATURE`, shown when the data-strip is off so they never duplicate it). **v81**: instant **still-layout preview** on the HUD flow — instead of a full render (or the 5s clip), composite one HUD frame over a real video frame from mid-clip, optionally with a positioning grid, to check element placement and readability fast (`<name>_preview.png`, auto-opened). **v82**: the still preview is now tonemapped on HDR-preserve sources so it no longer looks dim (only the preview PNG — the real encode keeps HDR; `BURNIN_STILL_NO_TONEMAP=1` for the raw frame) + optional **text shaping** for complex scripts (Arabic / Hebrew / Indic) on SRT/ASS; the broken ASS font-scale options (1.25x/1.5x, dead since v48) were removed since ASS files carry their own styling. **v84**: a visual **HUD layout designer** in your browser — pick a video (with its telemetry CSV, or demo mode with synthetic data), drag the HUD elements (data strip, map, corner readouts) directly over real video frames rendered by the same production engine (true WYSIWYG, HDR frames tonemapped for display), scrub the timeline, tune fonts/colors/sizes live, then save the layout as a custom preset (`UserProfiles/burnin/`) selectable in the HUD flow; runs strictly local (127.0.0.1), zero new dependencies
 
 ## Quick Start
 
@@ -251,6 +251,8 @@ AV-Encoder-Suite/
 │   ├── av_burnin.sh            # v48 — Burn-in overlay (HUD/SRT/ASS/Image)
 │   ├── av_burnin.ps1           # v48 — PS1 mirror standalone
 │   ├── burnin_render.py        # v48 — Python+matplotlib HUD render engine
+│   ├── burnin_designer.py      # v84 — local web server for the visual HUD layout designer
+│   ├── burnin_designer.html    # v84 — designer UI (single page, vanilla JS, served locally)
 │   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat)
 │   ├── dji_djmd_dlogm.py       # v62 — DJI Action 6 D-Log M detector (djmd protobuf .2.4.1==19)
 │   ├── apv_hdr10plus.py        # v69 — APV HDR10+ engine (ST 2094-40 inject/extract/probe)
@@ -407,4 +409,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v83** — 147 bugs fixed · 273+ features · ~43 000 LoC · 219 files
+Current: **v84** — 149 bugs fixed · 274+ features · ~44 500 LoC · 223 files

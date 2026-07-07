@@ -3,9 +3,65 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v83 | 147 bug-uri fixate | 273+ features
-  219 fisiere (22 src + 5 Python engines + 18 tools + 6 profile + 3 burnin presets + 165 teste [158 test_* + 7 infra]) | ~43000 linii cod+teste | ~7400 linii documentatie
+  TOTAL: v84 | 149 bug-uri fixate | 274+ features
+  223 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 167 teste [160 test_* + 7 infra]) | ~44500 linii cod+teste | ~7500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v84 — Designer vizual de layout HUD, in browser (Burn-in)
+═══════════════════════════════════════════════════════════════
+
+  ADD Burn-in are acum un DESIGNER VIZUAL: optiunea noua 5 din meniul
+        Burn-in deschide o pagina locala in browser, unde iti aranjezi
+        overlay-ul HUD cu mouse-ul, direct pe un cadru REAL din
+        videoclipul tau. Tragi elementele unde le vrei (viteza,
+        timestamp, altitudine, G-force, puls, bara de jos cu indicatori,
+        harta traseului), le pornesti / opresti, alegi campurile si
+        ordinea lor in bara, schimbi culori, marimi de font si unitatea
+        de viteza, derulezi prin video ca sa vezi cum arata overlay-ul
+        in alt moment (harta si valorile se misca), pornesti o grila de
+        pozitionare — si salvezi totul ca preset. Ajustare fina si de la
+        tastatura: sagetile muta elementul selectat cu 1 pixel (Shift =
+        10). Previzualizarea e 100% fidela: pagina foloseste ACELASI
+        motor de desenare ca randarea finala, deci ce vezi in browser e
+        exact ce iese la ardere.
+  ADD Preseturile salvate din designer apar in fluxul normal de burn-in
+        HUD la noua optiune "custom" din meniul LAYOUT PRESET — de acolo
+        le folosesti la ardere exact ca pe preseturile incluse
+        (minimal / data-strip / full). Se pastreaza in folderul tau de
+        profile (UserProfiles/burnin/), separat de cele livrate cu
+        suita, deci nu se pierd la update.
+  ADD Designerul merge si FARA telemetrie extrasa: alegi doar
+        videoclipul si primesti date DEMO (viteza, altitudine, traseu
+        simulate) ca sa poti aranja layoutul inainte sa extragi
+        telemetria reala. Cu telemetrie extrasa (norm CSV), vezi datele
+        si traseul TALE reale in timp ce aranjezi.
+  ADD Pe video HDR, cadrul afisat in designer e adaptat automat pentru
+        un ecran normal (altfel ar iesi spalacit) — doar pentru
+        previzualizare; randarea finala nu e atinsa. Functioneaza si la
+        capetele clipurilor cu frame-rate variabil (cadrul cel mai
+        apropiat disponibil).
+        Nimic nou de instalat: aceleasi dependinte ca burn-in HUD
+        (Python + matplotlib), pagina se deschide automat in browser
+        (inclusiv pe Android/Termux), totul ruleaza LOCAL — serverul
+        accepta conexiuni doar de pe calculatorul tau si se opreste
+        singur cand inchizi din pagina; nimic nu pleaca pe internet.
+  FIX Gauge-urile de colt G-force si Puls (HR) din burn-in HUD ignorau
+        partea aleasa a ecranului: pozitionate in dreapta sau jos,
+        textul iesea partial din cadru (alinierea ramanea mereu
+        stanga-sus, spre deosebire de celelalte elemente). Reparat —
+        acum se aliniaza corect dupa coltul ales, ca viteza, timestamp
+        si ALT/HDG/TEMP. Layouturile existente (pozitii implicite
+        stanga-sus) raman identice pixel cu pixel. Problema exista de
+        mult, dar abia designerul vizual a facut-o usor de intalnit
+        (tragi elementul in dreapta si o vezi).
+  FIX Burn-in HUD se oprea cu eroare daca telemetria nu continea GPS
+        (ex. doar accelerometru / puls) si presetul avea harta pornita
+        (ex. "full"). Acum harta e sarita curat cand nu exista traseu,
+        iar restul overlay-ului se deseneaza normal; designerul afiseaza
+        si un indiciu ("Telemetria nu are GPS — harta nu se poate
+        desena").
 
 
 ═══════════════════════════════════════════════════════════════

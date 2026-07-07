@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burn-in Designer</title>
+<style>
+  :root {
+    --bg:#14171c; --bg2:#1c2129; --bg3:#242b36; --fg:#e6e9ee; --dim:#8b95a5;
+    --acc:#3da9fc; --ok:#39c37d; --warn:#e8b23f; --err:#ef5b5b; --line:#303845;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+              font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:10px; padding:8px 14px;
+           background:var(--bg2); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .vid { color:var(--dim); font-size:13px; overflow:hidden;
+                text-overflow:ellipsis; white-space:nowrap; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap; }
+  .badge.hdr  { background:#3a2f14; color:var(--warn); }
+  .badge.demo { background:#14313a; color:var(--acc); }
+  .badge.real { background:#153526; color:var(--ok); }
+  #main { display:flex; height:calc(100% - 42px); }
+  #stage { flex:1; display:flex; flex-direction:column; min-width:0; padding:12px; gap:8px; }
+  #canvasWrap { position:relative; margin:auto; max-width:100%; max-height:100%;
+                line-height:0; box-shadow:0 0 0 1px var(--line); }
+  #frame   { display:block; max-width:100%; max-height:calc(100vh - 150px); }
+  #overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none;
+             transition:opacity .12s; }
+  #overlay.busy { opacity:.45; }
+  #dragLayer { position:absolute; inset:0; }
+  .hitbox { position:absolute; border:1px dashed transparent; cursor:move;
+            border-radius:3px; touch-action:none; }
+  .hitbox:hover, .hitbox.sel { border-color:var(--acc);
+            background:rgba(61,169,252,.10); }
+  .hitbox.dragging { border-style:solid; background:rgba(61,169,252,.16); }
+  .hitbox .tag { position:absolute; top:-18px; left:0; font-size:10px; color:var(--acc);
+                 background:var(--bg2); padding:0 5px; border-radius:3px;
+                 opacity:0; white-space:nowrap; }
+  .hitbox:hover .tag, .hitbox.sel .tag, .hitbox.dragging .tag { opacity:1; }
+  #timebar { display:flex; align-items:center; gap:10px; padding:0 4px; }
+  #timebar input[type=range] { flex:1; }
+  #tlabel { min-width:110px; text-align:right; color:var(--dim);
+            font-variant-numeric:tabular-nums; }
+  #panel { width:342px; overflow-y:auto; background:var(--bg2);
+           border-left:1px solid var(--line); padding:10px 12px 30px; }
+  #panel h3 { font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+              color:var(--dim); margin:16px 0 6px; border-bottom:1px solid var(--line);
+              padding-bottom:4px; }
+  .row { display:flex; align-items:center; gap:8px; margin:5px 0; }
+  .row label { flex:1; }
+  .row input[type=range] { flex:1.3; }
+  .row input[type=color] { width:34px; height:24px; padding:0; border:1px solid var(--line);
+                           background:none; border-radius:4px; }
+  .row input[type=text], .row input[type=number], .row select {
+      background:var(--bg3); color:var(--fg); border:1px solid var(--line);
+      border-radius:5px; padding:4px 7px; }
+  .row input[type=text] { flex:1.3; min-width:0; }
+  .row select { flex:1.3; }
+  .row .val { min-width:38px; text-align:right; color:var(--dim); font-size:12px;
+              font-variant-numeric:tabular-nums; }
+  .chk { display:flex; align-items:center; gap:7px; margin:4px 0; cursor:pointer; }
+  .chk input { accent-color:var(--acc); }
+  .group { margin-left:4px; }
+  .group.dimmed { opacity:.45; pointer-events:none; }
+  .hint { font-size:11.5px; color:var(--dim); margin:3px 0 6px; }
+  button { background:var(--bg3); color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:6px 11px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#08121c; border-color:var(--acc);
+                   font-weight:600; }
+  button.danger:hover { border-color:var(--err); color:var(--err); }
+  button.mini { padding:1px 7px; font-size:12px; line-height:1.4; }
+  #fieldsList { margin:4px 0; }
+  .fieldRow { display:flex; align-items:center; gap:6px; padding:2px 0; }
+  .fieldRow label { flex:1; cursor:pointer; }
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+           background:var(--bg3); border:1px solid var(--line); color:var(--fg);
+           padding:9px 16px; border-radius:8px; opacity:0; transition:opacity .25s;
+           pointer-events:none; max-width:70vw; font-size:13px; z-index:50; }
+  #toast.show { opacity:1; }
+  #toast.err { border-color:var(--err); color:var(--err); }
+  #closedMsg { display:none; height:100%; align-items:center; justify-content:center;
+               flex-direction:column; gap:12px; color:var(--dim); }
+  .pathNote { font-size:11px; color:var(--dim); word-break:break-all; margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Burn-in Designer</h1>
+  <span class="vid" id="vidInfo"></span>
+  <span class="badge" id="telemBadge" style="display:none"></span>
+  <span class="badge hdr" id="hdrBadge" style="display:none">HDR → tonemap (doar preview)</span>
+</header>
+
+<div id="main">
+  <div id="stage">
+    <div id="canvasWrap">
+      <img id="frame" alt="cadru video">
+      <img id="overlay" alt="overlay HUD">
+      <div id="dragLayer"></div>
+    </div>
+    <div id="timebar">
+      <input type="range" id="scrub" min="0" max="100" step="0.1" value="0">
+      <span id="tlabel">0.0s</span>
+      <label class="chk" style="margin:0"><input type="checkbox" id="gridChk"> Grilă</label>
+    </div>
+  </div>
+
+  <div id="panel">
+    <h3>Preset</h3>
+    <div class="row">
+      <select id="presetSel"></select>
+      <button id="loadBtn">Încarcă</button>
+    </div>
+    <div class="row">
+      <input type="text" id="saveName" placeholder="nume preset nou" maxlength="64">
+      <button id="saveBtn">Salvează</button>
+    </div>
+    <div class="row">
+      <button class="primary" id="saveCloseBtn" style="flex:1">Salvează &amp; Închide</button>
+      <button class="danger" id="closeBtn">Închide</button>
+    </div>
+    <div class="pathNote" id="userDirNote"></div>
+
+    <h3>Elemente</h3>
+    <label class="chk"><input type="checkbox" data-key="HUD_DATA_STRIP"> Data-strip (bară gauges)</label>
+    <div class="group" id="cornerGroup">
+      <label class="chk"><input type="checkbox" data-key="HUD_TIMESTAMP"> Timestamp</label>
+      <label class="chk"><input type="checkbox" data-key="HUD_SPEED"> Viteză</label>
+      <label class="chk"><input type="checkbox" data-key="HUD_ALTITUDE"> Altitudine (ALT)</label>
+      <label class="chk"><input type="checkbox" data-key="HUD_HEADING"> Direcție (HDG)</label>
+      <label class="chk"><input type="checkbox" data-key="HUD_TEMPERATURE"> Temperatură</label>
+    </div>
+    <div class="hint" id="cornerHint" style="display:none">
+      Elementele de colț sunt dezactivate cât timp data-strip e pornit (sunt deja în strip).</div>
+    <label class="chk"><input type="checkbox" data-key="HUD_GFORCE"> G-force</label>
+    <label class="chk"><input type="checkbox" data-key="HUD_HR"> Puls (HR)</label>
+    <label class="chk"><input type="checkbox" data-key="HUD_MAP"> Hartă traseu (M2)</label>
+    <div class="hint" id="noRouteHint" style="display:none">
+      Telemetria nu are GPS — harta nu se poate desena.</div>
+    <div class="hint">Trage elementele direct pe imagine. Săgeți = 1px, Shift+săgeți = 10px.</div>
+
+    <div id="stripSection">
+      <h3>Data-strip</h3>
+      <div class="row"><label>Poziție</label>
+        <select data-key="STRIP_POSITION">
+          <option value="bottom">jos</option><option value="top">sus</option>
+        </select></div>
+      <div class="row"><label>Înălțime</label>
+        <input type="range" data-key="STRIP_HEIGHT" min="40" max="200" step="2">
+        <span class="val"></span></div>
+      <div class="row"><label>Fundal</label>
+        <input type="color" data-key="STRIP_BG_COLOR">
+        <input type="range" data-key="STRIP_BG_ALPHA" min="0" max="1" step="0.05">
+        <span class="val"></span></div>
+      <div class="hint">Câmpuri afișate (bifă = activ, săgeți = ordinea):</div>
+      <div id="fieldsList"></div>
+    </div>
+
+    <div id="mapSection">
+      <h3>Hartă (M2)</h3>
+      <div class="row"><label>Mărime</label>
+        <input type="range" data-key="MAP_SIZE" min="120" max="420" step="5">
+        <span class="val"></span></div>
+      <div class="row"><label>Fundal</label>
+        <input type="color" data-key="MAP_BG_COLOR">
+        <input type="range" data-key="MAP_BG_ALPHA" min="0" max="1" step="0.05">
+        <span class="val"></span></div>
+      <div class="row"><label>Traseu</label>
+        <input type="color" data-key="MAP_ROUTE_COLOR">
+        <input type="range" data-key="MAP_ROUTE_WIDTH" min="1" max="6" step="0.5">
+        <span class="val"></span></div>
+      <div class="row"><label>Punct curent</label>
+        <input type="color" data-key="MAP_DOT_COLOR">
+        <input type="range" data-key="MAP_DOT_SIZE" min="4" max="20" step="1">
+        <span class="val"></span></div>
+      <div class="hint">Poziția hărții: trage caseta pe imagine.</div>
+    </div>
+
+    <h3>Text &amp; stil</h3>
+    <div class="row"><label>Font mare</label>
+      <input type="range" data-key="FONT_SIZE_LARGE" min="10" max="72" step="1">
+      <span class="val"></span></div>
+    <div class="row"><label>Font mediu</label>
+      <input type="range" data-key="FONT_SIZE_MEDIUM" min="8" max="56" step="1">
+      <span class="val"></span></div>
+    <div class="row"><label>Font etichete</label>
+      <input type="range" data-key="FONT_SIZE_LABEL" min="8" max="40" step="1">
+      <span class="val"></span></div>
+    <div class="row"><label>Culoare text</label>
+      <input type="color" data-key="FONT_COLOR"></div>
+    <div class="row"><label>Culoare etichete</label>
+      <input type="color" data-key="LABEL_COLOR"></div>
+    <div class="row"><label>Umbră</label>
+      <input type="color" data-key="SHADOW_COLOR">
+      <input type="range" data-key="SHADOW_OFFSET" min="0" max="6" step="1">
+      <span class="val"></span></div>
+    <div class="row"><label>Font (nume/.ttf)</label>
+      <input type="text" data-key="FONT_FAMILY" placeholder="gol = implicit"></div>
+    <div class="row"><label>Unitate viteză</label>
+      <select data-key="SPEED_UNIT">
+        <option value="kmh">km/h</option><option value="mph">mph</option>
+        <option value="mps">m/s</option>
+      </select></div>
+  </div>
+</div>
+
+<div id="closedMsg">
+  <div style="font-size:20px">Serverul s-a oprit.</div>
+  <div>Poți închide tabul. Continuă în terminal.</div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+// ── State ────────────────────────────────────────────────────────────
+let META = null;            // /api/state
+let CFG  = {};              // cheile .conf (stringuri)
+let T    = 0;               // timpul curent (sec)
+let LAST_BOXES = [];        // hitbox-urile ultimului render (spatiu video px)
+let SELECTED = null;        // id-ul elementului selectat (nudge cu sageti)
+let renderSeq = 0;
+
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const frameImg = $("#frame"), overlayImg = $("#overlay"), dragLayer = $("#dragLayer");
+
+// nume de culori din preseturi → hex pt <input type=color>
+const NAMED = { white:"#ffffff", black:"#000000", red:"#ff0000", green:"#00ff00",
+                blue:"#0000ff", yellow:"#ffff00", cyan:"#00ffff", magenta:"#ff00ff",
+                gray:"#808080", grey:"#808080", orange:"#ffa500" };
+function toHex(v) {
+  v = String(v || "").trim().toLowerCase();
+  if (NAMED[v]) return NAMED[v];
+  if (/^#[0-9a-f]{6}$/.test(v)) return v;
+  if (/^#[0-9a-f]{3}$/.test(v)) return "#" + v[1]+v[1]+v[2]+v[2]+v[3]+v[3];
+  return "#ffffff";
+}
+function fmtT(t) {
+  const m = Math.floor(t / 60), s = (t - m * 60).toFixed(1);
+  return (m > 0 ? m + "m" : "") + s + "s  /  " + META.video.duration.toFixed(1) + "s";
+}
+function toast(msg, isErr) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "show" + (isErr ? " err" : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.className = "", 3200);
+}
+
+// ── Server API ───────────────────────────────────────────────────────
+async function api(path, body) {
+  const opt = body ? { method:"POST", headers:{ "Content-Type":"application/json" },
+                       body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opt);
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+function setFrame() { frameImg.src = "/frame?t=" + T.toFixed(2); }
+
+let renderTimer = null;
+function scheduleRender(delay) {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(doRender, delay === undefined ? 160 : delay);
+}
+async function doRender() {
+  const seq = ++renderSeq;
+  overlayImg.classList.add("busy");
+  try {
+    const j = await api("/api/overlay", { cfg: CFG, t: T, grid: $("#gridChk").checked });
+    if (seq !== renderSeq) return;               // a venit un render mai nou
+    overlayImg.src = "data:image/png;base64," + j.png;
+    LAST_BOXES = j.boxes || [];
+    layoutBoxes();
+  } catch (e) {
+    toast("Eroare render: " + e.message, true);
+  } finally {
+    if (seq === renderSeq) overlayImg.classList.remove("busy");
+  }
+}
+
+// ── Hitbox-uri + drag ────────────────────────────────────────────────
+function scale() {
+  return frameImg.clientWidth ? frameImg.clientWidth / META.video.width : 1;
+}
+function layoutBoxes() {
+  dragLayer.innerHTML = "";
+  const sc = scale();
+  const LBL = { timestamp:"Timestamp", speed:"Viteză", altitude:"ALT", heading:"HDG",
+                temperature:"TEMP", gforce:"G-force", hr:"HR", map:"Hartă",
+                strip:"Data-strip" };
+  for (const b of LAST_BOXES) {
+    const el = document.createElement("div");
+    el.className = "hitbox" + (SELECTED === b.id ? " sel" : "");
+    el.style.left   = (b.x * sc) + "px";
+    el.style.top    = (b.y * sc) + "px";
+    el.style.width  = (b.w * sc) + "px";
+    el.style.height = (b.h * sc) + "px";
+    el.dataset.id = b.id;
+    const tag = document.createElement("span");
+    tag.className = "tag"; tag.textContent = LBL[b.id] || b.id;
+    el.appendChild(tag);
+    attachDrag(el, b);
+    dragLayer.appendChild(el);
+  }
+}
+function attachDrag(el, box) {
+  el.addEventListener("pointerdown", ev => {
+    ev.preventDefault();
+    SELECTED = box.id;
+    $$(".hitbox").forEach(x => x.classList.toggle("sel", x.dataset.id === SELECTED));
+    const sc = scale();
+    const startX = ev.clientX, startY = ev.clientY;
+    const origL = box.x * sc, origT = box.y * sc;
+    let moved = false;
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add("dragging");
+    const onMove = e => {
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+      el.style.left = (origL + dx) + "px";
+      el.style.top  = (origT + dy) + "px";
+    };
+    const cleanup = () => {
+      try { el.releasePointerCapture(ev.pointerId); } catch (e) {}
+      el.classList.remove("dragging");
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onCancel);
+    };
+    const onUp = e => {
+      cleanup();
+      if (!moved) return;                       // simplu click = doar selectie
+      const vx = parseFloat(el.style.left) / sc;
+      const vy = parseFloat(el.style.top)  / sc;
+      applyDrop(box, vx, vy);
+    };
+    const onCancel = e => {                     // touch/gest anulat → reset vizual
+      cleanup();
+      layoutBoxes();
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onCancel);
+  });
+}
+// pozitia finala (video px, colt stanga-sus al boxului) → chei .conf
+function applyDrop(box, vx, vy) {
+  const W = META.video.width, H = META.video.height;
+  const cx = vx + box.w / 2, cy = vy + box.h / 2;
+  const a = (cy < H / 2 ? "t" : "b") + (cx < W / 2 ? "l" : "r");
+  const cl = n => Math.max(0, Math.round(n));
+  if (box.kind === "strip") {
+    CFG.STRIP_POSITION = cy < H / 2 ? "top" : "bottom";
+    syncControls();
+  } else if (box.kind === "map") {
+    const ms = box.w;
+    const ox = a.endsWith("r") ? W - vx - ms : vx;
+    const oy = a.startsWith("b") ? H - vy - ms : vy;
+    CFG.MAP_POSITION = a; CFG.MAP_OFFSET_X = String(cl(ox)); CFG.MAP_OFFSET_Y = String(cl(oy));
+  } else {                                       // kind=pos → anchor:x,y
+    // semantica anchor_to_xy: punctul de ancora e coltul boxului dinspre ancora
+    const ox = a.endsWith("r") ? W - (vx + box.w) : vx;
+    const oy = a.startsWith("b") ? H - (vy + box.h) : vy;
+    CFG[box.key] = a + ":" + cl(ox) + "," + cl(oy);
+  }
+  scheduleRender(0);
+}
+// nudge cu sagetile (1px, Shift=10px)
+document.addEventListener("keydown", ev => {
+  if (!SELECTED) return;
+  if (["INPUT","SELECT","TEXTAREA"].includes(document.activeElement.tagName)) return;
+  const d = { ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1] }[ev.key];
+  if (!d) return;
+  const box = LAST_BOXES.find(b => b.id === SELECTED);
+  if (!box || box.kind === "strip") return;
+  ev.preventDefault();
+  const step = ev.shiftKey ? 10 : 1;
+  applyDrop(box, box.x + d[0] * step, box.y + d[1] * step);
+}, true);
+
+// ── Controale ↔ CFG ──────────────────────────────────────────────────
+const STRIP_FIELD_DEFS = [
+  ["timestamp","Timp"], ["speed","Viteză"], ["altitude","Altitudine"],
+  ["heading","Direcție"], ["temperature","Temperatură"], ["gforce","G-force"],
+  ["satellites","Sateliți"], ["hdop","HDOP"], ["attitude","Pitch/Roll"],
+];
+function buildFieldsList() {
+  const cont = $("#fieldsList");
+  cont.innerHTML = "";
+  const active = (CFG.STRIP_FIELDS || "").split(",").map(s => s.trim()).filter(Boolean);
+  const known = STRIP_FIELD_DEFS.map(d => d[0]);
+  const order = active.filter(f => known.includes(f))
+      .concat(known.filter(f => !active.includes(f)));
+  order.forEach(fid => {
+    const def = STRIP_FIELD_DEFS.find(d => d[0] === fid);
+    const row = document.createElement("div");
+    row.className = "fieldRow";
+    const chk = document.createElement("input");
+    chk.type = "checkbox"; chk.checked = active.includes(fid); chk.id = "fld_" + fid;
+    const lab = document.createElement("label");
+    lab.htmlFor = chk.id; lab.textContent = def ? def[1] : fid;
+    const up = document.createElement("button");
+    up.className = "mini"; up.textContent = "▲"; up.title = "mai în față";
+    const dn = document.createElement("button");
+    dn.className = "mini"; dn.textContent = "▼"; dn.title = "mai în spate";
+    const commit = () => {
+      const ids = $$("#fieldsList .fieldRow").map(r => r.dataset.fid);
+      const on  = ids.filter(id => $("#fld_" + id).checked);
+      CFG.STRIP_FIELDS = on.join(",");
+      scheduleRender();
+    };
+    chk.addEventListener("change", commit);
+    up.addEventListener("click", () => { const p = row.previousElementSibling;
+      if (p) { cont.insertBefore(row, p); commit(); } });
+    dn.addEventListener("click", () => { const n = row.nextElementSibling;
+      if (n) { cont.insertBefore(n, row); commit(); } });
+    row.dataset.fid = fid;
+    row.append(chk, lab, up, dn);
+    cont.appendChild(row);
+  });
+}
+function bindControls() {
+  $$("[data-key]").forEach(el => {
+    const key = el.dataset.key;
+    const evName = (el.type === "text") ? "change" : "input";
+    el.addEventListener(evName, () => {
+      if (el.type === "checkbox")   CFG[key] = el.checked ? "1" : "0";
+      else if (el.type === "color") CFG[key] = el.value;
+      else                          CFG[key] = String(el.value);
+      updateValLabel(el);
+      updateSectionVisibility();
+      scheduleRender();
+    });
+  });
+  $("#gridChk").addEventListener("change", () => scheduleRender(0));
+}
+function updateValLabel(el) {
+  if (el.type !== "range") return;
+  const lbl = el.parentElement.querySelector(".val");
+  if (lbl) lbl.textContent = el.value;
+}
+function syncControls() {
+  $$("[data-key]").forEach(el => {
+    const v = CFG[el.dataset.key];
+    if (v === undefined) return;
+    if (el.type === "checkbox")   el.checked = ["1","true","yes","on"].includes(String(v).toLowerCase());
+    else if (el.type === "color") el.value = toHex(v);
+    else                          el.value = v;
+    updateValLabel(el);
+  });
+  buildFieldsList();
+  updateSectionVisibility();
+}
+function updateSectionVisibility() {
+  const stripOn = CFG.HUD_DATA_STRIP === "1";
+  $("#stripSection").style.display = stripOn ? "" : "none";
+  $("#cornerGroup").classList.toggle("dimmed", stripOn);
+  $("#cornerHint").style.display = stripOn ? "" : "none";
+  const mapOn = CFG.HUD_MAP === "1";
+  $("#mapSection").style.display = mapOn ? "" : "none";
+  $("#noRouteHint").style.display =
+      (mapOn && !META.telemetry.has_route) ? "" : "none";
+}
+
+// ── Preset load/save/close ───────────────────────────────────────────
+function fillPresetSelect() {
+  const sel = $("#presetSel");
+  sel.innerHTML = "";
+  const og1 = document.createElement("optgroup"); og1.label = "Built-in";
+  META.presets.builtin.forEach(n => og1.appendChild(new Option(n, n)));
+  sel.appendChild(og1);
+  if (META.presets.user.length) {
+    const og2 = document.createElement("optgroup"); og2.label = "Salvate (designer)";
+    META.presets.user.forEach(n => og2.appendChild(new Option(n, n)));
+    sel.appendChild(og2);
+  }
+}
+async function loadPreset(name) {
+  try {
+    const j = await api("/api/preset?name=" + encodeURIComponent(name));
+    CFG = j.cfg;
+    syncControls();
+    scheduleRender(0);
+    toast("Preset încărcat: " + name);
+  } catch (e) { toast("Eroare: " + e.message, true); }
+}
+async function savePreset() {
+  const name = $("#saveName").value.trim();
+  if (!name) { toast("Dă un nume presetului.", true); $("#saveName").focus(); return null; }
+  try {
+    const j = await api("/api/save", { name, cfg: CFG });
+    toast("Salvat: " + j.path);
+    if (!META.presets.user.includes(j.name)) {
+      META.presets.user.push(j.name); META.presets.user.sort();
+      fillPresetSelect(); $("#presetSel").value = j.name;
+    }
+    return j;
+  } catch (e) { toast("Eroare la salvare: " + e.message, true); return null; }
+}
+async function shutdownServer() {
+  try { await api("/api/shutdown", {}); } catch (e) { /* serverul moare — ok */ }
+  $("#main").style.display = "none";
+  document.querySelector("header").style.display = "none";
+  $("#closedMsg").style.display = "flex";
+}
+function wireButtons() {
+  $("#loadBtn").addEventListener("click", () => loadPreset($("#presetSel").value));
+  $("#saveBtn").addEventListener("click", savePreset);
+  $("#saveCloseBtn").addEventListener("click", async () => {
+    const ok = await savePreset();
+    if (ok) shutdownServer();
+  });
+  const closeBtn = $("#closeBtn");
+  closeBtn.addEventListener("click", () => {
+    if (closeBtn.dataset.arm === "1") { shutdownServer(); return; }
+    closeBtn.dataset.arm = "1";
+    closeBtn.textContent = "Sigur? (fără salvare)";
+    setTimeout(() => { closeBtn.dataset.arm = "0"; closeBtn.textContent = "Închide"; }, 2600);
+  });
+}
+
+// ── Scrub ────────────────────────────────────────────────────────────
+function wireScrub() {
+  const s = $("#scrub");
+  s.max = Math.max(META.video.duration, 0.1);
+  s.value = T;
+  let t2 = null;
+  s.addEventListener("input", () => {
+    T = parseFloat(s.value);
+    $("#tlabel").textContent = fmtT(T);
+    clearTimeout(t2);
+    t2 = setTimeout(() => { setFrame(); scheduleRender(0); }, 240);
+  });
+}
+
+// ── Init ─────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    META = await api("/api/state");
+  } catch (e) {
+    document.body.innerHTML = "<p style='padding:30px'>Serverul nu răspunde: " + e.message + "</p>";
+    return;
+  }
+  CFG = META.cfg;
+  T = Math.round(META.video.duration / 2 * 10) / 10;    // mid-point, ca preview-urile
+  $("#vidInfo").textContent = META.video.name + " — " + META.video.width + "×" +
+      META.video.height + ", " + META.video.duration.toFixed(1) + "s";
+  if (META.video.tonemap) $("#hdrBadge").style.display = "";
+  const tb = $("#telemBadge");
+  tb.style.display = "";
+  if (META.telemetry.mode === "demo") {
+    tb.textContent = "date DEMO"; tb.classList.add("demo");
+  } else {
+    tb.textContent = "telemetrie: " + (META.telemetry.brand || "reală") +
+                     " (" + META.telemetry.points + " puncte)";
+    tb.classList.add("real");
+  }
+  $("#userDirNote").textContent = "Preseturile se salvează în: " + META.user_dir;
+  $("#tlabel").textContent = fmtT(T);
+  fillPresetSelect();
+  $("#presetSel").value = "full";
+  bindControls();
+  wireButtons();
+  wireScrub();
+  syncControls();
+  frameImg.addEventListener("load", layoutBoxes);
+  window.addEventListener("resize", layoutBoxes);
+  setFrame();
+  scheduleRender(0);
+}
+init();
+</script>
+</body>
+</html>

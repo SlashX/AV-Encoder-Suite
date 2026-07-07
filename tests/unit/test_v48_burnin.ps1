@@ -36,7 +36,7 @@ Assert-Match $burninText '1\) Telemetry HUD'              "main menu opt 1 = HUD
 Assert-Match $burninText '2\) Subtitrari SRT'             "main menu opt 2 = SRT"
 Assert-Match $burninText '3\) Subtitrari ASS'             "main menu opt 3 = ASS"
 Assert-Match $burninText '4\) Image subs PGS/VobSub'      "main menu opt 4 = Image subs"
-Assert-Match $burninText '5\) Anulare'                    "main menu opt 5 = Anulare"
+Assert-Match $burninText '6\) Anulare'                    "main menu opt 6 = Anulare (v84: opt 5 = Designer)"
 Assert-Match $burninText '\$burninType'                   "dispatcher reads burninType"
 Assert-Match $burninText 'Invoke-HudFlow'                 "dispatcher calls Invoke-HudFlow"
 Assert-Match $burninText 'Invoke-SrtFlow'                 "dispatcher calls Invoke-SrtFlow"

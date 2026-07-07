@@ -379,22 +379,30 @@ def render_frame(cfg, sample, route_xy, w, h, out_path, grid=False):
         draw_text(x, y, "TEMP " + fmt_value(sample.get("temp_c"), "{:.1f}", "°C"), font_medium, ha=ha, va=va)
 
     # ── Extra gauges (G-force, HR) — afisate doar daca data exista ─
+    # ha/va derivate din ancora, ca la timestamp/speed/ALT/HDG/TEMP — altfel
+    # pe ancorele tr/br/bl textul iese din cadru (aliniere fixa left/top).
     if cfg_bool(cfg, "HUD_GFORCE") and sample.get("gforce_x") is not None:
         a, ox, oy = parse_pos(cfg.get("POS_GFORCE", "tl:24,24"))
         x, y = anchor_to_xy(a, w, h, ox, oy)
+        ha = "right" if a in ("tr","br") else "left"
+        va = "bottom" if a in ("bl","br") else "top"
         gx = sample.get("gforce_x") or 0
         gy = sample.get("gforce_y") or 0
         gz = sample.get("gforce_z") or 0
         gmag = math.sqrt(gx*gx + gy*gy + gz*gz)
-        draw_text(x, y, f"G {gmag:.2f}", font_medium)
+        draw_text(x, y, f"G {gmag:.2f}", font_medium, ha=ha, va=va)
 
     if cfg_bool(cfg, "HUD_HR") and sample.get("hr_bpm") is not None:
         a, ox, oy = parse_pos(cfg.get("POS_HR", "tl:24,80"))
         x, y = anchor_to_xy(a, w, h, ox, oy)
-        draw_text(x, y, f"HR {int(sample.get('hr_bpm'))} bpm", font_medium)
+        ha = "right" if a in ("tr","br") else "left"
+        va = "bottom" if a in ("bl","br") else "top"
+        draw_text(x, y, f"HR {int(sample.get('hr_bpm'))} bpm", font_medium, ha=ha, va=va)
 
     # ── Map M2 (route + dot) ────────────────────────────────────────
-    if cfg_bool(cfg, "HUD_MAP") and route_xy is not None:
+    # route_xy poate fi (None,None,None) pe CSV fara GPS (contract
+    # build_route_xy) → gate si pe primul element, altfel unpack-ul crapa.
+    if cfg_bool(cfg, "HUD_MAP") and route_xy is not None and route_xy[0]:
         xs, ys, (lat0, lon0) = route_xy
         if xs and ys:
             map_size = cfg_int(cfg, "MAP_SIZE", 220)
