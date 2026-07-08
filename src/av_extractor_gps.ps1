@@ -18,8 +18,12 @@ if (-not $py3) {
     Read-Host; exit
 }
 
-$InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutputDir = Join-Path $InputDir "output"
+# v85 (O3): env override AV_INPUT_DIR / AV_OUTPUT_DIR (paritate cu av_check.ps1 +
+# bash INPUT_DIR/OUTPUT_DIR) — util pt CI/testare fara a muta scriptul.
+if ($env:AV_INPUT_DIR)  { $InputDir  = $env:AV_INPUT_DIR }
+else                    { $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR }
+else                    { $OutputDir = Join-Path $InputDir "output" }
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
 $TempBase  = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (script Python temporar), nu $env:TEMP
 if (-not (Test-Path $TempBase)) { New-Item -ItemType Directory -Force -Path $TempBase | Out-Null }
@@ -47,6 +51,24 @@ if ($gpsChoice -eq "6") { exit }
 if (-not $gpsFiles -or $gpsFiles.Count -eq 0) {
     Write-Host "Nu am gasit fisiere .gpx, .fit sau .kml in $InputDir" -ForegroundColor Red
     Read-Host; exit
+}
+
+# v85 (O5): avertisment la coliziune de stem — output-urile se numesc dupa numele
+# fara extensie (traseu.gpx + traseu.kml → ambele scriu traseu_norm.csv etc.) →
+# al 2-lea suprascrie tacut output-urile primului. Avertizam inainte de procesare.
+$seenStems = @{}
+$collisions = @()
+foreach ($gf in $gpsFiles) {
+    $st = $gf.BaseName
+    if ($seenStems.ContainsKey($st)) {
+        $collisions += "  ⚠ '$st': $($seenStems[$st]) + $($gf.Name) → output-urile se suprascriu"
+    } else { $seenStems[$st] = $gf.Name }
+}
+if ($collisions.Count -gt 0) {
+    Write-Host ""
+    Write-Host "ATENTIE: fisiere cu acelasi nume (extensii diferite) — output-uri suprascrise:" -ForegroundColor Yellow
+    $collisions | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+    Write-Host "  (redenumeste unul dintre ele daca vrei ambele seturi de output)"
 }
 
 # Generate Python script as temp file

@@ -179,6 +179,13 @@ function Get-BurninShaping {
 }
 
 function Invoke-BurninEncode {
+    # v85 (F7): apelantii TREBUIE sa paseze argumentele ca UN array splatat
+    #   (construieste $ffArgs=@(...), apoi splateaza-l), NU tokenuri literale. La un apel de FUNCTIE
+    #   PowerShell, un flag cu doua puncte (`-c:v`, `-c:a`, `-frames:v`) e parsat ca
+    #   sintaxa `-param:value` → `-c:v libx265` devine `-c:` + `v` + `libx265` →
+    #   `v` ajunge fisier de iesire ("Unable to choose an output format for 'v'").
+    #   Splatarea unui array pre-construit transmite elementele ca DATE (fara
+    #   re-parsare de `:`), deci flag-urile raman intacte.
     if ($script:BurninWorkDir) { Push-Location $script:BurninWorkDir }
     try { & ffmpeg @args } finally { if ($script:BurninWorkDir) { Pop-Location } }
 }
@@ -314,6 +321,13 @@ function Get-BurninSourceInfo {
         $info.CameraMake = "dji"
     } elseif ($tagsText -match "(?i)manufacturer=.*samsung|make=.*samsung|com\.samsung\.android") {
         $info.CameraMake = "samsung"
+    }
+    # v85: Apple fallback pe encoderul de STREAM ("Apple ProRes") — supravietuieste la
+    # -c copy/trim cand make=Apple de container se pierde. Paritate cu detect_source_info.
+    if (-not $info.CameraMake) {
+        $vEnc = @(& ffprobe -v error -select_streams v:0 -show_entries stream_tags=encoder `
+            -of default=noprint_wrappers=1:nokey=1 $File 2>$null)[0]
+        if ("$vEnc" -match "Apple ProRes") { $info.CameraMake = "apple" }
     }
 
     # LOG detection (10-bit + BT.2020 + brand context, exclud HDR)
@@ -673,7 +687,19 @@ function Build-BurninVideoChain {
     $script:BurninPreFilter = ""
     $script:BurninEncExtraArgs = @()
     $encoder = $EncInfo.Name
-    $tonemapFilter = "zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+    # v85 (F9): DV Profile 5/7 au baza IPT cu color_transfer=unknown → zscale nu poate
+    # liniariza ("no path between colorspaces") → tonemap-ul (optiunea RECOMANDATA in
+    # dialogul DV) CRAPA. Prepend setparams=PQ/BT.2020 DOAR cand transferul e necunoscut
+    # (baza P5/P7 e HDR10-like). P8.1 (smpte2084)/P8.4 (arib) au transfer cunoscut →
+    # prefix gol → tonemap corect neschimbat. Sigur si pe fallback-urile libx264
+    # preserve_hdr10/hlg (sursa lor are transfer cunoscut → prefix gol).
+    $tmTrc = (& ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nw=1:nk=1 $File 2>$null | Select-Object -First 1)
+    if ($tmTrc) { $tmTrc = $tmTrc.Trim() }
+    $tmPrefix = ""
+    if ((-not $tmTrc) -or $tmTrc -eq "unknown") {
+        $tmPrefix = "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,"
+    }
+    $tonemapFilter = "${tmPrefix}zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
 
     switch ($script:BurninMode) {
         "skip"        { return $false }
@@ -1027,8 +1053,9 @@ function Invoke-HudFlow {
                 Write-Host "  (still tonemapped pentru preview; output-ul real pastreaza HDR)" -ForegroundColor DarkGray
             }
             Write-Host "  Compun still (cadru video la ${stT}s + HUD)..." -ForegroundColor DarkGray
-            Invoke-BurninEncode -v error -ss $stT -i $p.Video -i (Join-Path $stDir "frame_000001.png") `
-                -filter_complex $stFc -map "[v]" -frames:v 1 $stOut -y
+            $stArgs = @('-v','error','-ss',$stT,'-i',$p.Video,'-i',(Join-Path $stDir "frame_000001.png"),
+                '-filter_complex',$stFc,'-map','[v]','-frames:v','1',$stOut,'-y')
+            Invoke-BurninEncode @stArgs
             if ($LASTEXITCODE -eq 0 -and (Test-Path $stOut) -and (Get-Item $stOut).Length -gt 0) {
                 Write-Host "  [OK] $stOut" -ForegroundColor Green; $okCount++
                 try { Invoke-Item $stOut -ErrorAction SilentlyContinue } catch {}
@@ -1077,23 +1104,26 @@ function Invoke-HudFlow {
         $out = Join-Path $OutputDir ("{0}_{1}.{2}" -f $p.Name, $outSuffix, $p.Ext)
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        # v85 (F6): ffmpeg nou negociaza formate CU alpha la iesirea overlay-ului
+        # (PNG-ul HUD e RGBA → [v]=yuva420p) iar libx265 refuza deschiderea
+        # ("does not support alpha layer encoding") → format EXPLICIT dupa overlay.
+        # 10-bit pe modurile preserve (lantul HDR ramane 10-bit), altfel 8-bit.
+        $ovFmt = if ($script:BurninMode -in @("preserve_hdr10","preserve_hdr10plus","preserve_hlg")) { "yuv420p10le" } else { "yuv420p" }
         $fc = if ($script:BurninPreFilter) {
-            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0[v]"
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0,format=$ovFmt[v]"
         } else {
-            "[0:v][1:v]overlay=0:0:shortest=0[v]"
+            "[0:v][1:v]overlay=0:0:shortest=0,format=$ovFmt[v]"
         }
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Overlay + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        Invoke-BurninEncode -v error -stats `
-            @seekArgs `
-            -i $p.Video `
-            -framerate $hudFps `
-            -i (Join-Path $framesDir "frame_%06d.png") `
-            -filter_complex $fc `
-            -map "[v]" -map "0:a?" `
-            -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            @extraArgs `
-            -c:a copy @codecTag -movflags +faststart $out -y
+        $ffArgs = @('-v','error','-stats') + $seekArgs + @(
+            '-i',$p.Video,'-framerate',$hudFps,
+            '-i',(Join-Path $framesDir "frame_%06d.png"),
+            '-filter_complex',$fc,'-map','[v]','-map','0:a?',
+            '-c:v',$enc.Name,'-crf',$enc.Crf,'-preset',$enc.Preset) + $extraArgs + @('-c:a','copy')
+        if ($codecTag) { $ffArgs += $codecTag }
+        $ffArgs += @('-movflags','+faststart',$out,'-y')
+        Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -1210,13 +1240,12 @@ function Invoke-SrtFlow {
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in SRT + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        Invoke-BurninEncode -v error -stats `
-            @seekArgs `
-            -i $p.Video `
-            -vf $vf `
-            -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            @extraArgs `
-            -c:a copy @codecTag -movflags +faststart $out -y
+        $ffArgs = @('-v','error','-stats') + $seekArgs + @(
+            '-i',$p.Video,'-vf',$vf,
+            '-c:v',$enc.Name,'-crf',$enc.Crf,'-preset',$enc.Preset) + $extraArgs + @('-c:a','copy')
+        if ($codecTag) { $ffArgs += $codecTag }
+        $ffArgs += @('-movflags','+faststart',$out,'-y')
+        Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -1316,13 +1345,12 @@ function Invoke-AssFlow {
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         $extraArgs = @($script:BurninEncExtraArgs)
         Write-Host "  Burn-in ASS + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-        Invoke-BurninEncode -v error -stats `
-            @seekArgs `
-            -i $p.Video `
-            -vf $vf `
-            -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-            @extraArgs `
-            -c:a copy @codecTag -movflags +faststart $out -y
+        $ffArgs = @('-v','error','-stats') + $seekArgs + @(
+            '-i',$p.Video,'-vf',$vf,
+            '-c:v',$enc.Name,'-crf',$enc.Crf,'-preset',$enc.Preset) + $extraArgs + @('-c:a','copy')
+        if ($codecTag) { $ffArgs += $codecTag }
+        $ffArgs += @('-movflags','+faststart',$out,'-y')
+        Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
         } else {
@@ -1485,12 +1513,16 @@ function Invoke-ImgFlow {
         $codecTag = Get-CodecTagForContainer $enc.CodecKey $p.Ext
         $extraArgs = @($script:BurninEncExtraArgs)
         # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
+        # v85 (F6): subpicture-urile (PGS/VobSub) au alpha → ffmpeg nou negociaza
+        # yuva* la iesirea overlay → x265 refuza → format EXPLICIT dupa overlay
+        # (10-bit pe modurile preserve, altfel 8-bit — ca la HUD).
+        $ovFmt = if ($script:BurninMode -in @("preserve_hdr10","preserve_hdr10plus","preserve_hlg")) { "yuv420p10le" } else { "yuv420p" }
         $fcExt = if ($script:BurninPreFilter) {
-            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:s]overlay[v]"
-        } else { "[0:v][1:s]overlay[v]" }
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][1:s]overlay,format=$ovFmt[v]"
+        } else { "[0:v][1:s]overlay,format=$ovFmt[v]" }
         $fcEmb = if ($script:BurninPreFilter) {
-            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][0:s:$($p.Track)]overlay[v]"
-        } else { "[0:v][0:s:$($p.Track)]overlay[v]" }
+            "[0:v]$($script:BurninPreFilter)[burnin_base];[burnin_base][0:s:$($p.Track)]overlay,format=$ovFmt[v]"
+        } else { "[0:v][0:s:$($p.Track)]overlay,format=$ovFmt[v]" }
         # v69 FIX: kind necunoscut prin FLAG — `continue` in switch NU sare perechea
         # (iese doar din switch) → cadea in verificarea $LASTEXITCODE de mai jos cu
         # un exit code STALE si dubla $failCount + afisa o a doua eroare falsa.
@@ -1498,26 +1530,23 @@ function Invoke-ImgFlow {
         switch ($p.Kind) {
             { $_ -in @("ext_pgs","ext_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (sursa: $($p.Aux)) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-                Invoke-BurninEncode -v error -stats `
-                    @seekArgs `
-                    -i $p.Video `
-                    -i $p.Aux `
-                    -filter_complex $fcExt `
-                    -map "[v]" -map "0:a?" `
-                    -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-                    @extraArgs `
-                    -c:a copy @codecTag -movflags +faststart $out -y
+                $ffArgs = @('-v','error','-stats') + $seekArgs + @(
+                    '-i',$p.Video,'-i',$p.Aux,
+                    '-filter_complex',$fcExt,'-map','[v]','-map','0:a?',
+                    '-c:v',$enc.Name,'-crf',$enc.Crf,'-preset',$enc.Preset) + $extraArgs + @('-c:a','copy')
+                if ($codecTag) { $ffArgs += $codecTag }
+                $ffArgs += @('-movflags','+faststart',$out,'-y')
+                Invoke-BurninEncode @ffArgs
             }
             { $_ -in @("emb_pgs","emb_vob") } {
                 Write-Host "  Burn-in $($p.Kind) (track s:$($p.Track) embedded) + re-encode ($($enc.Name) CRF $($enc.Crf) preset $($enc.Preset))..." -ForegroundColor DarkGray
-                Invoke-BurninEncode -v error -stats `
-                    @seekArgs `
-                    -i $p.Video `
-                    -filter_complex $fcEmb `
-                    -map "[v]" -map "0:a?" `
-                    -c:v $enc.Name -crf $enc.Crf -preset $enc.Preset `
-                    @extraArgs `
-                    -c:a copy @codecTag -movflags +faststart $out -y
+                $ffArgs = @('-v','error','-stats') + $seekArgs + @(
+                    '-i',$p.Video,
+                    '-filter_complex',$fcEmb,'-map','[v]','-map','0:a?',
+                    '-c:v',$enc.Name,'-crf',$enc.Crf,'-preset',$enc.Preset) + $extraArgs + @('-c:a','copy')
+                if ($codecTag) { $ffArgs += $codecTag }
+                $ffArgs += @('-movflags','+faststart',$out,'-y')
+                Invoke-BurninEncode @ffArgs
             }
             default {
                 Write-Host "  [EROARE] kind necunoscut: $($p.Kind)" -ForegroundColor Red

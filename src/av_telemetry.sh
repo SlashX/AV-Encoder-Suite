@@ -191,7 +191,7 @@ if [ "$choice" == "6" ]; then
 fi
 
 # ── Template-uri ExifTool (DJI) ──────────────────────────────────────
-GPX_FMT=$(mktemp); SRT_FMT=$(mktemp); KML_FMT=$(mktemp)
+GPX_FMT=$(mktemp); KML_FMT=$(mktemp)
 cat <<'GPXEOF' > "$GPX_FMT"
 #[HEAD]<?xml version="1.0" encoding="utf-8"?>
 #[HEAD]<gpx version="1.0" creator="ExifTool $[ExifToolVersion]" xmlns="http://www.topografix.com/GPX/1/0">
@@ -199,13 +199,6 @@ cat <<'GPXEOF' > "$GPX_FMT"
 #[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#"><ele>$gpsaltitude#</ele><time>$gpsdatetime</time></trkpt>
 #[TAIL]</trkseg></trk></gpx>
 GPXEOF
-cat <<'SRTEOF' > "$SRT_FMT"
-#[BODY]${self:SampleIndex}
-#[BODY]${gpsdatetime} --> ${gpsdatetime}
-#[BODY]Viteza: ${gpsspeed#} m/s | Alt: ${gpsaltitude#}m
-#[BODY]Coord: ${gpslatitude#}, ${gpslongitude#}
-#[BODY]
-SRTEOF
 cat <<'KMLEOF' > "$KML_FMT"
 #[HEAD]<?xml version="1.0" encoding="UTF-8"?>
 #[HEAD]<kml xmlns="http://www.opengis.net/kml/2.2">
@@ -669,7 +662,9 @@ process_dji() {
     case "$choice" in
         1|2|4)
             "$AV_TOOL_EXIFTOOL" -p "$GPX_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.gpx" 2>/dev/null
-            if [ -s "$OUTPUT_DIR/${name}.gpx" ]; then echo "  [OK] GPX: ${name}.gpx"
+            # v85: fmt-ul are HEAD/TAIL → fisierul e non-gol si FARA puncte;
+            # verifica trkpt real (altfel un clip fara GPS raporta [OK] pe schelet)
+            if grep -q "<trkpt" "$OUTPUT_DIR/${name}.gpx" 2>/dev/null; then echo "  [OK] GPX: ${name}.gpx"
             else echo "  [SKIP] GPX: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}.gpx"; fi
             ;;
     esac
@@ -677,7 +672,9 @@ process_dji() {
         1|4)
             # Track complet per-sample (DJI protobuf): -p template, NU -csv (care colapseaza la 1 rand)
             "$AV_TOOL_EXIFTOOL" -p "$DJI_BASIC_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}_basic.csv" 2>/dev/null
-            [ -s "$OUTPUT_DIR/${name}_basic.csv" ] && echo "  [OK] CSV Basic: ${name}_basic.csv" || rm -f "$OUTPUT_DIR/${name}_basic.csv"
+            # v85: header-only (fara randuri de date) = fara GPS → SKIP onest
+            if [ "$(wc -l < "$OUTPUT_DIR/${name}_basic.csv" 2>/dev/null || echo 0)" -gt 1 ]; then echo "  [OK] CSV Basic: ${name}_basic.csv"
+            else echo "  [SKIP] CSV Basic: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}_basic.csv"; fi
             ;;
     esac
     case "$choice" in
@@ -686,19 +683,23 @@ process_dji() {
             [ -s "$OUTPUT_DIR/${name}_FULL.csv" ] && echo "  [OK] CSV Full: ${name}_FULL.csv" || rm -f "$OUTPUT_DIR/${name}_FULL.csv"
             ;;
     esac
-    case "$choice" in
-        3|4)
-            "$AV_TOOL_EXIFTOOL" -p "$SRT_FMT" -ee3 -api LargeFileSupport=1 "$file" > "$OUTPUT_DIR/${name}.srt" 2>/dev/null
-            if [ -s "$OUTPUT_DIR/${name}.srt" ]; then echo "  [OK] SRT: ${name}.srt"
-            else echo "  [SKIP] SRT: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}.srt"; fi
-            ;;
-    esac
+    # v85 (F3): SRT-ul DJI se genereaza din ACEEASI extractie per-sample ca norm CSV,
+    # cu index + timpi RELATIVI reali (SampleTime) + downsample 1Hz. Vechiul template
+    # exiftool producea SRT INVALID (fara index, timestamp-uri EXIF absolute cu
+    # start==end) → ffmpeg il refuza → embed-ul (opt 7) pica pe DJI; pe clipuri
+    # fara GPS ieseau doar linii goale raportate [OK].
     # CSV normalizat — extractie per-sample (track complet protobuf): GPS + accelerometru (g) +
     # orientare (modele care o expun). Viteza/heading calculate din delta GPS cu sampletime sub-secunda.
+    local want_norm=0 want_srt=0
+    case "$choice" in 1|2|4) want_norm=1 ;; esac
+    case "$choice" in 3|4)   want_srt=1  ;; esac
     case "$choice" in
-        1|2|4)
+        1|2|3|4)
             local norm_src="$OUTPUT_DIR/${name}_normsrc.csv.tmp"
             "$AV_TOOL_EXIFTOOL" -p "$DJI_NORM_FMT" -f -ee3 -api LargeFileSupport=1 "$file" > "$norm_src" 2>/dev/null
+            # SRT-ul e scris de python DOAR cand exista puncte → sterge un
+            # eventual fisier vechi, altfel un stale ar trece drept [OK]
+            [ "$want_srt" -eq 1 ] && rm -f "$OUTPUT_DIR/${name}.srt"
             if [ -s "$norm_src" ] && [ "$HAVE_PYTHON" -eq 1 ]; then
                 python3 -c "
 import sys, csv, math
@@ -719,6 +720,8 @@ def brg(la1,lo1,la2,lo2):
     y=math.sin(dl)*math.cos(p2); x=math.cos(p1)*math.sin(p2)-math.sin(p1)*math.cos(p2)*math.cos(dl)
     return (math.degrees(math.atan2(y,x))+360)%360
 base=None; first_st=None; ld=None; lsp=0.0; lhd=''
+want_norm=(sys.argv[4]=='1'); want_srt=(sys.argv[5]=='1')
+pts=[]; srt_t0=None
 with open(sys.argv[1], encoding='utf-8', errors='replace') as fi, open(sys.argv[2],'w',newline='',encoding='utf-8') as fo:
     w=csv.writer(fo); wrote=False
     for line in fi:
@@ -763,10 +766,45 @@ with open(sys.argv[1], encoding='utf-8', errors='replace') as fi, open(sys.argv[
         if rol is not None: out['roll_deg']='%.2f'%rol
         if yaw is not None: out['yaw_deg']='%.2f'%yaw
         out['source_brand']='dji'
-        if not wrote: w.writerow(NORM); wrote=True
-        w.writerow([out[c] for c in NORM])
-" "$norm_src" "$OUTPUT_DIR/${name}_norm.csv" 2>/dev/null
-                [ -s "$OUTPUT_DIR/${name}_norm.csv" ] && echo "  [OK] CSV Norm: ${name}_norm.csv" || rm -f "$OUTPUT_DIR/${name}_norm.csv"
+        if want_norm:
+            if not wrote: w.writerow(NORM); wrote=True
+            w.writerow([out[c] for c in NORM])
+        if want_srt and st is not None:
+            if srt_t0 is None: srt_t0=st
+            pts.append((st-srt_t0, lat, lon, alt, sp))
+if want_srt and pts:
+    # downsample 1Hz (prima mostra din fiecare secunda) — DJI emite sub-secunda
+    sel=[]; last_sec=None
+    for r in pts:
+        sec=int(r[0])
+        if sec!=last_sec: sel.append(r); last_sec=sec
+    def fmt_srt(t):
+        if t<0: t=0.0
+        ms=int(round((t-int(t))*1000)); s=int(t)
+        if ms==1000: s+=1; ms=0
+        return '%02d:%02d:%02d,%03d'%(s//3600,(s%3600)//60,s%60,ms)
+    with open(sys.argv[3],'w',encoding='utf-8') as fs:
+        n=len(sel)
+        for i in range(n):
+            r=sel[i]
+            t1=sel[i+1][0] if i+1<n else r[0]+1.0
+            alt_s=('%.1f'%r[3]) if r[3] is not None else 'N/A'
+            fs.write('%d\n%s --> %s\n'%(i+1,fmt_srt(r[0]),fmt_srt(t1)))
+            fs.write('Viteza: %.2f m/s | Alt: %sm\n'%(r[4],alt_s))
+            fs.write('Coord: %.7f, %.7f\n\n'%(r[1],r[2]))
+" "$norm_src" "$OUTPUT_DIR/${name}_norm.csv" "$OUTPUT_DIR/${name}.srt" "$want_norm" "$want_srt" 2>/dev/null
+                if [ "$want_norm" -eq 1 ]; then
+                    [ -s "$OUTPUT_DIR/${name}_norm.csv" ] && echo "  [OK] CSV Norm: ${name}_norm.csv" || rm -f "$OUTPUT_DIR/${name}_norm.csv"
+                else
+                    rm -f "$OUTPUT_DIR/${name}_norm.csv"
+                fi
+                if [ "$want_srt" -eq 1 ]; then
+                    if [ -s "$OUTPUT_DIR/${name}.srt" ]; then echo "  [OK] SRT: ${name}.srt"
+                    else echo "  [SKIP] SRT: nu s-au gasit date GPS"; rm -f "$OUTPUT_DIR/${name}.srt"; fi
+                fi
+            else
+                [ "$want_srt" -eq 1 ] && echo "  [SKIP] SRT: nu s-au gasit date GPS (sau python3 lipseste)"
+                [ "$want_norm" -eq 1 ] && [ "$HAVE_PYTHON" -eq 0 ] && echo "  [SKIP] CSV Norm: python3 lipseste"
             fi
             rm -f "$norm_src"
             ;;
@@ -800,13 +838,19 @@ process_dji_strip() {
     local file="$1"; local name="$2"
     local ext="${file##*.}"
     local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
+    # v85 (F4): muxer-ul MOV/MP4 REGENEREAZA un track tmcd din metadata de timecode
+    # a pistei video chiar cu -dn (dropul afecteaza doar pistele de INPUT) → fara
+    # -write_tmcd 0 output-ul "curat" contine tot un tmcd, desi meniul promite
+    # eliminarea lui. Optiunea e a muxer-ului mov → doar pe mp4/mov/m4v.
+    local tmcd_flag=""
+    case "${ext,,}" in mp4|mov|m4v) tmcd_flag="-write_tmcd 0" ;; esac
 
     if [ "$STRIP_MODE" == "3" ]; then
         # v78: PASTREAZA GPS-ul nativ (djmd). ffmpeg singur nu il poate re-muxa →
         # producem o baza curata (video real v:0 + audio, FARA cover/date) apoi grefam
         # djmd inapoi cu MP4Box (_dji_graft_native_meta din av_common.sh). Reverseaza
         # restrictia v71 — pe MP4/MOV GPS-ul nativ POATE ramane, prin MP4Box (nu ffmpeg).
-        ffmpeg -v error -i "$file" -map 0:v:0 -map 0:a? -c copy -dn -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+        ffmpeg -v error -i "$file" -map 0:v:0 -map 0:a? -c copy -dn $tmcd_flag -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
         if [ $? -ne 0 ] || [ ! -s "$out_clean" ]; then
             echo "  [EROARE] Remux esuat"; rm -f "$out_clean"; return
         fi
@@ -836,7 +880,7 @@ process_dji_strip() {
             [[ "$_vcodec" =~ ^(mjpeg|jpeg|png)$ ]] && maps="$maps -map -0:$_vidx"
         done < <(ffprobe -v error -select_streams v -show_entries stream=index,codec_name -of csv=p=0 "$file" 2>/dev/null)
     fi
-    ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+    ffmpeg -v error -i "$file" $maps -c copy $tmcd_flag -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
     if [ $? -eq 0 ] && [ -s "$out_clean" ]; then
         echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"
         echo "  Notă: telemetria DJI (djmd/dbgi/tmcd) eliminata (ffmpeg nu o re-muxeaza); GPS via opt 1-5."
@@ -876,7 +920,10 @@ process_gopro() {
                 local_idx=$((local_idx + 1))
             done < <(ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null)
             local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
-            ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+            # v85 (F4): -write_tmcd 0 pe mp4/mov — muxer-ul regenereaza tmcd altfel
+            local tmcd_flag=""
+            case "${ext,,}" in mp4|mov|m4v) tmcd_flag="-write_tmcd 0" ;; esac
+            ffmpeg -v error -i "$file" $maps -c copy $tmcd_flag -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
             if [ $? -eq 0 ] && [ -s "$out_clean" ]; then
                 echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"
             else echo "  [EROARE] Remux esuat"; rm -f "$out_clean"; fi
@@ -916,7 +963,10 @@ _telem_strip_track() {
         local_idx=$((local_idx + 1))
     done < <(ffprobe -v error -show_entries stream=codec_tag_string -of csv=p=0 "$file" 2>/dev/null)
     local out_clean="$OUTPUT_DIR/${name}_clean.${ext}"
-    ffmpeg -v error -i "$file" $maps -c copy -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
+    # v85 (F4): -write_tmcd 0 pe mp4/mov — muxer-ul regenereaza tmcd altfel
+    local tmcd_flag=""
+    case "${ext,,}" in mp4|mov|m4v) tmcd_flag="-write_tmcd 0" ;; esac
+    ffmpeg -v error -i "$file" $maps -c copy $tmcd_flag -map_metadata 0 "$out_clean" -y </dev/null 2>/dev/null
     if [ $? -eq 0 ] && [ -s "$out_clean" ]; then
         echo "  [OK] ${name}_clean.${ext} ($(du -h "$file" | cut -f1) → $(du -h "$out_clean" | cut -f1))"
     else echo "  [EROARE] Remux esuat"; rm -f "$out_clean"; fi
@@ -1255,7 +1305,7 @@ for ((i=0; i<TOTAL; i++)); do
 done
 
 # ── Curatenie ────────────────────────────────────────────────────────
-rm -f "$GPX_FMT" "$SRT_FMT" "$KML_FMT" "$DJI_BASIC_FMT" "$DJI_NORM_FMT"
+rm -f "$GPX_FMT" "$KML_FMT" "$DJI_BASIC_FMT" "$DJI_NORM_FMT"
 [ -n "$GPMF_PY" ] && rm -f "$GPMF_PY"
 
 echo ""

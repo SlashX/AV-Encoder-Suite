@@ -185,6 +185,28 @@ av_mktemp_ext() {
     fi
 }
 
+# av_filtergraph_path <path> — pregateste o cale pentru inserare intr-un
+# filtergraph ffmpeg (lut3d='...', subtitles='...', ass='...'). Face TOATA
+# munca de escape + conversie, o singura sursa de adevar:
+#   1. (O6, v85) pe git-bash/MSYS ffmpeg-ul e NATIV Windows → calea POSIX /d/x
+#      nu e recunoscuta; cygpath -m o converteste la D:/x. cygpath exista DOAR pe
+#      MSYS → pe Termux/Linux/macOS e no-op (calea POSIX e nativa acolo).
+#   2. backslash -> slash (cale Windows D:\x -> D:/x)
+#   3. drive-colon -> \: (D:/x -> D\:/x) — `:` separa optiunile de filtru, iar
+#      ghilimelele simple NU protejeaza drive-colon (regula v61).
+#   4. apostrof -> \'
+# Pe productie (cai POSIX curate, fara colon/backslash/apostrof) → no-op efectiv.
+av_filtergraph_path() {
+    local p="$1"
+    if command -v cygpath &>/dev/null; then
+        p=$(cygpath -m "$p" 2>/dev/null || echo "$p")
+    fi
+    p="${p//\\//}"        # backslash -> forward slash
+    p="${p//:/\\:}"       # drive-colon -> \:
+    p="${p//\'/\\\'}"     # apostrof -> \'
+    echo "$p"
+}
+
 # av_df_kb <path> — df portabil cu block size 1K (POSIX -Pk, GNU + BSD compatibil)
 # Output: o singura linie cu campurile POSIX standard (col 4 = available KB).
 av_df_kb() {
@@ -243,6 +265,9 @@ av_wake_lock() {
             :
             ;;
     esac
+    # v85 (F8, simetrie): best-effort — `command -v termux-wake-lock && ...` intoarce
+    # 1 fara unealta → return 0 explicit (wake-lock nu poate „esua"; consistent cu unlock).
+    return 0
 }
 
 av_wake_unlock() {
@@ -260,6 +285,10 @@ av_wake_unlock() {
             :
             ;;
     esac
+    # v85 (F8): best-effort — pe termux fara termux-wake-unlock `command -v && ...`
+    # intoarce 1; `run_encode_loop` se termina cu av_wake_unlock → toate encoderele
+    # ar iesi 1 pe succes. return 0 explicit (wake-unlock nu poate „esua").
+    return 0
 }
 
 # av_notify_done <title> <message> — notificare la final batch
@@ -280,6 +309,11 @@ av_notify_done() {
                 osascript -e "display notification \"$msg\" with title \"$title\"" 2>/dev/null
             ;;
     esac
+    # v85 (F8): notificarea e best-effort — cand unealta lipseste (git-bash,
+    # Linux headless, CI), `command -v ... && ...` intoarce 1 → daca av_notify_done
+    # e ULTIMA comanda a unui script (av_encoder_audio etc.) scriptul iese 1 pe
+    # SUCCES. return 0 explicit: notificarea nu trebuie sa raporteze esec.
+    return 0
 }
 
 # av_open_path <path> — deschide folder in file manager
@@ -440,6 +474,19 @@ detect_source_info() {
         # Fallback: DJI tracks detection (already have detect_dji_tracks)
         if [[ -z "$CAMERA_MAKE" ]] && [[ "${IS_DJI:-0}" -eq 1 ]]; then
             CAMERA_MAKE="dji"
+        fi
+        # v85: Apple fallback pe encoderul de STREAM ("Apple ProRes ...") — tag de
+        # stream care SUPRAVIETUIESTE la -c copy / trim, cand make=Apple de CONTAINER
+        # se pierde (ex. clip iPhone Apple Log taiat cu Trim&Concat inainte de encode
+        # → cadea pe unknown_log in loc de apple_log). Semnal SIGUR: ffmpeg prores_ks
+        # scrie "Lavc... prores_ks", NU "Apple ProRes". Gate-ul LOG (bt2020/10-bit) de
+        # mai jos filtreaza clipurile Apple ProRes NON-Log (bt709) → doar Log ia apple_log.
+        if [[ -z "$CAMERA_MAKE" ]]; then
+            local _venc_tag
+            _venc_tag=$(ffprobe -v error -select_streams v:0 \
+                -show_entries stream_tags=encoder \
+                -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+            [[ "$_venc_tag" == *"Apple ProRes"* ]] && CAMERA_MAKE="apple"
         fi
 
         # Detect color transfer characteristic
@@ -613,9 +660,9 @@ get_dv_profile() {
     if [[ -n "$dv_profile_num" && "$dv_profile_num" =~ ^[0-9]+$ ]]; then
         case "$dv_profile_num" in
             4) echo "Profil 4 (DV + HDR10 fallback)" ;; 5) echo "Profil 5 (DV only)" ;;
-            7) echo "Profil 7 (DV + HDR10+)" ;;
+            7) echo "Profil 7 (DV + HDR10, dual-layer Blu-ray)" ;;
             8) case "$dv_compat" in
-                1) echo "Profil 8.1 (DV + HDR10, Blu-ray)" ;; 2) echo "Profil 8.2 (DV + SDR)" ;;
+                1) echo "Profil 8.1 (DV + HDR10)" ;; 2) echo "Profil 8.2 (DV + SDR)" ;;
                 4) echo "Profil 8.4 (DV + HLG)" ;; *) echo "Profil 8 (DV + HDR10)" ;; esac ;;
             9) echo "Profil 9 (DV + SDR)" ;;
             10) case "$dv_compat" in
@@ -3325,6 +3372,12 @@ handle_log_dialog() {
         # v62 audit: setparams re-eticheteaza culoarea pe FRAME (lut3d nu o atinge →
         # ramanea bt2020/unknown de la sursa). Pe MKV ffprobe citeste Matroska Colour
         # din frame (nu VUI/SPS) → fara setparams iesirea LUT Rec.709 era mis-tagged.
+        # NB (O6): calea de encode foloseste `$VIDEO_FILTER` NEQUOTAT in `eval $FFMPEG_CMD`
+        # → pe MSYS un drive-colon escapat (D\:) e stricat de interactiunea eval+single-quote
+        # (strica parsarea setparams). Pe PRODUCTIE (Termux/Linux/macOS) calea LUT e POSIX
+        # fara colon → merge nativ. Deci NU aplicam av_filtergraph_path aici (ar fi no-op pe
+        # productie + un half-fix confuz pe MSYS-encode). Burn-in + Trim/Concat (cai non-eval)
+        # folosesc av_filtergraph_path si merg pe MSYS. Encode-LOG pe git-bash ramane gated.
         if [[ "$encoder_type" == "x264" ]]; then
             LOG_VIDEO_FILTER="lut3d='$selected_lut',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p"
@@ -3361,6 +3414,8 @@ handle_log_dialog() {
             fi
         fi
         log "  LOG: Apply HLG LUT — $(basename "$selected_hlg_lut")"
+        # NB (O6): vezi nota de la LUT Rec.709 — calea de encode (eval nequotat) nu poate
+        # purta drive-colon pe MSYS; productia POSIX merge nativ. Encode-LOG git-bash gated.
         LOG_VIDEO_FILTER="lut3d='$selected_hlg_lut',format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc"
         LOG_PIX_FMT="yuv420p10le"
         LOG_COLOR_FLAGS="-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc"
@@ -3419,6 +3474,7 @@ handle_log_dialog() {
             fi
         fi
         log "  LOG: Creative LUT — $(basename "$selected_creative")"
+        # NB (O6): vezi nota de la LUT Rec.709 — encode-LOG pe git-bash gated (eval nequotat).
         if [[ "$encoder_type" == "x264" ]]; then
             LOG_VIDEO_FILTER="lut3d='$selected_creative',format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             LOG_PIX_FMT="yuv420p"
@@ -4079,7 +4135,10 @@ hdr10_static_resolve() {
             HDR10_STATIC_SOURCE="measured-cll"
         fi
     fi
-    [ -z "$HDR10_MAX_CLL" ] && HDR10_MAX_CLL="1000,400"
+    # v85: forma `[ -z ] && ASSIGN` ca ultima comanda intoarce 1 cand CLL e deja
+    # setat (probe real) — azi apelantii nu ruleaza sub set -e (av_burnin/trimconcat
+    # gardeaza cu || true), dar forma if e robusta daca un consumator viitor adopta -e.
+    if [ -z "$HDR10_MAX_CLL" ]; then HDR10_MAX_CLL="1000,400"; fi
 }
 
 # Helper: extrage bitrate kbps dintr-un input "4000k" / "4M" / "4000000".

@@ -177,9 +177,9 @@ function Get-DVProfile {
     }
     if ($n -match '^\d+$') {
         switch ($n) {
-            "4" { "Profil 4 (DV+HDR10)" } "5" { "Profil 5 (DV only)" } "7" { "Profil 7 (DV+HDR10+)" }
-            "8" { switch ($c) { "1"{"Profil 8.1 (DV+HDR10, Blu-ray)"} "2"{"Profil 8.2 (DV+SDR)"} "4"{"Profil 8.4 (DV+HLG)"} default{"Profil 8 (DV+HDR10)"} } }
-            "9" { "Profil 9 (DV+SDR)" }
+            "4" { "Profil 4 (DV + HDR10)" } "5" { "Profil 5 (DV only)" } "7" { "Profil 7 (DV + HDR10, dual-layer Blu-ray)" }
+            "8" { switch ($c) { "1"{"Profil 8.1 (DV + HDR10)"} "2"{"Profil 8.2 (DV + SDR)"} "4"{"Profil 8.4 (DV + HLG)"} default{"Profil 8 (DV + HDR10)"} } }
+            "9" { "Profil 9 (DV + SDR)" }
             "10" { switch ($c) { "1"{"Profil 10.1 (DV AV1 + HDR10)"} "2"{"Profil 10.2 (DV AV1 + SDR)"} "4"{"Profil 10.4 (DV AV1 + HLG)"} default{"Profil 10 (DV AV1)"} } }
             default { "Profil $n" }
         }
@@ -344,6 +344,13 @@ function Get-LogProfile {
     elseif ($allTags -imatch "make=.*dji|encoder=.*dji")                                    { $cameraMake = "dji" }
     elseif ($allTags -imatch "manufacturer=.*samsung|make=.*samsung|com\.samsung\.android") { $cameraMake = "samsung" }
     if (-not $cameraMake -and $isDji) { $cameraMake = "dji" }
+    # v85: Apple fallback pe encoderul de STREAM ("Apple ProRes") — supravietuieste la
+    # -c copy/trim cand make=Apple de container se pierde. Paritate cu av_check.sh.
+    if (-not $cameraMake) {
+        $vEnc = @(& ffprobe -v error -select_streams v:0 -show_entries stream_tags=encoder `
+            -of default=noprint_wrappers=1:nokey=1 $file 2>$null)[0]
+        if ("$vEnc" -match "Apple ProRes") { $cameraMake = "apple" }
+    }
 
     $srcTrc = Get-FFprobeValue $file "v:0" "color_transfer"
     $srcBps = Get-FFprobeValue $file "v:0" "bits_per_raw_sample"

@@ -17,6 +17,16 @@ CSV_FILE="$OUTPUT_DIR/av_check_report.csv"
 
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR"
 
+# v85 (O2): check upfront de ffprobe — fara el fiecare fisier raporta „nu s-a
+# gasit stream video valid" (acelasi mesaj ca pentru un fisier chiar corupt),
+# derutant. Mesaj onest + hint de instalare, exit inainte de a scana degeaba.
+if ! command -v ffprobe &>/dev/null; then
+    echo "EROARE: ffprobe (FFmpeg) nu este in PATH — analiza media e imposibila."
+    echo "  Instaleaza FFmpeg: $(av_pkg_install_hint ffmpeg)"
+    echo "  (sau pune ffprobe/ffmpeg langa scripturile din src/)"
+    exit 1
+fi
+
 echo "Folder input: $INPUT_DIR"
 echo "─────────────────────────────────────"
 
@@ -141,9 +151,9 @@ get_dv_profile() {
         case "$dv_profile_num" in
             4) echo "Profil 4 (DV + HDR10)" ;;
             5) echo "Profil 5 (DV only)" ;;
-            7) echo "Profil 7 (DV + HDR10+)" ;;
+            7) echo "Profil 7 (DV + HDR10, dual-layer Blu-ray)" ;;
             8) case "$dv_compat" in
-                1) echo "Profil 8.1 (DV + HDR10, Blu-ray)" ;;
+                1) echo "Profil 8.1 (DV + HDR10)" ;;
                 2) echo "Profil 8.2 (DV + SDR)" ;;
                 4) echo "Profil 8.4 (DV + HLG)" ;;
                 *) echo "Profil 8 (DV + HDR10)" ;; esac ;;
@@ -242,6 +252,14 @@ get_log_profile() {
     elif echo "$all_tags" | grep -qi "manufacturer=.*samsung\|make=.*samsung\|com\.samsung\.android"; then camera_make="samsung"
     fi
     [[ -z "$camera_make" ]] && [[ "$is_dji" -eq 1 ]] && camera_make="dji"
+    # v85: Apple fallback pe encoderul de STREAM ("Apple ProRes") — supravietuieste la
+    # -c copy/trim cand make=Apple de container se pierde. Gate LOG (bt2020) filtreaza
+    # non-Log. Paritate cu detect_source_info (av_common.sh).
+    if [[ -z "$camera_make" ]]; then
+        local venc_tag; venc_tag=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream_tags=encoder -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+        [[ "$venc_tag" == *"Apple ProRes"* ]] && camera_make="apple"
+    fi
 
     src_trc=$(ffprobe -v error -select_streams v:0 \
         -show_entries stream=color_transfer \

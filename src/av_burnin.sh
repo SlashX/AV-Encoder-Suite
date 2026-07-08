@@ -25,13 +25,12 @@ if [[ "${AV_BURNIN_TEST_MODE:-0}" != "1" ]]; then
     fi
 fi
 
-# ── Escape path pentru ffmpeg filter (subtitles=/ass=) ───────────────
+# ── Escape path pentru ffmpeg filter (subtitles=/ass=/lut3d=) ────────
+# v85 (O6): deleaga la av_filtergraph_path (av_common) — aceeasi logica (backslash
+# ->slash + colon-escape + apostrof) DAR si cygpath pe MSYS (git-bash: calea POSIX
+# /d/x → D:/x pt ffmpeg NATIV Windows). Pe productie cygpath lipseste → identic v48.
 escape_ffmpeg_filter_path() {
-    local p="$1"
-    p="${p//\\//}"        # backslash -> forward slash
-    p="${p//:/\\:}"       # colon (Windows drive) -> \:
-    p="${p//\'/\\\'}"     # apostrof -> \'
-    echo "$p"
+    av_filtergraph_path "$1"
 }
 
 # ── Preview mode helpers (shared) ────────────────────────────────────
@@ -370,7 +369,18 @@ build_burnin_video_chain() {
             BURNIN_PRE_FILTER="lut3d='${_lut_esc}',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
             return 0 ;;
         tonemap)
-            BURNIN_PRE_FILTER="zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
+            # v85 (F9): DV Profile 5/7 au baza IPT cu color_transfer=unknown → zscale
+            # nu poate liniariza ("no path between colorspaces") → tonemap-ul (optiunea
+            # RECOMANDATA in dialogul DV) CRAPA. Prepend setparams=PQ/BT.2020 DOAR cand
+            # transferul e necunoscut (baza P5/P7 e HDR10-like). P8.1 (smpte2084) si P8.4
+            # (arib) au transfer cunoscut → tonemap corect fara prefix, deci nu le atingem.
+            local _tm_trc; _tm_trc=$(ffprobe -v error -select_streams v:0 \
+                -show_entries stream=color_transfer -of default=nw=1:nk=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+            local _tm_pre=""
+            if [[ -z "$_tm_trc" || "$_tm_trc" == "unknown" ]]; then
+                _tm_pre="setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,"
+            fi
+            BURNIN_PRE_FILTER="${_tm_pre}zscale=transfer=linear:matrix=bt709:primaries=bt709,tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709:primaries=bt709,format=yuv420p"
             return 0 ;;
         preserve_hdr10)
             if [[ "$encoder" == "libx264" ]]; then
@@ -472,7 +482,10 @@ pick_files() {
             SELECTED+=("$idx")
         done
     fi
-    [ "${#SELECTED[@]}" -eq 0 ] && { echo "Nimic selectat."; exit 0; }
+    # v85 (F5): garda era `[ ... ] && { ...; }` ca ULTIMA comanda a functiei →
+    # pe selectie NE-goala (cazul normal!) testul intoarce 1 → functia intoarce 1
+    # → set -e omora scriptul imediat dupa selectie (toate 4 fluxurile, din v48).
+    if [ "${#SELECTED[@]}" -eq 0 ]; then echo "Nimic selectat."; exit 0; fi
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -521,7 +534,9 @@ ask_burnin_shaping() {
         3) SUB_SHAPING="complex" ;;
         *) SUB_SHAPING="" ;;
     esac
-    [ -n "$SUB_SHAPING" ] && echo "  → shaping=$SUB_SHAPING"
+    # v85 (F5): `[ -n ] && echo` ca ultima comanda → pe default (auto, gol)
+    # functia intorcea 1 → set -e omora srt/ass flow dupa promptul de shaping.
+    if [ -n "$SUB_SHAPING" ]; then echo "  → shaping=$SUB_SHAPING"; fi
 }
 
 hud_flow() {
@@ -738,11 +753,16 @@ hud_flow() {
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
         local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
-        local _fc
+        # v85 (F6): ffmpeg nou negociaza formate CU alpha la iesirea overlay-ului
+        # (PNG-ul HUD e RGBA → [v]=yuva420p) iar libx265 refuza deschiderea
+        # ("does not support alpha layer encoding") → format EXPLICIT dupa overlay.
+        # 10-bit pe modurile preserve (lantul HDR ramane 10-bit), altfel 8-bit.
+        local _fc _ov_fmt="yuv420p"
+        case "$BURNIN_MODE" in preserve_hdr10|preserve_hdr10plus|preserve_hlg) _ov_fmt="yuv420p10le" ;; esac
         if [[ -n "$BURNIN_PRE_FILTER" ]]; then
-            _fc="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0[v]"
+            _fc="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:v]overlay=0:0:shortest=0,format=${_ov_fmt}[v]"
         else
-            _fc="[0:v][1:v]overlay=0:0:shortest=0[v]"
+            _fc="[0:v][1:v]overlay=0:0:shortest=0,format=${_ov_fmt}[v]"
         fi
         echo "  Overlay + re-encode ($ENC_NAME CRF $ENC_CRF preset $ENC_PRESET)..."
         # shellcheck disable=SC2086
@@ -1135,13 +1155,17 @@ img_flow() {
         local out="$OUTPUT_DIR/${name}_${out_suffix}.${ext}"
         local _codec_tag; _codec_tag=$(codec_tag_for_container "$ENC_CODEC_KEY" "$ext")
         # v58: pre-filter (LUT/tonemap) injectat in filter_complex inainte de overlay
-        local _fc_ext _fc_emb
+        # v85 (F6): subpicture-urile (PGS/VobSub) au alpha → ffmpeg nou negociaza
+        # yuva* la iesirea overlay → x265 refuza → format EXPLICIT dupa overlay
+        # (10-bit pe modurile preserve, altfel 8-bit — ca la HUD).
+        local _fc_ext _fc_emb _ov_fmt="yuv420p"
+        case "$BURNIN_MODE" in preserve_hdr10|preserve_hdr10plus|preserve_hlg) _ov_fmt="yuv420p10le" ;; esac
         if [[ -n "$BURNIN_PRE_FILTER" ]]; then
-            _fc_ext="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:s]overlay[v]"
-            _fc_emb="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][0:s:${track}]overlay[v]"
+            _fc_ext="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][1:s]overlay,format=${_ov_fmt}[v]"
+            _fc_emb="[0:v]${BURNIN_PRE_FILTER}[burnin_base];[burnin_base][0:s:${track}]overlay,format=${_ov_fmt}[v]"
         else
-            _fc_ext="[0:v][1:s]overlay[v]"
-            _fc_emb="[0:v][0:s:${track}]overlay[v]"
+            _fc_ext="[0:v][1:s]overlay,format=${_ov_fmt}[v]"
+            _fc_emb="[0:v][0:s:${track}]overlay,format=${_ov_fmt}[v]"
         fi
         # ok_now=0 fallback la fail; ramurile if/else previn abort set -e pe ffmpeg failure
         local ok_now=0

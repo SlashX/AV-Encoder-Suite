@@ -19,8 +19,12 @@ if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Read-Host; exit
 }
 
-$InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutputDir = Join-Path $InputDir "output"
+# v85 (O3): env override AV_INPUT_DIR / AV_OUTPUT_DIR (paritate cu av_check.ps1 +
+# bash INPUT_DIR/OUTPUT_DIR) — util pt CI/testare fara a muta scriptul.
+if ($env:AV_INPUT_DIR)  { $InputDir  = $env:AV_INPUT_DIR }
+else                    { $InputDir  = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR }
+else                    { $OutputDir = Join-Path $InputDir "output" }
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
 $TempBase  = Join-Path $InputDir "Temp"   # v63: temp-ul nostru (scripturi Python temporare), nu $env:TEMP
 if (-not (Test-Path $TempBase)) { New-Item -ItemType Directory -Force -Path $TempBase | Out-Null }
@@ -197,12 +201,13 @@ if ($choice -eq "6") {
 
 # ── Verificare dependente conditional ────────────────────────────────
 $exifCmd = $null; $py3 = $null
-$gpxFmt = $null; $srtFmt = $null; $djiBasicFmt = $null; $djiNormFmt = $null
+$gpxFmt = $null; $djiBasicFmt = $null; $djiNormFmt = $null
 
 $needExif = (($djiCount -gt 0) -or ($qtCount -gt 0)) -and ($choice -in @("1","2","3","4"))
 $needPy   = (($goproCount -gt 0) -or ($sonyCount -gt 0) -or ($garminCount -gt 0)) -and ($choice -in @("1","2","3","4"))
-# Soft Python detection pentru DJI norm CSV (nu blocant)
-$wantPyDjiNorm = ($djiCount -gt 0) -and ($choice -in @("1","2","4")) -and (-not $needPy)
+# Soft Python detection pentru DJI norm CSV + SRT (v85: SRT-ul DJI se genereaza
+# din extractia per-sample prin python → include si optiunea 3; nu blocant)
+$wantPyDjiNorm = ($djiCount -gt 0) -and ($choice -in @("1","2","3","4")) -and (-not $needPy)
 
 if ($needExif) {
     $exifCmd = Get-ExifCmd
@@ -221,15 +226,6 @@ if ($needExif) {
 #[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#"><ele>$gpsaltitude#</ele><time>$gpsdatetime</time></trkpt>
 #[TAIL]</trkseg></trk></gpx>
 '@ | Out-File $gpxFmt -Encoding ASCII
-
-    $srtFmt = Join-Path $OutputDir "srt.fmt"
-    @'
-#[BODY]${self:SampleIndex}
-#[BODY]${gpsdatetime} --> ${gpsdatetime}
-#[BODY]Viteza: ${gpsspeed#} m/s | Alt: ${gpsaltitude#}m
-#[BODY]Coord: ${gpslatitude#}, ${gpslongitude#}
-#[BODY]
-'@ | Out-File $srtFmt -Encoding ASCII
 
     # Basic CSV per-sample (track complet, nu doar 1 punct ca -csv) — mirror campuri GPX
     $djiBasicFmt = Join-Path $OutputDir "djibasic.fmt"
@@ -706,7 +702,9 @@ function Process-DJI {
         & $exifCmd -p $gpxFmt -ee3 -api LargeFileSupport=1 $f.FullName 2>$null |
             Out-File (Join-Path $OutputDir "$name.gpx") -Encoding UTF8
         $gpxOut = Join-Path $OutputDir "$name.gpx"
-        if ((Test-Path $gpxOut) -and (Get-Item $gpxOut).Length -gt 0) {
+        # v85: fmt-ul are HEAD/TAIL → fisierul e non-gol si FARA puncte;
+        # verifica trkpt real (altfel un clip fara GPS raporta [OK] pe schelet)
+        if ((Test-Path $gpxOut) -and (Select-String -Path $gpxOut -Pattern "<trkpt" -Quiet)) {
             Write-Host "  [OK] GPX: $name.gpx" -ForegroundColor Green
         } else {
             Write-Host "  [SKIP] GPX: nu s-au gasit date GPS" -ForegroundColor DarkGray
@@ -718,9 +716,15 @@ function Process-DJI {
         & $exifCmd -p $djiBasicFmt -ee3 -api LargeFileSupport=1 $f.FullName 2>$null |
             Out-File (Join-Path $OutputDir "${name}_basic.csv") -Encoding UTF8
         $basicOut = Join-Path $OutputDir "${name}_basic.csv"
-        if ((Test-Path $basicOut) -and (Get-Item $basicOut).Length -gt 0) {
+        # v85: header-only (fara randuri de date) = fara GPS → SKIP onest
+        $basicLines = 0
+        if (Test-Path $basicOut) { $basicLines = @(Get-Content $basicOut | Where-Object { $_ -ne "" }).Count }
+        if ($basicLines -gt 1) {
             Write-Host "  [OK] CSV Basic: ${name}_basic.csv" -ForegroundColor Green
-        } else { Remove-Item $basicOut -Force -ErrorAction SilentlyContinue }
+        } else {
+            Write-Host "  [SKIP] CSV Basic: nu s-au gasit date GPS" -ForegroundColor DarkGray
+            Remove-Item $basicOut -Force -ErrorAction SilentlyContinue
+        }
     }
     if ($choice -in @("2","4")) {
         & $exifCmd -ee3 -api LargeFileSupport=1 -csv -G -n `
@@ -728,24 +732,24 @@ function Process-DJI {
             Out-File (Join-Path $OutputDir "${name}_FULL.csv") -Encoding UTF8
         Write-Host "  [OK] CSV Full: ${name}_FULL.csv" -ForegroundColor Green
     }
-    if ($choice -in @("3","4")) {
-        & $exifCmd -p $srtFmt -ee3 -api LargeFileSupport=1 $f.FullName 2>$null |
-            Out-File (Join-Path $OutputDir "$name.srt") -Encoding UTF8
-        $srtOut = Join-Path $OutputDir "$name.srt"
-        if ((Test-Path $srtOut) -and (Get-Item $srtOut).Length -gt 0) {
-            Write-Host "  [OK] SRT: $name.srt" -ForegroundColor Green
-        } else {
-            Write-Host "  [SKIP] SRT: nu s-au gasit date GPS" -ForegroundColor DarkGray
-            Remove-Item $srtOut -Force -ErrorAction SilentlyContinue
-        }
-    }
+    # v85 (F3): SRT-ul DJI se genereaza din ACEEASI extractie per-sample ca norm CSV,
+    # cu index + timpi RELATIVI reali (SampleTime) + downsample 1Hz. Vechiul template
+    # exiftool producea SRT INVALID (fara index, timestamp-uri EXIF absolute cu
+    # start==end) → ffmpeg il refuza → embed-ul (opt 7) pica pe DJI; pe clipuri
+    # fara GPS ieseau doar linii goale raportate [OK]. Paritate exacta cu bash.
     # CSV normalizat — extractie per-sample (track complet protobuf): GPS + accelerometru (g) +
     # orientare (modele care o expun). Viteza/heading calculate din delta GPS cu sampletime sub-secunda.
-    if ($choice -in @("1","2","4")) {
+    $wantNorm = if ($choice -in @("1","2","4")) { "1" } else { "0" }
+    $wantSrt  = if ($choice -in @("3","4"))     { "1" } else { "0" }
+    if ($choice -in @("1","2","3","4")) {
         $normSrc = Join-Path $OutputDir "${name}_normsrc.csv.tmp"
         & $exifCmd -p $djiNormFmt -f -ee3 -api LargeFileSupport=1 $f.FullName 2>$null | Out-File $normSrc -Encoding UTF8
+        $normOut = Join-Path $OutputDir "${name}_norm.csv"
+        $srtOut  = Join-Path $OutputDir "$name.srt"
+        # SRT-ul e scris de python DOAR cand exista puncte → sterge un
+        # eventual fisier vechi, altfel un stale ar trece drept [OK]
+        if ($wantSrt -eq "1") { Remove-Item $srtOut -Force -ErrorAction SilentlyContinue }
         if ((Test-Path $normSrc) -and (Get-Item $normSrc).Length -gt 0 -and $py3) {
-            $normOut = Join-Path $OutputDir "${name}_norm.csv"
             $pyDji = @"
 import sys, csv, math
 from datetime import datetime, timedelta
@@ -765,6 +769,8 @@ def brg(la1,lo1,la2,lo2):
     y=math.sin(dl)*math.cos(p2); x=math.cos(p1)*math.sin(p2)-math.sin(p1)*math.cos(p2)*math.cos(dl)
     return (math.degrees(math.atan2(y,x))+360)%360
 base=None; first_st=None; ld=None; lsp=0.0; lhd=''
+want_norm=(sys.argv[4]=='1'); want_srt=(sys.argv[5]=='1')
+pts=[]; srt_t0=None
 with open(sys.argv[1], encoding='utf-8-sig', errors='replace') as fi, open(sys.argv[2],'w',newline='',encoding='utf-8') as fo:
     w=csv.writer(fo); wrote=False
     for line in fi:
@@ -809,16 +815,53 @@ with open(sys.argv[1], encoding='utf-8-sig', errors='replace') as fi, open(sys.a
         if rol is not None: out['roll_deg']='%.2f'%rol
         if yaw is not None: out['yaw_deg']='%.2f'%yaw
         out['source_brand']='dji'
-        if not wrote: w.writerow(NORM); wrote=True
-        w.writerow([out[c] for c in NORM])
+        if want_norm:
+            if not wrote: w.writerow(NORM); wrote=True
+            w.writerow([out[c] for c in NORM])
+        if want_srt and st is not None:
+            if srt_t0 is None: srt_t0=st
+            pts.append((st-srt_t0, lat, lon, alt, sp))
+if want_srt and pts:
+    # downsample 1Hz (prima mostra din fiecare secunda) — DJI emite sub-secunda
+    sel=[]; last_sec=None
+    for r in pts:
+        sec=int(r[0])
+        if sec!=last_sec: sel.append(r); last_sec=sec
+    def fmt_srt(t):
+        if t<0: t=0.0
+        ms=int(round((t-int(t))*1000)); s=int(t)
+        if ms==1000: s+=1; ms=0
+        return '%02d:%02d:%02d,%03d'%(s//3600,(s%3600)//60,s%60,ms)
+    with open(sys.argv[3],'w',encoding='utf-8') as fs:
+        n=len(sel)
+        for i in range(n):
+            r=sel[i]
+            t1=sel[i+1][0] if i+1<n else r[0]+1.0
+            alt_s=('%.1f'%r[3]) if r[3] is not None else 'N/A'
+            fs.write('%d\n%s --> %s\n'%(i+1,fmt_srt(r[0]),fmt_srt(t1)))
+            fs.write('Viteza: %.2f m/s | Alt: %sm\n'%(r[4],alt_s))
+            fs.write('Coord: %.7f, %.7f\n\n'%(r[1],r[2]))
 "@
             $pyTmp = Join-Path $TempBase "av_dji_norm_$(Get-Random).py"
             $pyDji | Out-File $pyTmp -Encoding UTF8
-            & $py3 $pyTmp $normSrc $normOut 2>$null
+            & $py3 $pyTmp $normSrc $normOut $srtOut $wantNorm $wantSrt 2>$null
             Remove-Item $pyTmp -Force -ErrorAction SilentlyContinue
-            if ((Test-Path $normOut) -and (Get-Item $normOut).Length -gt 0) {
-                Write-Host "  [OK] CSV Norm: ${name}_norm.csv" -ForegroundColor Green
+            if ($wantNorm -eq "1") {
+                if ((Test-Path $normOut) -and (Get-Item $normOut).Length -gt 0) {
+                    Write-Host "  [OK] CSV Norm: ${name}_norm.csv" -ForegroundColor Green
+                } else { Remove-Item $normOut -Force -ErrorAction SilentlyContinue }
             } else { Remove-Item $normOut -Force -ErrorAction SilentlyContinue }
+            if ($wantSrt -eq "1") {
+                if ((Test-Path $srtOut) -and (Get-Item $srtOut).Length -gt 0) {
+                    Write-Host "  [OK] SRT: $name.srt" -ForegroundColor Green
+                } else {
+                    Write-Host "  [SKIP] SRT: nu s-au gasit date GPS" -ForegroundColor DarkGray
+                    Remove-Item $srtOut -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } else {
+            if ($wantSrt -eq "1") { Write-Host "  [SKIP] SRT: nu s-au gasit date GPS (sau python lipseste)" -ForegroundColor DarkGray }
+            if ($wantNorm -eq "1" -and -not $py3) { Write-Host "  [SKIP] CSV Norm: python lipseste" -ForegroundColor DarkGray }
         }
         Remove-Item $normSrc -Force -ErrorAction SilentlyContinue
     }
@@ -906,12 +949,17 @@ function Process-DJIStrip {
         Write-Host "  [SKIP] Nu e fisier DJI" -ForegroundColor DarkGray; return
     }
     $outClean = Join-Path $OutputDir "${name}_clean$ext"
+    # v85 (F4): muxer-ul MOV/MP4 REGENEREAZA un track tmcd din metadata de timecode
+    # a pistei video chiar cu -dn (dropul afecteaza doar pistele de INPUT) → fara
+    # -write_tmcd 0 output-ul "curat" contine tot un tmcd, desi meniul promite
+    # eliminarea lui. Optiunea e a muxer-ului mov → doar pe mp4/mov/m4v.
+    $tmcdFlag = @(); if ($ext -imatch '^\.(mp4|mov|m4v)$') { $tmcdFlag = @("-write_tmcd","0") }
 
     if ($stripMode -eq "3") {
         # v78: PASTREAZA GPS-ul nativ (djmd). Baza curata (video real v:0 + audio, FARA
         # cover/date) apoi graft djmd cu MP4Box (Add-DjiNativeMeta). Reverseaza v71 — pe
         # MP4/MOV GPS-ul nativ POATE ramane (MP4Box, nu ffmpeg).
-        & ffmpeg -v error -i $f.FullName -map 0:v:0 -map "0:a?" -c copy -dn -map_metadata 0 $outClean -y 2>$null
+        & ffmpeg -v error -i $f.FullName -map 0:v:0 -map "0:a?" -c copy -dn @tmcdFlag -map_metadata 0 $outClean -y 2>$null
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outClean) -or (Get-Item $outClean).Length -eq 0) {
             Write-Host "  [EROARE] Remux esuat" -ForegroundColor Red
             Remove-Item $outClean -Force -ErrorAction SilentlyContinue; return
@@ -942,7 +990,7 @@ function Process-DJIStrip {
             }
         }
     }
-    & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
+    & ffmpeg -v error -i $f.FullName @stripMaps -c copy @tmcdFlag -map_metadata 0 $outClean -y 2>$null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
         Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green
         Write-Host "  Nota: telemetria DJI (djmd/dbgi/tmcd) eliminata (ffmpeg nu o re-muxeaza); GPS via opt 1-5." -ForegroundColor DarkGray
@@ -989,7 +1037,9 @@ function Process-GoPro {
             $stripIdx++
         }
         $outClean = Join-Path $OutputDir "${name}_clean$ext"
-        & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
+        # v85 (F4): -write_tmcd 0 pe mp4/mov — muxer-ul regenereaza tmcd altfel
+        $tmcdFlag = @(); if ($ext -imatch '^\.(mp4|mov|m4v)$') { $tmcdFlag = @("-write_tmcd","0") }
+        & ffmpeg -v error -i $f.FullName @stripMaps -c copy @tmcdFlag -map_metadata 0 $outClean -y 2>$null
         if ($LASTEXITCODE -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
             Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green
         } else {
@@ -1040,7 +1090,9 @@ function Invoke-TelemStripTrack {
         $stripIdx++
     }
     $outClean = Join-Path $OutputDir "${name}_clean$ext"
-    & ffmpeg -v error -i $f.FullName @stripMaps -c copy -map_metadata 0 $outClean -y 2>$null
+    # v85 (F4): -write_tmcd 0 pe mp4/mov — muxer-ul regenereaza tmcd altfel
+    $tmcdFlag = @(); if ($ext -imatch '^\.(mp4|mov|m4v)$') { $tmcdFlag = @("-write_tmcd","0") }
+    & ffmpeg -v error -i $f.FullName @stripMaps -c copy @tmcdFlag -map_metadata 0 $outClean -y 2>$null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $outClean) -and (Get-Item $outClean).Length -gt 0) {
         Write-Host "  [OK] ${name}_clean$ext ($(Format-Bytes $f.Length) -> $(Format-Bytes (Get-Item $outClean).Length))" -ForegroundColor Green
     } else {
@@ -1355,7 +1407,6 @@ foreach ($f in $inputFiles) {
 
 # ── Curatenie ────────────────────────────────────────────────────────
 if ($gpxFmt) { Remove-Item $gpxFmt -Force -ErrorAction SilentlyContinue }
-if ($srtFmt) { Remove-Item $srtFmt -Force -ErrorAction SilentlyContinue }
 if ($djiBasicFmt) { Remove-Item $djiBasicFmt -Force -ErrorAction SilentlyContinue }
 if ($djiNormFmt) { Remove-Item $djiNormFmt -Force -ErrorAction SilentlyContinue }
 if ($gpmfPy) { Remove-Item $gpmfPy -Force -ErrorAction SilentlyContinue }

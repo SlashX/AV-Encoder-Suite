@@ -175,9 +175,14 @@ Assert-Eq 4 $dlgCount "Show-BurninHdrDialog apelata in 4 flow-uri"
 $bldCount = ([regex]'Build-BurninVideoChain -File \$p\.Video').Matches($BURNIN_TXT).Count
 Assert-Eq 4 $bldCount "Build-BurninVideoChain apelata in 4 flow-uri"
 
-# Verifica ca $script:BurninEncExtraArgs e injectat in toate 5 ffmpeg sites
-$extraUses = ([regex]'@extraArgs').Matches($BURNIN_TXT).Count
-Assert-Eq 5 $extraUses "@extraArgs injectat in 5 ffmpeg sites (HUD/SRT/ASS + img ext + img emb)"
+# Verifica ca $extraArgs e injectat in toate 5 ffmpeg sites (HUD/SRT/ASS + img ext + img emb).
+# v85 (F7): call-site-urile construiesc `$ffArgs = ... + $extraArgs + ...` si splateaza
+# @ffArgs (flag-urile cu `:` ca -c:v se corup daca sunt tokenuri literale la apel de functie).
+$extraUses = ([regex]'\+ \$extraArgs \+').Matches($BURNIN_TXT).Count
+Assert-Eq 5 $extraUses "\$extraArgs concatenat in 5 array-uri ffmpeg (HUD/SRT/ASS + img ext + img emb)"
+# Toate encode-urile trec prin wrapper-ul Invoke-BurninEncode splatat (@ffArgs / @stArgs)
+$splatCount = ([regex]'Invoke-BurninEncode @(ffArgs|stArgs)').Matches($BURNIN_TXT).Count
+Assert-Eq 6 $splatCount "Invoke-BurninEncode chemat cu array splatat in 6 situri (F7: fara -c:v literal)"
 
 # DV refuse text
 Assert-Contains $BURNIN_TXT "Dolby Vision detectata" "Mesaj DV refuse prezent"

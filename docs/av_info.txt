@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v84
+  Documentatie Setup & Utilizare — v85
 ═══════════════════════════════════════════════════════════════
 
 
@@ -988,7 +988,10 @@ CUPRINS
   Detectie automata: 10-bit + BT.2020 + brand din metadata ffprobe.
   Adancimea de biti se deduce si din formatul de pixel (yuv420p10le →
   10-bit) cand bits_per_raw_sample lipseste (frecvent pe HEVC 10-bit).
-    Apple Log — iPhone (com.apple.quicktime.make=Apple)
+    Apple Log — iPhone (com.apple.quicktime.make=Apple; v85: si dupa
+                encoderul pistei video "Apple ProRes", care supravietuieste
+                taierii/remux-ului cu -c copy → clipul iPhone taiat inainte
+                de encodare pastreaza detectia brandului)
     D-Log M   — DJI Action/Pocket
     Samsung Log — Samsung S24 Ultra (exclus daca HDR10+ / smpte2084 / HLG)
     Unknown   — 10-bit + bt2020 fara HDR, transfer necunoscut = probabil LOG
@@ -1932,6 +1935,11 @@ CUPRINS
 
   Extragere unificata telemetrie din video pentru 5 branduri majore.
   Brand auto-detectat per fisier; output normalizat cross-brand.
+
+  NOTA (v85): scripturile standalone Telemetrie, Import GPS extern si Mux
+  (varianta PowerShell) accepta variabilele de mediu AV_INPUT_DIR /
+  AV_OUTPUT_DIR pentru a suprascrie folderele implicite (utile la
+  automatizare / CI; paritate cu av_check si cu bash INPUT_DIR/OUTPUT_DIR).
 
   BRAND DETECTION (per fisier, codec tag scan):
     djmd | dbgi   → DJI         (ExifTool)

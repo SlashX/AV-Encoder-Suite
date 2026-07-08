@@ -1860,7 +1860,10 @@ build_tc_video_args() {
         skip)         return 1 ;;
         sdr|keep_log) return 0 ;;
         lut_rec709)
-            local _esc; _esc=$(printf '%s' "$TC_LUT_FILE" | sed 's/\\/\//g; s/:/\\:/g')
+            # v85 (O6): av_filtergraph_path face cygpath (MSYS) + backslash→slash +
+            # colon-escape + apostrof (inlocuieste sed-ul manual v62, care nu facea
+            # conversia POSIX→native → LUT pica pe git-bash).
+            local _esc; _esc=$(av_filtergraph_path "$TC_LUT_FILE")
             # v62 audit: setparams re-eticheteaza culoarea pe frame (lut3d nu o atinge →
             # mis-tagged pe ORICE container fara ea).
             TC_VF_PREPEND="lut3d='${_esc}',setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"

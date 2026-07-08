@@ -3,9 +3,93 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v84 | 149 bug-uri fixate | 274+ features
-  223 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 167 teste [160 test_* + 7 infra]) | ~44500 linii cod+teste | ~7500 linii documentatie
+  TOTAL: v85 | 159 bug-uri fixate | 275+ features
+  227 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 171 teste [164 test_* + 7 infra]) | ~45000 linii cod+teste | ~7500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v85 — Campanie de validare completa: fluxuri, encodere si metadata
+═══════════════════════════════════════════════════════════════
+
+  Aceasta versiune este o trecere de validare cap-coada peste TOATE
+  fluxurile suitei, pe ambele platforme (bash + PowerShell), rulate pe
+  fisiere reale (iPhone Apple Log, Samsung Log, DJI, HDR10+, Dolby Vision
+  P5/P7/P8.1/P8.4, hibrid DV+HDR10+, APV). A scos la iveala si a reparat
+  10 probleme reale — cateva dintre ele ascunse de ani, fiindca traiau in
+  spatiul dintre "functiile merg izolat" si "fluxul complet merge cand il
+  pornesti din meniu". Plus 6 rafinari de robustete si consistenta.
+
+  FIX Burn-in prin meniu (Termux/Linux/macOS) nu mai murea la selectia
+        fisierelor. Din cauza unei garzi de cod, dupa ce alegeai fisierele
+        scriptul se oprea tacut inainte de a encoda — toate cele 4 fluxuri
+        de burn-in (HUD / SRT / ASS / Image subs) erau afectate cand erau
+        pornite din meniu. Reparat; meniul functioneaza complet acum.
+
+  FIX Burn-in pe Windows (PowerShell) nu mai esueaza la encodare. Un
+        detaliu de sintaxa facea ca argumentul de codec sa fie interpretat
+        gresit, iar ffmpeg incerca sa scrie un fisier de iesire numit "v".
+        Toate cele 6 cai de burn-in PowerShell (HUD, SRT, ASS, Image subs,
+        preview) sunt reparate.
+
+  FIX Overlay-ul HUD si subtitrarile-imagine (PGS/VobSub) se encodeaza
+        din nou pe versiunile recente de FFmpeg. FFmpeg-ul nou negocia un
+        format cu canal alfa la iesirea suprapunerii, iar encoderul HEVC il
+        refuza ("does not support alpha layer encoding"). Fixat prin
+        fixarea explicita a formatului dupa suprapunere (10-bit pe sursele
+        HDR pastrate, 8-bit altfel).
+
+  FIX Telemetria DJI — subtitrarea .SRT si "embed lossless" (optiunea 7)
+        functioneaza acum pe orice clip DJI. Subtitrarea generata era
+        invalida (fara numar de secventa, cu timpi absoluti egali) → FFmpeg
+        o refuza, iar impachetarea lossless in MKV esua. SRT-ul se
+        genereaza acum corect (index + timpi reali, o mostra/secunda), iar
+        pe clipurile fara GPS raporteaza cinstit ca sarit.
+
+  FIX Curatarea pistelor DJI ("strip") elimina acum si pista de timecode
+        (tmcd) pe MP4/MOV. Muxer-ul o regenera automat, asa ca fisierul
+        "curat" o continea tot; acum e eliminata cu adevarat.
+
+  FIX Detectia GPS onesta — la extragerea din clipuri fara GPS, GPX-ul si
+        CSV-ul de baza raportau "[OK]" pe fisiere-schelet goale. Acum
+        verifica existenta unor puncte reale si raporteaza corect "[SKIP]".
+
+  FIX Burn-in pe surse Dolby Vision Profil 5 / 7 — optiunea recomandata
+        "Tonemap la SDR" nu mai da eroare. Aceste profile au o baza cu
+        semnalizare de culoare nedefinita, ceea ce bloca conversia; acum e
+        tratata ca HDR10 (PQ / BT.2020) inainte de tonemapping.
+
+  FIX Codul de iesire pe succes — encoderele si encodarea audio-only nu mai
+        ies cu cod de eroare pe sisteme fara utilitarul de notificare /
+        wake-lock (CI, Linux headless, Termux fara Termux:API). Notificarea
+        e "best-effort" si nu mai influenteaza rezultatul operatiei.
+
+  FIX Eticheta Dolby Vision Profil 7 corectata: era "DV + HDR10+" (gresit —
+        P7 are baza HDR10, nu HDR10+), iar mentiunea "Blu-ray" statea la 8.1
+        in loc de 7. Acum: Profil 7 = "DV + HDR10, dual-layer Blu-ray".
+        Etichetele DV sunt acum identice intre bash si PowerShell.
+
+  UPDATE Detectia Apple Log rezista acum la taiere. Apple Log de pe iPhone
+        era recunoscut dupa o eticheta de container care se pierde la
+        taiere/remux fara re-encodare (ex. daca tai clipul cu Trim & Concat
+        inainte de a-l encoda). Acum se recunoaste si dupa encoderul pistei
+        video ("Apple ProRes"), care supravietuieste taierii → LUT-ul Apple
+        potrivit pe brand ramane sugerat corect. Fara fals-pozitive: un
+        ProRes re-encodat de suita nu e confundat cu unul Apple.
+
+  UPDATE Import GPS extern (GPX / FIT / KML): avertisment cand doua fisiere
+        au acelasi nume cu extensii diferite (traseu.gpx + traseu.kml) —
+        altfel al doilea suprascria tacut rezultatele primului.
+
+  UPDATE av_check da un mesaj clar cand FFmpeg/ffprobe lipseste din PATH,
+        in loc sa raporteze "stream video invalid" pe fiecare fisier.
+
+  UPDATE Scripturile de telemetrie, GPS si Mux (PowerShell) accepta acum
+        variabilele de mediu AV_INPUT_DIR / AV_OUTPUT_DIR pentru folder,
+        utile la automatizare (paritate cu av_check).
+
+  UPDATE Import GPS extern (bash): caile fisierelor sunt pasate mai robust
+        catre procesorul intern, tolerand nume cu caractere speciale.
 
 
 ═══════════════════════════════════════════════════════════════

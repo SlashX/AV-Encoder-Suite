@@ -130,7 +130,9 @@ Assert-Match $burninText '5s clip la mid-point'        "preview: prompt text 5s 
 Assert-Match $burninText '_preview\.'                  "preview: output naming _preview"
 $callCount = ([regex]::Matches($burninText, 'Get-PreviewMode')).Count
 if ($callCount -ge 5) { _pass } else { _fail "preview: 4 flow-uri cheama Get-PreviewMode (definitie + 4 apeluri, found $callCount)" }
-Assert-Match $burninText '@seekArgs'                   "preview: ffmpeg @seekArgs splat"
+# v85 (F7): seekArgs nu mai e splatat inline la apel (flag-urile cu `:` se corupeau);
+# e concatenat in array-ul $ffArgs care se splateaza intreg spre Invoke-BurninEncode.
+Assert-Match $burninText ([regex]::Escape('+ $seekArgs +')) "preview: seekArgs concatenat in array-ul ffmpeg (F7)"
 Assert-Match $burninText '-copyts'                     "preview: -copyts pt subtitle filters"
 
 # Bug-uri rezolvate v48 audit:

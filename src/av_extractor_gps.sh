@@ -54,6 +54,26 @@ if [ "$TOTAL" -eq 0 ]; then
     exit 1
 fi
 
+# v85 (O5): avertisment la coliziune de stem — output-urile se numesc dupa numele
+# fara extensie (traseu.gpx + traseu.kml → ambele scriu traseu_norm.csv etc.) →
+# al 2-lea suprascrie tacut output-urile primului. Avertizam inainte de procesare.
+declare -A _seen_stems
+_collision=""
+for _f in "${FILES[@]}"; do
+    _bn=$(basename "$_f"); _st="${_bn%.*}"
+    if [ -n "${_seen_stems[$_st]:-}" ]; then
+        _collision+="  ⚠ '$_st': ${_seen_stems[$_st]} + $_bn → output-urile se suprascriu\n"
+    else
+        _seen_stems[$_st]="$_bn"
+    fi
+done
+if [ -n "$_collision" ]; then
+    echo ""
+    echo "ATENTIE: fisiere cu acelasi nume (extensii diferite) — output-uri suprascrise:"
+    printf "%b" "$_collision"
+    echo "  (redenumeste unul dintre ele daca vrei ambele seturi de output)"
+fi
+
 echo ""
 echo "═══════════════════════════════════════"
 echo "Incep procesarea..."
@@ -73,14 +93,17 @@ for file in "${FILES[@]}"; do
 
     if [[ "$ext_lower" == "gpx" ]]; then
         # ── GPX Processing (XML) ─────────────────────────────────────
-        python3 << PYEOF
+        python3 - "$file" "$name" "$OUTPUT_DIR" "$choice" << 'PYEOF'
 import xml.etree.ElementTree as ET
 import csv, sys, os, math
 
-file_path = "$file"
-name = "$name"
-output_dir = "$OUTPUT_DIR"
-choice = "$choice"
+# v85 (O4): cai prin sys.argv, NU interpolate in textul heredoc (delimiter 'PYEOF'
+# quotat) — robust la ghilimele/backslash in nume + pe git-bash argv primeste
+# conversia MSYS de cale (interpolarea in text NU o primea → Python nativ nu gasea /d/...).
+file_path = sys.argv[1]
+name = sys.argv[2]
+output_dir = sys.argv[3]
+choice = sys.argv[4]
 
 try:
     tree = ET.parse(file_path)
@@ -286,14 +309,17 @@ PYEOF
 
     elif [[ "$ext_lower" == "fit" ]]; then
         # ── FIT Processing (binary) ──────────────────────────────────
-        python3 << PYEOF
+        python3 - "$file" "$name" "$OUTPUT_DIR" "$choice" << 'PYEOF'
 import struct, csv, sys, os
 from datetime import datetime, timedelta
 
-file_path = "$file"
-name = "$name"
-output_dir = "$OUTPUT_DIR"
-choice = "$choice"
+# v85 (O4): cai prin sys.argv, NU interpolate in textul heredoc (delimiter 'PYEOF'
+# quotat) — robust la ghilimele/backslash in nume + pe git-bash argv primeste
+# conversia MSYS de cale (interpolarea in text NU o primea → Python nativ nu gasea /d/...).
+file_path = sys.argv[1]
+name = sys.argv[2]
+output_dir = sys.argv[3]
+choice = sys.argv[4]
 
 # FIT file parser (minimal — extracts record messages with GPS)
 FIT_EPOCH = datetime(1989, 12, 31)
@@ -588,14 +614,17 @@ PYEOF
 
     elif [[ "$ext_lower" == "kml" ]]; then
         # ── KML Processing (XML) ─────────────────────────────────────
-        python3 << PYEOF
+        python3 - "$file" "$name" "$OUTPUT_DIR" "$choice" << 'PYEOF'
 import xml.etree.ElementTree as ET
 import csv, sys, os
 
-file_path = "$file"
-name = "$name"
-output_dir = "$OUTPUT_DIR"
-choice = "$choice"
+# v85 (O4): cai prin sys.argv, NU interpolate in textul heredoc (delimiter 'PYEOF'
+# quotat) — robust la ghilimele/backslash in nume + pe git-bash argv primeste
+# conversia MSYS de cale (interpolarea in text NU o primea → Python nativ nu gasea /d/...).
+file_path = sys.argv[1]
+name = sys.argv[2]
+output_dir = sys.argv[3]
+choice = sys.argv[4]
 
 try:
     tree = ET.parse(file_path)

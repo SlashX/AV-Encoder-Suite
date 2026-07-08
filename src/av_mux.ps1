@@ -13,8 +13,10 @@ $ErrorActionPreference = "Stop"
 $env:PATH = "$PSScriptRoot;$env:PATH"
 
 $ScriptDir = $PSScriptRoot
-$InputDir  = Join-Path $ScriptDir "InputVideos"
-$OutputDir = Join-Path $ScriptDir "OutputVideos"
+# v85 (O3): env override AV_INPUT_DIR / AV_OUTPUT_DIR (paritate cu av_check.ps1 +
+# bash INPUT_DIR/OUTPUT_DIR) — util pt CI/testare fara a muta scriptul.
+if ($env:AV_INPUT_DIR)  { $InputDir  = $env:AV_INPUT_DIR }  else { $InputDir  = Join-Path $ScriptDir "InputVideos" }
+if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR } else { $OutputDir = Join-Path $ScriptDir "OutputVideos" }
 $TempBase  = Join-Path $ScriptDir "Temp"   # v63: temp-ul nostru (chapters ffmetadata), nu OS temp
 New-Item -ItemType Directory -Force -Path $InputDir, $OutputDir, $TempBase | Out-Null
 
