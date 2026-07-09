@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v85
+  Documentatie Setup & Utilizare — v86
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1273,6 +1273,15 @@ CUPRINS
     Toate identice → optiune stream copy (concat demuxer, instant, lossless)
                      sau re-encode (compresie suplimentara).
     Diferente      → re-encode OBLIGATORIU via concat filter.
+
+  NOTA VFR (v86): taieturile din acelasi clip cu frame-rate VARIABIL
+  (VFR — tipic telefoane si camere de actiune) raporteaza fps diferit
+  intre ele, deci pica pe "Diferente" → re-encode. E corect, nu e
+  defect: unirea fara re-encode pe taieturi VFR produce timestamps
+  corupte la punctele de lipire (sacadare vizibila la jonctiuni).
+  Mesajul explica acum explicit cazul VFR in loc de genericul
+  "codec/rez/fps diferit". Sursele cu frame-rate constant (CFR) se
+  unesc in continuare instant, lossless, prin concat demuxer.
 
 
   ─── 9.3. Pipeline (trim + concat + encode) ───

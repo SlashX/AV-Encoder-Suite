@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v85** — 159 bugs fixed · 275+ features · ~45 000 LoC · 227 files
+**v86** — 159 bugs fixed · 275+ features · ~45 000 LoC · 229 files
 
 ---
 
@@ -188,7 +188,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 3. **Media analysis** (`av_check`) — 30-50 field CSV
 4. **Telemetry** — 6 modes: Standard / Full / SRT / All / Raw / Strip
 5. **External GPS** — GPX/FIT/KML → CSV/SRT
-6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass (+ dry-run preview, v63) · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag); v73: LOG also detected at concat (brand LUT / keep LOG / skip) + DV container signaling kept on stream-copy / pipeline smart-copy / audio-only paths
+6. **Trim & Concat** — single trim · concat (auto demuxer/filter) · pipeline 3-pass (+ dry-run preview, v63) · batch trim · HDR/LOG-aware re-encode (v60: per-file dialog — preserve HDR10/HLG · tonemap · LUT · keep LOG · skip; pipeline x265 + svtav1 HDR, codec_tag); v73: LOG also detected at concat (brand LUT / keep LOG / skip) + DV container signaling kept on stream-copy / pipeline smart-copy / audio-only paths; v86: honest message when re-encode is forced by variable frame rate (VFR) sources — lossless concat on VFR cuts would corrupt timestamps at the joins, so the compat check correctly re-encodes and now says exactly why (CFR sources still concat lossless)
 7. **Mux tools** (v49 + v50, no re-encode, lossless):
 
    | Flow | Action |
@@ -409,4 +409,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v85** — 159 bugs fixed · 275+ features · ~45 000 LoC · 227 files
+Current: **v86** — 159 bugs fixed · 275+ features · ~45 000 LoC · 229 files

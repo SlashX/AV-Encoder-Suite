@@ -3,9 +3,31 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v85 | 159 bug-uri fixate | 275+ features
-  227 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 171 teste [164 test_* + 7 infra]) | ~45000 linii cod+teste | ~7500 linii documentatie
+  TOTAL: v86 | 159 bug-uri fixate | 275+ features
+  229 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 173 teste [166 test_* + 7 infra]) | ~45000 linii cod+teste | ~7500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v86 — Concat pe surse VFR: mesaj onest despre re-encode
+═══════════════════════════════════════════════════════════════
+
+  UPDATE La Concat (si la pasul de concat din Pipeline), cand fisierele
+        selectate sunt taieturi din acelasi clip cu frame-rate VARIABIL
+        (VFR — tipic telefoane si camere de actiune), verificarea de
+        compatibilitate alege re-encode in loc de unirea rapida fara
+        re-encodare. Decizia era si ramane CORECTA — s-a verificat
+        practic ca unirea fara re-encode pe astfel de taieturi produce
+        timestamps corupte la punctele de lipire (sacadare vizibila la
+        jonctiuni) — dar mesajul generic "codec/rez/fps diferit" era
+        derutant: fisierele PAREAU identice. Acum, cand singura
+        diferenta e frame-rate-ul si sursele sunt VFR, mesajul explica
+        exact de ce e nevoie de re-encode. Pe surse cu frame-rate
+        constant nimic nu se schimba: taieturile identice se unesc in
+        continuare instant, fara re-encodare si fara pierderi. Paritate
+        bash + PowerShell (ambele situri de mesaj pe fiecare
+        platforma); test nou test_v86_concat_vfr (bash + PS1), validat
+        inclusiv prin meniurile reale pe ambele platforme.
 
 
 ═══════════════════════════════════════════════════════════════

@@ -692,6 +692,27 @@ check_concat_compat() {
     return 0
 }
 
+# v86: motivul incompatibilitatii — return 0 cand SINGURA diferenta de semnatura e
+# frame-rate-ul si macar o sursa e VFR. Pe taieturi din acelasi clip VFR r_frame_rate
+# variaza intre segmente (ex. 120/1 vs 60000/1001) desi codec/rez/pix_fmt sunt identice
+# → mesajul generic "codec/rez/fps diferit" deruteaza. Re-encode-ul ramane OBLIGATORIU
+# (validat empiric: concat demuxer pe taieturi VFR = coliziuni DTS la jonctiuni →
+# ffmpeg rescrie fortat timestamps → pacing stricat ~1s per jonctiune) — helperul
+# schimba DOAR mesajul, nu decizia. Apelat guardat (if/&&), nu sub set -e aici.
+_concat_incompat_vfr_fps() {
+    local first="" nofps f vfr_seen=0
+    for f in "$@"; do
+        nofps=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,pix_fmt \
+            -of default=noprint_wrappers=1:nokey=1 "$f" 2>/dev/null | head -4 | paste -sd'|' -)
+        [[ -z "$nofps" ]] && return 1
+        if [[ -z "$first" ]]; then first="$nofps"
+        elif [[ "$nofps" != "$first" ]]; then return 1; fi
+        _is_vfr_source "$f" && vfr_seen=1
+    done
+    [[ "$vfr_seen" -eq 1 ]]
+}
+
 # ── Flow 2: Concat fișiere ────────────────────────────────────────────
 trimconcat_flow_concat() {
     scan_input_videos
@@ -821,7 +842,14 @@ trimconcat_flow_concat() {
         read -p "  Alege 1-2: " cmode
         [[ "$cmode" == "2" ]] && use_filter=1
     else
-        echo "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)."
+        # v86: pe taieturi VFR din acelasi clip doar fps-ul difera → mesaj onest
+        # (re-encode-ul e protectiv: fara el, jonctiunile ar avea timestamps corupte)
+        if _concat_incompat_vfr_fps "${selected[@]}"; then
+            echo "  ⚠ Sursele au frame-rate VARIABIL (VFR) → concat fara re-encode ar"
+            echo "    produce timestamps corupte la jonctiuni (sacadare la lipituri)."
+        else
+            echo "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)."
+        fi
         echo "  Re-encode OBLIGATORIU via concat filter."
         use_filter=1
     fi
@@ -1365,7 +1393,13 @@ trimconcat_flow_pipeline() {
     local smart_copy=0
     if ! check_concat_compat "${trimmed_files[@]}"; then
         use_filter=1
-        echo "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter"
+        # v86: pe taieturi VFR doar fps-ul difera → mesaj onest (paritate cu Concat)
+        if _concat_incompat_vfr_fps "${trimmed_files[@]}"; then
+            echo "  ⚠ Surse VFR (frame-rate variabil) → concat fara re-encode ar produce"
+            echo "    timestamps corupte la jonctiuni — folosesc concat filter"
+        else
+            echo "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter"
+        fi
         if (( audio_only == 1 )); then
             echo "  ⚠ Audio-only mode: concat filter cere video re-encode."
             echo "  → Fallback la full re-encode ($codec CRF $crf $preset)."

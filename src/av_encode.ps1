@@ -491,6 +491,29 @@ function Test-ConcatCompatibility {
     return $true
 }
 
+# v86: motivul incompatibilitatii — $true cand SINGURA diferenta de semnatura e
+# frame-rate-ul si macar o sursa e VFR. Pe taieturi din acelasi clip VFR r_frame_rate
+# variaza intre segmente (ex. 120/1 vs 60000/1001) desi codec/rez/pix_fmt sunt identice
+# → mesajul generic "codec/rez/fps diferit" deruteaza. Re-encode-ul ramane OBLIGATORIU
+# (validat empiric: concat demuxer pe taieturi VFR = coliziuni DTS la jonctiuni →
+# ffmpeg rescrie fortat timestamps → pacing stricat) — schimba DOAR mesajul, nu decizia.
+# Paritate cu _concat_incompat_vfr_fps (av_trimconcat.sh).
+function Test-ConcatIncompatVfrFps {
+    param([string[]]$files)
+    $first = $null; $vfrSeen = $false
+    foreach ($f in $files) {
+        $out = & ffprobe -v error -select_streams v:0 `
+            -show_entries stream=codec_name,width,height,pix_fmt `
+            -of default=noprint_wrappers=1:nokey=1 $f 2>$null | Select-Object -First 4
+        $noFps = ($out -join "|")
+        if (-not $noFps) { return $false }
+        if ($null -eq $first) { $first = $noFps }
+        elseif ($noFps -ne $first) { return $false }
+        if (Test-VfrSource -File $f) { $vfrSeen = $true }
+    }
+    return $vfrSeen
+}
+
 # ── v37: Flow Batch Trim (aceleași cuturi pe N fisiere) ───────────────
 function Invoke-BatchTrimFlow {
     $files = @(Get-TcInputVideos)
@@ -753,7 +776,14 @@ function Invoke-ConcatFlow {
         $cmode = Read-Host "  Alege 1-2"
         if ($cmode -eq "2") { $useFilter = $true }
     } else {
-        Write-Host "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)." -ForegroundColor Yellow
+        # v86: pe taieturi VFR din acelasi clip doar fps-ul difera → mesaj onest
+        # (re-encode-ul e protectiv: fara el, jonctiunile ar avea timestamps corupte)
+        if (Test-ConcatIncompatVfrFps ($selected | ForEach-Object { $_.FullName })) {
+            Write-Host "  ⚠ Sursele au frame-rate VARIABIL (VFR) → concat fara re-encode ar" -ForegroundColor Yellow
+            Write-Host "    produce timestamps corupte la jonctiuni (sacadare la lipituri)." -ForegroundColor Yellow
+        } else {
+            Write-Host "  ⚠ Fisierele NU sunt identice (codec/rez/fps/pix_fmt difera)." -ForegroundColor Yellow
+        }
         Write-Host "  Re-encode OBLIGATORIU via concat filter." -ForegroundColor Yellow
         $useFilter = $true
     }
@@ -1284,7 +1314,13 @@ function Invoke-PipelineFlow {
     $useFilter = -not (Test-ConcatCompatibility $trimmedFiles)
     $smartCopy = $false
     if ($useFilter) {
-        Write-Host "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter" -ForegroundColor Yellow
+        # v86: pe taieturi VFR doar fps-ul difera → mesaj onest (paritate cu Concat)
+        if (Test-ConcatIncompatVfrFps $trimmedFiles) {
+            Write-Host "  ⚠ Surse VFR (frame-rate variabil) → concat fara re-encode ar produce" -ForegroundColor Yellow
+            Write-Host "    timestamps corupte la jonctiuni — folosesc concat filter" -ForegroundColor Yellow
+        } else {
+            Write-Host "  ⚠ Fisiere cu codec/rez/fps diferit — folosesc concat filter" -ForegroundColor Yellow
+        }
         if ($audioOnly) {
             Write-Host "  ⚠ Audio-only mode: concat filter cere video re-encode." -ForegroundColor Yellow
             Write-Host "  → Fallback la full re-encode ($codec CRF $crf $preset)." -ForegroundColor Yellow
