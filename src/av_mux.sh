@@ -192,18 +192,41 @@ remux_display_and_select() {
         echo ""
         echo "AUDIO ($acount):"
         rel=0
+        local -a audio_compat_list=()
         for abs_idx in "${REMUX_AUDIO_INDICES[@]}"; do
             info="${REMUX_STREAMS[$abs_idx]}"
             IFS='|' read -r _ codec lang title extra <<< "$info"
             compat=$(remux_stream_compat "$codec" audio "$target")
+            audio_compat_list+=("$compat")
             local warn=""
-            [[ "$compat" == "drop" ]] && warn=" ⚠ incompat → drop"
+            if [[ "$compat" == "drop" ]]; then
+                warn=" ⚠ incompat → drop"
+                # v87: pierderea e mai grava cand pista poarta obiecte spatiale — spune-o AICI,
+                # la momentul selectiei (notele preflight level-1 nu se afiseaza pe acest flux)
+                case "$(_audio_spatial_kind "$file" "$rel" || true)" in
+                    atmos) warn=" ⚠ incompat → drop (Dolby Atmos! foloseste MKV ca s-o pastrezi)" ;;
+                    dtsx)  warn=" ⚠ incompat → drop (DTS:X! foloseste MKV ca s-o pastrezi)" ;;
+                esac
+            fi
             printf "  %2d) %-10s %-6s %s%s%s\n" "$((rel+1))" "$codec" "${extra}" "${lang:+[$lang] }" "${title}" "$warn"
             rel=$((rel+1))
         done
         read -p "Pastreaza audio (ex: 1,3 sau ALL/NONE) [ALL]: " inp
         local picks; picks=$(mux_parse_selection "$inp" "$acount") || { echo "Selectie invalida."; return 1; }
         SELECTED_AUDIO_REL=($picks)
+        # v87 FIX pre-existent (v49): drop-ul promis in afisaj ("⚠ incompat → drop") NU se
+        # aplica efectiv la AUDIO — pistele incompatibile selectate (ALL sau explicit)
+        # intrau in comanda ffmpeg → "Could not write header" → remux esuat COMPLET
+        # (0 output). Mirror-ul mecanismului de la subtitrari (compat memorat + aplicat).
+        local -a _audio_kept=()
+        for rel in "${SELECTED_AUDIO_REL[@]}"; do
+            if [[ "${audio_compat_list[$rel]:-copy}" == "drop" ]]; then
+                echo "  → pista audio $((rel+1)) incompatibila cu .$target — dropata"
+            else
+                _audio_kept+=("$rel")
+            fi
+        done
+        SELECTED_AUDIO_REL=("${_audio_kept[@]}")
     else
         echo ""
         echo "AUDIO: niciun stream."
@@ -354,6 +377,9 @@ remux_run_for_file() {
     # chiar si la MP4→MP4). _dv_resignal_copy: detecteaza DV pe sursa + extrage raw din
     # output + dispatch (mkvmerge/MP4Box). No-op pe non-DV / non-ISO/mkv / unealta lipsa.
     _dv_resignal_copy "$file" "$final_out" "$target"
+    # v87: pe MP4/MOV cu pista E-AC-3 Atmos copiata, ffmpeg scrie dec3 FARA extensia
+    # JOC → re-scrie semnalizarea de container (analog dvcC). No-op pe MKV/non-Atmos.
+    _atmos_mp4_signal "$final_out"
     local end_ts=$(date +%s)
     local sz_orig sz_new
     sz_orig=$(av_stat_size "$file" 2>/dev/null || echo 0)
@@ -630,11 +656,17 @@ demux_display_and_select() {
     if [ "$acount" -gt 0 ]; then
         echo ""
         echo "AUDIO STREAMS ($acount):"
-        local rel=0 info codec lang title extra
+        local rel=0 info codec lang title extra _spmark
         for abs_idx in "${REMUX_AUDIO_INDICES[@]}"; do
             info="${REMUX_STREAMS[$abs_idx]}"
             IFS='|' read -r _ codec lang title extra <<< "$info"
-            printf "  %2d) %-10s %-6s %s%s\n" "$((rel+1))" "$codec" "${extra}" "${lang:+[$lang] }" "${title}"
+            # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) — extract=copy le pastreaza
+            _spmark=""
+            case "$(_audio_spatial_kind "$file" "$rel" || true)" in
+                atmos) _spmark="  ← ATMOS" ;;
+                dtsx)  _spmark="  ← DTS:X" ;;
+            esac
+            printf "  %2d) %-10s %-6s %s%s%s\n" "$((rel+1))" "$codec" "${extra}" "${lang:+[$lang] }" "${title}" "$_spmark"
             rel=$((rel+1))
         done
         read -p "Extrage audio (ex: 1,3 sau ALL/NONE) [ALL]: " inp
@@ -1559,6 +1591,8 @@ mux_flow() {
     if [[ -n "$_dv_raw_src" ]]; then
         _dv_container_signal "$_dv_raw_src" "$final_out" "$TARGET"
     fi
+    # v87: semnalizare Atmos de container pe MP4/MOV (dec3 JOC). No-op pe MKV/non-Atmos.
+    _atmos_mp4_signal "$final_out"
     local end_ts; end_ts=$(date +%s)
     local sz_new; sz_new=$(av_stat_size "$final_out" 2>/dev/null || echo 0)
     echo "  ✓ Mux OK in $((end_ts-start_ts))s | output: $((sz_new/1024/1024)) MB"

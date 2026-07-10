@@ -299,24 +299,11 @@ for file in "${FILES[@]}"; do
             ;;
     esac
 
-    # Avertizari metadata TrueHD/DTS la re-encode (per fisier, in log)
-    audio_codecs_check=$(ffprobe -v error -select_streams a \
-        -show_entries stream=codec_name \
-        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
-    audio_profile_check=$(ffprobe -v error -select_streams a \
-        -show_entries stream=profile \
-        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
-    if echo "$audio_codecs_check" | grep -qi "truehd"; then
-        echo "  ⚠ ATENTIE: Sursa contine TrueHD." | tee -a "$LOG_FILE"
-        echo "    Metadata Dolby Atmos (obiecte spatiale) se va pierde la re-encode." | tee -a "$LOG_FILE"
-    fi
-    if echo "$audio_codecs_check" | grep -qi "dts"; then
-        if echo "$audio_profile_check" | grep -qi "DTS-HD MA\|DTS:X"; then
-            echo "  ⚠ ATENTIE: Sursa contine DTS-HD MA / DTS:X — metadata lossless/spatiala se va pierde." | tee -a "$LOG_FILE"
-        else
-            echo "  ⚠ ATENTIE: Sursa contine DTS — metadata DTS se va pierde la re-encode." | tee -a "$LOG_FILE"
-        fi
-    fi
+    # Avertizari metadata TrueHD/DTS la re-encode (per fisier, in log).
+    # v87: delegat la _warn_audio_metadata (av_common.sh) — mesajul TrueHD e onest
+    # (lossless→lossy, fara afirmatia oarba "Atmos" pe TrueHD simplu); Atmos-ul REAL
+    # e detectat per-pista si tratat de garda din handle_multi_audio_dialog (mai jos).
+    _warn_audio_metadata "$file"
 
     echo "  Audio: $AUDIO_CODEC ${A_BR:-lossless} | Canale sursa: $SRC_CHANNELS"
 
@@ -396,6 +383,8 @@ for file in "${FILES[@]}"; do
         # v78: audio-only copiaza video-ul 1:1 (-c:v copy) → djmd ramane valid temporal →
         # re-grefeaza GPS-ul nativ DJI (ffmpeg dropeaza djmd codec=none). No-op pe non-DJI / non-ISO.
         _dji_preserve_meta_postencode "$file" "$output"
+        # v87: pista E-AC-3 Atmos copiata (garda spatiala) pe MP4/MOV → re-scrie dec3 JOC.
+        _atmos_mp4_signal "$output"
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
         echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"

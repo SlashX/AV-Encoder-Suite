@@ -330,6 +330,30 @@ function Invoke-ApvHdr10PlusProbe {
     return $result
 }
 
+# v87: detecteaza audio spatial cu obiecte (Atmos / DTS:X) pe O pista — copie standalone
+# (av_check.ps1 nu importa av_encode.ps1; mirror exact Get-AudioSpatialKind/av_encode +
+# _audio_spatial_kind/bash). Returneaza "atmos"/"dtsx"/"" din stream=profile ("… + Dolby
+# Atmos" / "DTS-HD MA + DTS:X"); retry probe 25M pe profil necunoscut (edge-case validat:
+# tonul Dolby TrueHD 9.1.6). Auro-3D = steganografic in LSB → nedetectabil, doar copy.
+function Get-AudioSpatialKind {
+    param([string]$File, [int]$AIdx = 0)
+    $codec = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=codec_name `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $codec = if ($codec.Count -gt 0) { "$($codec[0])".Trim() } else { "" }
+    if ($codec -notin @("eac3","truehd","dts")) { return "" }
+    $prof = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=profile `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    if (-not $p -or $p -eq "unknown") {
+        $prof = @(& ffprobe -v error -analyzeduration 25M -probesize 25M -select_streams "a:$AIdx" `
+            -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    }
+    if ($p -match "Dolby Atmos") { return "atmos" }
+    if ($p -match "DTS:X")       { return "dtsx" }
+    return ""
+}
+
 function Get-LogProfile {
     param([string]$file, [bool]$isDji)
     $allTags = & ffprobe -v error -show_entries format_tags `
@@ -445,6 +469,13 @@ foreach ($f in $inputFiles) {
     }
     $audioLangRaw = & ffprobe -v error -select_streams a:0 -show_entries stream_tags=language -of csv=p=0 $f.FullName 2>$null | Select-Object -First 1
     $audioLang = if ($audioLangRaw) { $audioLangRaw.Trim() } else { "und" }
+    # v87: eticheta audio spatial pe pista principala (Atmos / DTS:X)
+    if ($ac) {
+        switch (Get-AudioSpatialKind -File $f.FullName -AIdx 0) {
+            "atmos" { $ac = "$ac (Atmos)" }
+            "dtsx"  { $ac = "$ac (DTS:X)" }
+        }
+    }
     $fsMB = [math]::Round($f.Length / 1MB, 1)
     $fpsRaw = Get-FFprobeValue $f.FullName "v:0" "avg_frame_rate"
     $bitrateRaw = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
@@ -487,6 +518,11 @@ foreach ($f in $inputFiles) {
                 if ($pair -match '^([^=]+)=(.*)$') { $kv[$matches[1]] = $matches[2] }
             }
             $tc = if ($kv['codec_name']) { $kv['codec_name'] } else { "N/A" }
+            # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) in detaliul per-track
+            switch (Get-AudioSpatialKind -File $f.FullName -AIdx $tIdx) {
+                "atmos" { $tc = "$tc (Atmos)" }
+                "dtsx"  { $tc = "$tc (DTS:X)" }
+            }
             $tbr = if ($kv['bit_rate'] -match '^\d+$') { [math]::Round([long]$kv['bit_rate'] / 1000) } else { "N/A" }
             $tsr = if ($kv['sample_rate'] -match '^\d+$') { [math]::Round([long]$kv['sample_rate'] / 1000, 1) } else { "N/A" }
             $tlayout = if ($kv['channel_layout']) { $kv['channel_layout'] } else { "$($kv['channels'])ch" }

@@ -11,11 +11,14 @@ $ENC = Get-Content (Join-Path $SRC "av_encode.ps1") -Raw
 Assert-Match $ENC ([regex]::Escape('Invoke-StreamCopy $f $outFile $mapFlags $container $LogFile $audioParams')) "#1: PS1 smart-copy paseaza audioParams (referinta paritate)"
 Assert-Match $ENC ([regex]::Escape('@("-c:v","copy") + $audioParams')) "#1: Invoke-StreamCopy = video copy + audio params"
 
-# ── 2. #4 — warning compat in concat (ambele cai: stream-copy + re-encode aArgs=copy) ──
-Assert-Match $ENC ([regex]::Escape('Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @()')) "#4: warning in concat (per sursa)"
-# de doua ori (stream-copy + aArgs copy)
+# ── 2. #4 — warning compat in concat pe calea unde copy E posibil (demuxer/stream-copy).
+#       v87 FIX: pe calea FILTER copy-ul audio nu exista (fallback aac obligatoriu —
+#       "Filtering and streamcopy cannot be used together") → warn-ul de acolo a fost
+#       scos ODATA CU optiunea; ramane doar pe demuxer, unde chiar se copiaza.
+Assert-Match $ENC ([regex]::Escape('Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @()')) "#4: warning in concat (per sursa, calea demuxer)"
 $cnt = ([regex]::Matches($ENC, [regex]::Escape('Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container'))).Count
-Assert-Eq 2 $cnt "#4: warning in AMBELE cai concat (stream-copy + re-encode copy)"
+Assert-Eq 1 $cnt "#4: warning DOAR pe calea demuxer (v87: pe filter copy e imposibil → fallback aac)"
+Assert-Match $ENC ([regex]::Escape('Audio copy nu functioneaza cu concat filter')) "#4/v87: calea filter are fallback-ul onest in loc de copy"
 
 # ── 3. Functional — helper compat (mirror, reconfirmare) ──────────────
 . "$PSScriptRoot\..\_helpers.ps1"

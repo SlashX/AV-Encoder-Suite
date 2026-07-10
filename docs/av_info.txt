@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v86
+  Documentatie Setup & Utilizare — v87
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  205 fisiere totale (22 src + 18 tools + 6 profile + 3 burnin presets +
-  5 Python engines + 144 test_* scripts + 7 infra).
+  231 fisiere totale (22 src + 1 UI web + 18 tools + 6 profile +
+  3 burnin presets + 6 Python engines + 168 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -1227,6 +1227,55 @@ CUPRINS
 
   Util pentru batch-uri mixte (drone + anime + film = setari diferite).
   Nu apare la ultimul fisier. Nu apare in dry-run.
+
+
+  ─── 8.9. Audio spatial — Dolby Atmos / DTS:X (v87) ───
+
+  Formatele cu obiecte spatiale — Dolby Atmos (E-AC-3 JOC / TrueHD) si
+  DTS:X (peste DTS-HD MA) — NU pot fi create sau re-encodate cu unelte
+  libere: encoderele exista doar la Dolby / DTS (licentiate). Obiectele
+  traiesc in bitstream si supravietuiesc DOAR la copierea 1:1 a pistei;
+  o re-encodare le pierde definitiv, iar fisierul rezultat arata la fel
+  ("eac3") — pierdere invizibila.
+
+  Suita detecteaza automat pistele Atmos / DTS:X (validat pe tonurile
+  oficiale Dolby si DTS Sound Check) si:
+
+    - la encodare (meniul 1) si audio-only (meniul 2), cand o pista
+      spatiala urmeaza sa fie re-encodata, apare garda:
+        1) Copiaza pista 1:1 — pastreaza obiectele  [implicit]
+        2) Re-encodeaza cum ai ales — pierde obiectele
+      Pistele sunt marcate "← ATMOS" / "← DTS:X" in dialogul de
+      selectie per-pista.
+    - "Verifica media" eticheteaza pistele: eac3 (Atmos), dts (DTS:X).
+    - Demux marcheaza pistele spatiale; Remux avertizeaza explicit cand
+      o pista incompatibila cu containerul tinta e spatiala ("foloseste
+      MKV ca s-o pastrezi").
+    - Trim & Concat avertizeaza inainte de alegerea audio (la Concat
+      optiunea implicita e re-encodare AAC → alege "copy").
+
+  Bypass non-interactiv (CI / batch):
+    AV_ATMOS_POLICY=copy|reencode
+    AV_DTSX_POLICY=copy|reencode
+  Fara env, rularile non-interactive aleg COPY (nu se pierde nimic
+  tacut).
+
+  SEMNALIZARE DE CONTAINER (MP4/MOV): FFmpeg nu scrie extensia Atmos
+  in metadata containerului MP4 — playerele care decid dupa container
+  (ecosistemul Apple) nu ar activa Atmos, desi pista il contine. Cand
+  MP4Box (GPAC) e instalat (vezi tools/mp4box_installer), suita
+  re-scrie semnalizarea automat oriunde o pista E-AC-3 Atmos e copiata
+  intr-un MP4/MOV (encode / stream copy / audio-only / Trim & Concat
+  pe caile de copiere / Remux / Mux). Optional si silentios cand
+  lipseste — bitstream-ul ramane oricum intact, iar TV-urile si
+  playerele care citesc bitstream-ul vad Atmos si fara semnalizare.
+  Pe MKV nu e nevoie de nimic.
+
+  Nota Auro-3D: isi ascunde canalele de inaltime in bitii de sub
+  pragul audibil ai unei piste 5.1 normale (PCM / DTS-HD MA) —
+  nedetectabil fara decoderul licentiat. Copierea 1:1 il pastreaza;
+  orice re-encodare sau procesare audio (normalizare, downmix) il
+  pierde.
 
 
 ═══════════════════════════════════════════════════════════════

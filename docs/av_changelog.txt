@@ -3,9 +3,89 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v86 | 159 bug-uri fixate | 275+ features
-  229 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 173 teste [166 test_* + 7 infra]) | ~45000 linii cod+teste | ~7500 linii documentatie
+  TOTAL: v87 | 162 bug-uri fixate | 276+ features
+  231 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 175 teste [168 test_* + 7 infra]) | ~46000 linii cod+teste | ~7500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v87 — Audio spatial: Dolby Atmos si DTS:X pastrate si semnalizate
+═══════════════════════════════════════════════════════════════
+
+  Suita stie acum de audio-ul spatial cu obiecte — Dolby Atmos (E-AC-3
+  JOC / TrueHD) si DTS:X (peste DTS-HD MA). Aceste formate NU pot fi
+  create sau re-encodate cu unelte libere (encoderele exista doar la
+  Dolby / DTS, licentiate); obiectele traiesc in bitstream si
+  supravietuiesc DOAR la copierea 1:1 a pistei. Pana acum, o
+  re-encodare pierdea obiectele FARA niciun avertisment — fisierul
+  rezultat arata identic ("eac3"), dar Atmos-ul disparea.
+
+  ADD Detectie automata per-pista Dolby Atmos / DTS:X (din profilul
+        raportat de FFmpeg) — validata pe tonurile oficiale de test
+        Dolby (5.1.2 → 9.1.6) si DTS Sound Check, fara fals-pozitive
+        pe TrueHD / AC-3 / DTS-HD MA simple.
+
+  ADD Garda la encodare: cand o pista Atmos / DTS:X urmeaza sa fie
+        re-encodata (meniul 1 encode video+audio sau meniul 2
+        audio-only), suita intreaba si propune COPY (pastreaza
+        obiectele) ca optiune implicita. Pistele sunt marcate
+        "← ATMOS" / "← DTS:X" in dialogul de selectie per-pista.
+        Bypass non-interactiv: AV_ATMOS_POLICY / AV_DTSX_POLICY =
+        copy | reencode (fara env, rularile non-interactive aleg
+        copy — nu se pierde nimic tacut).
+
+  ADD Semnalizare Atmos de CONTAINER pe MP4/MOV — perechea audio a
+        semnalizarii Dolby Vision din v70-v72. FFmpeg nu scrie
+        extensia Atmos in metadata containerului MP4 → playerele care
+        decid dupa container (ecosistemul Apple) nu activau Atmos,
+        desi pista il continea intact in bitstream. Cand MP4Box
+        (GPAC) e instalat, suita re-scrie semnalizarea automat,
+        oriunde o pista E-AC-3 Atmos e copiata intr-un MP4/MOV:
+        encode, stream copy, audio-only, Trim & Concat (caile fara
+        re-encodare), Remux si Mux. Optional si silentios cand
+        MP4Box lipseste (bitstream-ul ramane oricum intact).
+
+  ADD Vizibilitate peste tot: "Verifica media" eticheteaza pistele
+        ("eac3 (Atmos)", "dts (DTS:X)", inclusiv per-track); Demux
+        marcheaza pistele spatiale in lista; Remux spune EXPLICIT
+        cand o pista care se pierde la schimbarea containerului e
+        Atmos / DTS:X ("foloseste MKV ca s-o pastrezi").
+
+  UPDATE Trim & Concat avertizeaza inainte de alegerea audio cand
+        sursele au piste spatiale — important mai ales la Concat,
+        unde optiunea implicita e re-encodare AAC (obiectele s-ar fi
+        pierdut tacut). Mesajele existente despre TrueHD / DTS-HD MA
+        sunt acum oneste: "lossless — re-encodarea e lossy" (inainte
+        afirmau "Atmos se pierde" pe ORICE TrueHD, si cand nu era
+        cazul).
+
+  FIX La Remux, pistele audio marcate "incompatibil → drop" NU erau
+        eliminate efectiv din comanda — o sursa cu TrueHD remux-ata
+        in MP4 cu selectia ALL esua complet (zero output). Acum
+        drop-ul promis chiar se aplica, iar remux-ul continua cu
+        pistele compatibile. (Prezent din v49.)
+
+  FIX In fluxul audio-only pe Windows, un conflict intern de
+        variabile facea ca al doilea fisier sarit dintr-un batch sa
+        arunce o eroare la contorizare. (Prezent din v68.)
+
+  FIX La Concat pe calea "re-encode via concat filter", optiunea
+        audio "copy" esua intregul concat (audio-ul trece obligatoriu
+        prin lantul de filtre, deci nu poate fi copiat) — zero output,
+        fara explicatie. Acum alegerea cade onest pe AAC 192k, cu
+        acelasi mesaj ca la Pipeline; iar pe surse spatiale mesajul
+        arata alternativa reala (uneste surse identice → stream copy).
+        (Prezent din v36/v60.)
+
+  Nota Auro-3D: al treilea format imersiv isi ascunde canalele de
+        inaltime in biti de sub pragul audibil ai pistei 5.1 (PCM /
+        DTS-HD MA) — invizibil pentru orice unealta fara decoderul
+        licentiat. Suita nu il poate detecta; copierea 1:1 il
+        pastreaza, orice re-encodare sau procesare audio il pierde.
+
+  Paritate completa bash + PowerShell pe toate punctele. Test nou
+  test_v87_spatial_audio (bash + PS1), validat prin meniurile reale
+  pe ambele platforme, pe tonurile oficiale Dolby si DTS.
 
 
 ═══════════════════════════════════════════════════════════════

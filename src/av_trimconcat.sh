@@ -395,6 +395,7 @@ trimconcat_flow_trim() {
             read -p "  Codec: " ec
             local codec="libx265"; [[ "$ec" == "2" ]] && codec="libx264"
             read -p "  CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+            _tc_warn_spatial_sources "$src"     # v87: Atmos/DTS:X → recomanda copy
             echo "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k"
             read -p "  Alege: " ac
             local aopt=(-c:a copy)
@@ -435,6 +436,8 @@ trimconcat_flow_trim() {
             if [[ -s "$out_path" ]]; then
                 local _tr_ext="${out_path##*.}"; _tr_ext="${_tr_ext,,}"
                 _dv_resignal_copy "$src" "$out_path" "$_tr_ext"
+                # v87: audio E-AC-3 Atmos copiat pe MP4/MOV → re-scrie dec3 JOC (no-op altfel)
+                _atmos_mp4_signal "$out_path"
             fi
         fi
 
@@ -527,6 +530,7 @@ trimconcat_flow_batch_trim() {
         read -p "  Alege: " ec
         [[ "$ec" == "2" ]] && re_codec="libx264"
         read -p "  CRF [default: 22]: " crf2; [[ -n "$crf2" ]] && re_crf=$crf2
+        _tc_warn_spatial_sources "${selected[@]}"   # v87: Atmos/DTS:X → recomanda copy
         echo "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k"
         read -p "  Alege: " ac
         [[ "$ac" == "2" ]] && re_aopt=(-c:a aac -b:a 192k)
@@ -603,6 +607,8 @@ trimconcat_flow_batch_trim() {
                 if [[ $rc -eq 0 && -s "$out_path" ]]; then
                     local _bt_ext="${out_path##*.}"; _bt_ext="${_bt_ext,,}"
                     _dv_resignal_copy "$src" "$out_path" "$_bt_ext"
+                    # v87: audio E-AC-3 Atmos copiat pe MP4/MOV → re-scrie dec3 JOC
+                    _atmos_mp4_signal "$out_path"
                 fi
             fi
             if [[ $rc -eq 0 && -f "$out_path" && -s "$out_path" ]]; then
@@ -711,6 +717,39 @@ _concat_incompat_vfr_fps() {
         _is_vfr_source "$f" && vfr_seen=1
     done
     [[ "$vfr_seen" -eq 1 ]]
+}
+
+# v87: avertisment INAINTE de alegerea audio cand sursele au piste cu obiecte
+# spatiale (Dolby Atmos / DTS:X) — re-encodarea audio le pierde definitiv (nu
+# exista encodere in ffmpeg), copy le pastreaza. Se opreste la primul gasit
+# (un singur mesaj); ieftin pe surse non-Dolby/DTS (_file_spatial_label early-out).
+_tc_warn_spatial_sources() {
+    local f found=""
+    for f in "$@"; do
+        found=$(_file_spatial_label "$f" || true)
+        [[ -n "$found" ]] && break
+    done
+    if [[ -n "$found" ]]; then
+        echo "  ⚠ Sursele au audio $found (obiecte spatiale) — alege COPY ca sa-l pastrezi;"
+        echo "    re-encodarea audio il pierde definitiv (nu exista encoder in ffmpeg)."
+    fi
+    return 0
+}
+
+# v87: varianta pt CONCAT FILTER — acolo audio-ul trece prin filtergraph → copy e
+# IMPOSIBIL tehnic ("Filtering and streamcopy cannot be used together") → mesajul
+# NU indeamna la copy, ci arata alternativa reala (demuxer pe surse identice).
+_tc_warn_spatial_filter_loss() {
+    local f found=""
+    for f in "$@"; do
+        found=$(_file_spatial_label "$f" || true)
+        [[ -n "$found" ]] && break
+    done
+    if [[ -n "$found" ]]; then
+        echo "  ⚠ Sursele au audio $found — concat filter RE-encodeaza audio, obiectele se pierd."
+        echo "    Pentru pastrare: uneste surse identice (Concat stream copy / demuxer)."
+    fi
+    return 0
 }
 
 # ── Flow 2: Concat fișiere ────────────────────────────────────────────
@@ -881,6 +920,8 @@ trimconcat_flow_concat() {
         if [[ -s "$out_path" ]]; then
             local _cc_ext="${out_path##*.}"; _cc_ext="${_cc_ext,,}"
             _dv_resignal_copy "${selected[0]}" "$out_path" "$_cc_ext"
+            # v87: audio E-AC-3 Atmos copiat pe MP4/MOV → re-scrie dec3 JOC (no-op altfel)
+            _atmos_mp4_signal "$out_path"
         fi
     else
         # Re-encode via concat filter
@@ -889,14 +930,19 @@ trimconcat_flow_concat() {
         read -p "  Codec: " ec
         local codec="libx265"; [[ "$ec" == "2" ]] && codec="libx264"
         read -p "  CRF [default: 22]: " crf; [[ -z "$crf" ]] && crf=22
+        _tc_warn_spatial_filter_loss "${selected[@]}"   # v87: pe filter copy e imposibil
         echo "  Audio: 1-aac 192k [default]  2-eac3 224k  3-copy"
         read -p "  Alege: " ac
         local aopt=(-c:a aac -b:a 192k)
         [[ "$ac" == "2" ]] && aopt=(-c:a eac3 -b:a 224k)
         [[ "$ac" == "3" ]] && aopt=(-c:a copy)
-        # v68: aopt=copy → audio copiat in containerul ales; avertizeaza incompatibilitatile
+        # v87 FIX pre-existent (v36/v60): pe ramura FILTER audio-ul iese din filtergraph
+        # ([outa]) → `-c:a copy` e imposibil ("Filtering and streamcopy cannot be used
+        # together") → concat esua COMPLET la alegerea 3. Fallback aac, mirror-ul
+        # gardei identice din Pipeline Pass 3.
         if [[ "${aopt[*]}" == "-c:a copy" ]]; then
-            for _cf in "${selected[@]}"; do warn_incompat_audio_copies "$_cf" "$container" ""; done
+            echo "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k."
+            aopt=(-c:a aac -b:a 192k)
         fi
 
         # v60: HDR detect agregat pe setul de fisiere (concat = N→1).
@@ -1206,6 +1252,7 @@ trimconcat_flow_pipeline() {
     else
         echo "  → Video: stream copy. Defaults fallback (dacă incompat): libx265 CRF 22 medium"
     fi
+    _tc_warn_spatial_sources "${chosen[@]}"     # v87: Atmos/DTS:X → recomanda 3-copy
     echo "Audio:"
     echo "  1) aac 192k [default]"
     echo "  2) eac3 224k"
@@ -1407,6 +1454,8 @@ trimconcat_flow_pipeline() {
         fi
         if [[ "${aopt[0]}" == "-c:a" && "${aopt[1]}" == "copy" ]]; then
             echo "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k."
+            # v87: pe surse cu Atmos/DTS:X fallback-ul pierde obiectele → spune-o onest
+            _tc_warn_spatial_filter_loss "${chosen[@]}"
             aopt=(-c:a aac -b:a 192k)
         fi
     else
@@ -1687,6 +1736,10 @@ trimconcat_flow_pipeline() {
     if (( smart_copy == 1 || audio_only == 1 )) && [[ -s "$out_path" ]]; then
         local _pl_ext="${out_path##*.}"; _pl_ext="${_pl_ext,,}"
         _dv_resignal_copy "${chosen[0]}" "$out_path" "$_pl_ext"
+    fi
+    # v87: audio E-AC-3 Atmos copiat pe MP4/MOV → re-scrie dec3 JOC (no-op altfel)
+    if [[ -s "$out_path" ]]; then
+        _atmos_mp4_signal "$out_path"
     fi
 
     av_wake_unlock

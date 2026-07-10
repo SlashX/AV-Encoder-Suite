@@ -453,6 +453,15 @@ for file in "${FILES[@]}"; do
     AUDIO_LAYOUT=$(_ai_field channel_layout)
     AUDIO_LANG=$(echo "$AUDIO_INFO" | awk -F= '$1=="TAG:language"{print $2; exit}')
 
+    # v87: eticheta audio spatial pe pista principala (Atmos / DTS:X) —
+    # _audio_spatial_kind din av_common.sh (sursat la linia 14); ieftin pe non-Dolby/DTS.
+    if [[ -n "$AUDIO_CODEC" ]]; then
+        case "$(_audio_spatial_kind "$file" 0 || true)" in
+            atmos) AUDIO_CODEC="$AUDIO_CODEC (Atmos)" ;;
+            dtsx)  AUDIO_CODEC="$AUDIO_CODEC (DTS:X)" ;;
+        esac
+    fi
+
     # Sample rate (Hz → kHz)
     AUDIO_SAMPLERATE_KHZ="N/A"
     [[ "$AUDIO_SAMPLERATE" =~ ^[0-9]+$ ]] && \
@@ -506,6 +515,11 @@ for file in "${FILES[@]}"; do
             [[ "$at_sr" =~ ^[0-9]+$ ]] && at_sr_k=$(awk "BEGIN{printf \"%.1f\", $at_sr/1000}")
             [[ -z "$at_layout" ]] && at_layout="${at_ch}ch"
             [[ -z "$at_lang" ]] && at_lang="und"
+            # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) in detaliul per-track
+            case "$(_audio_spatial_kind "$file" "$local_aidx" || true)" in
+                atmos) at_codec="${at_codec:-N/A} (Atmos)" ;;
+                dtsx)  at_codec="${at_codec:-N/A} (DTS:X)" ;;
+            esac
             AUDIO_TRACKS_DETAIL="${AUDIO_TRACKS_DETAIL}    Track $local_aidx: ${at_codec:-N/A} | ${at_br_k}kbps | ${at_sr_k}kHz | ${at_layout} | ${at_lang}\n"
             local_aidx=$((local_aidx + 1))
         done < <(ffprobe -v error -select_streams a \

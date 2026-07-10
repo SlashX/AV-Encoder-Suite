@@ -376,6 +376,7 @@ function Invoke-TrimFlow {
             $codec = if ($ec -eq "2") { "libx264" } else { "libx265" }
             $crf = Read-Host "  CRF [default: 22]"
             if (-not $crf) { $crf = "22" }
+            Show-TcSpatialWarning -Files @($src.FullName)   # v87: Atmos/DTS:X -> recomanda copy
             Write-Host "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k" -ForegroundColor Cyan
             $ac = Read-Host "  Alege"
             $aArgs = @("-c:a","copy")
@@ -412,6 +413,8 @@ function Invoke-TrimFlow {
             # (DOAR pe stream-copy; re-encode refuza/tonemap DV).
             if (Test-Path $outPath) {
                 Invoke-DvResignalCopy -Source $src.FullName -Output $outPath -Target ([System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant())
+                # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC (no-op altfel)
+                Invoke-AtmosMp4Signal -File $outPath
             }
         }
 
@@ -583,6 +586,7 @@ function Invoke-BatchTrimFlow {
         if ($ec -eq "2") { $reCodec = "libx264" }
         $c2 = Read-Host "  CRF [default: 22]"
         if ($c2) { $reCrf = $c2 }
+        Show-TcSpatialWarning -Files @($selected | ForEach-Object { $_.FullName })   # v87
         Write-Host "  Audio: 1-copy [default]  2-aac 192k  3-eac3 224k" -ForegroundColor Cyan
         $ac = Read-Host "  Alege"
         if ($ac -eq "2") { $reAArgs = @("-c:a","aac","-b:a","192k") }
@@ -647,6 +651,8 @@ function Invoke-BatchTrimFlow {
                 # v71: batch trim stream-copy al unui DV HEVC -> re-scrie dvcC (DOAR stream-copy)
                 if ($rc -eq 0 -and (Test-Path $outPath)) {
                     Invoke-DvResignalCopy -Source $src.FullName -Output $outPath -Target ([System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant())
+                    # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC
+                    Invoke-AtmosMp4Signal -File $outPath
                 }
             }
             if ($rc -eq 0 -and (Test-Path $outPath) -and ((Get-Item $outPath).Length -gt 0)) {
@@ -810,6 +816,8 @@ function Invoke-ConcatFlow {
         if (Test-Path $outPath) {
             $ccExt = [System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant()
             Invoke-DvResignalCopy -Source $selected[0].FullName -Output $outPath -Target $ccExt
+            # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC (no-op altfel)
+            Invoke-AtmosMp4Signal -File $outPath
         }
     } else {
         Write-Host ""
@@ -818,14 +826,17 @@ function Invoke-ConcatFlow {
         $codec = if ($ec -eq "2") { "libx264" } else { "libx265" }
         $crf = Read-Host "  CRF [default: 22]"
         if (-not $crf) { $crf = "22" }
+        Show-TcSpatialFilterLoss -Files @($selected | ForEach-Object { $_.FullName })   # v87: pe filter copy e imposibil
         Write-Host "  Audio: 1-aac 192k [default]  2-eac3 224k  3-copy" -ForegroundColor Cyan
         $ac = Read-Host "  Alege"
         $aArgs = @("-c:a","aac","-b:a","192k")
         if ($ac -eq "2") { $aArgs = @("-c:a","eac3","-b:a","224k") }
         if ($ac -eq "3") {
-            $aArgs = @("-c:a","copy")
-            # v68: aopt=copy → audio copiat in containerul ales; avertizeaza incompatibilitatile
-            foreach ($s in $selected) { Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @() }
+            # v87 FIX pre-existent (v36/v60): pe ramura FILTER audio-ul iese din filtergraph
+            # ([outa]) → `-c:a copy` e imposibil ("Filtering and streamcopy cannot be used
+            # together") → concat esua COMPLET la alegerea 3. Fallback aac, mirror Pipeline.
+            Write-Host "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k." -ForegroundColor Yellow
+            $aArgs = @("-c:a","aac","-b:a","192k")
         }
 
         # v60: HDR detect agregat pe setul de fisiere (concat = N->1).
@@ -1142,6 +1153,7 @@ function Invoke-PipelineFlow {
     } else {
         Write-Host "  → Video: stream copy. Defaults fallback (dacă incompat): libx265 CRF 22 medium" -ForegroundColor Gray
     }
+    Show-TcSpatialWarning -Files @($chosen | ForEach-Object { $_.FullName })   # v87: recomanda 3-copy
     Write-Host "Audio:" -ForegroundColor Cyan
     Write-Host "  1) aac 192k [default]"
     Write-Host "  2) eac3 224k"
@@ -1328,6 +1340,8 @@ function Invoke-PipelineFlow {
         }
         if ($aArgs.Count -ge 2 -and $aArgs[0] -eq "-c:a" -and $aArgs[1] -eq "copy") {
             Write-Host "  ⚠ Audio copy nu functioneaza cu concat filter. Fallback: aac 192k." -ForegroundColor Yellow
+            # v87: pe surse cu Atmos/DTS:X fallback-ul pierde obiectele -> spune-o onest
+            Show-TcSpatialFilterLoss -Files @($chosen | ForEach-Object { $_.FullName })
             $aArgs = @("-c:a","aac","-b:a","192k")
         }
     } else {
@@ -1594,6 +1608,8 @@ function Invoke-PipelineFlow {
         $plExt = [System.IO.Path]::GetExtension($outPath).TrimStart('.').ToLowerInvariant()
         Invoke-DvResignalCopy -Source $chosen[0].FullName -Output $outPath -Target $plExt
     }
+    # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC (no-op altfel)
+    if (Test-Path $outPath) { Invoke-AtmosMp4Signal -File $outPath }
 
     Remove-TempSubdirSafe $subdir $outPath
     # v61: HDR10+ JSON sta in $AV_TEMP_DIR (nu in $subdir) — cleanup explicit
@@ -2136,6 +2152,113 @@ function Get-TrackAudioArgs {
         "pcm"  { return @("-c:a:$Idx","pcm_s${BaseBr}") + $dm }
         default { return @("-c:a:$Idx","aac","-b:a:$Idx","192k") + $dm }
     }
+}
+
+# v87: detecteaza audio SPATIAL cu obiecte pe O pista (index a:N) — mirror bash
+# _audio_spatial_kind. Returneaza "atmos" (E-AC-3 + JOC / TrueHD + Atmos), "dtsx"
+# (DTS:X peste DTS-HD MA) sau "" — obiectele traiesc ca extensie IN bitstream;
+# decoderul ffmpeg expune profilul prin stream=profile ("… + Dolby Atmos" /
+# "DTS-HD MA + DTS:X"), validat pe tonurile oficiale Dolby + DTS Sound Check,
+# zero fals-pozitive pe TrueHD/AC-3/DTS-HD MA simple. EDGE-CASE (tonul TrueHD
+# 9.1.6): probe default → unknown → retry 25M DOAR pe profil necunoscut. NOTA
+# Auro-3D: height-ul e steganografic in LSB (arata ca MA/PCM 5.1 normal) →
+# NEdetectabil fara decoder licentiat; doar copy il pastreaza.
+function Get-AudioSpatialKind {
+    param([string]$File, [int]$AIdx = 0)
+    $codec = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=codec_name `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $codec = if ($codec.Count -gt 0) { "$($codec[0])".Trim() } else { "" }
+    if ($codec -notin @("eac3","truehd","dts")) { return "" }
+    $prof = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=profile `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    if (-not $p -or $p -eq "unknown") {
+        $prof = @(& ffprobe -v error -analyzeduration 25M -probesize 25M -select_streams "a:$AIdx" `
+            -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    }
+    if ($p -match "Dolby Atmos") { return "atmos" }
+    if ($p -match "DTS:X")       { return "dtsx" }
+    return ""
+}
+
+# v87: eticheta umana pt tipul spatial (mesaje gard + marcaje) — mirror _spatial_label.
+function Get-SpatialLabel {
+    param([string]$Kind)
+    switch ($Kind) { "atmos" { "Dolby Atmos" } "dtsx" { "DTS:X" } default { $Kind } }
+}
+
+# v87: eticheta primei piste spatiale dintr-un fisier ("Dolby Atmos"/"DTS:X"/"") —
+# mirror _file_spatial_label (bash). Folosit de warn-urile trim/concat/pipeline.
+function Get-FileSpatialLabel {
+    param([Parameter(Mandatory)][string]$File)
+    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    if (-not $nb) { return "" }
+    for ($n = 0; $n -lt $nb; $n++) {
+        $k = Get-AudioSpatialKind -File $File -AIdx $n
+        if ($k) { return (Get-SpatialLabel $k) }
+    }
+    return ""
+}
+
+# v87: avertisment INAINTE de alegerea audio la Trim/Concat/Pipeline cand sursele au
+# piste cu obiecte spatiale — mirror _tc_warn_spatial_sources (bash). Un singur mesaj.
+function Show-TcSpatialWarning {
+    param([string[]]$Files)
+    $found = ""
+    foreach ($f in $Files) {
+        $found = Get-FileSpatialLabel -File $f
+        if ($found) { break }
+    }
+    if ($found) {
+        Write-Host "  ⚠ Sursele au audio $found (obiecte spatiale) — alege COPY ca sa-l pastrezi;" -ForegroundColor Yellow
+        Write-Host "    re-encodarea audio il pierde definitiv (nu exista encoder in ffmpeg)." -ForegroundColor Yellow
+    }
+}
+
+# v87: varianta pt CONCAT FILTER — acolo audio-ul trece prin filtergraph → copy e
+# IMPOSIBIL tehnic → mesajul NU indeamna la copy, ci arata alternativa reala
+# (demuxer pe surse identice). Mirror _tc_warn_spatial_filter_loss (bash).
+function Show-TcSpatialFilterLoss {
+    param([string[]]$Files)
+    $found = ""
+    foreach ($f in $Files) {
+        $found = Get-FileSpatialLabel -File $f
+        if ($found) { break }
+    }
+    if ($found) {
+        Write-Host "  ⚠ Sursele au audio $found — concat filter RE-encodeaza audio, obiectele se pierd." -ForegroundColor Yellow
+        Write-Host "    Pentru pastrare: uneste surse identice (Concat stream copy / demuxer)." -ForegroundColor Yellow
+    }
+}
+
+# v87: garda audio spatial — mirror bash _ask_spatial_guard. $true = copy (pastreaza
+# obiectele) / $false = re-encode (pierde). Obiectele Atmos/DTS:X NU pot fi regenerate
+# (encoderele exista doar in uneltele licentiate Dolby / DTS-Xperi; ffmpeg nu le are) —
+# pierderea e invizibila (fisierul rezultat arata la fel). Bypass per tip:
+# AV_ATMOS_POLICY / AV_DTSX_POLICY = copy|reencode; non-interactiv fara env → copy.
+function Read-SpatialGuardChoice {
+    param([string]$Tracks, [string]$Kind = "atmos")
+    $label = Get-SpatialLabel $Kind
+    $envName = if ($Kind -eq "dtsx") { "AV_DTSX_POLICY" } else { "AV_ATMOS_POLICY" }
+    $policy = if ($Kind -eq "dtsx") { "$($env:AV_DTSX_POLICY)" } else { "$($env:AV_ATMOS_POLICY)" }
+    switch ($policy.ToLowerInvariant()) {
+        "copy"     { return $true }
+        "reencode" { return $false }
+    }
+    if ($env:AV_NONINTERACTIVE -eq "1" -or [Console]::IsInputRedirected) {
+        Write-Host "  ⚠ Pista(e) $Tracks = ${label}: non-interactiv → COPY (pastreaza $label)." -ForegroundColor Yellow
+        Write-Host "    Pentru re-encode (pierde $label): $envName=reencode" -ForegroundColor Yellow
+        return $true
+    }
+    Write-Host ""
+    Write-Host "  ⚠ Pista(e) $Tracks = $label (obiecte spatiale in bitstream)." -ForegroundColor Yellow
+    Write-Host "    Re-encodarea PIERDE definitiv obiectele $label — nu exista encoder" -ForegroundColor Yellow
+    Write-Host "    $label in ffmpeg (doar uneltele licentiate il pot genera)." -ForegroundColor Yellow
+    Write-Host "  1) Copiaza pista(ele) $label 1:1 — pastreaza $label  [implicit]" -ForegroundColor White
+    Write-Host "  2) Re-encodeaza cum ai ales — pierde $label" -ForegroundColor White
+    $c = Read-Host "  Alege [implicit: 1]"
+    return ($c -ne "2")
 }
 
 # v68: compat codec audio vs container la COPY (mirror al matricei remux_stream_compat
@@ -2896,6 +3019,8 @@ function Invoke-StreamCopy {
     # v78: stream-copy al unei surse DJI -> ffmpeg dropeaza djmd (codec=none) -> re-grefeaza
     # GPS-ul nativ pe MP4/MOV (acelasi hook ca pe calea de encode). No-op pe non-DJI / non-ISO.
     Invoke-DjiPreserveMetaPostEncode -Source $fileInfo.FullName -Output $outFile
+    # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC (no-op altfel)
+    Invoke-AtmosMp4Signal -File $outFile
 
     # Stats
     $newSize = (Get-Item $outFile).Length
@@ -4265,6 +4390,75 @@ function Invoke-DvResignalCopy {
         Invoke-DvContainerSignal -Raw $raw -Built $Output -Target $Target -DvRef $Source
     }
     if (Test-Path $raw) { Remove-Item $raw -Force -ErrorAction SilentlyContinue }
+}
+
+# v87: semnalizare Atmos de CONTAINER pe MP4/MOV (mirror _atmos_mp4_signal bash; analogul
+# dvcC v70-v72 pt audio). ffmpeg NU scrie extensia JOC in box-ul dec3 la mux/copy (validat:
+# Size=14, fara ExtendedConfig) → playerele care decid dupa box (ecosistem Apple) nu vad
+# Atmos, desi bitstream-ul il are. MP4Box la import raw .ec3 o scrie corect ("ATMOS
+# complexity index type 16"). Per pista eac3-Atmos: extract raw → rebuild -rem <tid> -add
+# raw(+lang) → move atomic. Soft-fail: output NEATINS; no-op pe MKV / unealta lipsa /
+# non-Atmos / deja semnalizat / start_time != 0 (raw re-add ar pierde edit-list-ul).
+function Invoke-AtmosMp4Signal {
+    param([Parameter(Mandatory)][string]$File)
+    $ext = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLowerInvariant()
+    if ($ext -notin @('mp4','mov','m4v')) { return }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return }
+    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    if (-not $nb) { return }
+    # deja semnalizat? Check O DATA, la nivel de fisier, INAINTE de bucla — in bucla
+    # ar opri gresit dupa PRIMA pista pe fisiere cu mai multe piste Atmos (limbi).
+    # NB: GPAC scrie -info pe STDERR → 2>&1 obligatoriu.
+    $info = (& $mux -info $File 2>&1) -join "`n"
+    if ($info -match 'ATMOS complexity') { return }
+    # FAZA 1: colecteaza pistele Atmos + extrage TOATE raw-urile cu indexurile
+    # ORIGINALE (dupa un rebuild indexurile a:N se schimba — pista re-adaugata merge
+    # la coada). UN SINGUR rebuild la final (tid-urile ISO raman valabile la -add file).
+    $dir = Split-Path $File -Parent
+    $rebuild = New-Object System.Collections.Generic.List[string]
+    $raws = @(); $sigged = @()
+    for ($n = 0; $n -lt $nb; $n++) {
+        if ((Get-AudioSpatialKind -File $File -AIdx $n) -ne 'atmos') { continue }
+        # offset de start (tipic pe trim-uri) → PASTRAT prin optiunea MP4Box `:delay=<ms>`
+        # (raw-ul singur l-ar pierde → desync; validat: 0.042s → 0.0417s, sub 1/2 frame EC3)
+        $st = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream=start_time -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $stv = if ($st.Count -gt 0) { "$($st[0])".Trim() } else { "" }
+        $dlyOpt = ""
+        if ($stv -match '^[0-9.]+$') {
+            $stD = [double]::Parse($stv, [System.Globalization.CultureInfo]::InvariantCulture)
+            if ($stD -gt 0.001) { $dlyOpt = ":delay=" + [math]::Round($stD * 1000) }
+        }
+        $idhex = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream=id -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $idv = if ($idhex.Count -gt 0) { "$($idhex[0])".Trim() } else { "" }
+        if ($idv -notmatch '^0x[0-9a-fA-F]+$') { continue }
+        $tid = [Convert]::ToInt32($idv.Substring(2), 16)
+        $lang = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream_tags=language -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $langv = if ($lang.Count -gt 0) { "$($lang[0])".Trim() } else { "" }
+        # temp-uri CO-LOCATE cu fisierul (acelasi drive → move atomic; regula no-$env:TEMP)
+        $raw = Join-Path $dir ("atmossig_" + [guid]::NewGuid().ToString("N") + ".ec3")
+        & ffmpeg -y -v error -i $File -map "0:a:$n" -c copy -f eac3 $raw 2>$null
+        if (-not ((Test-Path $raw) -and (Get-Item $raw).Length -gt 0)) {
+            if (Test-Path $raw) { Remove-Item $raw -Force -ErrorAction SilentlyContinue }
+            continue
+        }
+        $rebuild.Add("-rem"); $rebuild.Add("$tid")
+        $rebuild.Add("-add")
+        $addSpec = $raw + $dlyOpt
+        if ($langv -match '^[a-zA-Z]{3}$') { $addSpec += ":lang=$langv" }
+        $rebuild.Add($addSpec)
+        $raws += $raw
+        $sigged += "a:$n"
+    }
+    if ($raws.Count -eq 0) { return }
+    # FAZA 2: UN SINGUR rebuild cu toate -rem/-add. Soft-fail: output NEATINS.
+    $tmp = Join-Path $dir ("atmossig_" + [guid]::NewGuid().ToString("N") + "." + $ext)
+    & $mux -add $File @rebuild -new $tmp 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {
+        Move-Item -Force $tmp $File
+        Write-Host ("  Semnalizare Atmos scrisa in container (dec3 JOC) — pista(e) {0}" -f ($sigged -join " ")) -ForegroundColor Green
+    } elseif (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    foreach ($r in $raws) { Remove-Item $r -Force -ErrorAction SilentlyContinue }
 }
 
 function Invoke-HdvCombineWithOriginal {
@@ -5778,9 +5972,23 @@ if ($mainChoice -eq "2") {
 
         # v67: selectie audio per-pista (>1 pista) — env AV_AUDIO_TRACKS sau dialog.
         # Override $eaAP (copy-first + scaling per-canale) + $eaSkipMaps (negative maps).
+        # v87 FIX pre-existent (v68): lista pistelor sarite era `$eaSkip` — COLIZIUNE cu
+        # contorul de fisiere sarite ($eaSkip++ la SKIP-output-exista) → dupa primul fisier
+        # procesat contorul devenea array si `++` arunca eroare runtime. Redenumita $eaSkipIn.
         $eaSkipMaps = @()
-        $eaReenc = @(0); $eaSkip = @()   # v68: indecsi INPUT re-encodati / sariti (compat warn)
+        $eaReenc = @(0); $eaSkipIn = @()   # v68: indecsi INPUT re-encodati / sariti (compat warn)
         $eaTrackCount = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $f.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
+        # v87: detectie audio spatial per-pista (refolosita la afisaj + garda; mirror fluxul principal)
+        $eaSpatial = @{}
+        for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSpatial[$ai] = (Get-AudioSpatialKind -File $f.FullName -AIdx $ai) }
+        if ($eaTrackCount -le 1 -and $eaSpatial[0]) {
+            # v87: garda single-track — $eaAP are deja `-c:a:0 <codec>`; pe Atmos/DTS:X oferim copy.
+            if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $eaSpatial[0]) {
+                $eaAP = @("-c:a","copy")
+                $eaReenc = @()
+                Write-Host "  Audio: pista $(Get-SpatialLabel $eaSpatial[0]) pastrata prin copy (fara re-encode)" -ForegroundColor Green
+            }
+        }
         if ($eaTrackCount -gt 1) {
             $eaSel = @{}; $eaUseSel = $false
             if ($env:AV_AUDIO_TRACKS -or $env:AV_AUDIO_DROP) {
@@ -5796,7 +6004,9 @@ if ($mainChoice -eq "2") {
                 $eaI = 0
                 foreach ($ln in ($eaAtList -split "`n" | Where-Object { $_ })) {
                     $p = $ln -split ','
-                    Write-Host ("     a:{0}  {1}  {2}ch  {3}" -f $eaI, $(if ($p.Count -gt 1) { $p[1] } else { '?' }), $(if ($p.Count -gt 2) { $p[2] } else { '?' }), $(if ($p.Count -gt 3 -and $p[3]) { $p[3] } else { 'und' })) -ForegroundColor White
+                    # v87: marcheaza pistele cu obiecte spatiale
+                    $eaMark = switch ($eaSpatial[$eaI]) { "atmos" { "  ← ATMOS" } "dtsx" { "  ← DTS:X" } default { "" } }
+                    Write-Host ("     a:{0}  {1}  {2}ch  {3}{4}" -f $eaI, $(if ($p.Count -gt 1) { $p[1] } else { '?' }), $(if ($p.Count -gt 2) { $p[2] } else { '?' }), $(if ($p.Count -gt 3 -and $p[3]) { $p[3] } else { 'und' }), $eaMark) -ForegroundColor White
                     $eaI++
                 }
                 Write-Host "  1) Track 0 re-encode, restul copy [impl]   2) Selecteaza (E/C/S)" -ForegroundColor Cyan
@@ -5810,19 +6020,40 @@ if ($mainChoice -eq "2") {
                         if ($cc -in @("E","C","S")) { $eaSel[$ai] = $cc } else { $eaSel[$ai] = $def }
                     }
                     $eaUseSel = $true
+                } elseif ($eaSpatial[0]) {
+                    # v87: si pe default (track 0 re-encode, rest copy) pista 0 poate fi Atmos/DTS:X
+                    if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $eaSpatial[0]) {
+                        $eaAP = @("-c:a","copy")
+                        $eaReenc = @()
+                        Write-Host "  Audio: pista 0 ($(Get-SpatialLabel $eaSpatial[0])) pastrata prin copy; restul pistelor raman copy" -ForegroundColor Green
+                    }
                 }
             }
             if ($eaUseSel) {
+                # v87: garda spatiala pe selectia finala — pistele cu obiecte lasate pe E → C
+                # (cu acord); grupare per TIP (dialog + policy separate)
+                foreach ($k in @("atmos","dtsx")) {
+                    $grp = @()
+                    for ($ai = 0; $ai -lt $eaTrackCount; $ai++) {
+                        if ($eaSel[$ai] -eq "E" -and $eaSpatial[$ai] -eq $k) { $grp += "a:$ai" }
+                    }
+                    if ($grp.Count -gt 0 -and (Read-SpatialGuardChoice -Tracks ($grp -join ", ") -Kind $k)) {
+                        for ($ai = 0; $ai -lt $eaTrackCount; $ai++) {
+                            if ($eaSel[$ai] -eq "E" -and $eaSpatial[$ai] -eq $k) { $eaSel[$ai] = "C" }
+                        }
+                        Write-Host ("  Audio: pistele {0} ({1}) mutate pe copy" -f (Get-SpatialLabel $k), ($grp -join ", ")) -ForegroundColor Green
+                    }
+                }
                 # v68 (DRY): acelasi builder partajat ca fluxul principal
                 $eaBrArg = if ($eaCodec -eq "flac") { $eaFlvl } elseif ($eaCodec -eq "pcm") { $eaPcmDepth } else { $eaBr }
                 $r = Build-AudioSelectionParams $eaSel $eaCodec $eaBrArg $f.FullName $eaTrackCount
                 $eaAP = $r.AudioParams
                 $eaSkipMaps = $r.SkipMaps
-                $eaReenc = $r.ReencInputs; $eaSkip = $r.SkipInputs
+                $eaReenc = $r.ReencInputs; $eaSkipIn = $r.SkipInputs
             }
         }
         # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
-        Show-IncompatAudioCopyWarnings -File $f.FullName -Container $eaContainer -ReencInputs $eaReenc -SkipInputs $eaSkip
+        Show-IncompatAudioCopyWarnings -File $f.FullName -Container $eaContainer -ReencInputs $eaReenc -SkipInputs $eaSkipIn
 
         # Avertizari metadata TrueHD/DTS
         $eaAudioCodecs = & ffprobe -v error -select_streams a `
@@ -5832,11 +6063,14 @@ if ($mainChoice -eq "2") {
             -show_entries stream=profile `
             -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
         if ($eaAudioCodecs -match "truehd") {
-            Write-Host "  ⚠ TrueHD detectat — metadata Atmos se va pierde la re-encode." -ForegroundColor Yellow
+            # v87: mesaj onest (Atmos-ul REAL e detectat per-pista si tratat de garda de mai sus)
+            Write-Host "  ⚠ TrueHD detectat (lossless) — re-encodarea e lossy." -ForegroundColor Yellow
         }
         if ($eaAudioCodecs -match "dts") {
-            if ($eaAudioProfile -match "DTS-HD MA|DTS:X") {
-                Write-Host "  ⚠ DTS-HD MA / DTS:X detectat — metadata lossless/spatiala se va pierde." -ForegroundColor Yellow
+            if ($eaAudioProfile -match "DTS:X") {
+                # v87: DTS:X → garda spatiala (mesaj dedicat, nu dublam aici)
+            } elseif ($eaAudioProfile -match "DTS-HD MA") {
+                Write-Host "  ⚠ DTS-HD MA detectat (lossless) — re-encodarea e lossy." -ForegroundColor Yellow
             } else {
                 Write-Host "  ⚠ DTS detectat — metadata se va pierde la re-encode." -ForegroundColor Yellow
             }
@@ -5867,6 +6101,8 @@ if ($mainChoice -eq "2") {
             # v78: audio-only copiaza video-ul 1:1 (-c:v copy) -> djmd ramane valid temporal ->
             # re-grefeaza GPS-ul nativ DJI (ffmpeg dropeaza djmd codec=none). No-op pe non-DJI / non-ISO.
             Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
+            # v87: pista E-AC-3 Atmos copiata (garda spatiala) pe MP4/MOV -> re-scrie dec3 JOC
+            Invoke-AtmosMp4Signal -File $outFile
             $ns = (Get-Item $outFile).Length
             Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
         }
@@ -7901,14 +8137,19 @@ foreach ($f in $inputFiles) {
         $srcAudioProfile = & ffprobe -v error -select_streams a `
             -show_entries stream=profile `
             -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
+        # v87: mesajele TrueHD/DTS nu mai afirma orb "Atmos/DTS:X se pierde" (orice
+        # TrueHD/DTS le primea) — spatial-ul REAL e detectat per-pista (Get-AudioSpatialKind)
+        # si tratat de garda de mai jos (oferta copy). Aici doar lossless.
         if ($srcAudioCodecs -match "truehd") {
-            Write-Host "  ⚠ ATENTIE: Sursa contine TrueHD. Metadata Atmos (obiecte spatiale) se va pierde." -ForegroundColor Yellow
-            "  ⚠ TrueHD detectat — metadata Atmos pierduta la re-encode" | Out-File $LogFile -Append -Encoding UTF8
+            Write-Host "  ⚠ ATENTIE: Sursa contine TrueHD (lossless) — re-encodarea e lossy." -ForegroundColor Yellow
+            "  ⚠ TrueHD detectat — re-encodarea e lossy" | Out-File $LogFile -Append -Encoding UTF8
         }
         if ($srcAudioCodecs -match "dts") {
-            if ($srcAudioProfile -match "DTS-HD MA|DTS:X") {
-                Write-Host "  ⚠ ATENTIE: Sursa contine DTS-HD MA / DTS:X — metadata lossless/spatiala se va pierde." -ForegroundColor Yellow
-                "  ⚠ DTS-HD MA / DTS:X detectat — metadata pierduta la re-encode" | Out-File $LogFile -Append -Encoding UTF8
+            if ($srcAudioProfile -match "DTS:X") {
+                # DTS:X → garda spatiala v87 (mesaj dedicat, nu dublam aici)
+            } elseif ($srcAudioProfile -match "DTS-HD MA") {
+                Write-Host "  ⚠ ATENTIE: Sursa contine DTS-HD MA (lossless) — re-encodarea e lossy." -ForegroundColor Yellow
+                "  ⚠ DTS-HD MA detectat — re-encodarea e lossy" | Out-File $LogFile -Append -Encoding UTF8
             } else {
                 Write-Host "  ⚠ ATENTIE: Sursa contine DTS — metadata DTS se va pierde la re-encode." -ForegroundColor Yellow
                 "  ⚠ DTS detectat — metadata pierduta la re-encode" | Out-File $LogFile -Append -Encoding UTF8
@@ -7925,6 +8166,24 @@ foreach ($f in $inputFiles) {
     # v68: indecsi INPUT audio re-encodati / sariti (pt avertisment compat container la copy).
     # Default: track 0 re-encodat, restul copy. Copy total → niciunul re-encodat.
     $reencInputs = if ($audioCopy) { @() } else { @(0) }; $skipInputs = @()
+    # v87: detectie audio spatial per-pista (o singura data; refolosita la afisaj +
+    # garda). Pe copy total nu se pierde nimic → detectia se sare. Mirror bash.
+    $spatialTracks = @{}
+    if (-not $audioCopy) {
+        for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
+            $spatialTracks[$ai] = (Get-AudioSpatialKind -File $f.FullName -AIdx $ai)
+        }
+    }
+    if ($audioTrackCount -le 1 -and -not $audioCopy -and $spatialTracks[0]) {
+        # v87: garda single-track (cazul comun: 1 pista E-AC-3 JOC / TrueHD Atmos /
+        # DTS:X) — $audioParams are deja `-c:a:0 <codec>`; oferim copy (pastreaza obiectele).
+        if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $spatialTracks[0]) {
+            $audioParams = @("-c:a","copy")
+            $audioLoudnormTrack = -1
+            $reencInputs = @()
+            Write-Host "  Audio: pista $(Get-SpatialLabel $spatialTracks[0]) pastrata prin copy (fara re-encode)" -ForegroundColor Green
+        }
+    }
     if ($audioTrackCount -gt 1 -and -not $audioCopy) {
         # v67: determina selectia — env AV_AUDIO_TRACKS (CI: lista encode, rest copy) sau dialog
         $sel = @{}; $useSelective = $false
@@ -7960,7 +8219,9 @@ foreach ($f in $inputFiles) {
                 $atCh    = if ($atParts.Count -gt 2) { $atParts[2] } else { "?" }
                 $atBr    = if ($atParts.Count -gt 3 -and $atParts[3] -match '^\d+$') { "$([int]([long]$atParts[3]/1000))k" } else { "N/A" }
                 $atLang  = if ($atParts.Count -gt 4 -and $atParts[4]) { $atParts[4] } else { "und" }
-                Write-Host ("  ║  Track {0}: {1} | {2}ch | {3} | {4,-14}║" -f $atIdx, $atCodec, $atCh, $atBr, $atLang) -ForegroundColor White
+                # v87: marcheaza pistele cu obiecte spatiale (informatie pt alegerea E/C/S)
+                $atMark  = switch ($spatialTracks[$atIdx]) { "atmos" { "  ← ATMOS" } "dtsx" { "  ← DTS:X" } default { "" } }
+                Write-Host ("  ║  Track {0}: {1} | {2}ch | {3} | {4,-14}║{5}" -f $atIdx, $atCodec, $atCh, $atBr, $atLang, $atMark) -ForegroundColor White
                 $atIdx++
             }
             Write-Host "  ╠══════════════════════════════════════════════╣" -ForegroundColor Cyan
@@ -7977,9 +8238,32 @@ foreach ($f in $inputFiles) {
                     if ($c -in @("E","C","S")) { $sel[$ai] = $c } else { $sel[$ai] = $def }
                 }
                 $useSelective = $true
+            } elseif ($spatialTracks[0]) {
+                # v87: si pe default (track 0 re-encode, rest copy) pista 0 poate fi Atmos/DTS:X
+                if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $spatialTracks[0]) {
+                    $audioParams = @("-c:a","copy")
+                    $audioLoudnormTrack = -1
+                    $reencInputs = @()
+                    Write-Host "  Audio: pista 0 ($(Get-SpatialLabel $spatialTracks[0])) pastrata prin copy; restul pistelor raman copy" -ForegroundColor Green
+                }
             }
         }
         if ($useSelective) {
+            # v87: garda spatiala pe selectia finala (env SAU interactiv per-pista) —
+            # pistele cu obiecte (Atmos / DTS:X) lasate pe E → C INAINTE de build; grupare
+            # per TIP (dialog + policy separate — un fisier mixt primeste doua intrebari).
+            foreach ($k in @("atmos","dtsx")) {
+                $grp = @()
+                for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
+                    if ($sel[$ai] -eq "E" -and $spatialTracks[$ai] -eq $k) { $grp += "a:$ai" }
+                }
+                if ($grp.Count -gt 0 -and (Read-SpatialGuardChoice -Tracks ($grp -join ", ") -Kind $k)) {
+                    for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
+                        if ($sel[$ai] -eq "E" -and $spatialTracks[$ai] -eq $k) { $sel[$ai] = "C" }
+                    }
+                    Write-Host ("  Audio: pistele {0} ({1}) mutate pe copy" -f (Get-SpatialLabel $k), ($grp -join ", ")) -ForegroundColor Green
+                }
+            }
             # v68 (DRY): builder partajat (copy-first + index OUTPUT dupa skip + reenc/skip tracking)
             $brArg = if ($audioCodec -eq "flac") { $audioFlacLevel } elseif ($audioCodec -eq "pcm") { $pcmDepth } else { $audioBitrate }
             $r = Build-AudioSelectionParams $sel $audioCodec $brArg $f.FullName $audioTrackCount
@@ -9581,6 +9865,11 @@ foreach ($f in $inputFiles) {
     # ── v78: re-grefeaza GPS-ul nativ DJI (djmd) pe output MP4/MOV ──
     # (ULTIMUL post-process: dupa toate inject-urile de metadata; gate intern pe djmd)
     Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
+
+    # ── v87: semnalizare Atmos de container (dec3 JOC) pe output MP4/MOV ──
+    # (pista E-AC-3 Atmos COPIATA — garda spatiala / alegerea userului — ramane cu dec3
+    # fara JOC de la ffmpeg → re-scrisa cu MP4Box; no-op pe MKV / non-Atmos / unealta lipsa)
+    Invoke-AtmosMp4Signal -File $outFile
 
     $newSize   = (Get-Item $outFile).Length
     $saved     = [math]::Max(0, $f.Length - $newSize)

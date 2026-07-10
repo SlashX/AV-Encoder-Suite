@@ -977,17 +977,186 @@ _warn_audio_metadata() {
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
     ap=$(ffprobe -v error -select_streams a -show_entries stream=profile \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null)
+    # v87: mesajele TrueHD/DTS nu mai afirma orb "Atmos/DTS:X se pierde" (orice
+    # TrueHD/DTS le primea) — spatial-ul e detectat REAL per-pista (_audio_spatial_kind)
+    # si tratat de garda din handle_multi_audio_dialog (oferta copy). Aici doar lossless.
     if echo "$ac" | grep -qi "truehd"; then
-        log "  ⚠ ATENTIE: Sursa contine TrueHD."
-        log "    Metadata Dolby Atmos (obiecte spatiale JOC) se va pierde la re-encode."
+        log "  ⚠ ATENTIE: Sursa contine TrueHD (lossless) — re-encodarea e lossy."
     fi
     if echo "$ac" | grep -qi "dts"; then
-        if echo "$ap" | grep -qi "DTS-HD MA\|DTS:X"; then
-            log "  ⚠ ATENTIE: Sursa contine DTS-HD MA / DTS:X — metadata pierduta la re-encode."
+        if echo "$ap" | grep -qi "DTS:X"; then
+            :   # DTS:X → garda spatiala v87 (mesaj dedicat, nu dublam aici)
+        elif echo "$ap" | grep -qi "DTS-HD MA"; then
+            log "  ⚠ ATENTIE: Sursa contine DTS-HD MA (lossless) — re-encodarea e lossy."
         else
             log "  ⚠ ATENTIE: Sursa contine DTS — metadata pierduta la re-encode."
         fi
     fi
+}
+
+# v87: detecteaza audio SPATIAL cu obiecte pe O pista (index a:N) — echo tipul:
+# "atmos" (E-AC-3 + JOC / TrueHD + Atmos) sau "dtsx" (DTS:X peste DTS-HD MA);
+# gol + rc=1 altfel. Obiectele traiesc ca extensie IN bitstream; decoderul ffmpeg
+# expune profilul prin stream=profile ("Dolby Digital Plus + Dolby Atmos" /
+# "Dolby TrueHD + Dolby Atmos" / "DTS-HD MA + DTS:X") — validat empiric pe
+# tonurile oficiale Dolby (5.1.2→9.1.6) + DTS Sound Check (DTS:X 11.1); zero
+# fals-pozitive pe TrueHD/AC-3/DTS-HD MA simple. EDGE-CASE (tonul TrueHD 9.1.6):
+# fereastra de probe default nu ajunge la semnalizare (profile=unknown) → retry
+# cu probe 25M, DOAR pe profil necunoscut (DTS:X iese din probe default; alte
+# codecuri → return ieftin, fara probe suplimentar). NOTA Auro-3D: height-ul sta
+# steganografic in LSB-ul canalelor PCM/DTS-HD MA → NEdetectabil fara decoder
+# licentiat (arata ca MA 5.1 normal si la decode) → doar copy il pastreaza.
+_audio_spatial_kind() {
+    local file="$1" aidx="${2:-0}" codec prof
+    codec=$(ffprobe -v error -select_streams "a:$aidx" -show_entries stream=codec_name \
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    case "${codec,,}" in eac3|truehd|dts) : ;; *) echo ""; return 1 ;; esac
+    prof=$(ffprobe -v error -select_streams "a:$aidx" -show_entries stream=profile \
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    if [[ -z "$prof" || "$prof" == "unknown" ]]; then
+        prof=$(ffprobe -v error -analyzeduration 25M -probesize 25M -select_streams "a:$aidx" \
+            -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    fi
+    case "$prof" in
+        *"Dolby Atmos"*) echo "atmos"; return 0 ;;
+        *"DTS:X"*)       echo "dtsx";  return 0 ;;
+    esac
+    echo ""; return 1
+}
+
+# v87: eticheta umana pt tipul spatial (mesaje gard + marcaje in liste).
+_spatial_label() {
+    case "$1" in
+        atmos) echo "Dolby Atmos" ;;
+        dtsx)  echo "DTS:X" ;;
+        *)     echo "$1" ;;
+    esac
+}
+
+# v87: eticheta primei piste spatiale dintr-un fisier ("Dolby Atmos"/"DTS:X"; gol +
+# rc=1 daca nu exista). Folosit de preflight-ul remux + warn-urile trim/concat.
+_file_spatial_label() {
+    local file="$1" n nb kind
+    nb=$(ffprobe -v error -select_streams a -show_entries stream=index \
+        -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
+    [[ "$nb" =~ ^[0-9]+$ ]] || nb=0
+    for ((n=0;n<nb;n++)); do
+        kind=$(_audio_spatial_kind "$file" "$n" || true)
+        if [[ -n "$kind" ]]; then _spatial_label "$kind"; return 0; fi
+    done
+    echo ""; return 1
+}
+
+# v87: semnalizare Atmos de CONTAINER pe MP4/MOV (analogul dvcC v70-v72, pt audio).
+# ffmpeg NU scrie extensia JOC in box-ul dec3 la mux/copy (validat empiric: Size=14,
+# fara ExtendedConfig, data_rate gresit) → bitstream-ul ARE Atmos dar containerul
+# semnalizeaza "E-AC-3 simplu" → playerele care decid dupa box (ecosistemul Apple)
+# nu activeaza Atmos; cele care citesc bitstream-ul (TV/AVR/mpv) il vad oricum.
+# MP4Box la import RAW .ec3 parseaza bitstream-ul si scrie flag_ec3_extension_type_a=1
+# + complexity_index_type_a (validat: -info afiseaza "ATMOS complexity index type 16",
+# si data_rate corect). Per pista eac3-Atmos: extract raw → rebuild cu -rem <tid> -add
+# raw (pastreaza limba) → mv atomic. Soft-fail: output NEATINS la orice esec; NO-OP
+# ieftin pe MKV / fara unealta / fara Atmos / deja semnalizat. Garda defensiva: sare
+# pistele cu start_time ≠ 0 (extract raw ar pierde edit-list-ul → desync).
+_atmos_mp4_signal() {
+    local file="$1"
+    local ext="${file##*.}"; ext="${ext,,}"
+    case "$ext" in mp4|mov|m4v) : ;; *) return 0 ;; esac
+    command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || return 0
+    local nb; nb=$(ffprobe -v error -select_streams a -show_entries stream=index \
+        -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
+    [[ "$nb" =~ ^[0-9]+$ && "$nb" -gt 0 ]] || return 0
+    # deja semnalizat? (dec3 cu extensia JOC → -info raporteaza "ATMOS complexity").
+    # NB: GPAC scrie -info pe STDERR → 2>&1 obligatoriu (altfel grep vede gol).
+    # Check O DATA, la nivel de fisier, INAINTE de bucla — in bucla ar opri gresit
+    # dupa PRIMA pista semnalizata pe fisiere cu mai multe piste Atmos (limbi).
+    if "$AV_TOOL_MP4BOX" -info "$file" 2>&1 | grep -qi "ATMOS complexity"; then
+        return 0
+    fi
+    # FAZA 1: colecteaza pistele Atmos + extrage TOATE raw-urile cu indexurile
+    # ORIGINALE — dupa un rebuild (-rem/-add) indexurile relative a:N se schimba
+    # (pista re-adaugata merge la coada), deci semnalizarea per-pista in bucla ar
+    # extrage pista GRESITA de la a doua incolo. Un singur rebuild la final.
+    local n kind idhex tid lang st raw langopt dlyopt
+    local -a _rebuild=() _raws=() _sigged=()
+    for ((n=0;n<nb;n++)); do
+        kind=$(_audio_spatial_kind "$file" "$n" || true)
+        [[ "$kind" == "atmos" ]] || continue
+        # offset de start (tipic pe trim-uri: -avoid_negative_ts lasa ~1 frame delay pe
+        # audio) → PASTRAT prin optiunea de import MP4Box `:delay=<ms>` (validat empiric:
+        # 0.042s → 0.0417s, sub 1/2 frame EC3 — raw-ul singur l-ar fi pierdut → desync).
+        st=$(ffprobe -v error -select_streams "a:$n" -show_entries stream=start_time \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+        dlyopt=""
+        if [[ "$st" =~ ^[0-9.]+$ ]] && awk "BEGIN{exit !($st > 0.001)}"; then
+            dlyopt=":delay=$(awk "BEGIN{printf \"%d\", ($st*1000)+0.5}")"
+        fi
+        idhex=$(ffprobe -v error -select_streams "a:$n" -show_entries stream=id \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+        [[ "$idhex" =~ ^0x[0-9a-fA-F]+$ ]] || continue
+        tid=$(( idhex ))
+        lang=$(ffprobe -v error -select_streams "a:$n" -show_entries stream_tags=language \
+            -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+        langopt=""; [[ "$lang" =~ ^[a-zA-Z]{3}$ ]] && langopt=":lang=$lang"
+        # temp-uri CO-LOCATE cu fisierul (nu av_mktemp/tmp): mv-ul ramane atomic pe
+        # acelasi filesystem + MP4Box nativ nu rezolva caile /tmp MSYS pe git-bash.
+        raw="${file%.*}.atmossig_$$_${n}.ec3"
+        if ! ffmpeg -y -v error -i "$file" -map "0:a:$n" -c copy -f eac3 "$raw" </dev/null 2>/dev/null \
+           || [ ! -s "$raw" ]; then
+            rm -f "$raw" 2>/dev/null; continue
+        fi
+        _rebuild+=("-rem" "$tid" "-add" "${raw}${dlyopt}${langopt}")
+        _raws+=("$raw")
+        _sigged+=("a:$n")
+    done
+    if [ ${#_raws[@]} -eq 0 ]; then return 0; fi
+    # FAZA 2: UN SINGUR rebuild cu toate -rem/-add (tid-urile ISO originale raman
+    # valabile — MP4Box le pastreaza la -add file). Soft-fail: output NEATINS.
+    local tmp="${file%.*}.atmossig_$$.$ext"
+    if "$AV_TOOL_MP4BOX" -add "$file" "${_rebuild[@]}" -new "$tmp" >/dev/null 2>&1 \
+       && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$file"
+        log "  Semnalizare Atmos scrisa in container (dec3 JOC) — pista(e) ${_sigged[*]}"
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
+    rm -f "${_raws[@]}" 2>/dev/null
+    return 0
+}
+
+# v87: garda audio spatial — decide daca pistele cu obiecte (Atmos / DTS:X)
+# selectate pentru RE-encode raman pe copy (pastreaza obiectele) sau se
+# re-encodeaza. return 0 = copy / 1 = re-encode. Obiectele NU pot fi regenerate:
+# encoderele exista doar in uneltele licentiate (Dolby JOC / DTS-Xperi; ffmpeg
+# nu le are) → re-encodarea le pierde DEFINITIV, iar fisierul rezultat arata
+# la fel ("eac3"/"dts" — pierdere invizibila; validat empiric: eac3-Atmos →
+# eac3 1024k → profile=unknown). Bypass per tip: AV_ATMOS_POLICY / AV_DTSX_POLICY
+# = copy|reencode; non-interactiv fara env → copy ('do no harm').
+_ask_spatial_guard() {
+    local tracks="$1" kind="${2:-atmos}" policy label
+    label=$(_spatial_label "$kind")
+    case "$kind" in
+        dtsx) policy="${AV_DTSX_POLICY:-}" ;;
+        *)    policy="${AV_ATMOS_POLICY:-}" ;;
+    esac
+    case "$policy" in
+        copy)     return 0 ;;
+        reencode) return 1 ;;
+    esac
+    local envname; [[ "$kind" == "dtsx" ]] && envname="AV_DTSX_POLICY" || envname="AV_ATMOS_POLICY"
+    if [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+        log "  ⚠ Pista(e) $tracks = $label: non-interactiv → COPY (pastreaza $label)."
+        log "    Pentru re-encode (pierde $label): $envname=reencode"
+        return 0
+    fi
+    echo ""
+    echo "  ⚠ Pista(e) $tracks = $label (obiecte spatiale in bitstream)."
+    echo "    Re-encodarea PIERDE definitiv obiectele $label — nu exista encoder"
+    echo "    $label in ffmpeg (doar uneltele licentiate il pot genera)."
+    echo "  1) Copiaza pista(ele) $label 1:1 — pastreaza $label  [implicit]"
+    echo "  2) Re-encodeaza cum ai ales — pierde $label"
+    local c; read -p "  Alege [implicit: 1]: " c
+    [[ "${c:-1}" != "2" ]]
 }
 
 # v67: dialog selectie audio per-pista (cand sursa are >1 pista audio si NU e copy total).
@@ -1011,7 +1180,24 @@ handle_multi_audio_dialog() {
     local ntracks; ntracks=$(ffprobe -v error -select_streams a \
         -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
     [[ "$ntracks" =~ ^[0-9]+$ ]] || ntracks=0
-    [ "$ntracks" -le 1 ] && return 0
+    # v87: detectie audio spatial per-pista (o singura data; refolosita la afisaj +
+    # garda). Pe codecuri non-Dolby/DTS e ieftina (early-return, fara probe profil).
+    local -a _sp=(); local _ai
+    for ((_ai=0;_ai<ntracks;_ai++)); do
+        _sp[_ai]=$(_audio_spatial_kind "$file" "$_ai" || true)
+    done
+    if [ "$ntracks" -le 1 ]; then
+        # v87: garda single-track (cazul comun: film cu 1 pista E-AC-3 JOC / TrueHD
+        # Atmos / DTS:X) — get_audio_params a pus deja `-c:a:0 <codec>`; oferim copy.
+        if [[ -n "${_sp[0]:-}" ]] && _ask_spatial_guard "a:0" "${_sp[0]}"; then
+            AUDIO_PARAMS="-c:a copy"
+            AUDIO_LOUDNORM_TRACK=-1
+            AUDIO_PERTRACK_CUSTOM=1
+            AUDIO_REENCODED_INPUTS=""
+            log "  Audio: pista $(_spatial_label "${_sp[0]}") pastrata prin copy (fara re-encode)"
+        fi
+        return 0
+    fi
 
     local -a sel=(); local i
     if [[ -n "${AV_AUDIO_TRACKS:-}" || -n "${AV_AUDIO_DROP:-}" ]]; then
@@ -1031,6 +1217,12 @@ handle_multi_audio_dialog() {
             for d in "${_dl[@]}"; do [[ "$d" =~ ^[0-9]+$ ]] && [ "$d" -lt "$ntracks" ] && sel[d]="S"; done
         fi
     elif [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+        # v87: default-ul re-encodeaza track 0 — pe Atmos/DTS:X, do-no-harm copy (env override)
+        if [[ -n "${_sp[0]:-}" ]] && _ask_spatial_guard "a:0" "${_sp[0]}"; then
+            AUDIO_PARAMS="-c:a copy"; AUDIO_LOUDNORM_TRACK=-1
+            AUDIO_PERTRACK_CUSTOM=1; AUDIO_REENCODED_INPUTS=""
+            log "  Audio: pista 0 ($(_spatial_label "${_sp[0]}")) pastrata prin copy; restul pistelor raman copy"
+        fi
         return 0                    # non-interactiv fara env → default
     else
         # interactiv: lista piste + dialog
@@ -1041,11 +1233,17 @@ handle_multi_audio_dialog() {
         local atinfo; atinfo=$(ffprobe -v error -select_streams a \
             -show_entries stream=codec_name,channels:stream_tags=language \
             -of csv=p=0 "$file" 2>/dev/null)
-        local idx=0 line c_codec c_ch c_lang
+        local idx=0 line c_codec c_ch c_lang _amark
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             IFS=',' read -r c_codec c_ch c_lang <<< "$line"
-            echo "  ║  a:$idx  ${c_codec:-?}  ${c_ch:-?}ch  ${c_lang:-und}"
+            # v87: marcheaza pistele cu obiecte spatiale (informatie pt alegerea E/C/S)
+            _amark=""
+            case "${_sp[idx]:-}" in
+                atmos) _amark="  ← ATMOS" ;;
+                dtsx)  _amark="  ← DTS:X" ;;
+            esac
+            echo "  ║  a:$idx  ${c_codec:-?}  ${c_ch:-?}ch  ${c_lang:-und}$_amark"
             idx=$((idx+1))
         done <<< "$atinfo"
         echo "  ╠══════════════════════════════════════════════════╣"
@@ -1053,7 +1251,15 @@ handle_multi_audio_dialog() {
         echo "  ║  2) Selecteaza per pista (E=encode/C=copy/S=skip) "
         echo "  ╚══════════════════════════════════════════════════╝"
         local mac; read -p "  Alege [implicit: 1]: " mac
-        [[ "${mac:-1}" != "2" ]] && return 0
+        if [[ "${mac:-1}" != "2" ]]; then
+            # v87: si pe default (track 0 re-encode, rest copy) pista 0 poate fi Atmos/DTS:X
+            if [[ -n "${_sp[0]:-}" ]] && _ask_spatial_guard "a:0" "${_sp[0]}"; then
+                AUDIO_PARAMS="-c:a copy"; AUDIO_LOUDNORM_TRACK=-1
+                AUDIO_PERTRACK_CUSTOM=1; AUDIO_REENCODED_INPUTS=""
+                log "  Audio: pista 0 ($(_spatial_label "${_sp[0]}")) pastrata prin copy; restul pistelor raman copy"
+            fi
+            return 0
+        fi
         for ((i=0;i<ntracks;i++)); do
             local def; [ "$i" -eq 0 ] && def="E" || def="C"
             local ch; read -p "  Track $i (E=encode/C=copy/S=skip) [implicit: $def]: " ch
@@ -1061,6 +1267,25 @@ handle_multi_audio_dialog() {
             case "$ch" in E|C|S) sel[i]="$ch" ;; *) sel[i]="$def" ;; esac
         done
     fi
+
+    # v87: garda spatiala pe selectia finala (env SAU interactiv per-pista) — pistele
+    # cu obiecte (Atmos / DTS:X) lasate pe E se muta pe C (cu acordul userului /
+    # policy) INAINTE de build → params, loudnorm-track si lista re-encodate ies
+    # corecte din bucla existenta. Grupare per TIP (dialog + policy separate — un
+    # fisier mixt Atmos+DTS:X primeste doua intrebari clare).
+    local _k _grp
+    for _k in atmos dtsx; do
+        _grp=""
+        for ((i=0;i<ntracks;i++)); do
+            [[ "${sel[i]:-C}" == "E" && "${_sp[i]:-}" == "$_k" ]] && _grp+="${_grp:+, }a:$i"
+        done
+        if [[ -n "$_grp" ]] && _ask_spatial_guard "$_grp" "$_k"; then
+            for ((i=0;i<ntracks;i++)); do
+                [[ "${sel[i]:-C}" == "E" && "${_sp[i]:-}" == "$_k" ]] && sel[i]="C"
+            done
+            log "  Audio: pistele $(_spatial_label "$_k") ($_grp) mutate pe copy"
+        fi
+    done
 
     # construieste AUDIO_PARAMS + negative skip maps din selectie.
     # Index OUTPUT = index_input - nr_skip-uri_inainte (negative-map compacteaza streamurile).
@@ -2475,6 +2700,9 @@ _remux_preflight() {
         mp4)
             echo "$audio_codecs" | grep -qiE "^(truehd|dts|pcm_s24le|pcm_s16be)$" && {
                 REMUX_PREFLIGHT_NOTES+=("Audio lossless (TrueHD/DTS-HD/PCM) — incompatibil cu MP4, va fi strip-uit")
+                # v87: spune EXPLICIT cand pista strip-uita poarta obiecte spatiale
+                local _spl87; _spl87=$(_file_spatial_label "$file" || true)
+                [[ -n "$_spl87" ]] && REMUX_PREFLIGHT_NOTES+=("Pista contine $_spl87 (obiecte spatiale) — foloseste MKV ca s-o pastrezi")
                 [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
             }
             echo "$sub_codecs" | grep -qiE "^(subrip|srt|ass|ssa)$" && {
@@ -2508,6 +2736,9 @@ _remux_preflight() {
             }
             echo "$audio_codecs" | grep -qiE "^(truehd|dts|opus)$" && {
                 REMUX_PREFLIGHT_NOTES+=("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — va fi strip-uit")
+                # v87: spune EXPLICIT cand pista strip-uita poarta obiecte spatiale
+                local _spl87m; _spl87m=$(_file_spatial_label "$file" || true)
+                [[ -n "$_spl87m" ]] && REMUX_PREFLIGHT_NOTES+=("Pista contine $_spl87m (obiecte spatiale) — foloseste MKV ca s-o pastrezi")
                 [ $REMUX_PREFLIGHT_LEVEL -lt 1 ] && REMUX_PREFLIGHT_LEVEL=1
             }
             echo "$sub_codecs" | grep -qiE "^(subrip|srt|ass|ssa)$" && {
@@ -2762,6 +2993,9 @@ do_stream_copy() {
         # v78: stream-copy al unei surse DJI → ffmpeg dropeaza djmd (codec=none) → re-grefeaza
         # GPS-ul nativ pe MP4/MOV (acelasi hook ca pe calea de encode). No-op pe non-DJI / non-ISO.
         _dji_preserve_meta_postencode "$file" "$output"
+        # v87: pista E-AC-3 Atmos copiata pe MP4/MOV → dec3 fara JOC (ffmpeg) → re-scrie
+        # semnalizarea Atmos de container. No-op pe MKV / non-Atmos / unealta lipsa.
+        _atmos_mp4_signal "$output"
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
@@ -6402,6 +6636,11 @@ run_encode_loop() {
         # ── v78: re-grefeaza GPS-ul nativ DJI (djmd) pe output MP4/MOV ──
         # (ULTIMUL post-process: dupa toate inject-urile de metadata; gate intern pe djmd)
         _dji_preserve_meta_postencode "$file" "$output"
+
+        # ── v87: semnalizare Atmos de container (dec3 JOC) pe output MP4/MOV ──
+        # (pista E-AC-3 Atmos COPIATA — via garda spatiala sau alegerea userului — ramane
+        # cu dec3 fara JOC de la ffmpeg → re-scrisa cu MP4Box; no-op pe MKV/non-Atmos)
+        _atmos_mp4_signal "$output"
 
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0

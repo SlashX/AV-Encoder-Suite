@@ -143,6 +143,101 @@ function Get-RemuxStreams {
     return $result
 }
 
+# v87: detecteaza audio spatial cu obiecte (Atmos / DTS:X) pe O pista — copie standalone
+# (av_mux.ps1 nu importa av_encode.ps1; mirror Get-AudioSpatialKind + _audio_spatial_kind).
+# Profil via stream=profile; retry probe 25M pe profil necunoscut (edge TrueHD 9.1.6).
+function Get-AudioSpatialKind {
+    param([string]$File, [int]$AIdx = 0)
+    $codec = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=codec_name `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $codec = if ($codec.Count -gt 0) { "$($codec[0])".Trim() } else { "" }
+    if ($codec -notin @("eac3","truehd","dts")) { return "" }
+    $prof = @(& ffprobe -v error -select_streams "a:$AIdx" -show_entries stream=profile `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+    $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    if (-not $p -or $p -eq "unknown") {
+        $prof = @(& ffprobe -v error -analyzeduration 25M -probesize 25M -select_streams "a:$AIdx" `
+            -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $p = if ($prof.Count -gt 0) { "$($prof[0])".Trim() } else { "" }
+    }
+    if ($p -match "Dolby Atmos") { return "atmos" }
+    if ($p -match "DTS:X")       { return "dtsx" }
+    return ""
+}
+
+# v87: eticheta primei piste spatiale ("Dolby Atmos"/"DTS:X"/"") — mirror _file_spatial_label.
+function Get-FileSpatialLabel {
+    param([Parameter(Mandatory)][string]$File)
+    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    if (-not $nb) { return "" }
+    for ($n = 0; $n -lt $nb; $n++) {
+        $k = Get-AudioSpatialKind -File $File -AIdx $n
+        if ($k -eq "atmos") { return "Dolby Atmos" }
+        if ($k -eq "dtsx")  { return "DTS:X" }
+    }
+    return ""
+}
+
+# v87: semnalizare Atmos de CONTAINER pe MP4/MOV — copie standalone a Invoke-AtmosMp4Signal
+# (av_encode.ps1; mirror _atmos_mp4_signal bash). ffmpeg nu scrie extensia JOC in dec3 →
+# MP4Box o scrie din raw .ec3. Soft-fail: output NEATINS; no-op pe MKV/non-Atmos/etc.
+function Invoke-AtmosMp4Signal {
+    param([Parameter(Mandatory)][string]$File)
+    $ext = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLowerInvariant()
+    if ($ext -notin @('mp4','mov','m4v')) { return }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return }
+    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    if (-not $nb) { return }
+    # deja semnalizat? Check O DATA, INAINTE de bucla (in bucla ar opri gresit dupa
+    # PRIMA pista pe fisiere multi-Atmos). GPAC scrie -info pe STDERR → 2>&1.
+    $info = (& $mux -info $File 2>&1) -join "`n"
+    if ($info -match 'ATMOS complexity') { return }
+    # FAZA 1: colecteaza + extrage TOATE raw-urile cu indexurile ORIGINALE (dupa un
+    # rebuild indexurile a:N se schimba). UN SINGUR rebuild la final.
+    $dir = Split-Path $File -Parent
+    $rebuild = New-Object System.Collections.Generic.List[string]
+    $raws = @(); $sigged = @()
+    for ($n = 0; $n -lt $nb; $n++) {
+        if ((Get-AudioSpatialKind -File $File -AIdx $n) -ne 'atmos') { continue }
+        # offset de start (tipic pe trim-uri) → PASTRAT prin optiunea MP4Box `:delay=<ms>`
+        $st = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream=start_time -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $stv = if ($st.Count -gt 0) { "$($st[0])".Trim() } else { "" }
+        $dlyOpt = ""
+        if ($stv -match '^[0-9.]+$') {
+            $stD = [double]::Parse($stv, [System.Globalization.CultureInfo]::InvariantCulture)
+            if ($stD -gt 0.001) { $dlyOpt = ":delay=" + [math]::Round($stD * 1000) }
+        }
+        $idhex = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream=id -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $idv = if ($idhex.Count -gt 0) { "$($idhex[0])".Trim() } else { "" }
+        if ($idv -notmatch '^0x[0-9a-fA-F]+$') { continue }
+        $tid = [Convert]::ToInt32($idv.Substring(2), 16)
+        $lang = @(& ffprobe -v error -select_streams "a:$n" -show_entries stream_tags=language -of default=noprint_wrappers=1:nokey=1 $File 2>$null)
+        $langv = if ($lang.Count -gt 0) { "$($lang[0])".Trim() } else { "" }
+        $raw = Join-Path $dir ("atmossig_" + [guid]::NewGuid().ToString("N") + ".ec3")
+        & ffmpeg -y -v error -i $File -map "0:a:$n" -c copy -f eac3 $raw 2>$null
+        if (-not ((Test-Path $raw) -and (Get-Item $raw).Length -gt 0)) {
+            if (Test-Path $raw) { Remove-Item $raw -Force -ErrorAction SilentlyContinue }
+            continue
+        }
+        $rebuild.Add("-rem"); $rebuild.Add("$tid")
+        $rebuild.Add("-add")
+        $addSpec = $raw + $dlyOpt
+        if ($langv -match '^[a-zA-Z]{3}$') { $addSpec += ":lang=$langv" }
+        $rebuild.Add($addSpec)
+        $raws += $raw
+        $sigged += "a:$n"
+    }
+    if ($raws.Count -eq 0) { return }
+    $tmp = Join-Path $dir ("atmossig_" + [guid]::NewGuid().ToString("N") + "." + $ext)
+    & $mux -add $File @rebuild -new $tmp 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {
+        Move-Item -Force $tmp $File
+        Write-Host ("  Semnalizare Atmos scrisa in container (dec3 JOC) — pista(e) {0}" -f ($sigged -join " ")) -ForegroundColor Green
+    } elseif (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    foreach ($r in $raws) { Remove-Item $r -Force -ErrorAction SilentlyContinue }
+}
+
 function Get-RemuxPreflight {
     param([string]$File, [string]$TargetContainer)
     $notes = New-Object System.Collections.Generic.List[string]
@@ -160,7 +255,13 @@ function Get-RemuxPreflight {
     function _Matches([string[]]$list, [string]$pat) { foreach ($c in $list) { if ($c -match $pat) { return $true } }; return $false }
     switch ($target) {
         "mp4" {
-            if (_Matches $audioCodecs '^(truehd|dts|pcm_s24le|pcm_s16be)$') { $notes.Add("Audio lossless (TrueHD/DTS-HD/PCM) incompatibil cu MP4 — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
+            if (_Matches $audioCodecs '^(truehd|dts|pcm_s24le|pcm_s16be)$') {
+                $notes.Add("Audio lossless (TrueHD/DTS-HD/PCM) incompatibil cu MP4 — strip") | Out-Null
+                # v87: spune EXPLICIT cand pista strip-uita poarta obiecte spatiale
+                $spl = Get-FileSpatialLabel -File $File
+                if ($spl) { $notes.Add("Pista contine $spl (obiecte spatiale) — foloseste MKV ca s-o pastrezi") | Out-Null }
+                if ($level -lt 1) { $level = 1 }
+            }
             if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') { $notes.Add("Subtitrari text vor fi convertite la mov_text pentru MP4") | Out-Null; if ($level -lt 1) { $level = 1 } }
             if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') { $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MP4 — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
             if ($djiPresent) { $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MP4 — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
@@ -170,7 +271,13 @@ function Get-RemuxPreflight {
             # v57: AV1 NU e suportat de MOV (ffmpeg: "av1 only supported in MP4 and AVIF")
             if ($videoCodec -eq "av1") { $notes.Add("Video AV1 incompatibil cu .mov (ffmpeg limit) — alege .mp4 sau .mkv") | Out-Null; $level = 2 }
             if (_Matches $audioCodecs '^eac3$') { $notes.Add("E-AC3 audio incompatibil cu .mov — abort"); $level = 2 }
-            if (_Matches $audioCodecs '^(truehd|dts|opus)$') { $notes.Add("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
+            if (_Matches $audioCodecs '^(truehd|dts|opus)$') {
+                $notes.Add("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — strip") | Out-Null
+                # v87: spune EXPLICIT cand pista strip-uita poarta obiecte spatiale
+                $spl = Get-FileSpatialLabel -File $File
+                if ($spl) { $notes.Add("Pista contine $spl (obiecte spatiale) — foloseste MKV ca s-o pastrezi") | Out-Null }
+                if ($level -lt 1) { $level = 1 }
+            }
             if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') { $notes.Add("Subtitrari text vor fi convertite la mov_text pentru MOV") | Out-Null; if ($level -lt 1) { $level = 1 } }
             if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') { $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MOV — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
             if ($djiPresent) { $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MOV — strip") | Out-Null; if ($level -lt 1) { $level = 1 } }
@@ -310,16 +417,35 @@ function Show-RemuxStreamSelection {
     if ($audioCount -gt 0) {
         Write-Host ""
         Write-Host "AUDIO ($audioCount):"
+        $audioCompatList = @()
         for ($i = 0; $i -lt $audioCount; $i++) {
             $s = $streams.Audio[$i]
             $compat = Get-RemuxStreamCompat -Codec $s.Codec -CodecType "audio" -Target $Target
+            $audioCompatList += $compat
             $warn = if ($compat -eq "drop") { " WARN incompat -> drop" } else { "" }
+            if ($compat -eq "drop") {
+                # v87: pierderea e mai grava cand pista poarta obiecte spatiale — spune-o AICI,
+                # la momentul selectiei (notele preflight level-1 nu se afiseaza pe acest flux)
+                switch (Get-AudioSpatialKind -File $File -AIdx $i) {
+                    "atmos" { $warn = " WARN incompat -> drop (Dolby Atmos! foloseste MKV ca s-o pastrezi)" }
+                    "dtsx"  { $warn = " WARN incompat -> drop (DTS:X! foloseste MKV ca s-o pastrezi)" }
+                }
+            }
             $langPart = if ($s.Lang) { "[$($s.Lang)] " } else { "" }
             Write-Host ("  {0,2}) {1,-10} {2,-6} {3}{4}{5}" -f ($i+1), $s.Codec, $s.Extra, $langPart, $s.Title, $warn)
         }
         $inp = Read-Host "Pastreaza audio (ex: 1,3 sau ALL/NONE) [ALL]"
         $audioRel = ConvertFrom-Selection -Text $inp -Max $audioCount
         if ($null -eq $audioRel) { Write-Host "Selectie invalida." -ForegroundColor Red; return $null }
+        # v87 FIX pre-existent (v49): drop-ul promis in afisaj NU se aplica efectiv la
+        # AUDIO — pistele incompatibile selectate (ALL/explicit) intrau in comanda ffmpeg
+        # -> "Could not write header" -> remux esuat COMPLET. Mirror-ul mecanismului subs.
+        $audioRel = @($audioRel | Where-Object {
+            if ($audioCompatList[$_] -eq "drop") {
+                Write-Host ("  -> pista audio {0} incompatibila cu .{1} — dropata" -f ($_ + 1), $Target) -ForegroundColor Yellow
+                $false
+            } else { $true }
+        })
     } else {
         Write-Host ""
         Write-Host "AUDIO: niciun stream." -ForegroundColor DarkGray
@@ -537,6 +663,9 @@ function Invoke-RemuxFile {
             if (Test-Path $rxRaw) { Remove-Item -LiteralPath $rxRaw -Force -ErrorAction SilentlyContinue }
         }
     }
+    # v87: pista E-AC-3 Atmos copiata pe MP4/MOV -> ffmpeg scrie dec3 FARA extensia JOC ->
+    # re-scrie semnalizarea de container (analog dvcC). No-op pe MKV/non-Atmos.
+    Invoke-AtmosMp4Signal -File $finalOut
     $elapsed = [int]((Get-Date) - $startTs).TotalSeconds
     $szOrig = (Get-Item -LiteralPath $File).Length
     $szNew = (Get-Item -LiteralPath $finalOut).Length
@@ -750,7 +879,9 @@ function Show-DemuxStreamSelection {
         for ($i = 0; $i -lt $streams.Audio.Count; $i++) {
             $s = $streams.Audio[$i]
             $langPart = if ($s.Lang) { "[$($s.Lang)] " } else { "" }
-            Write-Host ("  {0,2}) {1,-10} {2,-6} {3}{4}" -f ($i+1), $s.Codec, $s.Extra, $langPart, $s.Title)
+            # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) — extract=copy le pastreaza
+            $spMark = switch (Get-AudioSpatialKind -File $File -AIdx $i) { "atmos" { "  ← ATMOS" } "dtsx" { "  ← DTS:X" } default { "" } }
+            Write-Host ("  {0,2}) {1,-10} {2,-6} {3}{4}{5}" -f ($i+1), $s.Codec, $s.Extra, $langPart, $s.Title, $spMark)
         }
         $inp = Read-Host "Extrage audio (ex: 1,3 sau ALL/NONE) [ALL]"
         $audioRel = ConvertFrom-Selection -Text $inp -Max $streams.Audio.Count
@@ -1561,6 +1692,8 @@ function Invoke-MuxFlow {
     # v70/v71: video brut HEVC DV -> scrie dvcC de container (DV pe TV, daca sursa avea
     # DV). Dispatch mkv->mkvmerge / mp4-mov->MP4Box via Invoke-AvMuxDvSignal (DRY cu Remux).
     if ($dvRawSrc) { Invoke-AvMuxDvSignal -Raw $dvRawSrc -Built $finalOut -Target $Target }
+    # v87: semnalizare Atmos de container pe MP4/MOV (dec3 JOC). No-op pe MKV/non-Atmos.
+    Invoke-AtmosMp4Signal -File $finalOut
     $elapsed = [int]((Get-Date) - $startTs).TotalSeconds
     $szNew = (Get-Item -LiteralPath $finalOut).Length
     Write-Host ("  OK Mux in {0}s | output: {1} MB" -f $elapsed, [int]($szNew/1MB)) -ForegroundColor Green
