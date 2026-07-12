@@ -2205,14 +2205,21 @@ function Get-FileSpatialLabel {
 # piste cu obiecte spatiale — mirror _tc_warn_spatial_sources (bash). Un singur mesaj.
 function Show-TcSpatialWarning {
     param([string[]]$Files)
-    $found = ""
+    $found = ""; $iamfFound = $false
     foreach ($f in $Files) {
-        $found = Get-FileSpatialLabel -File $f
-        if ($found) { break }
+        if (-not $found) { $found = Get-FileSpatialLabel -File $f }
+        # v88: grup Eclipsa/IAMF — mesaj SEPARAT (copy NU il salveaza aici: timeline-ul
+        # editat la trim/concat aplatizeaza grupul, substream-urile nu se pot regrupa)
+        if (-not $iamfFound -and (Get-IamfLayout -File $f)) { $iamfFound = $true }
+        if ($found -and $iamfFound) { break }
     }
     if ($found) {
         Write-Host "  ⚠ Sursele au audio $found (obiecte spatiale) — alege COPY ca sa-l pastrezi;" -ForegroundColor Yellow
         Write-Host "    re-encodarea audio il pierde definitiv (nu exista encoder in ffmpeg)." -ForegroundColor Yellow
+    }
+    if ($iamfFound) {
+        Write-Host "  ⚠ Sursele au grup Eclipsa/IAMF — la trim/concat timeline-ul se editeaza →" -ForegroundColor Yellow
+        Write-Host "    grupul se aplatizeaza la Opus simplu (nu poate fi re-grupat pe taieturi)." -ForegroundColor Yellow
     }
 }
 
@@ -2221,14 +2228,19 @@ function Show-TcSpatialWarning {
 # (demuxer pe surse identice). Mirror _tc_warn_spatial_filter_loss (bash).
 function Show-TcSpatialFilterLoss {
     param([string[]]$Files)
-    $found = ""
+    $found = ""; $iamfFound = $false
     foreach ($f in $Files) {
-        $found = Get-FileSpatialLabel -File $f
-        if ($found) { break }
+        if (-not $found) { $found = Get-FileSpatialLabel -File $f }
+        # v88: grup Eclipsa/IAMF — pe filter nici demuxer-ul nu-l salveaza (timeline editat)
+        if (-not $iamfFound -and (Get-IamfLayout -File $f)) { $iamfFound = $true }
+        if ($found -and $iamfFound) { break }
     }
     if ($found) {
         Write-Host "  ⚠ Sursele au audio $found — concat filter RE-encodeaza audio, obiectele se pierd." -ForegroundColor Yellow
         Write-Host "    Pentru pastrare: uneste surse identice (Concat stream copy / demuxer)." -ForegroundColor Yellow
+    }
+    if ($iamfFound) {
+        Write-Host "  ⚠ Sursele au grup Eclipsa/IAMF — grupul se aplatizeaza la Opus simplu la concat." -ForegroundColor Yellow
     }
 }
 
@@ -2281,11 +2293,20 @@ function Get-AudioCopyCompat {
 function Show-IncompatAudioCopyWarnings {
     param([string]$File, [string]$Container, [int[]]$ReencInputs = @(0), [int[]]$SkipInputs = @())
     if ($Container.ToLowerInvariant() -eq "mkv") { return }
-    $codecs = @(& ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 $File 2>$null)
+    $codecs = @(& ffprobe -v error -select_streams a -show_entries stream=index,codec_name -of csv=p=0 $File 2>$null)
     $i = 0
+    $seenIdx = @{}
     foreach ($line in $codecs) {
-        if (-not $line) { continue }
-        $ac = (($line -split ',')[0]).Trim()
+        if (-not "$line".Trim()) { continue }
+        $parts = $line -split ','
+        # v88: ffprobe listeaza substream-urile unui grup IAMF de DOUA ori → dedupe pe
+        # indexul de stream (altfel warn-uri duble cu ordinale a:N fantoma)
+        $aIdx = "$($parts[0])".Trim()
+        if ($aIdx -match '^\d+$') {
+            if ($seenIdx.ContainsKey($aIdx)) { continue }
+            $seenIdx[$aIdx] = $true
+        }
+        $ac = if ($parts.Count -gt 1) { "$($parts[1])".Trim() } else { "" }
         if ($ac) {
             if (($ReencInputs -notcontains $i) -and ($SkipInputs -notcontains $i)) {
                 if ((Get-AudioCopyCompat $ac $Container) -ne "copy") {
@@ -3021,6 +3042,9 @@ function Invoke-StreamCopy {
     Invoke-DjiPreserveMetaPostEncode -Source $fileInfo.FullName -Output $outFile
     # v87: audio E-AC-3 Atmos copiat pe MP4/MOV -> re-scrie dec3 JOC (no-op altfel)
     Invoke-AtmosMp4Signal -File $outFile
+    # v88: sursa cu grup Eclipsa/IAMF -> ffmpeg l-a aplatizat la Opus simplu ->
+    # re-grefeaza grupul din sursa (timeline 1:1). No-op pe non-IAMF; warn pe non-ISO.
+    Invoke-IamfPreserve -Source $fileInfo.FullName -Output $outFile | Out-Null
 
     # Stats
     $newSize = (Get-Item $outFile).Length
@@ -4461,6 +4485,171 @@ function Invoke-AtmosMp4Signal {
     foreach ($r in $raws) { Remove-Item $r -Force -ErrorAction SilentlyContinue }
 }
 
+# v88: detecteaza audio Eclipsa / IAMF (mirror _iamf_probe/av_common.sh). Echo layout
+# ("stereo"/"5.1"/"7.1"/"iamf") sau "". Detector autoritar stream_group=type == "IAMF
+# Audio Element" (raw .iamf SI IAMF-in-MP4). IAMF traieste DOAR in MP4/MOV.
+function Get-IamfLayout {
+    param([string]$File)
+    $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join ' '
+    if ($gtype -notmatch "IAMF Audio Element") { return "" }
+    # layer cel mai INALT din banner (NU -v error, ar suprima liniile "Layer N:")
+    $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
+    $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
+    if ($lay -match 'stereo')     { return "stereo" }
+    if ($lay -match '6 channels') { return "5.1" }
+    if ($lay -match '8 channels') { return "7.1" }
+    return "iamf"
+}
+
+# v88: authoring Eclipsa/IAMF (mirror _iamf_author/av_common.sh) — creeaza IAMF-in-MP4
+# dintr-o sursa cu audio multicanal. Layout stereo|5.1|7.1 (channel-based scalabil: layer
+# stereo de baza + tinta). Substream-uri Opus izolate cu `pan` (layout GENERIC curat —
+# altfel libopus refuza etichetele surround). ffmpeg raw .iamf → MP4Box package (+video
+# copy daca sursa are; detectat prin banner-ul full, NU -select_streams v care rateaza pe
+# IAMF). Temp CO-LOCAT cu output (regula no-$env:TEMP + MP4Box.exe fara /tmp). Args ca
+# ARRAY + splat (flag-urile `:` = date, nu re-parsare PS). $true ok / $false esec (soft).
+function Invoke-IamfAuthor {
+    param([string]$Source, [string]$Output, [string]$Layout, [string]$Bitrate = "256k")
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { Write-Host "  ✗ MP4Box lipseste (necesar pt IAMF-in-MP4)" -ForegroundColor Red; return $false }
+    $raw = Join-Path (Split-Path $Output -Parent) ("iamfauth_" + [guid]::NewGuid().ToString("N") + ".iamf")
+    $fcArgs = @(); $sg1 = ""; $sg2 = ""; $sidArgs = @()
+    switch ($Layout) {
+        "stereo" {
+            $fcArgs = @("-map","0:a:0")
+            $sg1 = "type=iamf_audio_element:id=1:st=0,layer=ch_layout=stereo"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=0:parameter_rate=48000|element=stg=0:parameter_id=1:parameter_rate=48000:default_mix_gain=0x0|layout=sound_system=stereo:integrated_loudness=0x0"
+        }
+        "5.1" {
+            $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[bk]","-map","[ce]","-map","[lf]")
+            $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=5.1(side)"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=5.1(side)"
+            $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3")
+        }
+        "7.1" {
+            $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[si]","-map","[bk]","-map","[ce]","-map","[lf]")
+            $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1"
+            $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3","-streamid","4:4")
+        }
+        default { Write-Host "  ✗ Layout IAMF nesuportat: $Layout (stereo|5.1|7.1)" -ForegroundColor Red; return $false }
+    }
+    $ffArgs = @("-y","-v","error","-i",$Source) + $fcArgs + @("-c:a","libopus","-b:a",$Bitrate,"-stream_group",$sg1,"-stream_group",$sg2) + $sidArgs + @($raw)
+    & ffmpeg @ffArgs 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
+        Write-Host "  ✗ ffmpeg authoring IAMF esuat (layout $Layout)" -ForegroundColor Red
+        if (Test-Path $raw) { Remove-Item $raw -Force -EA SilentlyContinue }
+        return $false
+    }
+    $hasVideo = @(& ffprobe -hide_banner $Source 2>&1) | Select-String -Pattern 'Stream #.*Video:'
+    # v88 audit: subtitrarile din surse ISO se importa cu #trackID (tx3g e formatul nativ
+    # MP4Box; validat empiric). Perechea Track-Info + Media Type sbtl/subt — NU text: (acela
+    # e chapter track-ul QT, vine separat prin -chap). Surse non-ISO cu subs → nota onesta.
+    $iext = [System.IO.Path]::GetExtension($Source).TrimStart('.').ToLowerInvariant()
+    $subAdd = @()
+    if ($iext -in @('mp4','mov','m4v','qt')) {
+        $sCurId = $null
+        foreach ($ln in @(& $mux -info $Source 2>&1)) {
+            if ("$ln" -match '^# Track \d+ Info - ID (\d+)') { $sCurId = $Matches[1] }
+            elseif ("$ln" -match 'Media Type: (sbtl|subt):') { if ($sCurId) { $subAdd += @("-add", "$Source#$sCurId"); $sCurId = $null } }
+        }
+    } elseif (@(& ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 $Source 2>$null) | Where-Object { $_ -match '^\d' }) {
+        Write-Host "  Nota: subtitrarile din sursa non-MP4 nu se transfera la authoring IAMF (pastreaza-le cu Remux)" -ForegroundColor DarkGray
+    }
+    if ($hasVideo) {
+        $pkgArgs = @("-add", "$($Source)#video", "-add", $raw) + $subAdd + @("-new", $Output)
+    } else {
+        $pkgArgs = @("-add", $raw) + $subAdd + @("-new", $Output)
+    }
+    & $mux @pkgArgs 2>$null | Out-Null
+    $mrc = $LASTEXITCODE
+    Remove-Item $raw -Force -EA SilentlyContinue
+    if ($mrc -eq 0 -and (Test-Path $Output) -and (Get-Item $Output).Length -gt 0) {
+        # v88 audit: MP4Box -add NU copiaza capitolele (regula v71) → dump-chap + chap,
+        # gardat pe count ffprobe (dump pe 0 capitole lasa fisier gol). Temp CO-LOCAT.
+        $nch = (@(& ffprobe -v error -show_chapters $Source 2>$null) | Where-Object { $_ -match '^\[CHAPTER\]' }).Count
+        if ($nch -gt 0) {
+            $chap = Join-Path (Split-Path $Output -Parent) ("iamfauth_" + [guid]::NewGuid().ToString("N") + ".txt")
+            & $mux -dump-chap $Source -out $chap 2>$null | Out-Null
+            if ((Test-Path $chap) -and (Get-Item $chap).Length -gt 0) { & $mux -chap $chap $Output 2>$null | Out-Null }
+            Remove-Item $chap -Force -EA SilentlyContinue
+        }
+        return $true
+    }
+    Write-Host "  ✗ MP4Box package IAMF esuat" -ForegroundColor Red
+    if (Test-Path $Output) { Remove-Item $Output -Force -EA SilentlyContinue }
+    return $false
+}
+
+# v88: passthrough Eclipsa/IAMF (mirror _iamf_preserve bash; analog dvcC/Atmos).
+# ffmpeg APLATIZEAZA grupul IAMF la piste Opus simple la ORICE mux/copy → dupa un flux
+# cu timeline 1:1 re-grefam grupul: extract raw .iamf din SURSA (MP4Box -raw <tid>;
+# byte-identic la round-trip — validat) → rebuild output cu -rem pe pistele aplatizate
+# + -add raw → mv atomic. Grupul e ATOMIC (selectie partiala de substream-uri = fara
+# sens → re-adaugam INTREG). DOAR MP4/MOV. NU pe trim/concat (timeline editata).
+# -AllowNoAudio: apelantul stie ca userul a CERUT audio dar compat-ul l-a dropat la
+# ffmpeg (ex. Remux opus→MOV) → graft si pe output fara audio. Temp-uri CO-LOCATE.
+# Idempotent la nivel de FISIER. Soft-fail: output NEATINS la esec.
+function Invoke-IamfPreserve {
+    param([string]$Source, [string]$Output, [switch]$AllowNoAudio)
+    $ext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    if (-not (Get-IamfLayout -File $Source)) { return $true }
+    if ($ext -notin @('mp4','mov','m4v')) {
+        Write-Host "  ⚠ Sursa are audio Eclipsa/IAMF — grupul NU exista in .$ext →" -ForegroundColor Yellow
+        Write-Host "    audio ramane Opus multi-pista simplu. Foloseste MP4/MOV ca sa pastrezi Eclipsa." -ForegroundColor Yellow
+        return $false
+    }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) {
+        Write-Host "  ⚠ MP4Box lipseste — grupul Eclipsa/IAMF nu poate fi re-scris (audio ramane Opus simplu)." -ForegroundColor Yellow
+        return $false
+    }
+    # idempotent: output-ul are deja grup (ex. re-rulare) → nimic de facut
+    if (Get-IamfLayout -File $Output) { return $true }
+    # pistele audio APLATIZATE din output (id ISO hex → dec). Output FARA audio =
+    # drop deliberat → respectam, EXCEPTIE -AllowNoAudio (drop de compat, nu de user).
+    $remArgs = @()
+    foreach ($ln in @(& ffprobe -v error -select_streams a -show_entries stream=id -of csv=p=0 $Output 2>$null)) {
+        $idhex = ($ln -split ',')[0].Trim()
+        if ($idhex -match '^0x[0-9a-fA-F]+$') { $remArgs += @("-rem", [Convert]::ToInt32($idhex, 16)) }
+    }
+    if ($remArgs.Count -eq 0 -and -not $AllowNoAudio) { return $true }
+    # track ID-ul pistei iamf din SURSA — perechea "# Track N Info - ID <id>" +
+    # "Media Type: soun:iamf" (ID REAL, nu pozitie). GPAC scrie -info pe STDERR → 2>&1.
+    $tid = $null
+    foreach ($ln in @(& $mux -info $Source 2>&1)) {
+        if ("$ln" -match '^# Track \d+ Info - ID (\d+)') { $curId = $Matches[1] }
+        if ("$ln" -match 'Media Type: soun:iamf') { $tid = $curId; break }
+    }
+    if (-not ($tid -match '^\d+$')) { return $false }
+    $dir = Split-Path $Output -Parent
+    $g = [guid]::NewGuid().ToString("N")
+    $raw = Join-Path $dir ("iamfpre_" + $g + ".iamf")
+    $tmp = Join-Path $dir ("iamfpre_" + $g + "." + $ext)
+    # v88 audit: capitolele se cara DETERMINIST prin dump-chap (inainte de rebuild) +
+    # -chap (dupa mv) — rebuild-ul MP4Box importa track-ul de capitole QT scris de
+    # ffmpeg dar ii TRUNCHIAZA etichetele (validat empiric: 2 capitole -> 1).
+    $chapf = Join-Path $dir ("iamfpre_" + $g + ".txt")
+    $nch = (@(& ffprobe -v error -show_chapters $Output 2>$null) | Where-Object { $_ -match '^\[CHAPTER\]' }).Count
+    if ($nch -gt 0) { & $mux -dump-chap $Output -out $chapf 2>$null | Out-Null }
+    & $mux -raw $tid -out $raw $Source 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
+        Remove-Item $raw, $chapf -Force -EA SilentlyContinue; return $false
+    }
+    $addArgs = @("-add", $Output) + $remArgs + @("-add", $raw, "-new", $tmp)
+    & $mux @addArgs 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0 -and (Get-IamfLayout -File $tmp)) {
+        Move-Item -Force $tmp $Output
+        if ((Test-Path $chapf) -and (Get-Item $chapf).Length -gt 0) { & $mux -chap $chapf $Output 2>$null | Out-Null }
+        Remove-Item $raw, $chapf -Force -EA SilentlyContinue
+        Write-Host "  Grup Eclipsa/IAMF re-scris in container (audio spatial pastrat 1:1)" -ForegroundColor Green
+        return $true
+    }
+    Remove-Item $raw, $tmp, $chapf -Force -EA SilentlyContinue
+    return $false
+}
+
 function Invoke-HdvCombineWithOriginal {
     param(
         [Parameter(Mandatory)][string]$Modified,
@@ -5830,8 +6019,8 @@ if ($mainChoice -eq "2") {
     $eaContainer = switch ($eaCont) { "1"{"mp4"} "3"{"mov"} "4"{"webm"} default{"mkv"} }
     $eaFlags = if ($eaContainer -in @("mkv","webm")) { @() } else { @("-movflags","+faststart") }
 
-    Write-Host "Audio: 1-AAC 192k/384k/768k [impl] 2-AAC custom 3-Opus 128k/256k/512k 4-Opus custom 5-FLAC 6-FLAC custom 7-E-AC3 8-AC3 9-LPCM" -ForegroundColor Cyan
-    $eaAC = Read-Host "Alege 1-9 [implicit: 1]"
+    Write-Host "Audio: 1-AAC 192k/384k/768k [impl] 2-AAC custom 3-Opus 128k/256k/512k 4-Opus custom 5-FLAC 6-FLAC custom 7-E-AC3 8-AC3 9-LPCM 10-Eclipsa (IAMF)" -ForegroundColor Cyan
+    $eaAC = Read-Host "Alege 1-10 [implicit: 1]"
     $eaCodec = "aac"; $eaBr = "192k"; $eaFlvl = 8; $eaPcmDepth = "16le"
     switch ($eaAC) {
         "2" { $eaBr = Read-Host "  Bitrate AAC"; if ($eaBr -notmatch '^\d+[kK]$') { $eaBr = "192k" } }
@@ -5851,6 +6040,12 @@ if ($mainChoice -eq "2") {
             Write-Host "  LPCM: 1-16bit [impl] 2-24bit 3-32bit" -ForegroundColor Cyan
             $epd = Read-Host "  Alege [impl: 1]"
             switch ($epd) { "2" { $eaPcmDepth = "24le" } "3" { $eaPcmDepth = "32le" } default { $eaPcmDepth = "16le" } }
+        }
+        "10" {
+            # v88: Eclipsa Audio (IAMF, AOMedia) — spatial deschis, substream-uri Opus
+            $eaCodec = "iamf"; $eaBr = "256k"
+            Write-Host "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1, substream-uri Opus" -ForegroundColor Green
+            Write-Host "  Layout-ul se alege automat din canalele sursei (2/6/8ch); alte surse → skip onest" -ForegroundColor DarkGray
         }
     }
     # FLAC + mp4/mov
@@ -5889,6 +6084,22 @@ if ($mainChoice -eq "2") {
             default { $eaContainer = "mkv"; $eaFlags = @() }
         }
     }
+    # v88: Eclipsa/IAMF — traieste DOAR in MP4/MOV (Matroska/WebM nu au mapare IAMF: nici
+    # ffmpeg, nici mkvmerge) + cere MP4Box pt impachetare (ffmpeg scrie doar raw .iamf).
+    if ($eaCodec -eq "iamf") {
+        $iamfMux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+        if (-not (Get-Command $iamfMux -ErrorAction SilentlyContinue)) {
+            Write-Host "  EROARE: MP4Box (GPAC) lipseste — necesar pt IAMF-in-MP4." -ForegroundColor Red
+            Write-Host "  Instaleaza cu tools/mp4box_installer.ps1 sau seteaza AV_TOOL_MP4BOX." -ForegroundColor Yellow
+            Read-Host; exit
+        }
+        if ($eaContainer -notin @("mp4","mov")) {
+            Write-Host "  Eclipsa/IAMF exista doar in MP4/MOV — containerul ales: $eaContainer. 1-MP4 [impl] 2-Opus 128k" -ForegroundColor Red
+            $imf = Read-Host "  Alege [impl: 1]"
+            if ($imf -eq "2") { $eaCodec = "opus"; $eaBr = "128k" }
+            else { $eaContainer = "mp4"; $eaFlags = @("-movflags","+faststart") }
+        }
+    }
     # WebM: doar Opus/Vorbis audio suportat
     if ($eaContainer -eq "webm" -and $eaCodec -ne "opus") {
         Write-Host "  WebM suporta doar Opus audio. 1-Opus 128k [impl] 2-MKV" -ForegroundColor Red
@@ -5924,6 +6135,80 @@ if ($mainChoice -eq "2") {
         $eaCh = Get-FFprobeValue $f.FullName "a:0" "channels"
         $eaChN = if ($eaCh -match '^\d+$') { [int]$eaCh } else { 2 }
         $abr = $eaBr
+
+        # v88: Eclipsa/IAMF — flux dedicat in 2 etape (ffmpeg raw .iamf → MP4Box package
+        # cu video copy 1:1). NU trece prin $eaAP/comanda ffmpeg unica de mai jos (cere
+        # filter_complex per layout + stream groups + re-pack MP4Box). Doar prima pista audio.
+        if ($eaCodec -eq "iamf") {
+            # sursa are DEJA grup IAMF → authoring-ul din substream-ul a:0 ar DOWNGRADA
+            # tacut (a:0 = perechea stereo → "2ch" → stereo dintr-un 5.1!) → copy 1:1 +
+            # re-scriere grup (fara re-encode; acelasi rezultat, calitate pastrata).
+            if (Get-IamfLayout -File $f.FullName) {
+                Write-Host "  Sursa are DEJA grup Eclipsa/IAMF → copy 1:1 + re-scriere grup (fara re-encode)" -ForegroundColor Green
+                # v88 audit: paritate cu fluxul normal al meniului — subs + attachments se
+                # pastreaza (sursa deja-IAMF e mereu ISO; pgs/dvd/dvb nu intra in mp4/mov → drop).
+                $iamfSubc = @("-c:s","mov_text")
+                $iamfSubChk = ((& ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 $f.FullName 2>$null) | Out-String)
+                if ($iamfSubChk -match 'hdmv_pgs|dvd_subtitle|dvb_subtitle') { $iamfSubc = @("-sn") }
+                $cpArgs = @("-y","-i",$f.FullName,"-map","0:v?","-map","0:a?","-map","0:s?","-map","0:t?","-map_metadata","0","-map_chapters","0","-c","copy") + $iamfSubc + @("-c:t","copy","-dn") + $eaFlags + @("-nostats",$outFile)
+                & ffmpeg @cpArgs 2>>$eaLog
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $outFile) -and (Get-Item $outFile).Length -gt 0) {
+                    # v88 audit: video 1:1 → aceleasi grafturi ca fluxul normal (dvcC DV se
+                    # pierde la ffmpeg →MP4; GPS-ul nativ DJI se dropeaza). Re-signal-ul DV +
+                    # graftul DJI ruleaza PE output-ul inca aplatizat (piste opus cu id-uri
+                    # reale) → graftul IAMF vine ULTIMUL (rem opus + add grup).
+                    Invoke-DvResignalCopy -Source $f.FullName -Output $outFile -Target $eaContainer
+                    Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
+                    if (Invoke-IamfPreserve -Source $f.FullName -Output $outFile) {
+                        $ns = (Get-Item $outFile).Length
+                        Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
+                    } else {
+                        Write-Host "  EROARE: re-scrierea grupului IAMF a esuat" -ForegroundColor Red
+                        Remove-Item $outFile -Force -ErrorAction SilentlyContinue
+                        $eaErr++; $eaDone--
+                    }
+                } else {
+                    Write-Host "  EROARE: copy+re-graft IAMF esuat" -ForegroundColor Red
+                    Remove-Item $outFile -Force -ErrorAction SilentlyContinue
+                    $eaErr++; $eaDone--
+                }
+                continue
+            }
+            # v88 audit: sursa FARA pista audio → skip onest (fallback-ul $eaChN=2 ar
+            # trimite-o in authoring stereo → eroare ffmpeg criptica). Mirror bash.
+            $eaHasAudio = @(& ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 $f.FullName 2>$null) | Where-Object { $_ -match '\d' }
+            if (-not $eaHasAudio) {
+                Write-Host "  SKIP: sursa nu are pista audio — nimic de autorat IAMF" -ForegroundColor Yellow
+                $eaSkip++; $eaDone--; continue
+            }
+            $iamfLayout = switch ($eaChN) { 2 {"stereo"} 6 {"5.1"} 8 {"7.1"} default {""} }
+            if (-not $iamfLayout) {
+                Write-Host "  SKIP: IAMF suporta surse 2/6/8 canale — sursa are ${eaChN}ch" -ForegroundColor Yellow
+                $eaSkip++; $eaDone--; continue
+            }
+            if ($env:AV_DOWNMIX_STEREO -eq "1" -and $eaChN -gt 2) {
+                Write-Host "  Nota: AV_DOWNMIX_STEREO ignorat pe IAMF (layout-ul urmeaza canalele sursei)" -ForegroundColor DarkGray
+            }
+            # sursa Atmos/DTS:X → obiectele NU se transfera in IAMF (doar bed-ul de canale; v87)
+            $iamfSp = Get-AudioSpatialKind -File $f.FullName -AIdx 0
+            if ($iamfSp) {
+                Write-Host "  ⚠ Sursa e $(Get-SpatialLabel $iamfSp): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" -ForegroundColor Yellow
+            }
+            Write-Host "  Audio: Eclipsa/IAMF layout $iamfLayout (${eaChN}ch → substream-uri Opus; doar prima pista audio)" -ForegroundColor White
+            if (Invoke-IamfAuthor -Source $f.FullName -Output $outFile -Layout $iamfLayout) {
+                # v88 audit: video-ul intra prin importul MP4Box #video → dvcC DV pastrat
+                # NATIV si CORECT (validat empiric P8.1→8 + P8.4→8.4; import track ISO cu
+                # stsd, NU auto-detect) → fara re-signal. GPS-ul nativ DJI insa se pierde
+                # (#video ia doar video) → re-grefeaza (graftul pastreaza grupul — validat).
+                Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
+                $ns = (Get-Item $outFile).Length
+                Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
+            } else {
+                Write-Host "  EROARE: authoring IAMF esuat" -ForegroundColor Red
+                $eaErr++; $eaDone--
+            }
+            continue
+        }
 
         # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix
         $eaDownmix = @()
@@ -5978,10 +6263,21 @@ if ($mainChoice -eq "2") {
         $eaSkipMaps = @()
         $eaReenc = @(0); $eaSkipIn = @()   # v68: indecsi INPUT re-encodati / sariti (compat warn)
         $eaTrackCount = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $f.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
+        # v88: sursa cu grup Eclipsa/IAMF — substream-urile SUNT grupul → UN unit: copy
+        # pe toate (dialogul per-pista/garda spatiala se sar; graft-ul post-succes
+        # `Invoke-IamfPreserve` re-scrie grupul). Mirror handle_multi_audio_dialog (bash).
+        $eaIamfSrc = [bool](Get-IamfLayout -File $f.FullName)
+        if ($eaIamfSrc) {
+            $eaAP = @("-c:a","copy")
+            $eaReenc = @()
+            Write-Host "  Audio: sursa Eclipsa/IAMF — substream-urile raman copy ca UN grup (grupul se re-scrie in container la final)" -ForegroundColor Green
+        }
         # v87: detectie audio spatial per-pista (refolosita la afisaj + garda; mirror fluxul principal)
         $eaSpatial = @{}
-        for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSpatial[$ai] = (Get-AudioSpatialKind -File $f.FullName -AIdx $ai) }
-        if ($eaTrackCount -le 1 -and $eaSpatial[0]) {
+        if (-not $eaIamfSrc) {
+            for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSpatial[$ai] = (Get-AudioSpatialKind -File $f.FullName -AIdx $ai) }
+        }
+        if (-not $eaIamfSrc -and $eaTrackCount -le 1 -and $eaSpatial[0]) {
             # v87: garda single-track — $eaAP are deja `-c:a:0 <codec>`; pe Atmos/DTS:X oferim copy.
             if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $eaSpatial[0]) {
                 $eaAP = @("-c:a","copy")
@@ -5989,7 +6285,7 @@ if ($mainChoice -eq "2") {
                 Write-Host "  Audio: pista $(Get-SpatialLabel $eaSpatial[0]) pastrata prin copy (fara re-encode)" -ForegroundColor Green
             }
         }
-        if ($eaTrackCount -gt 1) {
+        if (-not $eaIamfSrc -and $eaTrackCount -gt 1) {
             $eaSel = @{}; $eaUseSel = $false
             if ($env:AV_AUDIO_TRACKS -or $env:AV_AUDIO_DROP) {
                 for ($ai = 0; $ai -lt $eaTrackCount; $ai++) { $eaSel[$ai] = "C" }
@@ -6103,6 +6399,9 @@ if ($mainChoice -eq "2") {
             Invoke-DjiPreserveMetaPostEncode -Source $f.FullName -Output $outFile
             # v87: pista E-AC-3 Atmos copiata (garda spatiala) pe MP4/MOV -> re-scrie dec3 JOC
             Invoke-AtmosMp4Signal -File $outFile
+            # v88: sursa cu grup Eclipsa/IAMF (gate-ul de mai sus a fortat copy) ->
+            # ffmpeg l-a aplatizat -> re-grefeaza grupul din sursa. No-op pe non-IAMF.
+            Invoke-IamfPreserve -Source $f.FullName -Output $outFile | Out-Null
             $ns = (Get-Item $outFile).Length
             Write-Host "  OK — $(Format-Bytes $ns)" -ForegroundColor Green
         }
@@ -8166,15 +8465,27 @@ foreach ($f in $inputFiles) {
     # v68: indecsi INPUT audio re-encodati / sariti (pt avertisment compat container la copy).
     # Default: track 0 re-encodat, restul copy. Copy total → niciunul re-encodat.
     $reencInputs = if ($audioCopy) { @() } else { @(0) }; $skipInputs = @()
+    # v88: sursa cu grup Eclipsa/IAMF — ffmpeg prezinta substream-urile Opus ca piste
+    # separate, dar ele SUNT grupul → se trateaza ca UN unit: copy pe toate (re-encodarea
+    # per-substream ar produce piste separate fara sens — mix-ul IAMF nu e randabil de
+    # ffmpeg; graft-ul post-encode `Invoke-IamfPreserve` re-scrie grupul pe MP4/MOV).
+    # Mirror gate-ul din handle_multi_audio_dialog (bash).
+    $iamfSrcGate = if (-not $audioCopy) { [bool](Get-IamfLayout -File $f.FullName) } else { $false }
+    if ($iamfSrcGate) {
+        $audioParams = @("-c:a","copy")
+        $audioLoudnormTrack = -1
+        $reencInputs = @()
+        Write-Host "  Audio: sursa Eclipsa/IAMF — substream-urile raman copy ca UN grup (grupul se re-scrie in container la final)" -ForegroundColor Green
+    }
     # v87: detectie audio spatial per-pista (o singura data; refolosita la afisaj +
     # garda). Pe copy total nu se pierde nimic → detectia se sare. Mirror bash.
     $spatialTracks = @{}
-    if (-not $audioCopy) {
+    if (-not $audioCopy -and -not $iamfSrcGate) {
         for ($ai = 0; $ai -lt $audioTrackCount; $ai++) {
             $spatialTracks[$ai] = (Get-AudioSpatialKind -File $f.FullName -AIdx $ai)
         }
     }
-    if ($audioTrackCount -le 1 -and -not $audioCopy -and $spatialTracks[0]) {
+    if ($audioTrackCount -le 1 -and -not $audioCopy -and -not $iamfSrcGate -and $spatialTracks[0]) {
         # v87: garda single-track (cazul comun: 1 pista E-AC-3 JOC / TrueHD Atmos /
         # DTS:X) — $audioParams are deja `-c:a:0 <codec>`; oferim copy (pastreaza obiectele).
         if (Read-SpatialGuardChoice -Tracks "a:0" -Kind $spatialTracks[0]) {
@@ -8184,7 +8495,7 @@ foreach ($f in $inputFiles) {
             Write-Host "  Audio: pista $(Get-SpatialLabel $spatialTracks[0]) pastrata prin copy (fara re-encode)" -ForegroundColor Green
         }
     }
-    if ($audioTrackCount -gt 1 -and -not $audioCopy) {
+    if ($audioTrackCount -gt 1 -and -not $audioCopy -and -not $iamfSrcGate) {
         # v67: determina selectia — env AV_AUDIO_TRACKS (CI: lista encode, rest copy) sau dialog
         $sel = @{}; $useSelective = $false
         if ($env:AV_AUDIO_TRACKS -or $env:AV_AUDIO_DROP) {
@@ -9870,6 +10181,12 @@ foreach ($f in $inputFiles) {
     # (pista E-AC-3 Atmos COPIATA — garda spatiala / alegerea userului — ramane cu dec3
     # fara JOC de la ffmpeg → re-scrisa cu MP4Box; no-op pe MKV / non-Atmos / unealta lipsa)
     Invoke-AtmosMp4Signal -File $outFile
+
+    # ── v88: re-graft grup Eclipsa/IAMF pe output MP4/MOV ──
+    # (gate-ul din dialogul multi-audio a fortat copy pe substream-uri → ffmpeg le-a
+    # aplatizat la Opus simplu → grupul se re-scrie din sursa; video-ul re-encodat NU
+    # atinge timeline-ul audio. No-op pe non-IAMF.)
+    Invoke-IamfPreserve -Source $f.FullName -Output $outFile | Out-Null
 
     $newSize   = (Get-Item $outFile).Length
     $saved     = [math]::Max(0, $f.Length - $newSize)

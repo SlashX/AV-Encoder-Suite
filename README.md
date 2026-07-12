@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v87** — 162 bugs fixed · 276+ features · ~46 000 LoC · 231 files
+**v88** — 163 bugs fixed · 277+ features · ~46 000 LoC · 233 files
 
 ---
 
@@ -19,6 +19,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **HDR10+ on APV** (v69) — a first: dynamic HDR10+ metadata survives encoding to Samsung APV (ffmpeg alone drops it). A dedicated stdlib engine writes the ST 2094-40 metadata per frame straight into the APV bitstream alongside static mastering-display/MaxCLL, from any HDR10+ source (HEVC / AV1 / APV) — and back: an HDR10+ APV file re-encodes to x265/AV1 with metadata intact. Output validated byte-exact against the HDR10+ ecosystem reference tools and the official test clip; optional decode-check via the OpenAPV reference decoder (`tools/openapv_validator`)
 - **HDR-aware everywhere** — HDR10 · HDR10+ dynamic · DV · HLG · LOG (Apple / D-Log M / Samsung) detected automatically; per-source dialogs propose the right transform
 - **Spatial audio preserved & signaled — Dolby Atmos and DTS:X** (v87) — object-based audio can't be created or re-encoded with free tools (the encoders are Dolby/DTS-licensed); it only survives a 1:1 track copy. The suite now detects Atmos (E-AC-3 JOC / TrueHD) and DTS:X per track, marks them in every selection dialog, and guards re-encodes with a copy-first prompt (`AV_ATMOS_POLICY` / `AV_DTSX_POLICY` for CI — non-interactive runs default to copy, nothing is lost silently). On MP4/MOV it also rewrites the container-level Atmos signaling that ffmpeg omits (via MP4Box, mirroring the v70-v72 DV container work) — Apple-ecosystem players decide by that box, everything else reads the bitstream. Media analysis labels the tracks, Demux marks them, Trim & Concat warns before the audio choice, and Remux now honestly drops container-incompatible spatial tracks instead of failing outright. Auro-3D (steganographic height channels in the LSBs of a normal 5.1 track) is undetectable by design — a 1:1 copy keeps it, any re-encode loses it
+- **Eclipsa Audio (IAMF) — author it AND keep it** (v88) — the open, royalty-free spatial audio format from AOMedia (pushed by Samsung/Google on recent TVs and phones). IAMF isn't a codec: it's a stream GROUP (Audio Element + Mix Presentation) over Opus substreams living in the container. The audio-only menu (option 10) now *authors* IAMF from stereo/5.1/7.1 sources — scalable layers (stereo base + full bed), Opus substreams, video copied 1:1 alongside; ffmpeg builds the IAMF structure natively but can't write it into a container, so MP4Box packages it (MP4/MOV only — Matroska has no IAMF mapping yet). And since ffmpeg silently FLATTENS an existing IAMF group to plain Opus tracks on *any* mux/copy (exit 0, nothing visibly lost — the audio twin of the v70–v72 DV container signaling), every 1:1 path (encode with audio copy, stream copy, audio-only, Remux) re-grafts the group from the source byte-identically. The audio dialog treats the substreams as one atomic unit (copy as a group, no per-track selection, no loudnorm), media analysis labels tracks *(Eclipsa)*, and Trim & Concat warns that timeline edits flatten the group. Atmos→Eclipsa conversion doesn't exist (Atmos objects can't be decoded with free tools) — an Atmos source's channel bed can still be authored, with an honest warning
 - **DJI Osmo Action 6 D-Log M detection** (v62) — Action 6 reports `bt709` identically for Normal and D-Log M (the LOG curve lives only in the pixels); the real flag sits in the `djmd` telemetry track, which exiftool doesn't expose. A shared stdlib reader parses the djmd protobuf and tags D-Log M correctly so the LOG dialog (apply Rec.709 LUT / keep LOG) shows up. LOG/LUT flow also hardened: 10-bit detection via pixel-format fallback, HLG no longer misread as LOG, correct Rec.709 tagging across all containers (MP4/MOV/MKV — `setparams` after `lut3d`, since the filter rewrites pixels but not color metadata). **v83**: brand-aware LUT matching — LUTs are now recognized by their real names (`AppleLog*`, `*Samsung*Log*`, `*D-LogM*`), not just a fixed prefix, so the brand's LUT is surfaced first (default) while the full list stays selectable for manual choice; applies to encode, burn-in and trim/concat. Validated end-to-end on a real iPhone 17 Pro Max Apple Log clip (ProRes 10-bit → detected as Apple Log → correct Rec.709 on x265 / AV1 / burn-in / trim-concat). **v85**: Apple Log detection now survives trimming/remuxing — it also keys off the video stream's encoder tag (`Apple ProRes`), which persists through `-c copy`, so a clip trimmed with Trim & Concat before encoding still gets the right brand LUT (no false positives: a suite-re-encoded ProRes isn't mistaken for Apple)
 - **DJI native GPS preserved on encode** (v78) — encoding a DJI clip (Osmo Action 6 etc.) used to silently drop the native GPS telemetry track (its `codec=none` format can't pass through ffmpeg into *any* container). Now the suite re-grafts the GPS track onto the MP4/MOV output after encoding (via MP4Box) — on full re-encode, fast stream-copy, and audio-only alike (anywhere the picture stays 1:1). The bulky debug track is dropped; on MKV (which can't hold it either) the suite points you to the telemetry *embed* option. Controlled by `DJI_PRESERVE_META` (auto/on/off). The old "switch to MKV to keep tracks" option — which actually crashed the encode (those tracks can't enter MKV) — is gone, replaced by this honest, automatic path
 - **6 HW backends, uniform UX** — NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec with a single `1..7` preset table mapped per backend
@@ -63,8 +64,8 @@ Drop your files into the input folder shown on first run (Termux: `/storage/emul
 | **Video** | HEVC · H.264 · AV1 (SVT-AV1 / libaom) · DNxHR · ProRes · APV |
 | **HW backends** | NVENC · QSV · VAAPI · VideoToolbox · AMF · MediaCodec |
 | **HDR** | HDR10 · HDR10+ · Dolby Vision (P5/P7/P8.1 HEVC + P10 AV1) · HLG · LOG |
-| **Audio encode** | AAC · Opus · FLAC · E-AC3 · AC3 · LPCM · per-track encode/copy/skip + container-compat warnings (v67–v68) |
-| **Audio passthrough** | TrueHD · DTS · DTS-HD (auto stream copy; AC3 source copies too) |
+| **Audio encode** | AAC · Opus · FLAC · E-AC3 · AC3 · LPCM · Eclipsa/IAMF authoring (v88) · per-track encode/copy/skip + container-compat warnings (v67–v68) |
+| **Audio passthrough** | TrueHD · DTS · DTS-HD (auto stream copy; AC3 source copies too) · Atmos/DTS:X guarded (v87) · Eclipsa/IAMF group re-grafted (v88) |
 | **Telemetry** | DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 |
 | **Workflows** | Encode · Audio-only · Trim & Concat · Remux · HDR/DV tools · Telemetry · GPS · Burn-in (HUD/SRT/ASS/Image) · Analysis |
 
@@ -151,6 +152,7 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 | **AC3** legacy (v53) | 224k stereo | 5.1 → 448k (max 640k) · 7.1 → 5.1 downmix | ❌ MOV |
 | **FLAC** lossless | level 8 | passthrough | mkv only |
 | **LPCM** | 16/24/32 le | passthrough | all |
+| **Eclipsa (IAMF)** (v88) | Opus 256k substreams | layout follows source (2/6/8 ch) | mp4/mov only (needs MP4Box) |
 
 ### Stream-copy passthrough
 
@@ -159,6 +161,8 @@ Uniform preset table `1..7` (Ultrafast → Veryslow, default `4=Quality`) across
 | **AC3** | preserved 1:1 |
 | **TrueHD** | preserved 1:1 (+ HD warning) |
 | **DTS / DTS-HD MA** | preserved 1:1 (+ HD warning) |
+| **Dolby Atmos / DTS:X** (v87) | copy-first guard (objects survive only a 1:1 copy) + MP4/MOV Atmos container signaling |
+| **Eclipsa / IAMF** (v88) | group re-grafted onto MP4/MOV output after any 1:1 flow (ffmpeg alone flattens it) |
 
 **Loudnorm** EBU R128 two-pass to -24 LUFS, optional per batch.
 
@@ -410,4 +414,4 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v87** — 162 bugs fixed · 276+ features · ~46 000 LoC · 231 files
+Current: **v88** — 163 bugs fixed · 277+ features · ~46 000 LoC · 233 files

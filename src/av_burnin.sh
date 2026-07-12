@@ -217,6 +217,15 @@ show_burnin_hdr_dialog() {
     detect_source_info "$file" >/dev/null 2>&1 || true
     _burnin_classify_source
 
+    # v88: sursa cu grup Eclipsa/IAMF — burn-in copiaza audio-ul prin ffmpeg, care
+    # APLATIZEAZA grupul la Opus simplu (pierdere tacuta altfel) → warn onest, o data
+    # per fisier, INAINTE de early-return-ul SDR (sursele Eclipsa au tipic video SDR).
+    # Graftul nu e cablat pe burn-in (preview-urile taiate l-ar invalida) — vezi TO-DO.
+    if _iamf_probe "$file" >/dev/null 2>&1; then
+        echo "  ⚠ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →"
+        echo "    grupul se aplatizeaza la Opus simplu (pistele raman, spatialul Eclipsa se pierde)."
+    fi
+
     # SDR → no dialog
     [[ "$BURNIN_SOURCE_TYPE" == "sdr" ]] && return 0
 

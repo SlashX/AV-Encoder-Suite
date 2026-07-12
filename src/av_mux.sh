@@ -188,9 +188,22 @@ remux_display_and_select() {
     fi
 
     local acount=${#REMUX_AUDIO_INDICES[@]}
+    # v88: global per-fisier (selectia e aici, graft-ul in remux_run_for_file) —
+    # 1 = userul a CERUT audio (chiar daca compat-ul il dropeaza la ffmpeg).
+    REMUX_IAMF_WANT_AUDIO=0
     if [ "$acount" -gt 0 ]; then
         echo ""
         echo "AUDIO ($acount):"
+        # v88: substream-urile Opus ale unui grup Eclipsa/IAMF sunt ATOMICE — pe MP4/MOV
+        # grupul INTREG se re-scrie la final (indiferent de selectia partiala); pe alte
+        # containere nu exista mapare IAMF → spune-o AICI, la selectie (ca la Atmos v87).
+        if _iamf_probe "$file" >/dev/null 2>&1; then
+            if [[ "$target" == "mp4" || "$target" == "mov" ]]; then
+                echo "  ℹ Pistele opus de mai jos = UN grup Eclipsa/IAMF (atomic) → se pastreaza INTREG pe .$target"
+            else
+                echo "  ⚠ Pistele opus de mai jos = grup Eclipsa/IAMF — .$target nu are mapare IAMF → raman Opus simplu (alege MP4/MOV ca sa pastrezi grupul)"
+            fi
+        fi
         rel=0
         local -a audio_compat_list=()
         for abs_idx in "${REMUX_AUDIO_INDICES[@]}"; do
@@ -214,6 +227,10 @@ remux_display_and_select() {
         read -p "Pastreaza audio (ex: 1,3 sau ALL/NONE) [ALL]: " inp
         local picks; picks=$(mux_parse_selection "$inp" "$acount") || { echo "Selectie invalida."; return 1; }
         SELECTED_AUDIO_REL=($picks)
+        # v88: userul a CERUT audio (selectie ne-goala INAINTE de filtrarea compat) —
+        # daca compat-ul dropeaza substream-urile opus (ex. →MOV), graft-ul IAMF de la
+        # final tot ruleaza (grupul vine din SURSA, nu din output).
+        [ ${#SELECTED_AUDIO_REL[@]} -gt 0 ] && REMUX_IAMF_WANT_AUDIO=1
         # v87 FIX pre-existent (v49): drop-ul promis in afisaj ("⚠ incompat → drop") NU se
         # aplica efectiv la AUDIO — pistele incompatibile selectate (ALL sau explicit)
         # intrau in comanda ffmpeg → "Could not write header" → remux esuat COMPLET
@@ -380,6 +397,11 @@ remux_run_for_file() {
     # v87: pe MP4/MOV cu pista E-AC-3 Atmos copiata, ffmpeg scrie dec3 FARA extensia
     # JOC → re-scrie semnalizarea de container (analog dvcC). No-op pe MKV/non-Atmos.
     _atmos_mp4_signal "$final_out"
+    # v88: sursa cu grup Eclipsa/IAMF → ffmpeg l-a aplatizat la remux → re-grefeaza
+    # grupul INTREG din sursa (grupul e atomic — selectia partiala de substream-uri nu
+    # are sens). Arg 3 = userul a cerut audio: graft si cand compat-ul l-a dropat la
+    # ffmpeg (opus→MOV). No-op pe non-IAMF; warn onest pe non-ISO.
+    _iamf_preserve "$file" "$final_out" "${REMUX_IAMF_WANT_AUDIO:-0}" || true
     local end_ts=$(date +%s)
     local sz_orig sz_new
     sz_orig=$(av_stat_size "$file" 2>/dev/null || echo 0)

@@ -34,7 +34,8 @@ assert_contains "$sc_block" '_dji_preserve_meta_postencode "$file" "$output"' "d
 # v78: si pe audio-only (video copiat 1:1 → djmd valid temporal); NU pe trim/concat (video editat)
 aud_sh="$(cat "$SRC/av_encoder_audio.sh")"
 assert_contains "$aud_sh" '_dji_preserve_meta_postencode "$file" "$output"' "av_encoder_audio.sh: re-grefeaza djmd pe audio-only"
-assert_eq "3" "$(printf '%s\n' "$enc_ps" | grep -c 'Invoke-DjiPreserveMetaPostEncode -Source')" "PS1: 3 call-site graft (run-loop + stream-copy + audio-only)"
+# v88 audit: +2 situri legitime in fluxurile IAMF audio-only (copy deja-IAMF + authoring)
+assert_eq "5" "$(printf '%s\n' "$enc_ps" | grep -c 'Invoke-DjiPreserveMetaPostEncode -Source')" "PS1: 5 call-site graft (run-loop + stream-copy + audio-only + IAMF copy/authoring v88)"
 
 # ── 3. Policy DJI_PRESERVE_META: gate + auto/on/off ──────────────────
 assert_contains "$common" 'DJI_PRESERVE_META:-auto'  "av_common: default auto"

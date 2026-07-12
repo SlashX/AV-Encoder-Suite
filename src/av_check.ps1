@@ -354,6 +354,26 @@ function Get-AudioSpatialKind {
     return ""
 }
 
+# v88: detecteaza audio Eclipsa / IAMF (Immersive Audio Model and Formats, AOMedia —
+# spatial deschis royalty-free; „Eclipsa" = brandul Samsung/Google) — copie standalone
+# (av_check.ps1 nu importa av_encode; mirror _iamf_probe/av_common.sh). IAMF nu e codec,
+# e un STREAM GROUP (Audio Element + Mix Presentation) peste Opus/AAC/FLAC/PCM; detector
+# autoritar stream_group=type == "IAMF Audio Element" (raw .iamf SI IAMF-in-MP4). Echo
+# layout ("stereo"/"5.1"/"7.1"/"iamf") sau "". IAMF traieste DOAR in MP4/MOV (Matroska nu-l are).
+function Get-IamfLayout {
+    param([string]$File)
+    $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join ' '
+    if ($gtype -notmatch "IAMF Audio Element") { return "" }
+    # layout = layer-ul cel mai INALT (ultimul "Layer N:" din banner; NU -v error, ar suprima-l)
+    $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
+    $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
+    if ($lay -match 'stereo')     { return "stereo" }
+    if ($lay -match '6 channels') { return "5.1" }
+    if ($lay -match '8 channels') { return "7.1" }
+    return "iamf"
+}
+
 function Get-LogProfile {
     param([string]$file, [bool]$isDji)
     $allTags = & ffprobe -v error -show_entries format_tags `
@@ -475,6 +495,8 @@ foreach ($f in $inputFiles) {
             "atmos" { $ac = "$ac (Atmos)" }
             "dtsx"  { $ac = "$ac (DTS:X)" }
         }
+        # v88: Eclipsa/IAMF (stream group peste Opus/AAC/FLAC/PCM; ortogonal cu Atmos/DTS:X)
+        if (Get-IamfLayout -File $f.FullName) { $ac = "$ac (Eclipsa)" }
     }
     $fsMB = [math]::Round($f.Length / 1MB, 1)
     $fpsRaw = Get-FFprobeValue $f.FullName "v:0" "avg_frame_rate"
@@ -499,23 +521,33 @@ foreach ($f in $inputFiles) {
             $bitrateMbps = "N/A"
         }
     }
-    $audioTracks = (& ffprobe -v error -select_streams a `
-        -show_entries stream=index -of csv=p=0 $f.FullName 2>$null |
-        Where-Object { $_ -match '^\d' }).Count
+    # v88: pe IAMF-in-MP4 ffprobe listeaza substream-urile de DOUA ori (o data prin
+    # grup, o data normal) → dedupe pe index, altfel count dublu + piste fantoma.
+    $audioTracks = (@(& ffprobe -v error -select_streams a `
+        -show_entries stream=index -of csv=p=0 $f.FullName 2>$null) |
+        Where-Object { $_ -match '^\d' } |
+        ForEach-Object { ($_ -split ',')[0].Trim() } | Sort-Object -Unique).Count
 
     # v57: per-track audio detail (paritate cu bash AUDIO_TRACKS_DETAIL)
     # Folosim compact=nk=0 (key=value pairs, | separated) — robust la reordonarea ffprobe
     $audioTracksDetail = @()
     if ($audioTracks -gt 0) {
         $aLines = & ffprobe -v error -select_streams a `
-            -show_entries stream=codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language `
+            -show_entries stream=index,codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language `
             -of compact=nk=0:p=0 $f.FullName 2>$null
         $tIdx = 0
+        $atSeen = @{}
         foreach ($line in $aLines) {
-            if (-not $line) { continue }
+            if (-not "$line".Trim()) { continue }
             $kv = @{}
             foreach ($pair in ($line -split '\|')) {
                 if ($pair -match '^([^=]+)=(.*)$') { $kv[$matches[1]] = $matches[2] }
+            }
+            # v88: dedupe pe index (vezi $audioTracks); $tIdx ramane ordinalul real
+            $atIdx = "$($kv['index'])".Trim()
+            if ($atIdx) {
+                if ($atSeen.ContainsKey($atIdx)) { continue }
+                $atSeen[$atIdx] = $true
             }
             $tc = if ($kv['codec_name']) { $kv['codec_name'] } else { "N/A" }
             # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) in detaliul per-track
@@ -722,10 +754,12 @@ if ($outFiles -and $outFiles.Count -gt 0) {
             $compTotalOrig += $origSize; $compTotalNew += $newSize
             $ratio = if ($origSize -gt 0) { [math]::Round($newSize * 100.0 / $origSize, 1) } else { "N/A" }
             $savedMB = [math]::Max(0, [int](($origSize - $newSize) / 1MB))
-            $origV = (& ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 $origFound.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
-            $newV  = (& ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 $of.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
-            $origA = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $origFound.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
-            $newA  = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $of.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
+            $origV = (@(& ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 $origFound.FullName 2>$null) | Where-Object { $_ -match '^\d' } | ForEach-Object { ($_ -split ',')[0].Trim() } | Sort-Object -Unique).Count
+            # v88: dedupe pe index (Sort-Object -Unique) — IAMF-in-MP4 listeaza
+            # substream-urile dublu → fara dedupe comparatia dadea fals "A:8>4"
+            $newV  = (@(& ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 $of.FullName 2>$null) | Where-Object { $_ -match '^\d' } | ForEach-Object { ($_ -split ',')[0].Trim() } | Sort-Object -Unique).Count
+            $origA = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $origFound.FullName 2>$null) | Where-Object { $_ -match '^\d' } | ForEach-Object { ($_ -split ',')[0].Trim() } | Sort-Object -Unique).Count
+            $newA  = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $of.FullName 2>$null) | Where-Object { $_ -match '^\d' } | ForEach-Object { ($_ -split ',')[0].Trim() } | Sort-Object -Unique).Count
             $streamOk = if ($newV -lt $origV) { "V:$origV>$newV" } elseif ($newA -lt $origA) { "A:$origA>$newA" } else { "OK" }
             Write-Host "  $baseName" -ForegroundColor White
             Write-Host "    $(Format-Bytes $origSize) → $(Format-Bytes $newSize) | ${ratio}% | Salvat: ${savedMB} MB | Streams: $streamOk" -ForegroundColor $(if ($streamOk -eq "OK") { "Green" } else { "Yellow" })

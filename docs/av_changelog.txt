@@ -3,9 +3,84 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v87 | 162 bug-uri fixate | 276+ features
-  231 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 175 teste [168 test_* + 7 infra]) | ~46000 linii cod+teste | ~7500 linii documentatie
+  TOTAL: v88 | 163 bug-uri fixate | 277+ features
+  233 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 177 teste [170 test_* + 7 infra]) | ~46000 linii cod+teste | ~7500 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v88 — Eclipsa Audio (IAMF): creare si pastrare
+═══════════════════════════════════════════════════════════════
+
+  Suita cunoaste acum Eclipsa Audio — formatul de audio spatial
+  DESCHIS al AOMedia (IAMF, Immersive Audio Model and Formats;
+  royalty-free, spre deosebire de Atmos / DTS:X), promovat de
+  Samsung si Google pe TV-urile si telefoanele recente. Un fisier
+  IAMF nu e "un codec": e un GRUP de substream-uri Opus + metadata
+  de scena (Audio Element + Mix Presentation) care traieste in
+  container. De aici ambele fete ale versiunii:
+
+  ADD Creare (authoring) Eclipsa/IAMF — meniul 2 (encode doar
+        audio), optiunea 10. Sursele stereo / 5.1 / 7.1 devin IAMF
+        cu layere scalabile (stereo de baza + stratul complet),
+        substream-uri Opus 256k; video-ul (daca exista) e copiat
+        1:1 pe langa — inclusiv Dolby Vision (semnalizarea de
+        container se pastreaza corect), subtitrarile (pe surse
+        MP4/MOV; pe alte containere, nota onesta), capitolele si
+        GPS-ul nativ DJI. FFmpeg construieste structura IAMF nativ,
+        dar NU o poate scrie intr-un container → impachetarea in
+        MP4 o face MP4Box (GPAC). Cere MP4/MOV (pe alt container,
+        oferta de schimbare) si MP4Box instalat. Surse cu alt numar
+        de canale decat 2/6/8 (sau fara audio) → skip onest; sursa
+        Atmos / DTS:X → avertisment onest (obiectele NU se
+        transfera in IAMF — intra doar bed-ul de canale).
+
+  ADD Pastrare (passthrough): FFmpeg APLATIZEAZA grupul IAMF la
+        piste Opus simple la ORICE mux sau copiere — comanda
+        reuseste, pierderea e tacuta (perechea audio a semnalizarii
+        Dolby Vision v70-v72 si Atmos v87). Pe toate caile cu
+        timeline 1:1 — encode video cu audio copy, stream copy,
+        audio-only, Remux — suita re-scrie grupul in containerul de
+        iesire direct din sursa (extractie raw prin MP4Box,
+        byte-identica la round-trip). In dialogul audio,
+        substream-urile unui grup IAMF se trateaza ca UN unit:
+        copy atomic, fara selectie per-pista, fara loudnorm.
+        Optiunea 10 pe o sursa deja-IAMF nu re-encodeaza: copy 1:1
+        + re-scrierea grupului (fara downgrade tacut din
+        substream-ul stereo) — si pastreaza tot ce pastreaza fluxul
+        normal al meniului: subtitrari, attachments, capitole,
+        semnalizarea Dolby Vision si GPS-ul nativ DJI.
+
+  ADD Vizibilitate: "Verifica media" eticheteaza pista "(Eclipsa)";
+        Remux noteaza inline ca pistele opus formeaza un grup
+        atomic (si avertizeaza pe tinte non-MP4/MOV); Trim & Concat
+        avertizeaza ca editarea timeline-ului aplatizeaza grupul
+        (substream-urile taiate nu se pot regrupa).
+
+  FIX Pe surse IAMF-in-MP4, ffprobe listeaza fiecare pista de doua
+        ori (o data prin grup, o data normal) si emite linii goale
+        — enumerarea pistelor la Remux crapa, "Verifica media"
+        numara si afisa piste-fantoma (8 in loc de 4), iar
+        avertismentele de compatibilitate la copy apareau dublat,
+        cu numere de pista inexistente. Deduplicare pe index peste
+        tot (Remux/Demux, analiza per-pista, comparatia
+        input↔output, avertismentele de compatibilitate), ambele
+        platforme; fisierele normale raman neatinse.
+
+  Nota IAMF exista DOAR in MP4/MOV — Matroska/WebM nu au inca
+        mapare IAMF (nici FFmpeg, nici mkvmerge). Conversia
+        Atmos → Eclipsa NU exista (obiectele Atmos nu pot fi
+        decodate cu unelte libere) — bed-ul de canale al unei
+        surse Atmos POATE fi insa autorat ca IAMF, cu avertismentul
+        de mai sus. Burn-in-ul avertizeaza onest pe surse Eclipsa
+        (audio-ul trece prin FFmpeg → grupul se aplatizeaza;
+        pistele raman, spatialul se pierde).
+
+  Paritate completa bash + PowerShell pe toate punctele. Test nou
+  test_v88_iamf (bash 90 / PS1 84), cu CANAR pe aplatizarea FFmpeg
+  (daca un FFmpeg viitor invata sa pastreze grupul, testul o
+  semnaleaza); validat prin meniurile reale pe ambele platforme,
+  inclusiv printr-un audit complet pe toate fluxurile afectate.
 
 
 ═══════════════════════════════════════════════════════════════

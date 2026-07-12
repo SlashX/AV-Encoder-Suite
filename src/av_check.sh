@@ -460,6 +460,8 @@ for file in "${FILES[@]}"; do
             atmos) AUDIO_CODEC="$AUDIO_CODEC (Atmos)" ;;
             dtsx)  AUDIO_CODEC="$AUDIO_CODEC (DTS:X)" ;;
         esac
+        # v88: Eclipsa/IAMF (stream group peste Opus/AAC/FLAC/PCM; ortogonal cu Atmos/DTS:X)
+        [[ -n "$(_iamf_probe "$file" || true)" ]] && AUDIO_CODEC="$AUDIO_CODEC (Eclipsa)"
     fi
 
     # Sample rate (Hz → kHz)
@@ -490,9 +492,11 @@ for file in "${FILES[@]}"; do
     # si AUDIO_TRACKS_DETAIL ramanea mereu gol pentru orice fisier.
     # FIX: grep -c '^[0-9]' in loc de wc -l — evita fals pozitiv daca
     # ffprobe printeaza un newline trailing pe output gol (wc -l ar returna 1)
+    # v88: pe IAMF-in-MP4 ffprobe listeaza substream-urile de DOUA ori (o data prin
+    # grup, o data normal) → dedupe pe index (sort -u), altfel count dublu.
     AUDIO_COUNT=$(ffprobe -v error -select_streams a \
         -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | \
-        grep -c '^[0-9]')
+        tr -d '\r' | sed 's/,*$//' | grep '^[0-9]' | sort -u | grep -c .)
 
     # ── Detalii per track audio (toate track-urile) ───────────────────
     # v57 FIX: folosim -of compact (key=value pairs, | separated) — robust la
@@ -501,8 +505,17 @@ for file in "${FILES[@]}"; do
     AUDIO_TRACKS_DETAIL=""
     if [ "$AUDIO_COUNT" -gt 0 ] 2>/dev/null; then
         local_aidx=0
+        _at_seen=" "
         while IFS= read -r stream_line; do
+            stream_line="${stream_line%$'\r'}"
             [ -z "$stream_line" ] && continue
+            # v88: dedupe pe index (IAMF-in-MP4 listeaza substream-urile dublu — vezi
+            # AUDIO_COUNT); local_aidx ramane ordinalul REAL (creste doar pe unice).
+            at_idx=$(_kv "$stream_line" index)
+            if [ -n "$at_idx" ]; then
+                case "$_at_seen" in *" $at_idx "*) continue ;; esac
+                _at_seen="${_at_seen}${at_idx} "
+            fi
             at_codec=$(_kv "$stream_line" codec_name)
             at_br=$(_kv "$stream_line" bit_rate)
             at_ch=$(_kv "$stream_line" channels)
@@ -523,7 +536,7 @@ for file in "${FILES[@]}"; do
             AUDIO_TRACKS_DETAIL="${AUDIO_TRACKS_DETAIL}    Track $local_aidx: ${at_codec:-N/A} | ${at_br_k}kbps | ${at_sr_k}kHz | ${at_layout} | ${at_lang}\n"
             local_aidx=$((local_aidx + 1))
         done < <(ffprobe -v error -select_streams a \
-            -show_entries stream=codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language \
+            -show_entries stream=index,codec_name,bit_rate,channels,sample_rate,channel_layout:stream_tags=language \
             -of compact=nk=0:p=0 "$file" 2>/dev/null)
     fi
 
@@ -828,10 +841,13 @@ if [ -d "$OUTPUT_DIR" ]; then
                 fi
 
                 # Verifica stream-uri
-                orig_v=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "$orig_found" 2>/dev/null | grep -c '^[0-9]')
-                new_v=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "$out_file" 2>/dev/null | grep -c '^[0-9]')
-                orig_a=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$orig_found" 2>/dev/null | grep -c '^[0-9]')
-                new_a=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$out_file" 2>/dev/null | grep -c '^[0-9]')
+                # v88: dedupe pe index (sort -u) — IAMF-in-MP4 listeaza substream-urile
+                # dublu → fara dedupe comparatia dadea fals "Audio: 8→4" pe surse Eclipsa
+                _cnt_streams() { ffprobe -v error -select_streams "$1" -show_entries stream=index -of csv=p=0 "$2" 2>/dev/null | tr -d '\r' | sed 's/,*$//' | grep '^[0-9]' | sort -u | grep -c .; }
+                orig_v=$(_cnt_streams v "$orig_found")
+                new_v=$(_cnt_streams v "$out_file")
+                orig_a=$(_cnt_streams a "$orig_found")
+                new_a=$(_cnt_streams a "$out_file")
 
                 streams_ok="✅"
                 [ "$new_v" -lt "$orig_v" ] && streams_ok="⚠️ Video: $orig_v→$new_v"

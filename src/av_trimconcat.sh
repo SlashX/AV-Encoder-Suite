@@ -724,14 +724,21 @@ _concat_incompat_vfr_fps() {
 # exista encodere in ffmpeg), copy le pastreaza. Se opreste la primul gasit
 # (un singur mesaj); ieftin pe surse non-Dolby/DTS (_file_spatial_label early-out).
 _tc_warn_spatial_sources() {
-    local f found=""
+    local f found="" iamf_found=""
     for f in "$@"; do
-        found=$(_file_spatial_label "$f" || true)
-        [[ -n "$found" ]] && break
+        [[ -z "$found" ]] && found=$(_file_spatial_label "$f" || true)
+        # v88: grup Eclipsa/IAMF — mesaj SEPARAT (copy NU il salveaza aici: timeline-ul
+        # editat la trim/concat aplatizeaza grupul, substream-urile nu se pot regrupa)
+        if [[ -z "$iamf_found" ]] && _iamf_probe "$f" >/dev/null 2>&1; then iamf_found=1; fi
+        [[ -n "$found" && -n "$iamf_found" ]] && break
     done
     if [[ -n "$found" ]]; then
         echo "  ⚠ Sursele au audio $found (obiecte spatiale) — alege COPY ca sa-l pastrezi;"
         echo "    re-encodarea audio il pierde definitiv (nu exista encoder in ffmpeg)."
+    fi
+    if [[ -n "$iamf_found" ]]; then
+        echo "  ⚠ Sursele au grup Eclipsa/IAMF — la trim/concat timeline-ul se editeaza →"
+        echo "    grupul se aplatizeaza la Opus simplu (nu poate fi re-grupat pe taieturi)."
     fi
     return 0
 }
@@ -740,14 +747,19 @@ _tc_warn_spatial_sources() {
 # IMPOSIBIL tehnic ("Filtering and streamcopy cannot be used together") → mesajul
 # NU indeamna la copy, ci arata alternativa reala (demuxer pe surse identice).
 _tc_warn_spatial_filter_loss() {
-    local f found=""
+    local f found="" iamf_found=""
     for f in "$@"; do
-        found=$(_file_spatial_label "$f" || true)
-        [[ -n "$found" ]] && break
+        [[ -z "$found" ]] && found=$(_file_spatial_label "$f" || true)
+        # v88: grup Eclipsa/IAMF — pe filter nici demuxer-ul nu-l salveaza (timeline editat)
+        if [[ -z "$iamf_found" ]] && _iamf_probe "$f" >/dev/null 2>&1; then iamf_found=1; fi
+        [[ -n "$found" && -n "$iamf_found" ]] && break
     done
     if [[ -n "$found" ]]; then
         echo "  ⚠ Sursele au audio $found — concat filter RE-encodeaza audio, obiectele se pierd."
         echo "    Pentru pastrare: uneste surse identice (Concat stream copy / demuxer)."
+    fi
+    if [[ -n "$iamf_found" ]]; then
+        echo "  ⚠ Sursele au grup Eclipsa/IAMF — grupul se aplatizeaza la Opus simplu la concat."
     fi
     return 0
 }

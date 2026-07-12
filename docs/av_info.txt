@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v87
+  Documentatie Setup & Utilizare — v88
 ═══════════════════════════════════════════════════════════════
 
 
@@ -31,8 +31,8 @@ CUPRINS
 1. STRUCTURA PROIECTULUI
 ═══════════════════════════════════════════════════════════════
 
-  231 fisiere totale (22 src + 1 UI web + 18 tools + 6 profile +
-  3 burnin presets + 6 Python engines + 168 test_* scripts + 7 infra).
+  233 fisiere totale (22 src + 1 UI web + 18 tools + 6 profile +
+  3 burnin presets + 6 Python engines + 170 test_* scripts + 7 infra).
 
   Pentru structura completa a folderelor si lista de fisiere
   vezi README.md (Project Structure tree).
@@ -646,6 +646,10 @@ CUPRINS
      Necomprimat, calitate maxima, fisier foarte mare. Doar mkv/mov.
      Ideal pentru mastering, DaVinci Resolve.
  10) Pastreaza audio original (copy) — fara re-encode.
+
+  In meniul 2 (encode doar audio), optiunea 10 e Eclipsa Audio (IAMF,
+  AOMedia) — authoring spatial deschis din surse stereo/5.1/7.1
+  (substream-uri Opus; doar MP4/MOV + MP4Box). Detalii → sectiunea 8.10.
 
   ─── 7.9.1. AV_DOWNMIX_STEREO=1 env var (v53) ───
 
@@ -1278,6 +1282,55 @@ CUPRINS
   pierde.
 
 
+  ─── 8.10. Eclipsa Audio (IAMF) — creare si pastrare (v88) ───
+
+  Eclipsa Audio e formatul de audio spatial DESCHIS al AOMedia (IAMF —
+  Immersive Audio Model and Formats; royalty-free, spre deosebire de
+  Atmos / DTS:X), promovat de Samsung si Google pe TV-urile si
+  telefoanele recente. IAMF nu e un codec: e un GRUP de substream-uri
+  Opus + metadata de scena (Audio Element + Mix Presentation) care
+  traieste in container. IAMF exista DOAR in MP4/MOV — Matroska/WebM
+  nu au inca mapare (nici FFmpeg, nici mkvmerge).
+
+  CREARE (authoring) — meniul 2 (encode doar audio), optiunea 10:
+    - surse stereo / 5.1 / 7.1 → IAMF cu layere scalabile (stereo de
+      baza + stratul complet), substream-uri Opus 256k; video-ul
+      (daca exista) e copiat 1:1 pe langa — inclusiv semnalizarea
+      Dolby Vision, subtitrarile (pe surse MP4/MOV; pe alte
+      containere nota onesta), capitolele si GPS-ul nativ DJI.
+    - cere container MP4/MOV (pe altul, oferta de schimbare) si
+      MP4Box/GPAC instalat (vezi tools/mp4box_installer) — FFmpeg
+      construieste structura IAMF nativ dar NU o poate scrie in
+      container.
+    - surse cu alt numar de canale decat 2/6/8 (sau fara audio) →
+      skip onest; sursa Atmos / DTS:X → avertisment onest
+      (obiectele NU se transfera in IAMF — intra doar bed-ul).
+    - optiunea 10 pe o sursa DEJA-IAMF nu re-encodeaza: copy 1:1 +
+      re-scrierea grupului (fara downgrade tacut) — pastreaza
+      subtitrarile, attachments, capitolele, semnalizarea Dolby
+      Vision si GPS-ul nativ DJI, ca fluxul normal al meniului.
+
+  PASTRARE (passthrough): FFmpeg APLATIZEAZA grupul IAMF la piste
+  Opus simple la ORICE mux sau copiere — comanda reuseste, pierderea
+  e tacuta (perechea audio a semnalizarii DV v70-v72 / Atmos v87).
+  Pe caile cu timeline 1:1 — encode video cu audio copy, stream copy,
+  audio-only, Remux — suita re-scrie automat grupul in containerul de
+  iesire direct din sursa (extractie raw prin MP4Box, byte-identica).
+  In dialogul audio, substream-urile unui grup IAMF se trateaza ca UN
+  unit: copy atomic, fara selectie per-pista, fara loudnorm.
+
+  Vizibilitate: "Verifica media" eticheteaza pista "(Eclipsa)" si
+  numara corect substream-urile (ffprobe le listeaza dublu pe
+  IAMF-in-MP4 — suita deduplica peste tot: Remux/Demux, analiza
+  per-pista, avertismente); Remux noteaza inline ca pistele opus
+  formeaza un grup atomic (si avertizeaza pe tinte non-MP4/MOV);
+  Trim & Concat avertizeaza ca editarea timeline-ului aplatizeaza
+  grupul (substream-urile taiate nu se pot regrupa — foloseste
+  encode per-clip + Remux daca ai nevoie de taieturi cu Eclipsa
+  pastrat); Burn-in avertizeaza onest ca grupul se aplatizeaza
+  (audio-ul trece prin FFmpeg; pistele raman, spatialul se pierde).
+
+
 ═══════════════════════════════════════════════════════════════
 9. TRIM & CONCAT PIPELINE (v36/v37 + v60 HDR/LOG — meniu principal opt 6)
 ═══════════════════════════════════════════════════════════════
@@ -1464,6 +1517,13 @@ CUPRINS
   ChapterAtom/no TS valide); recunoastere XML de capitole cu namespace
   declaration in PowerShell. Mux/Remux/Demux folosesc -c copy peste
   tot — HDR/DV/HDR10+ metadata pastrate intact automat.
+
+  v88: Remux pe surse Eclipsa/IAMF — FFmpeg aplatizeaza grupul IAMF la
+  Opus simplu la orice remux, deci pe tinta MP4/MOV suita re-scrie
+  grupul INTREG din sursa la final (substream-urile sunt atomice —
+  selectia partiala nu are sens, nota apare inline la selectia audio);
+  pe tinte non-MP4/MOV avertisment onest (nu exista mapare IAMF).
+  Detalii → sectiunea 8.10.
 
   ─── 10.1. Formate suportate (input — comune remux + demux) ───
 

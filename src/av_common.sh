@@ -1159,6 +1159,183 @@ _ask_spatial_guard() {
     [[ "${c:-1}" != "2" ]]
 }
 
+# v88: detecteaza audio Eclipsa / IAMF (Immersive Audio Model and Formats, AOMedia —
+# spatial audio deschis, royalty-free; „Eclipsa Audio" = brandul Samsung/Google). IAMF
+# nu e un codec, e un STREAM GROUP (Audio Element + Mix Presentation) peste substream-uri
+# Opus/AAC/FLAC/PCM. Detector AUTORITAR: `stream_group=type == "IAMF Audio Element"`
+# (functioneaza pe raw .iamf SI pe IAMF-in-MP4). Echo layout-ul celui mai inalt layer
+# ("stereo"/"5.1"/"7.1"/"iamf") sau gol + rc1. NOTA container: IAMF traieste DOAR in
+# MP4/MOV (via MP4Box); Matroska/WebM nu au inca mapare IAMF (nici ffmpeg, nici mkvmerge).
+_iamf_probe() {
+    local file="$1" gtype lay
+    gtype=$(ffprobe -v error -show_stream_groups -show_entries stream_group=type \
+        -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
+    [[ "$gtype" == *"IAMF Audio Element"* ]] || { echo ""; return 1; }
+    # layout uman = layer-ul cel mai INALT (ultimul "Layer N:" din banner-ul de input;
+    # NU folosi -v error aici — ar suprima banner-ul cu liniile "Layer N:"). channel-count
+    # ambiguu (7.1 vs 5.1.2 = 8ch) → fallback onest "iamf" cand nu e clar.
+    lay=$(ffprobe -hide_banner "$file" 2>&1 | grep -aoE 'Layer [0-9]+:.*' | tail -1 | tr -d '\r')
+    case "$lay" in
+        *stereo*)       echo "stereo" ;;
+        *"6 channels"*) echo "5.1" ;;
+        *"8 channels"*) echo "7.1" ;;
+        *)              echo "iamf" ;;
+    esac
+    return 0
+}
+
+# v88: authoring Eclipsa/IAMF — creeaza un IAMF-in-MP4 dintr-o sursa cu audio multicanal.
+# Args: $1=input $2=output(.mp4/.mov) $3=layout(stereo|5.1|7.1) $4=bitrate(implicit 256k).
+# Model channel-based SCALABIL: layer stereo de baza + layer-ul tinta (demixing/recon_gain
+# reconstruiesc). Substream-urile Opus se izoleaza cu `pan` (layout GENERIC curat —
+# channelsplit pastreaza etichetele surround FC/LFE/BL → libopus le refuza). ffmpeg scrie
+# raw .iamf (muxer nativ; ffmpeg NU poate scrie IAMF-in-container → aplatizeaza la opus),
+# apoi MP4Box il impacheteaza in MP4 [analog dvcC v70-72]; daca sursa are video, il adauga
+# (copy, fara re-encode). Temp CO-LOCAT cu output-ul (MP4Box.exe nu rezolva /tmp MSYS).
+# IAMF = DOAR MP4/MOV (Matroska n-are mapare). return 0 ok / 1 esec (soft, fara output partial).
+_iamf_author() {
+    local input="$1" output="$2" layout="$3" br="${4:-256k}"
+    command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || { echo "  ✗ MP4Box lipseste (necesar pt IAMF-in-MP4)"; return 1; }
+    local raw="${output%.*}.iamfauth_$$.iamf"
+    local -a fc sg1 sg2 sid
+    case "$layout" in
+        stereo)
+            fc=(-map 0:a:0)
+            sg1=(-stream_group "type=iamf_audio_element:id=1:st=0,layer=ch_layout=stereo")
+            sg2=(-stream_group "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=0:parameter_rate=48000|element=stg=0:parameter_id=1:parameter_rate=48000:default_mix_gain=0x0|layout=sound_system=stereo:integrated_loudness=0x0")
+            sid=()
+            ;;
+        5.1)
+            fc=(-filter_complex "[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]" -map "[fr]" -map "[bk]" -map "[ce]" -map "[lf]")
+            sg1=(-stream_group "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=5.1(side)")
+            sg2=(-stream_group "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=5.1(side)")
+            sid=(-streamid 0:0 -streamid 1:1 -streamid 2:2 -streamid 3:3)
+            ;;
+        7.1)
+            fc=(-filter_complex "[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]" -map "[fr]" -map "[si]" -map "[bk]" -map "[ce]" -map "[lf]")
+            sg1=(-stream_group "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1")
+            sg2=(-stream_group "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1")
+            sid=(-streamid 0:0 -streamid 1:1 -streamid 2:2 -streamid 3:3 -streamid 4:4)
+            ;;
+        *) echo "  ✗ Layout IAMF nesuportat: $layout (stereo|5.1|7.1)"; return 1 ;;
+    esac
+    if ! ffmpeg -y -v error -i "$input" "${fc[@]}" -c:a libopus -b:a "$br" "${sg1[@]}" "${sg2[@]}" "${sid[@]}" "$raw" </dev/null >/dev/null 2>&1 || [ ! -s "$raw" ]; then
+        echo "  ✗ ffmpeg authoring IAMF esuat (layout $layout)"; rm -f "$raw" 2>/dev/null; return 1
+    fi
+    local has_video
+    has_video=$(ffprobe -v error -select_streams v -show_entries stream=index -of csv=p=0 "$input" 2>/dev/null | grep -c '^[0-9]')
+    # v88 audit: subtitrarile din surse ISO se importa cu #trackID (tx3g e formatul nativ
+    # MP4Box; validat empiric). Perechea Track-Info + Media Type sbtl/subt — NU text: (acela
+    # e chapter track-ul QT, vine separat prin -chap). Surse non-ISO (MP4Box nu importa din
+    # MKV) cu subs → nota onesta, subs raman afara.
+    local _iext="${input##*.}"; _iext="${_iext,,}"
+    local -a subadd=()
+    if [[ "$_iext" == "mp4" || "$_iext" == "mov" || "$_iext" == "m4v" || "$_iext" == "qt" ]]; then
+        local _sid
+        while IFS= read -r _sid; do
+            [[ "$_sid" =~ ^[0-9]+$ ]] && subadd+=(-add "${input}#${_sid}")
+        done < <("$AV_TOOL_MP4BOX" -info "$input" 2>&1 | awk '/^# Track [0-9]+ Info - ID [0-9]+/{id=$7} /Media Type: (sbtl|subt):/{if (id!="") print id; id=""}')
+    elif ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$input" 2>/dev/null | grep -q '[0-9]'; then
+        echo "  Nota: subtitrarile din sursa non-MP4 nu se transfera la authoring IAMF (pastreaza-le cu Remux)"
+    fi
+    local mrc=1
+    if [[ "$has_video" =~ ^[0-9]+$ ]] && [ "$has_video" -gt 0 ]; then
+        "$AV_TOOL_MP4BOX" -add "${input}#video" -add "$raw" "${subadd[@]}" -new "$output" >/dev/null 2>&1 && mrc=0
+    else
+        "$AV_TOOL_MP4BOX" -add "$raw" "${subadd[@]}" -new "$output" >/dev/null 2>&1 && mrc=0
+    fi
+    rm -f "$raw" 2>/dev/null
+    if [ $mrc -eq 0 ] && [ -s "$output" ]; then
+        # v88 audit: MP4Box -add NU copiaza capitolele (regula v71) → dump-chap + chap,
+        # gardat pe count ffprobe (dump pe 0 capitole lasa fisier gol). Temp CO-LOCAT
+        # (MP4Box.exe nu rezolva /tmp MSYS), ca restul temp-urilor IAMF.
+        local _nch
+        _nch=$(ffprobe -v error -show_chapters -of csv=p=0 "$input" 2>/dev/null | grep -c . || true)
+        if [[ "${_nch:-0}" -gt 0 ]]; then
+            local _chap="${output%.*}.iamfauth_$$.txt"
+            if "$AV_TOOL_MP4BOX" -dump-chap "$input" -out "$_chap" >/dev/null 2>&1 && [ -s "$_chap" ]; then
+                "$AV_TOOL_MP4BOX" -chap "$_chap" "$output" >/dev/null 2>&1 || true
+            fi
+            rm -f "$_chap" 2>/dev/null || true
+        fi
+        return 0
+    fi
+    echo "  ✗ MP4Box package IAMF esuat"; rm -f "$output" 2>/dev/null; return 1
+}
+
+# v88: passthrough Eclipsa/IAMF (analog dvcC v70-72 / Atmos v87, pt grupul IAMF).
+# ffmpeg APLATIZEAZA grupul IAMF la piste Opus simple la ORICE mux/copy in container
+# (validat empiric: -c copy → substream-uri opus fara stream group, rc=0 = pierdere
+# TACUTA) → dupa un flux cu timeline 1:1 (encode video + audio copy / stream-copy /
+# audio-only / remux/mux) re-grefam grupul: extract raw .iamf din SURSA (MP4Box -raw
+# <tid>; raw-ul ramane BYTE-IDENTIC la round-trip — validat) → rebuild output cu -rem
+# pe pistele aplatizate + -add raw → mv atomic. Grupul e ATOMIC: selectia partiala de
+# substream-uri nu are sens → re-adaugam grupul INTREG. DOAR MP4/MOV (Matroska/WebM
+# n-au mapare IAMF → warn onest). NU pe trim/concat (timeline editata → substream-urile
+# taiate nu se pot regrupa). Capitolele se cara DETERMINIST prin dump-chap + -chap
+# (audit v88: rebuild-ul -add importa track-ul de capitole QT dar ii trunchiaza
+# etichetele — 2 capitole → 1, validat; NU te baza pe -add pentru capitole).
+# Temp-uri CO-LOCATE cu output-ul (mv atomic same-FS + MP4Box.exe fara /tmp MSYS).
+# Idempotent la nivel de FISIER. Soft-fail: output NEATINS la orice esec.
+_iamf_preserve() {
+    local src="$1" output="$2" allow_no_audio="${3:-0}"
+    local ext="${output##*.}"; ext="${ext,,}"
+    # gate ieftin: sursa fara grup IAMF (cazul comun) → no-op tacut
+    _iamf_probe "$src" >/dev/null 2>&1 || return 0
+    case "$ext" in
+        mp4|mov|m4v) : ;;
+        *)  echo "  ⚠ Sursa are audio Eclipsa/IAMF — grupul NU exista in .$ext →"
+            echo "    audio ramane Opus multi-pista simplu. Foloseste MP4/MOV ca sa pastrezi Eclipsa."
+            return 1 ;;
+    esac
+    command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || {
+        echo "  ⚠ MP4Box lipseste — grupul Eclipsa/IAMF nu poate fi re-scris (audio ramane Opus simplu)."
+        return 1; }
+    # idempotent: output-ul are deja grup (ex. re-rulare) → nimic de facut
+    _iamf_probe "$output" >/dev/null 2>&1 && return 0
+    # pistele audio APLATIZATE din output (id ISO din stream=id, hex → dec).
+    # Output FARA audio = drop deliberat al userului → respectam (fara graft),
+    # EXCEPTIE allow_no_audio=1 (arg 3): apelantul stie ca userul a CERUT audio dar
+    # compat-ul l-a dropat la ffmpeg (ex. Remux opus→MOV) → graft-ul ruleaza din sursa.
+    local -a rem=()
+    local idhex
+    while IFS= read -r idhex; do
+        idhex="${idhex%%,*}"; idhex="${idhex//$'\r'/}"
+        [[ "$idhex" =~ ^0x[0-9a-fA-F]+$ ]] && rem+=(-rem "$(( idhex ))")
+    done < <(ffprobe -v error -select_streams a -show_entries stream=id -of csv=p=0 "$output" 2>/dev/null)
+    [ ${#rem[@]} -gt 0 ] || [ "$allow_no_audio" = "1" ] || return 0
+    # track ID-ul pistei iamf din SURSA — din perechea "# Track N Info - ID <id>" +
+    # "Media Type: soun:iamf" (ID-ul REAL, nu pozitia: dupa rebuild-uri anterioare
+    # difera de numarul de track). GPAC scrie -info pe STDERR → 2>&1 OBLIGATORIU.
+    local tid
+    tid=$("$AV_TOOL_MP4BOX" -info "$src" 2>&1 | awk '/^# Track [0-9]+ Info - ID [0-9]+/{id=$7} /Media Type: soun:iamf/{print id; exit}')
+    [[ "$tid" =~ ^[0-9]+$ ]] || return 1
+    local raw="${output%.*}.iamfpre_$$.iamf" tmp="${output%.*}.iamfpre_$$.$ext"
+    # v88 audit: capitolele se cara DETERMINIST prin dump-chap (inainte de rebuild) +
+    # -chap (dupa mv) — rebuild-ul MP4Box importa track-ul de capitole QT scris de
+    # ffmpeg dar ii TRUNCHIAZA etichetele (validat empiric: 2 capitole → 1).
+    local chapf="${output%.*}.iamfpre_$$.txt" _nch
+    _nch=$(ffprobe -v error -show_chapters -of csv=p=0 "$output" 2>/dev/null | grep -c . || true)
+    if [[ "${_nch:-0}" -gt 0 ]]; then
+        "$AV_TOOL_MP4BOX" -dump-chap "$output" -out "$chapf" >/dev/null 2>&1 || true
+    fi
+    if ! "$AV_TOOL_MP4BOX" -raw "$tid" -out "$raw" "$src" >/dev/null 2>&1 || [ ! -s "$raw" ]; then
+        rm -f "$raw" "$chapf" 2>/dev/null; return 1
+    fi
+    if "$AV_TOOL_MP4BOX" -add "$output" "${rem[@]}" -add "$raw" -new "$tmp" >/dev/null 2>&1 \
+       && [ -s "$tmp" ] && _iamf_probe "$tmp" >/dev/null 2>&1; then
+        mv -f "$tmp" "$output"
+        if [ -s "$chapf" ]; then
+            "$AV_TOOL_MP4BOX" -chap "$chapf" "$output" >/dev/null 2>&1 || true
+        fi
+        rm -f "$raw" "$chapf" 2>/dev/null
+        echo "  Grup Eclipsa/IAMF re-scris in container (audio spatial pastrat 1:1)"
+        return 0
+    fi
+    rm -f "$raw" "$tmp" "$chapf" 2>/dev/null
+    return 1
+}
+
 # v67: dialog selectie audio per-pista (cand sursa are >1 pista audio si NU e copy total).
 # Poate REscrie AUDIO_PARAMS, adauga negative maps in MAP_FLAGS (skip/drop) si seteaza
 # AUDIO_LOUDNORM_TRACK (index OUTPUT al primei piste re-encodate, pt loudnorm). NU e
@@ -1175,6 +1352,18 @@ handle_multi_audio_dialog() {
     # compat container pe pistele COPIATE. Default: track 0 re-encodat, restul copy.
     AUDIO_REENCODED_INPUTS="0"; AUDIO_SKIPPED_INPUTS=""
     [[ "$AUDIO_CODEC_ARG" == "copy" ]] && { AUDIO_REENCODED_INPUTS=""; return 0; }
+    # v88: sursa cu grup Eclipsa/IAMF — ffmpeg prezinta substream-urile Opus ca piste
+    # separate, dar ele SUNT grupul → se trateaza ca UN unit: copy pe toate (re-encodarea
+    # per-substream ar produce piste separate fara sens — mix-ul IAMF nu e randabil de
+    # ffmpeg; graft-ul post-encode `_iamf_preserve` re-scrie grupul pe MP4/MOV).
+    if _iamf_probe "$file" >/dev/null 2>&1; then
+        AUDIO_PARAMS="-c:a copy"
+        AUDIO_LOUDNORM_TRACK=-1
+        AUDIO_PERTRACK_CUSTOM=1
+        AUDIO_REENCODED_INPUTS=""
+        log "  Audio: sursa Eclipsa/IAMF — substream-urile raman copy ca UN grup (grupul se re-scrie in container la final)"
+        return 0
+    fi
     local codec="${AUDIO_CODEC_ARG%%:*}" base_br="${AUDIO_CODEC_ARG#*:}"
     # numar piste audio (o linie/index per pista; multi-field csv NU se foloseste aici)
     local ntracks; ntracks=$(ffprobe -v error -select_streams a \
@@ -1326,11 +1515,18 @@ warn_incompat_audio_copies() {
     # din encode flow (AUDIO_REENCODED_INPUTS/AUDIO_SKIPPED_INPUTS).
     local reenc=" ${3-${AUDIO_REENCODED_INPUTS:-0}} " skipd=" ${4-${AUDIO_SKIPPED_INPUTS:-}} "
     local info; info=$(ffprobe -v error -select_streams a \
-        -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null)
-    local i=0 acodec verdict
-    while IFS= read -r acodec; do
+        -show_entries stream=index,codec_name -of csv=p=0 "$file" 2>/dev/null)
+    local i=0 aidx acodec verdict _seen=" "
+    while IFS=',' read -r aidx acodec _; do
+        aidx="$(echo "$aidx" | tr -d '\r')"
         acodec="${acodec%%,*}"; acodec="$(echo "$acodec" | tr -d '\r')"
         [[ -z "$acodec" ]] && continue
+        # v88: ffprobe listeaza substream-urile unui grup IAMF de DOUA ori → dedupe pe
+        # indexul de stream (altfel warn-uri duble cu ordinale a:N fantoma)
+        if [[ "$aidx" =~ ^[0-9]+$ ]]; then
+            [[ "$_seen" == *" $aidx "* ]] && continue
+            _seen="$_seen$aidx "
+        fi
         # sarit daca pista i e re-encodata sau skip (nu se copiaza)
         if [[ "$reenc" != *" $i "* ]] && [[ "$skipd" != *" $i "* ]]; then
             verdict=$(remux_stream_compat "$acodec" audio "$container")
@@ -2883,12 +3079,19 @@ remux_enumerate_streams() {
     # arata "Title text," urat. Pe attachment-uri cu nume care nu se foloseste exact
     # in compare (doar afisare) impactul e cosmetic, dar tot defensiv strip.
 
+    # v88: pe surse IAMF-in-MP4 ffprobe emite linii DOAR-cu-CR + listeaza streamurile
+    # de DOUA ori (o data prin grupul IAMF, o data normal) → idx=CR dadea eroare
+    # aritmetica la indexarea array-ului, iar pistele apareau dublat. Toate 4 buclele:
+    # strip CR pe idx + gate numeric + dedupe (idx deja vazut → skip).
+
     # Video: index,codec_name,width,height,language,title
     raw=$(ffprobe -v error -select_streams v -show_entries \
         stream=index,codec_name,width,height:stream_tags=language,title \
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec w h lang title; do
-        [ -z "$idx" ] && continue
+        idx="${idx//$'\r'/}"
+        [[ "$idx" =~ ^[0-9]+$ ]] || continue
+        [ -n "${REMUX_STREAMS[$idx]:-}" ] && continue   # v88 dedupe
         title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="video|${codec}|${lang}|${title}|${w}x${h}"
         REMUX_VIDEO_INDICES+=("$idx")
@@ -2899,7 +3102,9 @@ remux_enumerate_streams() {
         stream=index,codec_name,channels:stream_tags=language,title \
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec ch lang title; do
-        [ -z "$idx" ] && continue
+        idx="${idx//$'\r'/}"
+        [[ "$idx" =~ ^[0-9]+$ ]] || continue
+        [ -n "${REMUX_STREAMS[$idx]:-}" ] && continue   # v88 dedupe
         title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="audio|${codec}|${lang}|${title}|${ch}ch"
         REMUX_AUDIO_INDICES+=("$idx")
@@ -2910,7 +3115,9 @@ remux_enumerate_streams() {
         stream=index,codec_name:stream_tags=language,title \
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec lang title; do
-        [ -z "$idx" ] && continue
+        idx="${idx//$'\r'/}"
+        [[ "$idx" =~ ^[0-9]+$ ]] || continue
+        [ -n "${REMUX_STREAMS[$idx]:-}" ] && continue   # v88 dedupe
         title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="subtitle|${codec}|${lang}|${title}|"
         REMUX_SUB_INDICES+=("$idx")
@@ -2921,7 +3128,9 @@ remux_enumerate_streams() {
         stream=index,codec_name:stream_tags=filename \
         -of csv=p=0 "$file" 2>/dev/null || true)
     while IFS=',' read -r idx codec title; do
-        [ -z "$idx" ] && continue
+        idx="${idx//$'\r'/}"
+        [[ "$idx" =~ ^[0-9]+$ ]] || continue
+        [ -n "${REMUX_STREAMS[$idx]:-}" ] && continue   # v88 dedupe
         title="${title%$'\r'}"; title="${title%,}"   # v59 audit
         REMUX_STREAMS[$idx]="attachment|${codec}||${title}|"
         REMUX_ATTACH_INDICES+=("$idx")
@@ -2996,6 +3205,9 @@ do_stream_copy() {
         # v87: pista E-AC-3 Atmos copiata pe MP4/MOV → dec3 fara JOC (ffmpeg) → re-scrie
         # semnalizarea Atmos de container. No-op pe MKV / non-Atmos / unealta lipsa.
         _atmos_mp4_signal "$output"
+        # v88: sursa cu grup Eclipsa/IAMF → ffmpeg l-a aplatizat la Opus simplu →
+        # re-grefeaza grupul din sursa (timeline 1:1). No-op pe non-IAMF; warn pe non-ISO.
+        _iamf_preserve "$file" "$output" || true
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0
         TOTAL_SAVED=$(( TOTAL_SAVED+SAVED ))
@@ -6641,6 +6853,12 @@ run_encode_loop() {
         # (pista E-AC-3 Atmos COPIATA — via garda spatiala sau alegerea userului — ramane
         # cu dec3 fara JOC de la ffmpeg → re-scrisa cu MP4Box; no-op pe MKV/non-Atmos)
         _atmos_mp4_signal "$output"
+
+        # ── v88: re-graft grup Eclipsa/IAMF pe output MP4/MOV ──
+        # (gate-ul din handle_multi_audio_dialog a fortat copy pe substream-uri →
+        # ffmpeg le-a aplatizat la Opus simplu → grupul se re-scrie din sursa;
+        # video-ul re-encodat NU atinge timeline-ul audio. No-op pe non-IAMF.)
+        _iamf_preserve "$file" "$output" || true
 
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( ORIGINAL_SIZE - NEW_SIZE )); [ $SAVED -lt 0 ] && SAVED=0

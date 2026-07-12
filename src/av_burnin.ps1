@@ -116,6 +116,23 @@ function Get-CodecTagForContainer {
     return @()
 }
 
+# v88: detecteaza audio Eclipsa/IAMF — copie standalone (av_burnin.ps1 nu importa
+# av_encode.ps1; mirror Get-IamfLayout / _iamf_probe). Layout sau "" (fara grup).
+# Folosit DOAR pentru warn-ul onest din Show-BurninHdrDialog (burn-in copiaza audio
+# prin ffmpeg → grupul IAMF se aplatizeaza; graftul nu e cablat pe burn-in).
+function Get-IamfLayout {
+    param([string]$File)
+    $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
+        -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join ' '
+    if ($gtype -notmatch "IAMF Audio Element") { return "" }
+    $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
+    $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
+    if ($lay -match 'stereo')     { return "stereo" }
+    if ($lay -match '6 channels') { return "5.1" }
+    if ($lay -match '8 channels') { return "7.1" }
+    return "iamf"
+}
+
 # ── v58: HDR/LOG awareness ──────────────────────────────────────────
 # State script-scope (reset in Show-BurninHdrDialog):
 #   $script:BurninSourceType = sdr|dv|hdr10|hdr10plus|hlg|log
@@ -531,6 +548,14 @@ function Show-BurninHdrDialog {
     Reset-BurninState
     $info = Get-BurninSourceInfo -File $File
     $script:BurninSourceType = $info.SourceType
+
+    # v88: sursa cu grup Eclipsa/IAMF — burn-in copiaza audio-ul prin ffmpeg, care
+    # APLATIZEAZA grupul la Opus simplu (pierdere tacuta altfel) → warn onest, o data
+    # per fisier, INAINTE de early-return-ul SDR (sursele Eclipsa au tipic video SDR).
+    if (Get-IamfLayout -File $File) {
+        Write-Host "  ⚠ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →" -ForegroundColor Yellow
+        Write-Host "    grupul se aplatizeaza la Opus simplu (pistele raman, spatialul Eclipsa se pierde)." -ForegroundColor Yellow
+    }
 
     if ($info.SourceType -eq "sdr") { return $info }
 

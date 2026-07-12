@@ -30,7 +30,8 @@ AssertHas $encPs 'Invoke-DjiPreserveMetaPostEncode -Source $fileInfo.FullName -O
 # si pe audio-only (av_encoder_audio.sh bash + PS1 menu 2); NU pe trim/concat (video editat)
 $audSh = Get-Content (Join-Path $src 'av_encoder_audio.sh') -Raw
 AssertHas $audSh '_dji_preserve_meta_postencode "$file" "$output"' "av_encoder_audio.sh: graft pe audio-only"
-Assert-Eq 3 ([regex]::Matches($encPs, 'Invoke-DjiPreserveMetaPostEncode -Source').Count) "PS1 av_encode: 3 call-site graft (run-loop + stream-copy + audio-only)"
+# v88 audit: +2 situri legitime in fluxurile IAMF audio-only (copy deja-IAMF + authoring)
+Assert-Eq 5 ([regex]::Matches($encPs, 'Invoke-DjiPreserveMetaPostEncode -Source').Count) "PS1 av_encode: 5 call-site graft (run-loop + stream-copy + audio-only + IAMF copy/authoring v88)"
 
 # ── 3. A — meniu telemetrie (bash + PS1): optiunea 3 + cancel = 4 ─────
 AssertHas $telSh 'Pastreaza GPS nativ (djmd)'     "av_telemetry.sh: optiunea 3"

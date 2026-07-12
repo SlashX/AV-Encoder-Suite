@@ -48,8 +48,10 @@ echo "║  8) AC3 (Dolby Digital legacy)                  ║"
 echo "║     TV-uri vechi pre-2010 / max 5.1 / 640k      ║"
 echo "║  9) LPCM (PCM necomprimat)                      ║"
 echo "║     16bit / 24bit / 32bit                        ║"
+echo "║  10) Eclipsa Audio (IAMF, AOMedia)              ║"
+echo "║      spatial deschis / Opus / doar MP4-MOV      ║"
 echo "╚══════════════════════════════════════════════════╝"
-read -p "Alege 1-9 [implicit: 1]: " audio_choice
+read -p "Alege 1-10 [implicit: 1]: " audio_choice
 
 AUDIO_CODEC="aac"
 AUDIO_BITRATE="192k"
@@ -94,6 +96,9 @@ case "${audio_choice:-1}" in
            3) AUDIO_BITRATE="32le"; echo "  Audio: LPCM 32bit" ;;
            *) AUDIO_BITRATE="16le"; echo "  Audio: LPCM 16bit" ;;
        esac ;;
+    10) AUDIO_CODEC="iamf"; AUDIO_BITRATE="256k"
+        echo "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1, substream-uri Opus"
+        echo "  Layout-ul se alege automat din canalele sursei (2/6/8ch); alte surse → skip onest" ;;
     *) echo "  Audio: AAC 192k / 5.1 384k / 7.1 768k" ;;
 esac
 
@@ -155,6 +160,31 @@ if [[ "$AUDIO_CODEC" == "pcm" ]] && [[ "$CONTAINER" == "mp4" ]]; then
         3) AUDIO_CODEC="aac"; AUDIO_BITRATE="192k"; echo "  Audio schimbat la AAC 192k" ;;
         *) CONTAINER="mkv"; echo "  Container schimbat la MKV" ;;
     esac
+fi
+
+# v88: Eclipsa/IAMF — traieste DOAR in MP4/MOV (Matroska/WebM nu au mapare IAMF: nici
+# ffmpeg, nici mkvmerge) + cere MP4Box pt impachetare (ffmpeg scrie doar raw .iamf;
+# la mux in container aplatizeaza grupul la Opus simplu).
+if [[ "$AUDIO_CODEC" == "iamf" ]]; then
+    if ! command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1; then
+        echo ""
+        echo "  EROARE: MP4Box (GPAC) lipseste — necesar pt IAMF-in-MP4."
+        echo "  Instaleaza cu tools/mp4box_installer.sh sau seteaza AV_TOOL_MP4BOX."
+        exit 1
+    fi
+    if [[ "$CONTAINER" != "mp4" && "$CONTAINER" != "mov" ]]; then
+        echo ""
+        echo "  ATENTIE: Eclipsa/IAMF exista doar in MP4/MOV — containerul ales: $CONTAINER."
+        echo "  1) Schimba container la MP4 [recomandat]"
+        echo "  2) Schimba audio la Opus 128k"
+        read -p "  Alege 1 sau 2 [implicit: 1]: " iamf_fix
+        if [[ "${iamf_fix:-1}" == "2" ]]; then
+            AUDIO_CODEC="opus"; AUDIO_BITRATE="128k"
+            echo "  Audio schimbat la Opus 128k"
+        else
+            CONTAINER="mp4"; echo "  Container schimbat la MP4"
+        fi
+    fi
 fi
 
 # v53: WebM compat — accepta DOAR Opus audio (Vorbis nu e expus in proiect)
@@ -228,6 +258,98 @@ for file in "${FILES[@]}"; do
     SRC_CHANNELS=$(ffprobe -v error -select_streams a:0 \
         -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1 | tr -d '\r')
     [[ ! "$SRC_CHANNELS" =~ ^[0-9]+$ ]] && SRC_CHANNELS=2
+
+    # v88: Eclipsa/IAMF — flux dedicat in 2 etape (ffmpeg raw .iamf → MP4Box package cu
+    # video copy 1:1). NU trece prin AUDIO_PARAMS/comanda ffmpeg unica de mai jos (cere
+    # filter_complex per layout + stream groups + re-pack MP4Box). Intra doar PRIMA pista
+    # audio (a:0); layout automat din canale. NB: nivel script (in for) → fara `local` (v66).
+    if [[ "$AUDIO_CODEC" == "iamf" ]]; then
+        # sursa are DEJA grup IAMF → authoring-ul din substream-ul a:0 ar DOWNGRADA
+        # tacut (a:0 = perechea stereo → "2ch" → stereo dintr-un 5.1!) → copy 1:1 +
+        # re-scriere grup (fara re-encode; acelasi rezultat, calitate pastrata).
+        if _iamf_probe "$file" >/dev/null 2>&1; then
+            echo "  Sursa are DEJA grup Eclipsa/IAMF → copy 1:1 + re-scriere grup (fara re-encode)" | tee -a "$LOG_FILE"
+            # v88 audit: paritate cu fluxul normal al meniului — subs + attachments se
+            # pastreaza (sursa deja-IAMF e mereu ISO; pgs/dvd/dvb nu intra in mp4/mov → drop).
+            _iamf_subc="-c:s mov_text"
+            if ffprobe -v error -select_streams s -show_entries stream=codec_name \
+                 -of csv=p=0 "$file" 2>/dev/null | grep -qi "hdmv_pgs\|dvd_subtitle\|dvb_subtitle"; then
+                _iamf_subc="-sn"
+            fi
+            ORIG_SIZE=$(av_stat_size "$file" 2>/dev/null || echo 0)
+            START_TIME=$(date +%s)
+            if ffmpeg -y -i "$file" -map 0:v? -map 0:a? -map 0:s? -map 0:t? -map_metadata 0 -map_chapters 0 \
+                   -c copy $_iamf_subc -c:t copy -dn $CONTAINER_FLAGS -nostats "$output" </dev/null 2>>"$LOG_FILE" \
+               && [ -s "$output" ]; then
+                # v88 audit: video 1:1 → aceleasi grafturi ca fluxul normal (dvcC DV se pierde
+                # la ffmpeg →MP4; GPS-ul nativ DJI se dropeaza). Ordinea conteaza: re-signal-ul
+                # DV + graftul DJI re-muxeaza prin MP4Box PE output-ul inca aplatizat (piste
+                # opus cu id-uri reale) → graftul IAMF vine ULTIMUL (rem opus + add grup).
+                _dv_resignal_copy "$file" "$output" "$CONTAINER"
+                _dji_preserve_meta_postencode "$file" "$output"
+                if _iamf_preserve "$file" "$output"; then
+                    END_TIME=$(date +%s)
+                    ELAPSED=$(( END_TIME - START_TIME ))
+                    NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
+                    echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB" | tee -a "$LOG_FILE"
+                    TOTAL_DONE=$((TOTAL_DONE + 1))
+                else
+                    echo "  EROARE: re-scrierea grupului IAMF a esuat" | tee -a "$LOG_FILE"
+                    rm -f "$output"
+                    TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+                fi
+            else
+                echo "  EROARE: copy+re-graft IAMF esuat" | tee -a "$LOG_FILE"
+                rm -f "$output"
+                TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+            fi
+            continue
+        fi
+        # v88 audit: sursa FARA pista audio → skip onest (fallback-ul SRC_CHANNELS=2 ar
+        # trimite-o in authoring stereo → eroare ffmpeg criptica "matches no streams").
+        if ! ffprobe -v error -select_streams a:0 -show_entries stream=index \
+               -of csv=p=0 "$file" 2>/dev/null | grep -q '[0-9]'; then
+            echo "  SKIP: sursa nu are pista audio — nimic de autorat IAMF" | tee -a "$LOG_FILE"
+            TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
+        fi
+        IAMF_LAYOUT=""
+        case "$SRC_CHANNELS" in
+            2) IAMF_LAYOUT="stereo" ;;
+            6) IAMF_LAYOUT="5.1" ;;
+            8) IAMF_LAYOUT="7.1" ;;
+        esac
+        if [[ -z "$IAMF_LAYOUT" ]]; then
+            echo "  SKIP: IAMF suporta surse 2/6/8 canale — sursa are ${SRC_CHANNELS}ch" | tee -a "$LOG_FILE"
+            TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
+        fi
+        [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$SRC_CHANNELS" -gt 2 ] && \
+            echo "  Nota: AV_DOWNMIX_STEREO ignorat pe IAMF (layout-ul urmeaza canalele sursei)"
+        # sursa Atmos/DTS:X → obiectele NU se transfera in IAMF (doar bed-ul de canale; v87)
+        _iamf_sp=$(_audio_spatial_kind "$file" 0 || true)
+        [[ -n "$_iamf_sp" ]] && \
+            echo "  ⚠ Sursa e $(_spatial_label "$_iamf_sp"): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" | tee -a "$LOG_FILE"
+        echo "  Audio: Eclipsa/IAMF layout $IAMF_LAYOUT (${SRC_CHANNELS}ch → substream-uri Opus; doar prima pista audio)" | tee -a "$LOG_FILE"
+        ORIG_SIZE=$(av_stat_size "$file" 2>/dev/null || echo 0)
+        START_TIME=$(date +%s)
+        if _iamf_author "$file" "$output" "$IAMF_LAYOUT"; then
+            # v88 audit: video-ul intra prin importul MP4Box #video, care pastreaza dvcC
+            # DV NATIV si CORECT (validat empiric P8.1→8 + P8.4→8.4, import de track ISO
+            # cu stsd — NU auto-detect pe NAL-uri) → fara re-signal. GPS-ul nativ DJI insa
+            # se pierde (#video ia doar video) → re-grefeaza (graftul pastreaza grupul —
+            # validat: -add pe fisier intreg cara track-ul soun:iamf intact).
+            _dji_preserve_meta_postencode "$file" "$output"
+            END_TIME=$(date +%s)
+            ELAPSED=$(( END_TIME - START_TIME ))
+            NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
+            SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
+            echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"
+            TOTAL_DONE=$((TOTAL_DONE + 1))
+        else
+            echo "  EROARE: authoring IAMF esuat" | tee -a "$LOG_FILE"
+            TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+        fi
+        continue
+    fi
 
     # v53: AV_DOWNMIX_STEREO=1 → force stereo downmix pe orice codec
     DOWNMIX_FLAG=""
@@ -385,6 +507,9 @@ for file in "${FILES[@]}"; do
         _dji_preserve_meta_postencode "$file" "$output"
         # v87: pista E-AC-3 Atmos copiata (garda spatiala) pe MP4/MOV → re-scrie dec3 JOC.
         _atmos_mp4_signal "$output"
+        # v88: sursa cu grup Eclipsa/IAMF (gate-ul din handle_multi_audio_dialog a fortat
+        # copy) → ffmpeg l-a aplatizat → re-grefeaza grupul din sursa. No-op pe non-IAMF.
+        _iamf_preserve "$file" "$output" || true
         NEW_SIZE=$(av_stat_size "$output" 2>/dev/null || echo 0)
         SAVED=$(( (ORIG_SIZE - NEW_SIZE) / 1048576 ))
         echo "  OK — ${ELAPSED}s | $(( NEW_SIZE / 1048576 )) MB | Salvat: ${SAVED} MB" | tee -a "$LOG_FILE"
