@@ -218,12 +218,14 @@ show_burnin_hdr_dialog() {
     _burnin_classify_source
 
     # v88: sursa cu grup Eclipsa/IAMF — burn-in copiaza audio-ul prin ffmpeg, care
-    # APLATIZEAZA grupul la Opus simplu (pierdere tacuta altfel) → warn onest, o data
-    # per fisier, INAINTE de early-return-ul SDR (sursele Eclipsa au tipic video SDR).
-    # Graftul nu e cablat pe burn-in (preview-urile taiate l-ar invalida) — vezi TO-DO.
+    # APLATIZEAZA grupul la Opus simplu → nota onesta, o data per fisier, INAINTE de
+    # early-return-ul SDR (sursele Eclipsa au tipic video SDR). v90: graftul e cablat
+    # pe output-ul COMPLET (audio-ul copy e timeline-1:1) → pe MP4/MOV grupul se
+    # re-scrie automat; pe alte containere / pe PREVIEW (clip taiat) ramane aplatizat.
     if _iamf_probe "$file" >/dev/null 2>&1; then
-        echo "  ⚠ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →"
-        echo "    grupul se aplatizeaza la Opus simplu (pistele raman, spatialul Eclipsa se pierde)."
+        echo "  ℹ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →"
+        echo "    pe MP4/MOV grupul se RE-SCRIE automat dupa encode (v90); pe alte containere"
+        echo "    si pe preview-uri ramane Opus simplu (pistele raman, spatialul se pierde)."
     fi
 
     # SDR → no dialog
@@ -785,6 +787,12 @@ hud_flow() {
             "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
+            # v90: sursa cu grup Eclipsa/IAMF → re-graft pe output-ul COMPLET (audio-ul
+            # copy e timeline-1:1); NU pe preview (clip taiat → substream-urile nu se
+            # regrupeaza — regula trim/concat). Soft: non-IAMF no-op, non-ISO warn onest.
+            if [[ "$out_suffix" != "preview" ]]; then
+                _iamf_preserve "$vid" "$out" || true
+            fi
         else
             echo "  [EROARE] ffmpeg overlay esuat"; rm -f "$out"; fail=$((fail+1))
         fi
@@ -906,6 +914,10 @@ srt_flow() {
             "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview)
+            if [[ "$out_suffix" != "preview" ]]; then
+                _iamf_preserve "$vid" "$out" || true
+            fi
         else
             echo "  [EROARE] ffmpeg SRT burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi
@@ -1010,6 +1022,10 @@ ass_flow() {
             "${BURNIN_ENC_EXTRA_ARGS[@]}" \
             -c:a copy $_codec_tag -movflags +faststart "$out" -y </dev/null; then
             echo "  [OK] $out"; ok=$((ok+1))
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview)
+            if [[ "$out_suffix" != "preview" ]]; then
+                _iamf_preserve "$vid" "$out" || true
+            fi
         else
             echo "  [EROARE] ffmpeg ASS burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi
@@ -1212,6 +1228,10 @@ img_flow() {
         esac
         if [ "$ok_now" -eq 1 ]; then
             echo "  [OK] $out"; ok=$((ok+1))
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview)
+            if [[ "$out_suffix" != "preview" ]]; then
+                _iamf_preserve "$vid" "$out" || true
+            fi
         else
             echo "  [EROARE] ffmpeg image subs burn-in esuat"; rm -f "$out"; fail=$((fail+1))
         fi

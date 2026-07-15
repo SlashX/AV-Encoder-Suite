@@ -118,8 +118,7 @@ function Get-CodecTagForContainer {
 
 # v88: detecteaza audio Eclipsa/IAMF — copie standalone (av_burnin.ps1 nu importa
 # av_encode.ps1; mirror Get-IamfLayout / _iamf_probe). Layout sau "" (fara grup).
-# Folosit DOAR pentru warn-ul onest din Show-BurninHdrDialog (burn-in copiaza audio
-# prin ffmpeg → grupul IAMF se aplatizeaza; graftul nu e cablat pe burn-in).
+# Folosit de nota din Show-BurninHdrDialog + de graftul post-encode (v90).
 function Get-IamfLayout {
     param([string]$File)
     $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
@@ -132,6 +131,66 @@ function Get-IamfLayout {
     if ($lay -match '8 channels')  { return "7.1" }
     if ($lay -match '12 channels') { return "7.1.4" }
     return "iamf"
+}
+
+# v90: passthrough Eclipsa/IAMF — copie standalone (mirror Invoke-IamfPreserve /
+# _iamf_preserve; av_burnin.ps1 nu importa av_encode.ps1). Burn-in re-encodeaza
+# video-ul dar copiaza audio-ul prin ffmpeg → grupul IAMF se aplatizeaza la Opus
+# simplu; timeline-ul audio ramane insa 1:1 pe output-ul COMPLET → re-grefam grupul
+# INTREG din sursa (extract raw MP4Box → rebuild -rem/-add → mv atomic). DOAR
+# MP4/MOV. NU se apeleaza pe preview-uri (clip taiat → substream-urile nu se
+# regrupeaza). Temp-uri CO-LOCATE. Idempotent. Soft-fail: output NEATINS la esec.
+function Invoke-IamfPreserve {
+    param([string]$Source, [string]$Output, [switch]$AllowNoAudio)
+    $ext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
+    if (-not (Get-IamfLayout -File $Source)) { return $true }
+    if ($ext -notin @('mp4','mov','m4v')) {
+        Write-Host "  ⚠ Sursa are audio Eclipsa/IAMF — grupul NU exista in .$ext →" -ForegroundColor Yellow
+        Write-Host "    audio ramane Opus multi-pista simplu. Foloseste MP4/MOV ca sa pastrezi Eclipsa." -ForegroundColor Yellow
+        return $false
+    }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) {
+        Write-Host "  ⚠ MP4Box lipseste — grupul Eclipsa/IAMF nu poate fi re-scris (audio ramane Opus simplu)." -ForegroundColor Yellow
+        return $false
+    }
+    if (Get-IamfLayout -File $Output) { return $true }
+    $remArgs = @()
+    foreach ($ln in @(& ffprobe -v error -select_streams a -show_entries stream=id -of csv=p=0 $Output 2>$null)) {
+        $idhex = ($ln -split ',')[0].Trim()
+        if ($idhex -match '^0x[0-9a-fA-F]+$') { $remArgs += @("-rem", [Convert]::ToInt32($idhex, 16)) }
+    }
+    if ($remArgs.Count -eq 0 -and -not $AllowNoAudio) { return $true }
+    $tid = $null
+    foreach ($ln in @(& $mux -info $Source 2>&1)) {
+        if ("$ln" -match '^# Track \d+ Info - ID (\d+)') { $curId = $Matches[1] }
+        if ("$ln" -match 'Media Type: soun:iamf') { $tid = $curId; break }
+    }
+    if (-not ($tid -match '^\d+$')) { return $false }
+    $dir = Split-Path $Output -Parent
+    $g = [guid]::NewGuid().ToString("N")
+    $raw = Join-Path $dir ("iamfpre_" + $g + ".iamf")
+    $tmp = Join-Path $dir ("iamfpre_" + $g + "." + $ext)
+    # capitolele se cara DETERMINIST prin dump-chap + -chap (rebuild-ul MP4Box
+    # trunchiaza etichetele track-ului QT — regula v88)
+    $chapf = Join-Path $dir ("iamfpre_" + $g + ".txt")
+    $nch = (@(& ffprobe -v error -show_chapters $Output 2>$null) | Where-Object { $_ -match '^\[CHAPTER\]' }).Count
+    if ($nch -gt 0) { & $mux -dump-chap $Output -out $chapf 2>$null | Out-Null }
+    & $mux -raw $tid -out $raw $Source 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
+        Remove-Item $raw, $chapf -Force -ErrorAction SilentlyContinue; return $false
+    }
+    $addArgs = @("-add", $Output) + $remArgs + @("-add", $raw, "-new", $tmp)
+    & $mux @addArgs 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0 -and (Get-IamfLayout -File $tmp)) {
+        Move-Item -Force $tmp $Output
+        if ((Test-Path $chapf) -and (Get-Item $chapf).Length -gt 0) { & $mux -chap $chapf $Output 2>$null | Out-Null }
+        Remove-Item $raw, $chapf -Force -ErrorAction SilentlyContinue
+        Write-Host "  Grup Eclipsa/IAMF re-scris in container (audio spatial pastrat 1:1)" -ForegroundColor Green
+        return $true
+    }
+    Remove-Item $raw, $tmp, $chapf -Force -ErrorAction SilentlyContinue
+    return $false
 }
 
 # ── v58: HDR/LOG awareness ──────────────────────────────────────────
@@ -551,11 +610,14 @@ function Show-BurninHdrDialog {
     $script:BurninSourceType = $info.SourceType
 
     # v88: sursa cu grup Eclipsa/IAMF — burn-in copiaza audio-ul prin ffmpeg, care
-    # APLATIZEAZA grupul la Opus simplu (pierdere tacuta altfel) → warn onest, o data
-    # per fisier, INAINTE de early-return-ul SDR (sursele Eclipsa au tipic video SDR).
+    # APLATIZEAZA grupul la Opus simplu → nota onesta, o data per fisier, INAINTE de
+    # early-return-ul SDR (sursele Eclipsa au tipic video SDR). v90: graftul e cablat
+    # pe output-ul COMPLET → pe MP4/MOV grupul se re-scrie automat; pe alte containere
+    # / pe PREVIEW (clip taiat) ramane aplatizat.
     if (Get-IamfLayout -File $File) {
-        Write-Host "  ⚠ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →" -ForegroundColor Yellow
-        Write-Host "    grupul se aplatizeaza la Opus simplu (pistele raman, spatialul Eclipsa se pierde)." -ForegroundColor Yellow
+        Write-Host "  ℹ Sursa are grup Eclipsa/IAMF — la burn-in audio-ul se copiaza prin ffmpeg →" -ForegroundColor Cyan
+        Write-Host "    pe MP4/MOV grupul se RE-SCRIE automat dupa encode (v90); pe alte containere" -ForegroundColor Cyan
+        Write-Host "    si pe preview-uri ramane Opus simplu (pistele raman, spatialul se pierde)." -ForegroundColor Cyan
     }
 
     if ($info.SourceType -eq "sdr") { return $info }
@@ -1152,6 +1214,9 @@ function Invoke-HudFlow {
         Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview —
+            # clip taiat → substream-urile nu se regrupeaza; regula trim/concat)
+            if ($outSuffix -ne "preview") { Invoke-IamfPreserve -Source $p.Video -Output $out | Out-Null }
         } else {
             Write-Host "  [EROARE] ffmpeg overlay esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
@@ -1274,6 +1339,9 @@ function Invoke-SrtFlow {
         Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview —
+            # clip taiat → substream-urile nu se regrupeaza; regula trim/concat)
+            if ($outSuffix -ne "preview") { Invoke-IamfPreserve -Source $p.Video -Output $out | Out-Null }
         } else {
             Write-Host "  [EROARE] ffmpeg SRT burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
@@ -1379,6 +1447,9 @@ function Invoke-AssFlow {
         Invoke-BurninEncode @ffArgs
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview —
+            # clip taiat → substream-urile nu se regrupeaza; regula trim/concat)
+            if ($outSuffix -ne "preview") { Invoke-IamfPreserve -Source $p.Video -Output $out | Out-Null }
         } else {
             Write-Host "  [EROARE] ffmpeg ASS burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++
@@ -1582,6 +1653,9 @@ function Invoke-ImgFlow {
         if ($kindUnknown) { $failCount++; continue }
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) {
             Write-Host "  [OK] $out" -ForegroundColor Green; $okCount++
+            # v90: re-graft grupul Eclipsa/IAMF pe output-ul complet (NU pe preview —
+            # clip taiat → substream-urile nu se regrupeaza; regula trim/concat)
+            if ($outSuffix -ne "preview") { Invoke-IamfPreserve -Source $p.Video -Output $out | Out-Null }
         } else {
             Write-Host "  [EROARE] ffmpeg image subs burn-in esuat" -ForegroundColor Red
             Remove-Item $out -Force -ErrorAction SilentlyContinue; $failCount++

@@ -124,7 +124,15 @@ assert_match "$(grep -c 'sort -u' "$CHK")" '^[1-9]' \
 assert_eq "1" "$(grep -c 'stream=index,codec_name,bit_rate' "$CHK")" \
     "av_check per-track are index in query (dedupe piste fantoma pe IAMF)"
 assert_eq "1" "$(grep -c 'la burn-in audio-ul se copiaza' "$BURN")" \
-    "burn-in avertizeaza onest pe surse IAMF (grupul se aplatizeaza; graftul nu e cablat — TO-DO)"
+    "burn-in are nota onesta pe surse IAMF (v90: graftul e cablat pe output-ul complet)"
+
+# ── source-level v90: graftul IAMF pe burn-in (inchide TO-DO-ul gated v88) ──
+assert_eq "4" "$(grep -c '_iamf_preserve "\$vid" "\$out" || true' "$BURN")" \
+    "v90: 4 situri graft in av_burnin.sh (HUD/SRT/ASS/img), gardat || true (set -e)"
+assert_eq "4" "$(grep -c 'out_suffix" != "preview" \]\]' "$BURN")" \
+    "v90: graftul e gardat pe output-ul COMPLET (NU pe preview — clip taiat nu se regrupeaza)"
+assert_match "$(cat "$BURN")" 'pe MP4/MOV grupul se RE-SCRIE automat' \
+    "v90: nota onesta actualizata (graft automat pe ISO, aplatizat pe rest/preview)"
 
 # ── source-level PS1: paritate ────────────────────────────────────────
 assert_eq "1" "$(grep -c '^function Get-IamfLayout {' "$PS")" \
@@ -174,6 +182,15 @@ assert_eq "1" "$(grep -c '^function Get-IamfLayout {' "$BURNPS")" \
     "PS1: av_burnin.ps1 are copia standalone Get-IamfLayout (pt warn)"
 assert_eq "1" "$(grep -c 'la burn-in audio-ul se copiaza' "$BURNPS")" \
     "PS1: burn-in avertizeaza onest pe surse IAMF"
+# ── source-level PS1: paritate v90 (graft burn-in) ───────────────────
+assert_eq "1" "$(grep -c '^function Invoke-IamfPreserve {' "$BURNPS")" \
+    "PS1 v90: av_burnin.ps1 are copia standalone Invoke-IamfPreserve"
+assert_eq "4" "$(grep -c 'Invoke-IamfPreserve -Source \$p.Video -Output \$out' "$BURNPS")" \
+    "PS1 v90: 4 situri graft (HUD/SRT/ASS/img)"
+assert_eq "4" "$(grep -c 'outSuffix -ne "preview"' "$BURNPS")" \
+    "PS1 v90: graftul gardat pe output-ul complet (NU pe preview)"
+assert_match "$(cat "$BURNPS")" 'pe MP4/MOV grupul se RE-SCRIE automat' \
+    "PS1 v90: nota onesta actualizata (paritate mesaj)"
 # ── source-level PS1: paritate v89 (7.1.4) ───────────────────────────
 assert_match "$(sed -n '/^function Invoke-IamfAuthor {/,/^}/p' "$PS")" 'st=0:st=1:st=2:st=3:st=4:st=5:st=6' \
     "PS1 v89: Invoke-IamfAuthor are cazul 7.1.4 (7 substream-uri)"

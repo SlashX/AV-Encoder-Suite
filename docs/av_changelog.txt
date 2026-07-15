@@ -3,9 +3,43 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v89 | 163 bug-uri fixate | 279+ features
-  237 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 179 teste [172 test_* + 7 infra]) | ~46900 linii cod+teste | ~7600 linii documentatie
+  TOTAL: v90 | 163 bug-uri fixate | 280+ features
+  237 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 179 teste [172 test_* + 7 infra]) | ~47000 linii cod+teste | ~7600 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v90 — Eclipsa pastrata si la Burn-in (graft pe output)
+═══════════════════════════════════════════════════════════════
+
+  Inchide singurul gol Eclipsa ramas din v88: burn-in-ul (meniul 9)
+  re-encodeaza video-ul (HUD / subtitrari arse in pixeli) dar copiaza
+  audio-ul prin FFmpeg — care aplatizeaza grupul IAMF la piste Opus
+  simple, tacut. v88 avertiza onest; v90 repara.
+
+  ADD Graft Eclipsa/IAMF pe burn-in — timeline-ul audio ramane 1:1
+        pe output-ul complet, deci grupul se poate re-scrie din
+        sursa (extractie raw prin MP4Box, byte-identica), exact ca
+        pe celelalte cai 1:1 (encode / stream copy / audio-only /
+        Remux). Cablat pe toate 4 fluxurile (HUD / SRT / ASS /
+        Image subs), ambele platforme. NU se aplica pe preview-uri
+        (clipul de 5s e taiat din timeline → substream-urile
+        trunchiate nu se pot regrupa — aceeasi regula ca la
+        Trim & Concat; still-ul e PNG, fara audio). Pe containere
+        non-MP4/MOV grupul ramane aplatizat (IAMF nu are mapare
+        acolo) — avertisment onest, output neatins.
+
+  UPDATE Nota din dialogul burn-in pe surse Eclipsa actualizata:
+        "pe MP4/MOV grupul se RE-SCRIE automat dupa encode; pe alte
+        containere si pe preview-uri ramane Opus simplu".
+
+  Paritate completa bash + PowerShell (av_burnin.ps1 primeste copia
+  standalone a functiei de graft — scriptul nu importa av_encode).
+  Validat prin meniurile reale pe ambele platforme, pe o sursa
+  Eclipsa 7.1.4 reala: output-ul burn-in are grupul RESTAURAT
+  (layout intact), iar preview-ul ramane corect negraftat.
+  test_v88_iamf extins (bash 114 / PS1 106). Suite complete:
+  bash 88/90 (2 skip platforma), PS1 82/82.
 
 
 ═══════════════════════════════════════════════════════════════

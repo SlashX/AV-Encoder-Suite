@@ -1351,8 +1351,10 @@ CUPRINS
   Trim & Concat avertizeaza ca editarea timeline-ului aplatizeaza
   grupul (substream-urile taiate nu se pot regrupa — foloseste
   encode per-clip + Remux daca ai nevoie de taieturi cu Eclipsa
-  pastrat); Burn-in avertizeaza onest ca grupul se aplatizeaza
-  (audio-ul trece prin FFmpeg; pistele raman, spatialul se pierde).
+  pastrat); Burn-in (v90) RE-SCRIE automat grupul pe output-ul
+  complet MP4/MOV (audio-ul copiat e timeline-1:1) — pe preview-uri
+  (clip taiat) si pe alte containere ramane aplatizat, cu nota
+  onesta in dialog.
 
 
 ═══════════════════════════════════════════════════════════════

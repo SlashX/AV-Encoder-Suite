@@ -101,6 +101,23 @@ Assert-Eq 1 ([regex]::Matches($burnPs, '(?m)^function Get-IamfLayout \{').Count)
 Assert-Eq 1 ([regex]::Matches($burnPs, 'la burn-in audio-ul se copiaza').Count) `
     "PS1: burn-in avertizeaza onest pe surse IAMF"
 
+# ── source-level v90: graftul IAMF pe burn-in (inchide TO-DO-ul gated v88) ──
+Assert-Eq 1 ([regex]::Matches($burnPs, '(?m)^function Invoke-IamfPreserve \{').Count) `
+    "v90: av_burnin.ps1 are copia standalone Invoke-IamfPreserve"
+Assert-Eq 4 ([regex]::Matches($burnPs, [regex]::Escape('Invoke-IamfPreserve -Source $p.Video -Output $out')).Count) `
+    "v90: 4 situri graft PS1 (HUD/SRT/ASS/img)"
+Assert-Eq 4 ([regex]::Matches($burnPs, 'outSuffix -ne "preview"').Count) `
+    "v90: graftul PS1 gardat pe output-ul complet (NU pe preview)"
+Assert-Contains $burnPs 'pe MP4/MOV grupul se RE-SCRIE automat' `
+    "v90: nota onesta actualizata PS1"
+# paritate bash v90
+Assert-Eq 4 ([regex]::Matches($burnSh, [regex]::Escape('_iamf_preserve "$vid" "$out" || true')).Count) `
+    "v90: 4 situri graft bash, gardate || true (set -e)"
+Assert-Eq 4 ([regex]::Matches($burnSh, 'out_suffix" != "preview"').Count) `
+    "v90: gate preview bash pe toate 4 fluxurile"
+Assert-Contains $burnSh 'pe MP4/MOV grupul se RE-SCRIE automat' `
+    "v90: nota onesta actualizata bash (paritate mesaj)"
+
 # ── source-level v89: authoring 7.1.4 (12ch, 7 substream-uri) ─────────
 Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?st=0:st=1:st=2:st=3:st=4:st=5:st=6[\s\S]*?\n\}' `
     "PS1 v89: Invoke-IamfAuthor are cazul 7.1.4 (7 substream-uri: 5 perechi stereo + C + LFE)"
