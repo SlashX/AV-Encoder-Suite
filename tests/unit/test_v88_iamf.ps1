@@ -1,5 +1,5 @@
 # v88 — Eclipsa Audio / IAMF (mirror test_v88_iamf.sh): detectie (stream_group=type),
-# authoring nativ ffmpeg (stereo/5.1/7.1, substream-uri Opus izolate cu `pan`, raw
+# authoring nativ ffmpeg (stereo/5.1/7.1 + 7.1.4 din v89, substream-uri Opus izolate cu `pan`, raw
 # .iamf -> MP4Box package) + passthrough (ffmpeg APLATIZEAZA grupul la Opus simplu la
 # ORICE mux/copy -> gate copy-ca-UN-grup + re-graft Invoke-IamfPreserve pe caile 1:1;
 # analog dvcC v70-72 / Atmos v87). IAMF = DOAR MP4/MOV. Source-level (ambele platforme)
@@ -100,6 +100,22 @@ Assert-Eq 1 ([regex]::Matches($burnPs, '(?m)^function Get-IamfLayout \{').Count)
     "PS1: av_burnin.ps1 are copia standalone Get-IamfLayout (pt warn)"
 Assert-Eq 1 ([regex]::Matches($burnPs, 'la burn-in audio-ul se copiaza').Count) `
     "PS1: burn-in avertizeaza onest pe surse IAMF"
+
+# ── source-level v89: authoring 7.1.4 (12ch, 7 substream-uri) ─────────
+Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?st=0:st=1:st=2:st=3:st=4:st=5:st=6[\s\S]*?\n\}' `
+    "PS1 v89: Invoke-IamfAuthor are cazul 7.1.4 (7 substream-uri: 5 perechi stereo + C + LFE)"
+Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?sound_system=7\.1\.4[\s\S]*?\n\}' `
+    "PS1 v89: mix_presentation are layout sound_system=7.1.4"
+Assert-Contains $psText 'IAMF suporta surse 2/6/8/12 canale' `
+    "PS1 v89: gate-ul de canale extins la 12 (mesaj skip)"
+foreach ($pair in @(@($psText,'av_encode.ps1'), @($muxPs,'av_mux.ps1'), @($chkPs,'av_check.ps1'), @($burnPs,'av_burnin.ps1'))) {
+    Assert-Match $pair[0] 'function Get-IamfLayout \{[\s\S]*?12 channels[\s\S]*?\n\}' `
+        ("PS1 v89: Get-IamfLayout mapeaza 12ch -> 7.1.4 in " + $pair[1])
+}
+# paritate bash v89
+Assert-Match $avcText 'st=0:st=1:st=2:st=3:st=4:st=5:st=6' "bash v89: _iamf_author are cazul 7.1.4 (paritate)"
+Assert-Match $avcText '12 channels' "bash v89: _iamf_probe mapeaza 12ch (paritate)"
+Assert-Contains $aeaText 'IAMF suporta surse 2/6/8/12 canale' "bash v89: gate 12ch (paritate mesaj)"
 # paritate bash pe audit
 Assert-Eq 1 ([regex]::Matches($aeaText, [regex]::Escape('_dv_resignal_copy "$file" "$output" "$CONTAINER"')).Count) `
     "bash: fluxul deja-IAMF copy re-scrie dvcC (paritate)"
@@ -184,6 +200,18 @@ if ($hasIamfMux -and (Get-Command $mp4box -ErrorAction SilentlyContinue)) {
         $outst = Join-Path $tmpd "outst.mp4"
         Assert-Eq $true (Invoke-IamfAuthor -Source $srcst -Output $outst -Layout "stereo") "authoring stereo: true"
         Assert-Eq "stereo" (Get-IamfLayout -File $outst) "authoring stereo: probe -> layout stereo"
+
+        # authoring 7.1.4 (v89 — 12ch, 7 substream-uri, layere stereo + 7.1.4)
+        $src714 = Join-Path $tmpd "src714.wav"; $out714 = Join-Path $tmpd "out714.mp4"
+        & ffmpeg -y -v error -f lavfi -i "sine=frequency=440:duration=2" -filter_complex `
+            "[0:a]pan=7.1.4|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0|c6=c0|c7=c0|c8=c0|c9=c0|c10=c0|c11=c0[a]" `
+            -map "[a]" $src714 2>$null
+        Assert-Zero $LASTEXITCODE "fixture 12ch 7.1.4 generat (WAVE_FORMAT_EXTENSIBLE)"
+        Assert-Eq $true (Invoke-IamfAuthor -Source $src714 -Output $out714 -Layout "7.1.4") "authoring 7.1.4: true"
+        Assert-Eq "7.1.4" (Get-IamfLayout -File $out714) "authoring 7.1.4: probe -> layout 7.1.4"
+        $b714 = (@(& ffprobe -hide_banner $out714 2>&1) | Out-String)
+        Assert-Match $b714 'Layer 0: stereo' "authoring 7.1.4: layer de baza stereo prezent (scalabil)"
+        Assert-Match $b714 'TFL.TFR.TBL.TBR' "authoring 7.1.4: canalele de inaltime prezente in layerul 12ch"
 
         # layout invalid -> refuz curat
         Assert-Eq $false (Invoke-IamfAuthor -Source $srcst -Output (Join-Path $tmpd "bad.mp4") -Layout "9.1.6") `

@@ -648,8 +648,10 @@ CUPRINS
  10) Pastreaza audio original (copy) — fara re-encode.
 
   In meniul 2 (encode doar audio), optiunea 10 e Eclipsa Audio (IAMF,
-  AOMedia) — authoring spatial deschis din surse stereo/5.1/7.1
-  (substream-uri Opus; doar MP4/MOV + MP4Box). Detalii → sectiunea 8.10.
+  AOMedia) — authoring spatial deschis din surse stereo/5.1/7.1/7.1.4
+  (substream-uri Opus; doar MP4/MOV + MP4Box). Pe surse Dolby Atmos,
+  obiectele pot fi REDATE pozitional in 7.1.4 prin Cavern (v89).
+  Detalii → sectiunea 8.10.
 
   ─── 7.9.1. AV_DOWNMIX_STEREO=1 env var (v53) ───
 
@@ -1282,7 +1284,8 @@ CUPRINS
   pierde.
 
 
-  ─── 8.10. Eclipsa Audio (IAMF) — creare si pastrare (v88) ───
+  ─── 8.10. Eclipsa Audio (IAMF) — creare si pastrare (v88; 7.1.4 +
+             Atmos → Eclipsa in v89) ───
 
   Eclipsa Audio e formatul de audio spatial DESCHIS al AOMedia (IAMF —
   Immersive Audio Model and Formats; royalty-free, spre deosebire de
@@ -1293,22 +1296,43 @@ CUPRINS
   nu au inca mapare (nici FFmpeg, nici mkvmerge).
 
   CREARE (authoring) — meniul 2 (encode doar audio), optiunea 10:
-    - surse stereo / 5.1 / 7.1 → IAMF cu layere scalabile (stereo de
-      baza + stratul complet), substream-uri Opus 256k; video-ul
-      (daca exista) e copiat 1:1 pe langa — inclusiv semnalizarea
-      Dolby Vision, subtitrarile (pe surse MP4/MOV; pe alte
-      containere nota onesta), capitolele si GPS-ul nativ DJI.
+    - surse stereo / 5.1 / 7.1 / 7.1.4 (12 canale, v89) → IAMF cu
+      layere scalabile (stereo de baza + stratul complet; pe 7.1.4,
+      7 substream-uri: 5 perechi stereo + centru + LFE), Opus 256k;
+      video-ul (daca exista) e copiat 1:1 pe langa — inclusiv
+      semnalizarea Dolby Vision, subtitrarile (pe surse MP4/MOV; pe
+      alte containere nota onesta), capitolele si GPS-ul nativ DJI.
     - cere container MP4/MOV (pe altul, oferta de schimbare) si
       MP4Box/GPAC instalat (vezi tools/mp4box_installer) — FFmpeg
       construieste structura IAMF nativ dar NU o poate scrie in
       container.
-    - surse cu alt numar de canale decat 2/6/8 (sau fara audio) →
-      skip onest; sursa Atmos / DTS:X → avertisment onest
-      (obiectele NU se transfera in IAMF — intra doar bed-ul).
+    - surse cu alt numar de canale decat 2/6/8/12 (sau fara audio)
+      → skip onest; sursa DTS:X → avertisment onest (obiectele NU
+      se transfera — intra doar bed-ul).
     - optiunea 10 pe o sursa DEJA-IAMF nu re-encodeaza: copy 1:1 +
       re-scrierea grupului (fara downgrade tacut) — pastreaza
       subtitrarile, attachments, capitolele, semnalizarea Dolby
       Vision si GPS-ul nativ DJI, ca fluxul normal al meniului.
+
+  ATMOS → ECLIPSA 7.1.4 (v89): pe sursele Dolby Atmos (E-AC-3 JOC
+  sau TrueHD), obiectele pot fi REDATE pozitional in canale 7.1.4
+  prin Cavern (VoidXH) — singurul renderer liber care decodeaza
+  obiectele Atmos (TrueHD prin truehdd, descarcat automat de
+  Cavernize la prima rulare). Optiunea 10 ofera atunci:
+    1) Render 7.1.4 → Eclipsa cu canale de inaltime [implicit cand
+       Cavernize e instalat] — obiectele intra in IAMF
+    2) Doar bed-ul de canale (comportamentul clasic)
+    3) Sari fisierul
+  Video/subtitrari/capitole/GPS DJI raman din sursa; audio-ul vine
+  din WAV-ul 7.1.4 randat. Pentru batch: AV_ATMOS_ECLIPSA_POLICY=
+  render|bed|skip (non-interactiv fara env → bed). Render esuat →
+  fallback onest pe bed. Cere Cavernize (tools/cavernize_installer;
+  Windows validat, macOS ghid manual, Linux/Termux indisponibil —
+  fara el totul ramane ca in v88) + .NET Desktop Runtime 8+ (pe
+  9/10 suita seteaza automat roll-forward). Nota: renderul WAV
+  intermediar are limita RIFF 4GiB (~62 min la 12ch/48k/16-bit) →
+  pe fisiere mai lungi, esec onest cu fallback pe bed. DTS:X ramane
+  doar-bed (nu exista decoder liber).
 
   PASTRARE (passthrough): FFmpeg APLATIZEAZA grupul IAMF la piste
   Opus simple la ORICE mux sau copiere — comanda reuseste, pierderea

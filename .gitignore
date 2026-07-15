@@ -117,6 +117,13 @@ src/mp4box.exe
 src/tools/mp4box.exe
 src/gpac/
 src/tools/gpac/
+# ── Cavernize / Cavern (v89 — render Atmos → 7.1.4 pt Eclipsa/IAMF) ──
+# CavernizeGUI.exe NU e standalone (are nevoie de DLL-urile Cavern.* de langa el)
+# → cavernize_installer.ps1 dezarhiveaza pachetul portabil INTREG in tools/cavernize/
+src/cavernize/
+src/tools/cavernize/
+src/CavernizeGUI.exe
+src/tools/CavernizeGUI.exe
 
 # ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
 # Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,
@@ -124,3 +131,10 @@ src/tools/gpac/
 # fluxului LOG → Rec.709 / HLG. Conventia de denumire e in docs/av_info.txt.
 src/Luts/
 *.cube
+
+# ── Mostre audio spatial (Dolby / DTS) — resurse de testare (NU se commit) ──
+# Tonurile oficiale Dolby (Atmos 5.1.2→9.1.6, Tone 7.1.4) + DTS Sound Check
+# (DTS:X) folosite la validarile v87 (detectie/garda), v88 (Eclipsa) si
+# v89 (render Atmos → 7.1.4). Fisiere mari, licentiate separat.
+src/Dolby/
+src/DTS/

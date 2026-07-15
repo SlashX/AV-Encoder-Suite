@@ -4486,31 +4486,35 @@ function Invoke-AtmosMp4Signal {
 }
 
 # v88: detecteaza audio Eclipsa / IAMF (mirror _iamf_probe/av_common.sh). Echo layout
-# ("stereo"/"5.1"/"7.1"/"iamf") sau "". Detector autoritar stream_group=type == "IAMF
+# ("stereo"/"5.1"/"7.1"/"7.1.4"/"iamf") sau "". Detector autoritar stream_group=type == "IAMF
 # Audio Element" (raw .iamf SI IAMF-in-MP4). IAMF traieste DOAR in MP4/MOV.
 function Get-IamfLayout {
     param([string]$File)
     $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
         -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join ' '
     if ($gtype -notmatch "IAMF Audio Element") { return "" }
-    # layer cel mai INALT din banner (NU -v error, ar suprima liniile "Layer N:")
+    # layer cel mai INALT din banner (NU -v error, ar suprima liniile "Layer N:");
+    # 12ch e UNIC printre layouturile IAMF scalabile → 7.1.4 fara ambiguitate (v89)
     $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
     $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
-    if ($lay -match 'stereo')     { return "stereo" }
-    if ($lay -match '6 channels') { return "5.1" }
-    if ($lay -match '8 channels') { return "7.1" }
+    if ($lay -match 'stereo')      { return "stereo" }
+    if ($lay -match '6 channels')  { return "5.1" }
+    if ($lay -match '8 channels')  { return "7.1" }
+    if ($lay -match '12 channels') { return "7.1.4" }
     return "iamf"
 }
 
 # v88: authoring Eclipsa/IAMF (mirror _iamf_author/av_common.sh) — creeaza IAMF-in-MP4
-# dintr-o sursa cu audio multicanal. Layout stereo|5.1|7.1 (channel-based scalabil: layer
-# stereo de baza + tinta). Substream-uri Opus izolate cu `pan` (layout GENERIC curat —
+# dintr-o sursa cu audio multicanal. Layout stereo|5.1|7.1|7.1.4 (channel-based scalabil:
+# layer stereo de baza + tinta). Substream-uri Opus izolate cu `pan` (layout GENERIC curat —
 # altfel libopus refuza etichetele surround). ffmpeg raw .iamf → MP4Box package (+video
 # copy daca sursa are; detectat prin banner-ul full, NU -select_streams v care rateaza pe
 # IAMF). Temp CO-LOCAT cu output (regula no-$env:TEMP + MP4Box.exe fara /tmp). Args ca
 # ARRAY + splat (flag-urile `:` = date, nu re-parsare PS). $true ok / $false esec (soft).
 function Invoke-IamfAuthor {
-    param([string]$Source, [string]$Output, [string]$Layout, [string]$Bitrate = "256k")
+    # v89: -AudioSource optional — audio-ul se ia de AICI (ex. WAV-ul 7.1.4 randat de
+    # Cavern), iar video/subtitrari/capitole raman din $Source; gol → $Source (back-compat v88).
+    param([string]$Source, [string]$Output, [string]$Layout, [string]$Bitrate = "256k", [string]$AudioSource = "")
     $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { Write-Host "  ✗ MP4Box lipseste (necesar pt IAMF-in-MP4)" -ForegroundColor Red; return $false }
     $raw = Join-Path (Split-Path $Output -Parent) ("iamfauth_" + [guid]::NewGuid().ToString("N") + ".iamf")
@@ -4533,9 +4537,19 @@ function Invoke-IamfAuthor {
             $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1"
             $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3","-streamid","4:4")
         }
-        default { Write-Host "  ✗ Layout IAMF nesuportat: $Layout (stereo|5.1|7.1)" -ForegroundColor Red; return $false }
+        "7.1.4" {
+            # v89: 12ch (ordinea ffmpeg: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR) → 7
+            # substream-uri coupled-first (perechi, apoi C/LFE — conventia 5.1/7.1);
+            # layere scalabile stereo + 7.1.4. Validat empiric (oracol frecvente + MP4Box).
+            $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=stereo|c0=c8|c1=c9[tf];[0:a]pan=stereo|c0=c10|c1=c11[tb];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[si]","-map","[bk]","-map","[tf]","-map","[tb]","-map","[ce]","-map","[lf]")
+            $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4:st=5:st=6,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1.4"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1.4"
+            $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3","-streamid","4:4","-streamid","5:5","-streamid","6:6")
+        }
+        default { Write-Host "  ✗ Layout IAMF nesuportat: $Layout (stereo|5.1|7.1|7.1.4)" -ForegroundColor Red; return $false }
     }
-    $ffArgs = @("-y","-v","error","-i",$Source) + $fcArgs + @("-c:a","libopus","-b:a",$Bitrate,"-stream_group",$sg1,"-stream_group",$sg2) + $sidArgs + @($raw)
+    $audioIn = if ($AudioSource) { $AudioSource } else { $Source }
+    $ffArgs = @("-y","-v","error","-i",$audioIn) + $fcArgs + @("-c:a","libopus","-b:a",$Bitrate,"-stream_group",$sg1,"-stream_group",$sg2) + $sidArgs + @($raw)
     & ffmpeg @ffArgs 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
         Write-Host "  ✗ ffmpeg authoring IAMF esuat (layout $Layout)" -ForegroundColor Red
@@ -4579,6 +4593,55 @@ function Invoke-IamfAuthor {
     }
     Write-Host "  ✗ MP4Box package IAMF esuat" -ForegroundColor Red
     if (Test-Path $Output) { Remove-Item $Output -Force -EA SilentlyContinue }
+    return $false
+}
+
+# v89: render Atmos → WAV 7.1.4 (12ch) prin Cavern (mirror _atmos_render_714 bash) —
+# redare POZITIONALA a obiectelor (E-AC-3 JOC nativ; TrueHD via truehdd, descarcat
+# automat de Cavernize la prima rulare). CavernizeGUI E CLI-ul (console-mode cu
+# argumente; se inchide singur pe SUCCES, pe EROARE ramane deschis) si e app WPF →
+# apelul direct `& exe` NU asteapta → Start-Process + WaitForExit cu timeout defensiv
+# + Kill. Validare AUTORITARA pe WAV (12 canale), NU pe exit code. Pista se extrage
+# intai intr-un MKV temp CO-LOCAT (Cavernize scrie temp-uri _extracted.thd* LANGA
+# input → pe copie nu murdarim sursa; pe mono-pista `-track 0` e neambiguu).
+# DOTNET_ROLL_FORWARD=LatestMajor: tinteste .NET Desktop 8, ruleaza pe 9/10.
+# WAV RIFF are limita 4GiB (~62min 12ch/48k) → honest-fail. $true ok / $false esec (soft).
+function Invoke-AtmosRender714 {
+    param([string]$Source, [string]$WavOut, [int]$Track = 0)
+    $cav = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } else { "CavernizeGUI" }
+    $cavCmd = Get-Command $cav -ErrorAction SilentlyContinue
+    if (-not $cavCmd) {
+        Write-Host "  ✗ Cavern lipseste (instaleaza cu tools/cavernize_installer.ps1 sau seteaza AV_TOOL_CAVERNIZE)" -ForegroundColor Red
+        return $false
+    }
+    $tmpMkv = Join-Path (Split-Path $WavOut -Parent) ("atmos714_" + [guid]::NewGuid().ToString("N") + ".mkv")
+    & ffmpeg -y -v error -i $Source -map "0:a:$Track" -c copy $tmpMkv 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmpMkv) -or (Get-Item $tmpMkv).Length -eq 0) {
+        Write-Host "  ✗ extractia pistei Atmos a esuat" -ForegroundColor Red
+        if (Test-Path $tmpMkv) { Remove-Item $tmpMkv -Force -EA SilentlyContinue }
+        return $false
+    }
+    if (Test-Path $WavOut) { Remove-Item $WavOut -Force -EA SilentlyContinue }
+    $oldRoll = $env:DOTNET_ROLL_FORWARD
+    $env:DOTNET_ROLL_FORWARD = "LatestMajor"
+    try {
+        # ArgumentList ca UN string cu quoting manual (PS 5.1 face join fara quoting → caile cu spatii s-ar rupe)
+        $argStr = "`"$tmpMkv`" -track 0 -target 7.1.4 -format PCM_LE -output `"$WavOut`""
+        $p = Start-Process -FilePath $cavCmd.Source -ArgumentList $argStr -PassThru -WindowStyle Hidden -ErrorAction Stop
+        if (-not $p.WaitForExit(7200000)) {
+            try { $p.Kill() } catch {}
+            Write-Host "  ✗ Cavern nu s-a terminat in 2h — proces oprit defensiv" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "  ✗ Cavern nu a putut fi pornit: $($_.Exception.Message)" -ForegroundColor Red
+    } finally {
+        if ($null -ne $oldRoll) { $env:DOTNET_ROLL_FORWARD = $oldRoll } else { Remove-Item Env:\DOTNET_ROLL_FORWARD -EA SilentlyContinue }
+        Remove-Item $tmpMkv -Force -EA SilentlyContinue
+    }
+    $ch = @(& ffprobe -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 $WavOut 2>$null)[0]
+    if ((Test-Path $WavOut) -and (Get-Item $WavOut).Length -gt 0 -and "$ch".Trim() -eq "12") { return $true }
+    Write-Host "  ✗ Cavern nu a produs un WAV 7.1.4 valid" -ForegroundColor Red
+    if (Test-Path $WavOut) { Remove-Item $WavOut -Force -EA SilentlyContinue }
     return $false
 }
 
@@ -6044,8 +6107,8 @@ if ($mainChoice -eq "2") {
         "10" {
             # v88: Eclipsa Audio (IAMF, AOMedia) — spatial deschis, substream-uri Opus
             $eaCodec = "iamf"; $eaBr = "256k"
-            Write-Host "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1, substream-uri Opus" -ForegroundColor Green
-            Write-Host "  Layout-ul se alege automat din canalele sursei (2/6/8ch); alte surse → skip onest" -ForegroundColor DarkGray
+            Write-Host "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1/7.1.4, substream-uri Opus" -ForegroundColor Green
+            Write-Host "  Layout-ul se alege automat din canalele sursei (2/6/8/12ch); alte surse → skip onest" -ForegroundColor DarkGray
         }
     }
     # FLAC + mp4/mov
@@ -6181,21 +6244,66 @@ if ($mainChoice -eq "2") {
                 Write-Host "  SKIP: sursa nu are pista audio — nimic de autorat IAMF" -ForegroundColor Yellow
                 $eaSkip++; $eaDone--; continue
             }
-            $iamfLayout = switch ($eaChN) { 2 {"stereo"} 6 {"5.1"} 8 {"7.1"} default {""} }
-            if (-not $iamfLayout) {
-                Write-Host "  SKIP: IAMF suporta surse 2/6/8 canale — sursa are ${eaChN}ch" -ForegroundColor Yellow
+            $iamfLayout = ""
+            $iamfRenderWav = ""
+            # v89: sursa Atmos → oferta render 7.1.4 prin Cavern (obiectele REDATE pozitional
+            # in canalele de inaltime) INAINTE de gate-ul pe canale — renderul produce 12ch
+            # indiferent de bed (5.1 JOC / 7.1 TrueHD). Fara tool / bed ales / DTS:X → clasic.
+            $iamfSp = Get-AudioSpatialKind -File $f.FullName -AIdx 0
+            $iamfRMode = ""
+            $cavTool = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } else { "CavernizeGUI" }
+            $cavPresent = [bool](Get-Command $cavTool -ErrorAction SilentlyContinue)
+            if ($iamfSp -like "atmos*" -and $cavPresent) {
+                $iamfRMode = if ($env:AV_ATMOS_ECLIPSA_POLICY) { $env:AV_ATMOS_ECLIPSA_POLICY } else { "" }
+                if (-not $iamfRMode) {
+                    if (($env:AV_NONINTERACTIVE -eq '1') -or [Console]::IsInputRedirected) {
+                        $iamfRMode = "bed"   # non-interactiv fara env → bed (do-no-harm, comportamentul v88)
+                    } else {
+                        Write-Host "  Sursa e $(Get-SpatialLabel $iamfSp) — obiectele pot fi REDATE pozitional (Cavern):" -ForegroundColor Cyan
+                        Write-Host "   1) Render 7.1.4 → Eclipsa cu canale de inaltime [implicit]"
+                        Write-Host "   2) Doar bed-ul de canale (clasic)"
+                        Write-Host "   3) Sari fisierul"
+                        $iamfRR = Read-Host "  Alege 1-3 [implicit: 1]"
+                        $iamfRMode = switch ($iamfRR) { "2" {"bed"} "3" {"skip"} default {"render"} }
+                    }
+                }
+            }
+            if ($iamfRMode -eq "skip") {
+                Write-Host "  SKIP: sarit de user (sursa Atmos)" -ForegroundColor Yellow
                 $eaSkip++; $eaDone--; continue
+            } elseif ($iamfRMode -eq "render") {
+                $iamfWav = Join-Path (Split-Path $outFile -Parent) ("atmos714_" + [guid]::NewGuid().ToString("N") + ".wav")
+                Write-Host "  Render Atmos → 7.1.4 prin Cavern (obiecte → canale de inaltime; poate dura)..." -ForegroundColor Cyan
+                if (Invoke-AtmosRender714 -Source $f.FullName -WavOut $iamfWav) {
+                    $iamfRenderWav = $iamfWav
+                    $iamfLayout = "7.1.4"
+                } else {
+                    Write-Host "  ⚠ Render esuat → fallback pe bed-ul de canale" -ForegroundColor Yellow
+                }
+            }
+            if (-not $iamfLayout) {
+                $iamfLayout = switch ($eaChN) { 2 {"stereo"} 6 {"5.1"} 8 {"7.1"} 12 {"7.1.4"} default {""} }
+                if (-not $iamfLayout) {
+                    Write-Host "  SKIP: IAMF suporta surse 2/6/8/12 canale — sursa are ${eaChN}ch" -ForegroundColor Yellow
+                    $eaSkip++; $eaDone--; continue
+                }
+                # sursa Atmos/DTS:X pe calea bed → obiectele NU se transfera in IAMF (v87)
+                if ($iamfSp) {
+                    Write-Host "  ⚠ Sursa e $(Get-SpatialLabel $iamfSp): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" -ForegroundColor Yellow
+                }
+                if ($iamfSp -like "atmos*" -and -not $cavPresent) {
+                    Write-Host "    (instaleaza Cavern — tools/cavernize_installer — pt render 7.1.4 cu tot cu obiecte)" -ForegroundColor DarkGray
+                }
             }
             if ($env:AV_DOWNMIX_STEREO -eq "1" -and $eaChN -gt 2) {
                 Write-Host "  Nota: AV_DOWNMIX_STEREO ignorat pe IAMF (layout-ul urmeaza canalele sursei)" -ForegroundColor DarkGray
             }
-            # sursa Atmos/DTS:X → obiectele NU se transfera in IAMF (doar bed-ul de canale; v87)
-            $iamfSp = Get-AudioSpatialKind -File $f.FullName -AIdx 0
-            if ($iamfSp) {
-                Write-Host "  ⚠ Sursa e $(Get-SpatialLabel $iamfSp): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" -ForegroundColor Yellow
+            if ($iamfRenderWav) {
+                Write-Host "  Audio: Eclipsa/IAMF layout 7.1.4 (render Cavern 12ch → substream-uri Opus)" -ForegroundColor White
+            } else {
+                Write-Host "  Audio: Eclipsa/IAMF layout $iamfLayout (${eaChN}ch → substream-uri Opus; doar prima pista audio)" -ForegroundColor White
             }
-            Write-Host "  Audio: Eclipsa/IAMF layout $iamfLayout (${eaChN}ch → substream-uri Opus; doar prima pista audio)" -ForegroundColor White
-            if (Invoke-IamfAuthor -Source $f.FullName -Output $outFile -Layout $iamfLayout) {
+            if (Invoke-IamfAuthor -Source $f.FullName -Output $outFile -Layout $iamfLayout -AudioSource $iamfRenderWav) {
                 # v88 audit: video-ul intra prin importul MP4Box #video → dvcC DV pastrat
                 # NATIV si CORECT (validat empiric P8.1→8 + P8.4→8.4; import track ISO cu
                 # stsd, NU auto-detect) → fara re-signal. GPS-ul nativ DJI insa se pierde
@@ -6207,6 +6315,7 @@ if ($mainChoice -eq "2") {
                 Write-Host "  EROARE: authoring IAMF esuat" -ForegroundColor Red
                 $eaErr++; $eaDone--
             }
+            if ($iamfRenderWav) { Remove-Item $iamfRenderWav -Force -ErrorAction SilentlyContinue }
             continue
         }
 

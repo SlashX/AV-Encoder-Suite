@@ -127,9 +127,10 @@ function Get-IamfLayout {
     if ($gtype -notmatch "IAMF Audio Element") { return "" }
     $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
     $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
-    if ($lay -match 'stereo')     { return "stereo" }
-    if ($lay -match '6 channels') { return "5.1" }
-    if ($lay -match '8 channels') { return "7.1" }
+    if ($lay -match 'stereo')      { return "stereo" }
+    if ($lay -match '6 channels')  { return "5.1" }
+    if ($lay -match '8 channels')  { return "7.1" }
+    if ($lay -match '12 channels') { return "7.1.4" }
     return "iamf"
 }
 

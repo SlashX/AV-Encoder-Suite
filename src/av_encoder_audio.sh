@@ -97,8 +97,8 @@ case "${audio_choice:-1}" in
            *) AUDIO_BITRATE="16le"; echo "  Audio: LPCM 16bit" ;;
        esac ;;
     10) AUDIO_CODEC="iamf"; AUDIO_BITRATE="256k"
-        echo "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1, substream-uri Opus"
-        echo "  Layout-ul se alege automat din canalele sursei (2/6/8ch); alte surse → skip onest" ;;
+        echo "  Audio: Eclipsa Audio (IAMF) — layere stereo + 5.1/7.1/7.1.4, substream-uri Opus"
+        echo "  Layout-ul se alege automat din canalele sursei (2/6/8/12ch); alte surse → skip onest" ;;
     *) echo "  Audio: AAC 192k / 5.1 384k / 7.1 768k" ;;
 esac
 
@@ -313,25 +313,71 @@ for file in "${FILES[@]}"; do
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
         fi
         IAMF_LAYOUT=""
-        case "$SRC_CHANNELS" in
-            2) IAMF_LAYOUT="stereo" ;;
-            6) IAMF_LAYOUT="5.1" ;;
-            8) IAMF_LAYOUT="7.1" ;;
-        esac
-        if [[ -z "$IAMF_LAYOUT" ]]; then
-            echo "  SKIP: IAMF suporta surse 2/6/8 canale — sursa are ${SRC_CHANNELS}ch" | tee -a "$LOG_FILE"
+        IAMF_RENDER_WAV=""
+        # v89: sursa Atmos → oferta render 7.1.4 prin Cavern (obiectele REDATE pozitional
+        # in canalele de inaltime) INAINTE de gate-ul pe canale — renderul produce 12ch
+        # indiferent de bed (5.1 JOC / 7.1 TrueHD). Fara tool / bed ales / DTS:X → clasic.
+        _iamf_sp=$(_audio_spatial_kind "$file" 0 || true)
+        _iamf_rmode=""
+        if [[ "$_iamf_sp" == atmos* ]] && command -v "$AV_TOOL_CAVERNIZE" >/dev/null 2>&1; then
+            _iamf_rmode="${AV_ATMOS_ECLIPSA_POLICY:-}"
+            if [[ -z "$_iamf_rmode" ]]; then
+                if [[ "${AV_NONINTERACTIVE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
+                    _iamf_rmode="bed"   # non-interactiv fara env → bed (do-no-harm, comportamentul v88)
+                else
+                    echo "  Sursa e $(_spatial_label "$_iamf_sp") — obiectele pot fi REDATE pozitional (Cavern):"
+                    echo "   1) Render 7.1.4 → Eclipsa cu canale de inaltime [implicit]"
+                    echo "   2) Doar bed-ul de canale (clasic)"
+                    echo "   3) Sari fisierul"
+                    read -p "  Alege 1-3 [implicit: 1]: " _iamf_rr
+                    case "${_iamf_rr:-1}" in
+                        2) _iamf_rmode="bed" ;;
+                        3) _iamf_rmode="skip" ;;
+                        *) _iamf_rmode="render" ;;
+                    esac
+                fi
+            fi
+        fi
+        if [[ "$_iamf_rmode" == "skip" ]]; then
+            echo "  SKIP: sarit de user (sursa Atmos)" | tee -a "$LOG_FILE"
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
+        elif [[ "$_iamf_rmode" == "render" ]]; then
+            _iamf_wav="${output%.*}.atmos714_$$.wav"
+            echo "  Render Atmos → 7.1.4 prin Cavern (obiecte → canale de inaltime; poate dura)..." | tee -a "$LOG_FILE"
+            if _atmos_render_714 "$file" "$_iamf_wav"; then
+                IAMF_RENDER_WAV="$_iamf_wav"
+                IAMF_LAYOUT="7.1.4"
+            else
+                echo "  ⚠ Render esuat → fallback pe bed-ul de canale" | tee -a "$LOG_FILE"
+            fi
+        fi
+        if [[ -z "$IAMF_LAYOUT" ]]; then
+            case "$SRC_CHANNELS" in
+                2)  IAMF_LAYOUT="stereo" ;;
+                6)  IAMF_LAYOUT="5.1" ;;
+                8)  IAMF_LAYOUT="7.1" ;;
+                12) IAMF_LAYOUT="7.1.4" ;;
+            esac
+            if [[ -z "$IAMF_LAYOUT" ]]; then
+                echo "  SKIP: IAMF suporta surse 2/6/8/12 canale — sursa are ${SRC_CHANNELS}ch" | tee -a "$LOG_FILE"
+                TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1)); continue
+            fi
+            # sursa Atmos/DTS:X pe calea bed → obiectele NU se transfera in IAMF (v87)
+            [[ -n "$_iamf_sp" ]] && \
+                echo "  ⚠ Sursa e $(_spatial_label "$_iamf_sp"): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" | tee -a "$LOG_FILE"
+            [[ "$_iamf_sp" == atmos* ]] && ! command -v "$AV_TOOL_CAVERNIZE" >/dev/null 2>&1 && \
+                echo "    (instaleaza Cavern — tools/cavernize_installer — pt render 7.1.4 cu tot cu obiecte)" | tee -a "$LOG_FILE"
         fi
         [[ "${AV_DOWNMIX_STEREO:-0}" == "1" ]] && [ "$SRC_CHANNELS" -gt 2 ] && \
             echo "  Nota: AV_DOWNMIX_STEREO ignorat pe IAMF (layout-ul urmeaza canalele sursei)"
-        # sursa Atmos/DTS:X → obiectele NU se transfera in IAMF (doar bed-ul de canale; v87)
-        _iamf_sp=$(_audio_spatial_kind "$file" 0 || true)
-        [[ -n "$_iamf_sp" ]] && \
-            echo "  ⚠ Sursa e $(_spatial_label "$_iamf_sp"): obiectele NU se transfera in IAMF — intra doar bed-ul de canale" | tee -a "$LOG_FILE"
-        echo "  Audio: Eclipsa/IAMF layout $IAMF_LAYOUT (${SRC_CHANNELS}ch → substream-uri Opus; doar prima pista audio)" | tee -a "$LOG_FILE"
+        if [[ -n "$IAMF_RENDER_WAV" ]]; then
+            echo "  Audio: Eclipsa/IAMF layout 7.1.4 (render Cavern 12ch → substream-uri Opus)" | tee -a "$LOG_FILE"
+        else
+            echo "  Audio: Eclipsa/IAMF layout $IAMF_LAYOUT (${SRC_CHANNELS}ch → substream-uri Opus; doar prima pista audio)" | tee -a "$LOG_FILE"
+        fi
         ORIG_SIZE=$(av_stat_size "$file" 2>/dev/null || echo 0)
         START_TIME=$(date +%s)
-        if _iamf_author "$file" "$output" "$IAMF_LAYOUT"; then
+        if _iamf_author "$file" "$output" "$IAMF_LAYOUT" "" "$IAMF_RENDER_WAV"; then
             # v88 audit: video-ul intra prin importul MP4Box #video, care pastreaza dvcC
             # DV NATIV si CORECT (validat empiric P8.1→8 + P8.4→8.4, import de track ISO
             # cu stsd — NU auto-detect pe NAL-uri) → fara re-signal. GPS-ul nativ DJI insa
@@ -348,6 +394,7 @@ for file in "${FILES[@]}"; do
             echo "  EROARE: authoring IAMF esuat" | tee -a "$LOG_FILE"
             TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
         fi
+        [[ -n "$IAMF_RENDER_WAV" ]] && rm -f "$IAMF_RENDER_WAV" 2>/dev/null
         continue
     fi
 

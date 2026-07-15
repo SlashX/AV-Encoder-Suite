@@ -359,7 +359,7 @@ function Get-AudioSpatialKind {
 # (av_check.ps1 nu importa av_encode; mirror _iamf_probe/av_common.sh). IAMF nu e codec,
 # e un STREAM GROUP (Audio Element + Mix Presentation) peste Opus/AAC/FLAC/PCM; detector
 # autoritar stream_group=type == "IAMF Audio Element" (raw .iamf SI IAMF-in-MP4). Echo
-# layout ("stereo"/"5.1"/"7.1"/"iamf") sau "". IAMF traieste DOAR in MP4/MOV (Matroska nu-l are).
+# layout ("stereo"/"5.1"/"7.1"/"7.1.4"/"iamf") sau "". IAMF traieste DOAR in MP4/MOV (Matroska nu-l are).
 function Get-IamfLayout {
     param([string]$File)
     $gtype = @(& ffprobe -v error -show_stream_groups -show_entries stream_group=type `
@@ -368,9 +368,10 @@ function Get-IamfLayout {
     # layout = layer-ul cel mai INALT (ultimul "Layer N:" din banner; NU -v error, ar suprima-l)
     $layMatch = @(& ffprobe -hide_banner $File 2>&1) | Select-String -Pattern 'Layer \d+:' | Select-Object -Last 1
     $lay = if ($layMatch) { $layMatch.ToString() } else { "" }
-    if ($lay -match 'stereo')     { return "stereo" }
-    if ($lay -match '6 channels') { return "5.1" }
-    if ($lay -match '8 channels') { return "7.1" }
+    if ($lay -match 'stereo')      { return "stereo" }
+    if ($lay -match '6 channels')  { return "5.1" }
+    if ($lay -match '8 channels')  { return "7.1" }
+    if ($lay -match '12 channels') { return "7.1.4" }
     return "iamf"
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # v88 — Eclipsa Audio / IAMF (AOMedia): detectie (stream_group=type), authoring nativ
-# ffmpeg (stereo/5.1/7.1, substream-uri Opus izolate cu `pan`, raw .iamf → MP4Box
+# ffmpeg (stereo/5.1/7.1 + 7.1.4 din v89, substream-uri Opus izolate cu `pan`, raw .iamf → MP4Box
 # package) + passthrough (ffmpeg APLATIZEAZA grupul la Opus simplu la ORICE mux/copy
 # → gate copy-ca-UN-grup in dialogul audio + re-graft `_iamf_preserve` din sursa pe
 # caile 1:1; analog dvcC v70-72 / Atmos v87). IAMF = DOAR MP4/MOV (Matroska/WebM fara
@@ -70,8 +70,20 @@ assert_match "$(cat "$AEA")" 'AUDIO_CODEC="iamf"' \
     "optiunea 10 seteaza AUDIO_CODEC=iamf"
 assert_match "$(cat "$AEA")" 'Sursa are DEJA grup Eclipsa/IAMF' \
     "edge anti-downgrade: sursa deja-IAMF → copy 1:1 + re-graft (NU authoring din substream stereo)"
-assert_match "$(cat "$AEA")" 'IAMF suporta surse 2/6/8 canale' \
-    "layout-urile nesuportate → skip onest"
+assert_match "$(cat "$AEA")" 'IAMF suporta surse 2/6/8/12 canale' \
+    "layout-urile nesuportate → skip onest (gate extins 12ch in v89)"
+
+# ── source-level v89: authoring 7.1.4 (12ch, 7 substream-uri) ────────
+assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'st=0:st=1:st=2:st=3:st=4:st=5:st=6' \
+    "v89: cazul 7.1.4 refera 7 substream-uri (5 perechi stereo + C + LFE)"
+assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'layer=ch_layout=7\.1\.4' \
+    "v89: layer scalabil 7.1.4 (baza stereo + tinta 7.1.4)"
+assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'sound_system=7\.1\.4' \
+    "v89: mix_presentation are layout sound_system=7.1.4"
+assert_match "$(sed -n '/^_iamf_probe()/,/^}/p' "$AVC")" '12 channels' \
+    "v89: probe mapeaza bannerul '12 channels' → 7.1.4 (12ch e UNIC printre layouturile scalabile)"
+assert_eq "1" "$(grep -c '12) IAMF_LAYOUT="7.1.4"' "$AEA")" \
+    "v89: gate-ul de canale accepta 12 → layout 7.1.4"
 assert_match "$(cat "$AEA")" 'obiectele NU se transfera in IAMF' \
     "sursa Atmos/DTS:X → warn onest (doar bed-ul intra in IAMF)"
 
@@ -162,6 +174,17 @@ assert_eq "1" "$(grep -c '^function Get-IamfLayout {' "$BURNPS")" \
     "PS1: av_burnin.ps1 are copia standalone Get-IamfLayout (pt warn)"
 assert_eq "1" "$(grep -c 'la burn-in audio-ul se copiaza' "$BURNPS")" \
     "PS1: burn-in avertizeaza onest pe surse IAMF"
+# ── source-level PS1: paritate v89 (7.1.4) ───────────────────────────
+assert_match "$(sed -n '/^function Invoke-IamfAuthor {/,/^}/p' "$PS")" 'st=0:st=1:st=2:st=3:st=4:st=5:st=6' \
+    "PS1 v89: Invoke-IamfAuthor are cazul 7.1.4 (7 substream-uri)"
+assert_match "$(sed -n '/^function Invoke-IamfAuthor {/,/^}/p' "$PS")" 'sound_system=7\.1\.4' \
+    "PS1 v89: mix_presentation are sound_system=7.1.4"
+assert_match "$(cat "$PS")" 'IAMF suporta surse 2/6/8/12 canale' \
+    "PS1 v89: gate-ul de canale extins la 12 (mesaj skip paritate)"
+for _f in "$PS" "$MXPS" "$CHKPS" "$BURNPS"; do
+    assert_match "$(sed -n '/^function Get-IamfLayout {/,/^}/p' "$_f")" '12 channels' \
+        "PS1 v89: Get-IamfLayout mapeaza 12ch → 7.1.4 in $(basename "$_f")"
+done
 
 # paritate mesaje-cheie bash ↔ PS1
 for _msg in \
@@ -219,6 +242,18 @@ else
     _iamf_author "$TD/srcst.wav" "$TD/outst.mp4" "stereo" >/dev/null 2>&1
     assert_zero $? "authoring stereo: rc=0"
     assert_eq "stereo" "$(_iamf_probe "$TD/outst.mp4")" "authoring stereo: probe → layout stereo"
+
+    # authoring 7.1.4 (v89 — 12ch, 7 substream-uri, layere stereo + 7.1.4)
+    ffmpeg -y -v error -f lavfi -i "sine=frequency=440:duration=2" -filter_complex \
+        "[0:a]pan=7.1.4|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0|c6=c0|c7=c0|c8=c0|c9=c0|c10=c0|c11=c0[a]" \
+        -map "[a]" "$TD/src714.wav" 2>/dev/null
+    assert_zero $? "fixture 12ch 7.1.4 generat (WAVE_FORMAT_EXTENSIBLE)"
+    _iamf_author "$TD/src714.wav" "$TD/out714.mp4" "7.1.4" >/dev/null 2>&1
+    assert_zero $? "authoring 7.1.4: rc=0"
+    assert_eq "7.1.4" "$(_iamf_probe "$TD/out714.mp4")" "authoring 7.1.4: probe → layout 7.1.4"
+    _b714=$(ffprobe -hide_banner "$TD/out714.mp4" 2>&1)
+    assert_match "$_b714" 'Layer 0: stereo' "authoring 7.1.4: layer de baza stereo prezent (scalabil)"
+    assert_match "$_b714" 'TFL.TFR.TBL.TBR' "authoring 7.1.4: canalele de inaltime prezente in layerul 12ch"
 
     # layout invalid → refuz curat
     if _iamf_author "$TD/srcst.wav" "$TD/outbad.mp4" "9.1.6" >/dev/null 2>&1; then

@@ -98,6 +98,7 @@ AV_TOOL_SVTAV1ENCAPP="${AV_TOOL_SVTAV1ENCAPP:-SvtAv1EncApp}"    # SVT-AV1 standa
 AV_TOOL_MKVMERGE="${AV_TOOL_MKVMERGE:-mkvmerge}"               # MKVToolNix (dvcC de container pe hibride HEVC DV pe MKV, v70)
 AV_TOOL_MKVEXTRACT="${AV_TOOL_MKVEXTRACT:-mkvextract}"          # MKVToolNix (extract BL+EL+RPU din P7 MKV pt conversia P7->8.1, v76)
 AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"                      # GPAC MP4Box (dvcC de container pe hibride HEVC DV pe MP4/MOV, v71)
+AV_TOOL_CAVERNIZE="${AV_TOOL_CAVERNIZE:-CavernizeGUI}"          # Cavern (render Atmos → canale 7.1.4 pt Eclipsa, v89; Windows/macOS)
 AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
 AV_ENGINE_DV_P7="${AV_ENGINE_DV_P7:-$SCRIPT_DIR/dv_p7_analyze.py}"  # clasificator EL (MEL/FEL) pt P7->8.1 (v76)
 
@@ -1164,7 +1165,7 @@ _ask_spatial_guard() {
 # nu e un codec, e un STREAM GROUP (Audio Element + Mix Presentation) peste substream-uri
 # Opus/AAC/FLAC/PCM. Detector AUTORITAR: `stream_group=type == "IAMF Audio Element"`
 # (functioneaza pe raw .iamf SI pe IAMF-in-MP4). Echo layout-ul celui mai inalt layer
-# ("stereo"/"5.1"/"7.1"/"iamf") sau gol + rc1. NOTA container: IAMF traieste DOAR in
+# ("stereo"/"5.1"/"7.1"/"7.1.4"/"iamf") sau gol + rc1. NOTA container: IAMF traieste DOAR in
 # MP4/MOV (via MP4Box); Matroska/WebM nu au inca mapare IAMF (nici ffmpeg, nici mkvmerge).
 _iamf_probe() {
     local file="$1" gtype lay
@@ -1173,19 +1174,23 @@ _iamf_probe() {
     [[ "$gtype" == *"IAMF Audio Element"* ]] || { echo ""; return 1; }
     # layout uman = layer-ul cel mai INALT (ultimul "Layer N:" din banner-ul de input;
     # NU folosi -v error aici — ar suprima banner-ul cu liniile "Layer N:"). channel-count
-    # ambiguu (7.1 vs 5.1.2 = 8ch) → fallback onest "iamf" cand nu e clar.
+    # ambiguu (7.1 vs 5.1.2 = 8ch) → fallback onest "iamf" cand nu e clar; 12ch e UNIC
+    # printre layouturile IAMF scalabile → 7.1.4 fara ambiguitate (v89).
     lay=$(ffprobe -hide_banner "$file" 2>&1 | grep -aoE 'Layer [0-9]+:.*' | tail -1 | tr -d '\r')
     case "$lay" in
-        *stereo*)       echo "stereo" ;;
-        *"6 channels"*) echo "5.1" ;;
-        *"8 channels"*) echo "7.1" ;;
-        *)              echo "iamf" ;;
+        *stereo*)        echo "stereo" ;;
+        *"6 channels"*)  echo "5.1" ;;
+        *"8 channels"*)  echo "7.1" ;;
+        *"12 channels"*) echo "7.1.4" ;;
+        *)               echo "iamf" ;;
     esac
     return 0
 }
 
 # v88: authoring Eclipsa/IAMF — creeaza un IAMF-in-MP4 dintr-o sursa cu audio multicanal.
-# Args: $1=input $2=output(.mp4/.mov) $3=layout(stereo|5.1|7.1) $4=bitrate(implicit 256k).
+# Args: $1=input $2=output(.mp4/.mov) $3=layout(stereo|5.1|7.1|7.1.4) $4=bitrate(implicit 256k)
+# $5=audio_src optional (v89: audio-ul se ia de AICI — ex. WAV-ul 7.1.4 randat de Cavern —
+# iar video/subtitrari/capitole raman din $1; gol → $1, back-compat v88).
 # Model channel-based SCALABIL: layer stereo de baza + layer-ul tinta (demixing/recon_gain
 # reconstruiesc). Substream-urile Opus se izoleaza cu `pan` (layout GENERIC curat —
 # channelsplit pastreaza etichetele surround FC/LFE/BL → libopus le refuza). ffmpeg scrie
@@ -1194,7 +1199,7 @@ _iamf_probe() {
 # (copy, fara re-encode). Temp CO-LOCAT cu output-ul (MP4Box.exe nu rezolva /tmp MSYS).
 # IAMF = DOAR MP4/MOV (Matroska n-are mapare). return 0 ok / 1 esec (soft, fara output partial).
 _iamf_author() {
-    local input="$1" output="$2" layout="$3" br="${4:-256k}"
+    local input="$1" output="$2" layout="$3" br="${4:-256k}" audio_src="${5:-$1}"
     command -v "$AV_TOOL_MP4BOX" >/dev/null 2>&1 || { echo "  ✗ MP4Box lipseste (necesar pt IAMF-in-MP4)"; return 1; }
     local raw="${output%.*}.iamfauth_$$.iamf"
     local -a fc sg1 sg2 sid
@@ -1217,9 +1222,19 @@ _iamf_author() {
             sg2=(-stream_group "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1")
             sid=(-streamid 0:0 -streamid 1:1 -streamid 2:2 -streamid 3:3 -streamid 4:4)
             ;;
-        *) echo "  ✗ Layout IAMF nesuportat: $layout (stereo|5.1|7.1)"; return 1 ;;
+        7.1.4)
+            # v89: 12ch (ordinea ffmpeg: FL FR FC LFE BL BR SL SR TFL TFR TBL TBR) → 7
+            # substream-uri in ordinea coupled-first IAMF (perechi, apoi C/LFE — aceeasi
+            # conventie ca 5.1/7.1); layere scalabile stereo + 7.1.4. Sintaxa validata
+            # empiric cap-coada (oracol de frecvente per substream, MP4Box package OK).
+            fc=(-filter_complex "[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=stereo|c0=c8|c1=c9[tf];[0:a]pan=stereo|c0=c10|c1=c11[tb];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]" -map "[fr]" -map "[si]" -map "[bk]" -map "[tf]" -map "[tb]" -map "[ce]" -map "[lf]")
+            sg1=(-stream_group "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4:st=5:st=6,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1.4")
+            sg2=(-stream_group "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1.4")
+            sid=(-streamid 0:0 -streamid 1:1 -streamid 2:2 -streamid 3:3 -streamid 4:4 -streamid 5:5 -streamid 6:6)
+            ;;
+        *) echo "  ✗ Layout IAMF nesuportat: $layout (stereo|5.1|7.1|7.1.4)"; return 1 ;;
     esac
-    if ! ffmpeg -y -v error -i "$input" "${fc[@]}" -c:a libopus -b:a "$br" "${sg1[@]}" "${sg2[@]}" "${sid[@]}" "$raw" </dev/null >/dev/null 2>&1 || [ ! -s "$raw" ]; then
+    if ! ffmpeg -y -v error -i "$audio_src" "${fc[@]}" -c:a libopus -b:a "$br" "${sg1[@]}" "${sg2[@]}" "${sid[@]}" "$raw" </dev/null >/dev/null 2>&1 || [ ! -s "$raw" ]; then
         echo "  ✗ ffmpeg authoring IAMF esuat (layout $layout)"; rm -f "$raw" 2>/dev/null; return 1
     fi
     local has_video
@@ -1261,6 +1276,40 @@ _iamf_author() {
         return 0
     fi
     echo "  ✗ MP4Box package IAMF esuat"; rm -f "$output" 2>/dev/null; return 1
+}
+
+# v89: render Atmos → WAV 7.1.4 (12ch) prin Cavern — redare POZITIONALA a obiectelor
+# (E-AC-3 JOC nativ; TrueHD via truehdd, descarcat automat de Cavernize la prima rulare).
+# Args: $1=sursa $2=wav_out [$3=index pista audio, implicit 0]. CavernizeGUI E CLI-ul
+# (console-mode cand primeste argumente; se inchide singur pe SUCCES, pe EROARE ramane
+# deschis → timeout defensiv + validare AUTORITARA pe WAV, nu pe exit code). Pista se
+# extrage intai intr-un MKV temp CO-LOCAT: Cavernize scrie temp-uri _extracted.thd*
+# LANGA input (pe copia temp nu murdarim sursa) + pe fisierul mono-pista `-track 0` e
+# neambiguu. DOTNET_ROLL_FORWARD=LatestMajor: tinteste .NET Desktop 8, ruleaza si pe
+# 9/10. WAV RIFF are limita 4GiB (~62min 12ch/48k/16-bit) → honest-fail (ffprobe
+# respinge header trunchiat → validarea pica). return 0 ok / 1 esec (soft, fara WAV partial).
+_atmos_render_714() {
+    local file="$1" wav_out="$2" atrack="${3:-0}"
+    command -v "$AV_TOOL_CAVERNIZE" >/dev/null 2>&1 || {
+        echo "  ✗ Cavern lipseste (instaleaza cu tools/cavernize_installer sau seteaza AV_TOOL_CAVERNIZE)"; return 1; }
+    local tmpmkv="${wav_out%.*}.atmos714_$$.mkv"
+    if ! ffmpeg -y -v error -i "$file" -map 0:a:"$atrack" -c copy "$tmpmkv" </dev/null >/dev/null 2>&1 || [ ! -s "$tmpmkv" ]; then
+        echo "  ✗ extractia pistei Atmos a esuat"; rm -f "$tmpmkv" 2>/dev/null; return 1
+    fi
+    rm -f "$wav_out" 2>/dev/null
+    local _tocmd=()
+    command -v timeout >/dev/null 2>&1 && _tocmd=(timeout 7200)
+    [ ${#_tocmd[@]} -eq 0 ] && command -v gtimeout >/dev/null 2>&1 && _tocmd=(gtimeout 7200)
+    DOTNET_ROLL_FORWARD=LatestMajor "${_tocmd[@]}" "$AV_TOOL_CAVERNIZE" "$tmpmkv" \
+        -track 0 -target 7.1.4 -format PCM_LE -output "$wav_out" >/dev/null 2>&1 || true
+    rm -f "$tmpmkv" 2>/dev/null
+    local _ch
+    _ch=$(ffprobe -v error -select_streams a:0 -show_entries stream=channels \
+        -of default=noprint_wrappers=1:nokey=1 "$wav_out" 2>/dev/null | head -1 | tr -d '\r')
+    if [ -s "$wav_out" ] && [ "$_ch" = "12" ]; then return 0; fi
+    echo "  ✗ Cavern nu a produs un WAV 7.1.4 valid"
+    rm -f "$wav_out" 2>/dev/null
+    return 1
 }
 
 # v88: passthrough Eclipsa/IAMF (analog dvcC v70-72 / Atmos v87, pt grupul IAMF).

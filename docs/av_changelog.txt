@@ -3,9 +3,70 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v88 | 163 bug-uri fixate | 277+ features
-  233 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 18 tools + 6 profile + 3 burnin presets + 177 teste [170 test_* + 7 infra]) | ~46000 linii cod+teste | ~7500 linii documentatie
+  TOTAL: v89 | 163 bug-uri fixate | 279+ features
+  237 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 179 teste [172 test_* + 7 infra]) | ~46900 linii cod+teste | ~7600 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v89 — Eclipsa 7.1.4 + Atmos → Eclipsa (render prin Cavern)
+═══════════════════════════════════════════════════════════════
+
+  Doua fete ale aceleiasi versiuni: authoring-ul Eclipsa/IAMF invata
+  layoutul 7.1.4 (12 canale, cu inaltimi), iar sursele Dolby Atmos
+  pot fi acum CONVERTITE la Eclipsa cu tot cu obiecte — redate
+  pozitional in canalele 7.1.4 prin Cavern, singurul renderer liber
+  care decodeaza obiectele Atmos. v88 spunea onest "obiectele nu se
+  transfera"; v89 le transfera.
+
+  ADD Authoring IAMF 7.1.4 — meniul 2 optiunea 10 accepta acum si
+        surse cu 12 canale (7.1.4): 7 substream-uri Opus (5 perechi
+        stereo + centru + LFE), layere scalabile stereo + 7.1.4,
+        mix presentation cu sound_system=7.1.4. Detectia recunoaste
+        layoutul (12 canale e unic printre layouturile IAMF
+        scalabile → fara ambiguitatea 8ch 7.1-vs-5.1.2) in toate
+        uneltele: Verifica media, Remux, Burn-in, dialogul audio.
+
+  ADD Atmos → Eclipsa 7.1.4 prin Cavern (VoidXH) — pe sursele Atmos
+        (E-AC-3 JOC nativ; TrueHD prin truehdd, descarcat automat
+        de Cavernize la prima rulare), optiunea 10 ofera:
+          1) Render 7.1.4 — obiectele sunt REDATE pozitional in
+             canale (inclusiv cele 4 de inaltime) si intra in
+             Eclipsa [implicit cand Cavernize e instalat]
+          2) Doar bed-ul de canale (comportamentul clasic v88)
+          3) Sari fisierul
+        Video, subtitrarile, capitolele si GPS-ul nativ DJI raman
+        din sursa (audio-ul vine din WAV-ul 7.1.4 randat).
+        Env AV_ATMOS_ECLIPSA_POLICY=render|bed|skip pentru batch;
+        non-interactiv fara env → bed (do-no-harm). Render esuat →
+        fallback onest pe bed. DTS:X ramane doar-bed (nu exista
+        decoder liber pentru obiectele lui). Validat pe tonurile
+        oficiale Dolby: Tone 7.1.4 complet → toate 12 canalele
+        active in IAMF-ul final (inclusiv TFL/TFR/TBL/TBR), video
+        copiat 1:1.
+
+  ADD Installer Cavernize — tools/cavernize_installer.ps1 (Windows:
+        pachetul portabil de pe site-ul oficial + verificare .NET
+        Desktop Runtime 8+) si .sh (macOS: ghid manual, consola
+        nevalidata acolo — nota onesta; Linux/Termux: mesaj onest,
+        Cavernize nu exista pe aceste platforme). Unealta e
+        OPTIONALA: fara ea, authoring-ul pe surse Atmos ramane
+        exact ca in v88 (bed + avertisment + indrumare catre
+        installer). Env AV_TOOL_CAVERNIZE pentru cai custom.
+
+  Nota CavernizeGUI e chiar CLI-ul (console-mode cand primeste
+        argumente); tinteste .NET Desktop 8 — pe .NET 9/10 suita
+        seteaza automat roll-forward. Timeout defensiv 2h +
+        validarea rezultatului pe WAV-ul produs (12 canale), nu pe
+        exit code. WAV-ul intermediar are limita RIFF 4GiB (~62 min
+        la 12ch/48k/16-bit) → esec onest, fara output corupt.
+
+  Paritate completa bash + PowerShell (dialog, mesaje, helper,
+  installere). Test nou test_v89_atmos_eclipsa (bash 54 / PS1 40,
+  functional real cu Cavernize + sample Atmos) + test_v88_iamf
+  extins (bash 107 / PS1 99, fixture sintetic 12ch); validat prin
+  meniurile reale pe ambele platforme. Suite complete: bash 88/90
+  (2 skip platforma), PS1 82/82.
 
 
 ═══════════════════════════════════════════════════════════════
