@@ -567,9 +567,21 @@ foreach ($f in $inputFiles) {
     $subStreams = & ffprobe -v error -select_streams s `
         -show_entries stream=index:stream_tags=language `
         -of default=noprint_wrappers=1 $f.FullName 2>$null
-    $subCount = ($subStreams | Where-Object { $_ -match "^index=" }).Count
-    $subLangs = ($subStreams | Where-Object { $_ -match "^TAG:language=" } |
-        ForEach-Object { $_ -replace "TAG:language=","" } | Where-Object { $_ -ne "und" }) -join "/"
+    # v91: TS/BD cu [PROGRAM] listeaza fiecare stream de DOUA ori → dedupe pe index
+    # (ca AUDIO_COUNT v88), altfel count/langs dublu pe .m2ts/.mts. curDup marcheaza
+    # blocul curent (linia TAG:language urmeaza dupa index).
+    $subCount = 0; $subSeen = @{}; $subLangList = @(); $subCurDup = $false
+    foreach ($sl in $subStreams) {
+        if ("$sl" -match '^index=(\d+)') {
+            $si = $Matches[1]
+            if ($subSeen.ContainsKey($si)) { $subCurDup = $true }
+            else { $subCurDup = $false; $subSeen[$si] = $true; $subCount++ }
+        } elseif ("$sl" -match '^TAG:language=(.+)' -and -not $subCurDup) {
+            $slang = $Matches[1]
+            if ($slang -ne 'und') { $subLangList += $slang }
+        }
+    }
+    $subLangs = $subLangList -join "/"
     $subStr = if ($subCount -gt 0) { if ($subLangs) { "$subCount ($subLangs)" } else { "$subCount" } } else { "Nu" }
     $chapCount = (& ffprobe -v error -show_chapters $f.FullName 2>$null |
         Where-Object { $_ -match "^\[CHAPTER\]" }).Count

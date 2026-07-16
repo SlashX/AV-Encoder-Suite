@@ -138,3 +138,17 @@ src/Luts/
 # v89 (render Atmos → 7.1.4). Fisiere mari, licentiate separat.
 src/Dolby/
 src/DTS/
+
+# ── Mostre DV Profile 7 dual-layer (MEL/FEL) — resurse de testare (NU se commit) ──
+# Sample-uri P7 pt validarea conversiei P7→8.1 si a clasificarii EL
+# (dv_p7_analyze.py: MEL / FEL_SAFE / FEL_COMPLEX). Fisiere mari,
+# licentiate separat.
+src/DVFEL/
+
+# ── Imagini disc (ISO) + structuri Blu-ray extrase — resurse de testare (NU se commit) ──
+# Ex. 3D-Subs-in-3D-ISO-Sample.iso (mostre mari, licentiate separat). ISO-ul dezarhivat
+# produce un folder BDMV/CERTIFICATE (sute de MB) → gitignore si structura de disc.
+*.iso
+**/BDMV/
+**/CERTIFICATE/
+src/3D-Subs-in-3D-ISO-Sample/

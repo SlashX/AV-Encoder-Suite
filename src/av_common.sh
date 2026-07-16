@@ -1038,8 +1038,10 @@ _spatial_label() {
 # rc=1 daca nu exista). Folosit de preflight-ul remux + warn-urile trim/concat.
 _file_spatial_label() {
     local file="$1" n nb kind
+    # v91: dedupe pe index (TS/BD [PROGRAM] listeaza pistele dublu) — paritate cu
+    # Get-AudioTrackCountDedup (PS1) + handle_multi_audio_dialog ntracks.
     nb=$(ffprobe -v error -select_streams a -show_entries stream=index \
-        -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
+        -of csv=p=0 "$file" 2>/dev/null | tr -d '\r' | sed 's/,*$//' | grep '^[0-9]' | sort -u | grep -c .)
     [[ "$nb" =~ ^[0-9]+$ ]] || nb=0
     for ((n=0;n<nb;n++)); do
         kind=$(_audio_spatial_kind "$file" "$n" || true)
@@ -1415,8 +1417,12 @@ handle_multi_audio_dialog() {
     fi
     local codec="${AUDIO_CODEC_ARG%%:*}" base_br="${AUDIO_CODEC_ARG#*:}"
     # numar piste audio (o linie/index per pista; multi-field csv NU se foloseste aici)
+    # v91: TS/BD cu [PROGRAM] (.m2ts/.mts) listeaza fiecare pista de DOUA ori → dedupe pe
+    # index (sort -u, ca AUDIO_COUNT v88 pe IAMF), altfel ntracks dublu → dialog per-pista
+    # fals-declansat pe surse single-audio + piste fantoma la selectie.
     local ntracks; ntracks=$(ffprobe -v error -select_streams a \
-        -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | grep -c '^[0-9]')
+        -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | \
+        tr -d '\r' | sed 's/,*$//' | grep '^[0-9]' | sort -u | grep -c .)
     [[ "$ntracks" =~ ^[0-9]+$ ]] || ntracks=0
     # v87: detectie audio spatial per-pista (o singura data; refolosita la afisaj +
     # garda). Pe codecuri non-Dolby/DTS e ieftina (early-return, fara probe profil).
@@ -1468,13 +1474,16 @@ handle_multi_audio_dialog() {
         echo "  ╔══════════════════════════════════════════════════╗"
         echo "  ║  $ntracks PISTE AUDIO — selectie per-pista          "
         echo "  ╠══════════════════════════════════════════════════╣"
+        # v91: index in query → dedupe pe TS/BD [PROGRAM] (fiecare pista listata dublu)
         local atinfo; atinfo=$(ffprobe -v error -select_streams a \
-            -show_entries stream=codec_name,channels:stream_tags=language \
+            -show_entries stream=index,codec_name,channels:stream_tags=language \
             -of csv=p=0 "$file" 2>/dev/null)
-        local idx=0 line c_codec c_ch c_lang _amark
+        local idx=0 line _aidx c_codec c_ch c_lang _amark _at_seen=" "
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            IFS=',' read -r c_codec c_ch c_lang <<< "$line"
+            IFS=',' read -r _aidx c_codec c_ch c_lang <<< "$line"
+            case "$_at_seen" in *" $_aidx "*) continue ;; esac
+            _at_seen="${_at_seen}${_aidx} "
             # v87: marcheaza pistele cu obiecte spatiale (informatie pt alegerea E/C/S)
             _amark=""
             case "${_sp[idx]:-}" in
@@ -2565,6 +2574,21 @@ _dv_container_signal() {
 _dv_resignal_copy() {
     local source="$1" output="$2" target="$3"
     case "$target" in mkv|mp4|mov) : ;; *) return 0 ;; esac
+    # v91: advisory P7 pe caile de COPY (echo-only, non-blocking; chokepoint = toate
+    # siturile de copy trec pe aici). Copy-ul pastreaza dual-layer-ul 1:1 (validat
+    # empiric pe FEL real: EL+RPU supravietuiesc si →MKV si →MP4, inclusiv sursele cu
+    # EL in block additions), DAR P7 e profil de Blu-ray: TV-urile/playerele hardware
+    # NU decodeaza P7 din fisiere — doar playerele PC (mpv/madVR). Gate numeric
+    # dv_profile==7 (stream side_data, ieftin); INAINTE de early-return-ul →MKV ca
+    # advisory-ul sa apara si acolo (unde re-mux-ul e sarit).
+    local _dvp7
+    _dvp7=$(ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile \
+        -of default=noprint_wrappers=1:nokey=1 "$source" 2>/dev/null | head -1 | tr -d '[:space:]\r')
+    if [[ "$_dvp7" == "7" ]]; then
+        echo "  ℹ Sursa e DV Profil 7 (dual-layer Blu-ray) — copy-ul pastreaza straturile 1:1,"
+        echo "    dar TV-urile/playerele hardware NU decodeaza P7 din fisiere (doar playere PC: mpv/madVR)."
+        echo "    Pentru compatibilitate universala: HDR/DV tools → Transform RPU (conversie P7→8.1)."
+    fi
     # ffmpeg PASTREAZA DOVI config la orice →MKV (block addition in track header), dar o
     # PIERDE la orice →MP4/MOV (chiar MP4→MP4). Deci daca output-ul are deja semnalizarea
     # (cazul →MKV), nimic de facut (evitam re-mux redundant); altfel (→MP4/MOV) re-adaugam.

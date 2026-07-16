@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v88
+  Documentatie Setup & Utilizare — v91
 ═══════════════════════════════════════════════════════════════
 
 
@@ -530,6 +530,13 @@ CUPRINS
 
     Fisierele .m2ts sunt unice per titlu (de obicei BDMV/STREAM/XXXXX.m2ts) —
     se pun direct in InputVideos.
+
+    v91: transport stream-urile de disc (.m2ts/.mts) au o structura de
+    program care face ffprobe sa listeze fiecare pista de doua ori. Suita
+    deduplica acum numaratorile afectate (numarul de subtitrari in "Verifica
+    fisiere media" + dialogul de selectie audio per-pista, care nu se mai
+    declanseaza fals pe un .m2ts cu o singura pista audio). Encodarea nu era
+    afectata (maparea foloseste indecsi relativi) — doar numaratorile.
 
 
   ─── 7.6. Rezolutie output ───
@@ -1959,6 +1966,15 @@ CUPRINS
   nevoie de mkvextract (vine cu acelasi installer MKVToolNix ca mkvmerge).
   Profile 7 = doar HEVC (AV1 DV e mereu single-layer Profile 10).
 
+  v91: conversia P7→8.1 e validata acum cap-coada pe mostre FEL reale (atat
+  ramura FEL_SAFE cat si FEL_COMPLEX a clasificatorului de enhancement layer),
+  inclusiv encode-preserve pe sursa P7. In plus, cand pastrezi un P7 prin COPY
+  (stream-copy, Remux, Trim & Concat), suita afiseaza o nota informativa:
+  copy-ul pastreaza straturile 1:1, dar Profile 7 nu e decodat de
+  televizoare / playere hardware direct din fisiere (doar playere PC:
+  mpv/madVR) → pentru compatibilitate universala foloseste Transform RPU
+  (P7→8.1). Nota nu blocheaza nimic, doar te indruma.
+
   AV1 Dolby Vision (v56 — reparat): injectarea stratului DV in AV1 omitea un
   octet de aliniere obligatoriu, iar decodorul (dav1d) ignora apoi DV-ul (se
   pierdea la redare/re-mux). Acum un modul intern re-adauga octetul imediat
@@ -2374,6 +2390,13 @@ CUPRINS
 
   Per video pot fi multiple entries (ex: video.mkv cu 2 track-uri PGS
   + extern .sup = 3 entries, fiecare pickable independent).
+
+  v91: fluxul PGS a fost validat cap-coada pe o mostra reala (subtitrare
+  forced dintr-un Blu-ray) — overlay-ul arde corect subtitrarea bitmap in
+  pixeli, iar analiza media / Demux / Remux o recunosc si o pastreaza
+  (Remux: PGS ramane pe MKV, se dropeaza onest pe MP4/MOV unde bitmap-ul nu
+  intra). Subtitrarile "3D" de pe un Blu-ray 3D sunt tot PGS, in structura
+  BD — odata extrase (fisier .m2ts / .sup) merg pe aceeasi cale.
 
   Encoder dialog (3 + Anulare):
     1) libx265 CRF 23 medium [implicit]

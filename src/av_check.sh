@@ -180,10 +180,19 @@ get_dv_profile() {
 # ── Subtitrari — un singur ffprobe cu index + language ────────────────
 get_subtitles_info() {
     local file="$1"
-    local count=0 langs="" line
+    local count=0 langs="" line _seen=" " _cur_dup=0
     while IFS= read -r line; do
-        if   [[ "$line" =~ ^index= ]];             then count=$((count + 1))
-        elif [[ "$line" =~ ^TAG:language=(.+)$ ]]; then
+        line="${line%$'\r'}"
+        if [[ "$line" =~ ^index=([0-9]+) ]]; then
+            # v91: TS/BD cu [PROGRAM] listeaza fiecare stream de DOUA ori (o data prin
+            # program, o data normal) → dedupe pe index (ca AUDIO_COUNT v88), altfel
+            # count dublu pe .m2ts/.mts. _cur_dup marcheaza blocul curent (lang urmeaza).
+            local _si="${BASH_REMATCH[1]}"
+            case "$_seen" in
+                *" $_si "*) _cur_dup=1 ;;
+                *) _cur_dup=0; _seen="$_seen$_si "; count=$((count + 1)) ;;
+            esac
+        elif [[ "$line" =~ ^TAG:language=(.+)$ ]] && [ "$_cur_dup" -eq 0 ]; then
             local lang="${BASH_REMATCH[1]}"
             [[ -n "$lang" && "$lang" != "und" ]] && langs="$langs $lang"
         fi

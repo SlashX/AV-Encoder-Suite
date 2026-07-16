@@ -179,7 +179,10 @@ function Get-AudioSpatialKind {
 # v87: eticheta primei piste spatiale ("Dolby Atmos"/"DTS:X"/"") — mirror _file_spatial_label.
 function Get-FileSpatialLabel {
     param([Parameter(Mandatory)][string]$File)
-    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    # v91: dedupe pe index (TS/BD [PROGRAM] listeaza pistele dublu) — paritate cu
+    # _file_spatial_label (bash) + Get-AudioTrackCountDedup (av_encode.ps1).
+    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) |
+        Where-Object { $_ -match '^\d' } | ForEach-Object { ($_ -replace ',.*$','').Trim() } | Sort-Object -Unique).Count
     if (-not $nb) { return "" }
     for ($n = 0; $n -lt $nb; $n++) {
         $k = Get-AudioSpatialKind -File $File -AIdx $n
@@ -748,6 +751,16 @@ function Invoke-RemuxFile {
     # la orice ->MP4/MOV. Doar DV (side_data) + video pastrat + tinta mkv/mp4/mov.
     if ($srcCodec -in @("hevc","av1") -and $Sel.VideoRel.Count -gt 0 -and $Target -in @("mkv","mp4","mov")) {
         $sdProbe = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $File 2>$null) -join "`n")
+        # v91: advisory P7 pe copy (echo-only; mirror _dv_resignal_copy) — INAINTE de
+        # check-ul de output, ca sa apara si pe →MKV (unde re-mux-ul e sarit).
+        if ($sdProbe -match "DOVI") {
+            $dvp7 = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile -of default=noprint_wrappers=1:nokey=1 $File 2>$null) | Select-Object -First 1)
+            if ("$dvp7".Trim() -eq "7") {
+                Write-Host "  ℹ Sursa e DV Profil 7 (dual-layer Blu-ray) — copy-ul pastreaza straturile 1:1," -ForegroundColor Cyan
+                Write-Host "    dar TV-urile/playerele hardware NU decodeaza P7 din fisiere (doar playere PC: mpv/madVR)." -ForegroundColor Cyan
+                Write-Host "    Pentru compatibilitate universala: HDR/DV tools → Transform RPU (conversie P7→8.1)." -ForegroundColor Cyan
+            }
+        }
         # output-DOVI check (paritate cu _dv_resignal_copy): daca ffmpeg a pastrat deja
         # semnalizarea (->MKV), nimic de re-muxat → evitam un re-mux redundant.
         $sdOut = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $finalOut 2>$null) -join "`n")

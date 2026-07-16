@@ -2188,11 +2188,22 @@ function Get-SpatialLabel {
     switch ($Kind) { "atmos" { "Dolby Atmos" } "dtsx" { "DTS:X" } default { $Kind } }
 }
 
+# v91: numar piste audio deduplicat. TS/BD cu [PROGRAM] (.m2ts/.mts) listeaza fiecare
+# pista de DOUA ori (o data prin program, o data normal) → dedupe pe index (mirror
+# `sort -u` bash / AUDIO_COUNT v88 pe IAMF). Pe surse normale = count neschimbat.
+function Get-AudioTrackCountDedup {
+    param([string]$File)
+    return @(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null |
+        Where-Object { $_ -match '^\d' } |
+        ForEach-Object { ($_ -replace ',.*$','').Trim() } |
+        Sort-Object -Unique).Count
+}
+
 # v87: eticheta primei piste spatiale dintr-un fisier ("Dolby Atmos"/"DTS:X"/"") —
 # mirror _file_spatial_label (bash). Folosit de warn-urile trim/concat/pipeline.
 function Get-FileSpatialLabel {
     param([Parameter(Mandatory)][string]$File)
-    $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
+    $nb = Get-AudioTrackCountDedup -File $File
     if (-not $nb) { return "" }
     for ($n = 0; $n -lt $nb; $n++) {
         $k = Get-AudioSpatialKind -File $File -AIdx $n
@@ -4392,6 +4403,16 @@ function Invoke-DvContainerSignal {
 function Invoke-DvResignalCopy {
     param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Output, [Parameter(Mandatory)][string]$Target)
     if ($Target -notin @('mkv','mp4','mov')) { return }
+    # v91: advisory P7 pe caile de COPY (echo-only, non-blocking; mirror _dv_resignal_copy).
+    # Copy-ul pastreaza dual-layer-ul 1:1, DAR P7 e profil de Blu-ray: TV-urile/playerele
+    # hardware NU decodeaza P7 din fisiere — doar playerele PC (mpv/madVR). Gate numeric
+    # dv_profile==7; INAINTE de skip-ul →MKV ca advisory-ul sa apara si acolo.
+    $dvp7 = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile -of default=noprint_wrappers=1:nokey=1 $Source 2>$null) | Select-Object -First 1)
+    if ("$dvp7".Trim() -eq "7") {
+        Write-Host "  ℹ Sursa e DV Profil 7 (dual-layer Blu-ray) — copy-ul pastreaza straturile 1:1," -ForegroundColor Cyan
+        Write-Host "    dar TV-urile/playerele hardware NU decodeaza P7 din fisiere (doar playere PC: mpv/madVR)." -ForegroundColor Cyan
+        Write-Host "    Pentru compatibilitate universala: HDR/DV tools → Transform RPU (conversie P7→8.1)." -ForegroundColor Cyan
+    }
     # ffmpeg PASTREAZA DOVI config la orice →MKV (block addition), dar o PIERDE la orice
     # →MP4/MOV (chiar MP4→MP4). Output deja-semnalizat (→MKV) → skip; altfel re-adaugam.
     $sdOut = ((& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=side_data_type -of default=noprint_wrappers=1:nokey=1 $Output 2>$null) -join "`n")
@@ -6371,7 +6392,7 @@ if ($mainChoice -eq "2") {
         # procesat contorul devenea array si `++` arunca eroare runtime. Redenumita $eaSkipIn.
         $eaSkipMaps = @()
         $eaReenc = @(0); $eaSkipIn = @()   # v68: indecsi INPUT re-encodati / sariti (compat warn)
-        $eaTrackCount = (& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $f.FullName 2>$null | Where-Object { $_ -match '^\d' }).Count
+        $eaTrackCount = Get-AudioTrackCountDedup -File $f.FullName   # v91: dedupe TS/BD [PROGRAM]
         # v88: sursa cu grup Eclipsa/IAMF — substream-urile SUNT grupul → UN unit: copy
         # pe toate (dialogul per-pista/garda spatiala se sar; graft-ul post-succes
         # `Invoke-IamfPreserve` re-scrie grupul). Mirror handle_multi_audio_dialog (bash).
@@ -6407,8 +6428,13 @@ if ($mainChoice -eq "2") {
                 Write-Host "  ── $eaTrackCount piste audio:" -ForegroundColor Cyan
                 $eaAtList = & ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels:stream_tags=language -of csv=p=0 $f.FullName 2>$null
                 $eaI = 0
+                $eaSeen = @{}
                 foreach ($ln in ($eaAtList -split "`n" | Where-Object { $_ })) {
                     $p = $ln -split ','
+                    # v91: TS/BD [PROGRAM] dubleaza streamurile → dedupe pe index (field 0)
+                    $eaAbs = "$($p[0])".Trim()
+                    if ($eaSeen.ContainsKey($eaAbs)) { continue }
+                    $eaSeen[$eaAbs] = $true
                     # v87: marcheaza pistele cu obiecte spatiale
                     $eaMark = switch ($eaSpatial[$eaI]) { "atmos" { "  ← ATMOS" } "dtsx" { "  ← DTS:X" } default { "" } }
                     Write-Host ("     a:{0}  {1}  {2}ch  {3}{4}" -f $eaI, $(if ($p.Count -gt 1) { $p[1] } else { '?' }), $(if ($p.Count -gt 2) { $p[2] } else { '?' }), $(if ($p.Count -gt 3 -and $p[3]) { $p[3] } else { 'und' }), $eaMark) -ForegroundColor White
@@ -8566,9 +8592,7 @@ foreach ($f in $inputFiles) {
     }
 
     # ── Multi-audio track dialog (daca >1 track si nu e audio copy) ──
-    $audioTrackCount = (& ffprobe -v error -select_streams a `
-        -show_entries stream=index -of csv=p=0 $f.FullName 2>$null |
-        Where-Object { $_ -match '^\d' }).Count
+    $audioTrackCount = Get-AudioTrackCountDedup -File $f.FullName   # v91: dedupe TS/BD [PROGRAM]
     # v67: pista pe care se aplica loudnorm (prima re-encodata). Default 0 (track 0).
     $audioLoudnormTrack = 0
     # v68: indecsi INPUT audio re-encodati / sariti (pt avertisment compat container la copy).
@@ -8633,8 +8657,13 @@ foreach ($f in $inputFiles) {
                 -show_entries stream=index,codec_name,channels,bit_rate:stream_tags=language `
                 -of csv=p=0 $f.FullName 2>$null
             $atIdx = 0
+            $atSeen = @{}
             foreach ($atLine in ($atList -split "`n" | Where-Object { $_ })) {
                 $atParts = $atLine -split ','
+                # v91: TS/BD [PROGRAM] dubleaza streamurile → dedupe pe index (field 0)
+                $atAbs = "$($atParts[0])".Trim()
+                if ($atSeen.ContainsKey($atAbs)) { continue }
+                $atSeen[$atAbs] = $true
                 $atCodec = if ($atParts.Count -gt 1) { $atParts[1] } else { "?" }
                 $atCh    = if ($atParts.Count -gt 2) { $atParts[2] } else { "?" }
                 $atBr    = if ($atParts.Count -gt 3 -and $atParts[3] -match '^\d+$') { "$([int]([long]$atParts[3]/1000))k" } else { "N/A" }

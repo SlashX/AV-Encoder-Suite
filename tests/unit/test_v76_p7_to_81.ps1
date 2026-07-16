@@ -120,4 +120,90 @@ Assert-Match $enc 'extract-rpu \$conv -o \$RpuOut'          "P7 → extract RPU 
 $presCount = ([regex]::Matches($enc, 'Get-PreserveRpu -File \$f\.FullName')).Count
 Assert-Eq "3" "$presCount" "3 situri preserve via Get-PreserveRpu (av1 SW / HW / x265)"
 
+# ── 8b. Advisory P7 pe copy-paths (v91, echo-only) ─────────────────────
+# Mirror bash _dv_resignal_copy: mesaj identic in av_encode.ps1 (Invoke-DvResignalCopy)
+# + av_mux.ps1 (Remux inline) + av_common.sh (chokepoint bash), gate numeric dv_profile==7.
+$advMsg = 'Sursa e DV Profil 7 \(dual-layer Blu-ray\)'
+Assert-Match $enc $advMsg                 "advisory P7 in Invoke-DvResignalCopy (av_encode.ps1)"
+Assert-Match $enc '"\$dvp7"\.Trim\(\) -eq "7"' "gate numeric dv_profile==7 (av_encode.ps1)"
+$muxPs = Get-Content (Join-Path $src 'av_mux.ps1') -Raw
+Assert-Match $muxPs $advMsg               "advisory P7 in av_mux.ps1 (Remux inline)"
+$cmnSh = Get-Content (Join-Path $src 'av_common.sh') -Raw
+Assert-Match $cmnSh $advMsg               "paritate mesaj advisory in av_common.sh (_dv_resignal_copy)"
+
+# ── 9. FEL REAL (sample-gated — src\DVFEL local, gitignored; campanie 2026-07-16) ──
+# 3 mostre P7 FEL reale au deblocat validarea: clasificatorul pe FEL real (ambele
+# ramuri) + gate-ul FEL_COMPLEX (refuz non-interactiv / DV_P7_FORCE) + encode-preserve
+# pe FEL. Note (nu Skip-Test) cand lipsesc mostrele/tools — source+hermetic raman.
+$felMp4 = Join-Path $src 'DVFEL\DV FEL Test DT DL P7 CMV4.0 4000nits v3.mp4'   # FEL_COMPLEX (CM v4.0, L1 10000 nits)
+$felMkv = Join-Path $src 'DVFEL\DV FEL All Layers Test (Woman at 80s).mkv'     # FEL_SAFE (CM v2.9, L1 961 nits)
+$haveFel = (Test-Path $felMp4) -and $py `
+    -and (Get-Command ffprobe   -EA SilentlyContinue) `
+    -and (Get-Command dovi_tool -EA SilentlyContinue) `
+    -and (Get-Command mkvmerge  -EA SilentlyContinue)
+if ($haveFel) {
+    # re-import defensiv (sectiunea 7 poate fi sarita cand awaken-girl lipseste)
+    Import-AvEncodeFunctions -Names @('Convert-P7ToProfile81','Get-DvFullHevc','Get-P7ElClass','Get-DvBlPeakNits','Get-DvP7EnginePath','Get-ToolForExtract','_Get-AvPython','Invoke-HdvCombineWithOriginal','Invoke-DvMkvMux','Get-ContainerFlags','Ensure-TempDir','Get-PreserveRpu','Get-DVProfile','Get-DvRpu','Get-ToolForInject','Test-VfrSource','Invoke-DvResignalCopy','Get-SourceCodec','Invoke-DvContainerSignal') | Out-Null
+    $env:AV_ENGINE_DV_P7 = $engine
+    $global:AV_TEMP_DIR = Join-Path ([IO.Path]::GetTempPath()) ("v76felf_" + [guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Force $global:AV_TEMP_DIR | Out-Null
+
+    # (a) clasificatorul pe FEL REAL — ramura FEL_COMPLEX (MP4, calea ffmpeg)
+    $fullF = Join-Path $global:AV_TEMP_DIR 'fel_full.hevc'
+    if (Get-DvFullHevc -File $felMp4 -OutFile $fullF) {
+        $vF = Get-P7ElClass -Stream $fullF -Orig $felMp4
+        Assert-Eq "FEL_COMPLEX" (($vF -split ' ')[0]) "FEL real CM v4.0 (L1 10000 nits) -> FEL_COMPLEX (helperi reali)"
+    } else { _fail "extract stream complet pe FEL MP4 esuat" }
+    Remove-Item $fullF -Force -EA SilentlyContinue
+
+    # (b) gate: AV_NONINTERACTIVE=1 fara force -> refuz rc=2, fara output
+    $outF = Join-Path $global:AV_TEMP_DIR 'fel_dv81.mkv'
+    $env:AV_NONINTERACTIVE = "1"
+    $rcF = Convert-P7ToProfile81 -File $felMp4 -FinalOut $outF
+    Remove-Item Env:AV_NONINTERACTIVE -EA SilentlyContinue
+    Assert-Eq "2" "$rcF" "FEL_COMPLEX non-interactiv fara DV_P7_FORCE -> refuz rc=2"
+    Assert-Eq "False" "$(Test-Path $outF)" "refuz -> niciun output creat"
+
+    # (c) DV_P7_FORCE=1 -> conversie completa -> dvcC profil 8 single-layer (mkvmerge)
+    $env:DV_P7_FORCE = "1"
+    $rcG = Convert-P7ToProfile81 -File $felMp4 -FinalOut $outF
+    Remove-Item Env:DV_P7_FORCE -EA SilentlyContinue
+    Assert-Eq "0" "$rcG" "FEL_COMPLEX + DV_P7_FORCE=1 -> conversie rc=0"
+    if ((Test-Path $outF) -and (Get-Item $outF).Length -gt 0) {
+        $infoF = (& ffprobe -v error -select_streams v:0 -show_entries stream_side_data=dv_profile,el_present_flag -of default=noprint_wrappers=1 $outF 2>$null) -join "`n"
+        Assert-Match $infoF 'dv_profile=8'      "output force este Profil 8 (DV)"
+        Assert-Match $infoF 'el_present_flag=0' "EL aruncat (single-layer)"
+    } else { _fail "output force P7->8.1 negasit" }
+
+    # (d) encode-preserve pe FEL -> RPU profil 8 (nu 7)
+    $presF = Join-Path $global:AV_TEMP_DIR 'fel_preserve.rpu'
+    if (Get-PreserveRpu -File $felMp4 -RpuOut $presF -Codec 'hevc') {
+        $dvF = Get-ToolForExtract -Codec hevc -Kind 'dovi'
+        $riF = (& $dvF info -i $presF -s 2>$null) -join "`n"
+        Assert-Match $riF 'Profile: 8' "Get-PreserveRpu pe FEL real -> RPU profil 8 (NU 7)"
+    } else { _fail "Get-PreserveRpu pe FEL a esuat" }
+
+    # (d2) advisory P7 pe copy (v91, functional): copy MP4→MKV pastreaza dvcC →
+    #      Invoke-DvResignalCopy face early-return DUPA advisory (capturat via 6>&1)
+    $cpyF = Join-Path $global:AV_TEMP_DIR 'fel_cpy.mkv'
+    & ffmpeg -y -v error -i $felMp4 -map 0:v:0 -c copy $cpyF 2>$null
+    if ((Test-Path $cpyF) -and (Get-Item $cpyF).Length -gt 0) {
+        $advF = (Invoke-DvResignalCopy -Source $felMp4 -Output $cpyF -Target 'mkv' 6>&1) -join "`n"
+        Assert-Match $advF 'Sursa e DV Profil 7 \(dual-layer Blu-ray\)' "advisory P7 afisat pe copy real (functional)"
+    } else { _fail "copy MP4->MKV pt advisory a esuat" }
+
+    # (e) FEL_SAFE pe MKV real (cealalta ramura a clasificatorului; cere mkvextract)
+    if ((Test-Path $felMkv) -and (Get-Command mkvextract -EA SilentlyContinue)) {
+        $fullS = Join-Path $global:AV_TEMP_DIR 'fels_full.hevc'
+        if (Get-DvFullHevc -File $felMkv -OutFile $fullS) {
+            $vS = Get-P7ElClass -Stream $fullS -Orig $felMkv
+            Assert-Eq "FEL_SAFE" (($vS -split ' ')[0]) "FEL real CM v2.9 (L1 961 nits) -> FEL_SAFE"
+        } else { _fail "extract stream complet pe FEL MKV esuat" }
+        Remove-Item $fullS -Force -EA SilentlyContinue
+    }
+    Remove-Item -Recurse -Force $global:AV_TEMP_DIR -EA SilentlyContinue
+} else {
+    Write-Host "  (nota: mostre FEL src\DVFEL absente sau tools lipsa - sectiunea FEL REAL sarita)" -ForegroundColor DarkGray
+}
+
 Invoke-TestSummary

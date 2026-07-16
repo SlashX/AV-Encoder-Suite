@@ -3,10 +3,89 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v90 | 163 bug-uri fixate | 280+ features
-  237 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 179 teste [172 test_* + 7 infra]) | ~47000 linii cod+teste | ~7600 linii documentatie
+  TOTAL: v91 | 164 bug-uri fixate | 280+ features
+  239 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 181 teste [174 test_* + 7 infra]) | ~47000 linii cod+teste | ~7600 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v91 — Dolby Vision Profil 7 FEL validat + advisory pe copy +
+        subtitrari PGS/3D + dedupe streamuri pe Blu-ray (.m2ts)
+═══════════════════════════════════════════════════════════════
+
+  Val de finisari pe fluxuri care, pana acum, nu avusesera mostre
+  reale de testat: conversia Dolby Vision Profil 7 dual-layer,
+  subtitrarile imagine PGS (Blu-ray) si transport stream-urile de
+  disc (.m2ts).
+
+  VALIDARE Conversia DV Profil 7 → 8.1 (dual-layer aware) validata
+        cap-coada pe mostre FEL REALE (introduse acum: 2× FEL_SAFE
+        CM v2.9 in MKV + 1× FEL_COMPLEX CM v4.0 in MP4). Pana acum
+        clasificatorul EL (MEL / FEL_SAFE / FEL_COMPLEX) + conversia
+        erau validate doar pe MEL + sintetic. Confirmat prin
+        meniurile reale, ambele platforme: Transform RPU pe FEL_SAFE
+        → output 8.1 cu dvcC corect; gate-ul FEL_COMPLEX pe toate
+        ramurile (refuz non-interactiv rc=2 / anulare interactiva /
+        DV_P7_FORCE=1 → converteste); encode DV-preserve pe FEL
+        (baza HDR10 re-encodata single-layer + RPU profil-8, CM v4.0
+        pastrat). ZERO bug in cod. Ambele cai de extractie a
+        stratului complet merg pe real (MKV via mkvextract din block
+        additions + MP4 via ffmpeg).
+
+  ADD Advisory Dolby Vision Profil 7 pe caile de COPY — la
+        stream-copy / audio-only / Remux / Trim & Concat cu sursa
+        DV Profil 7, un mesaj informativ (non-blocant) explica:
+        copy-ul pastreaza straturile 1:1, dar P7 e profil de
+        Blu-ray pe care TV-urile/playerele hardware NU il decodeaza
+        din fisiere (doar playere PC: mpv/madVR) → pentru
+        compatibilitate universala, HDR/DV tools → Transform RPU
+        (P7→8.1). Un singur punct comun in bash (acopera toate 8
+        caile de copy) + oglinzi PowerShell (flux principal +
+        Remux). Gate ieftin pe dv_profile==7, afisat inclusiv pe
+        →MKV (unde nu se re-muxeaza nimic).
+
+  VALIDARE Subtitrari imagine PGS (Blu-ray) — validate cap-coada
+        (prima oara cu mostra reala): burn-in prin meniul real
+        (opt 4, Image subs) arde corect subtitrarea PGS forced in
+        pixeli (confirmat vizual); analiza media detecteaza pista
+        PGS forced; Mux → Demux extrage PGS ca .sup, Remux pe MKV
+        pastreaza pista cu flag-ul forced, pe MP4/MOV o dropeaza
+        onest (bitmap-ul PGS nu intra in containerul MP4).
+        Subtitrarile "3D" dintr-un disc Blu-ray 3D sunt PGS in
+        structura BD → odata extrase merg pe aceeasi cale PGS
+        (partea 3D-stereoscopica MVC ramane in afara scopului).
+
+  FIX Dublare de streamuri pe transport stream-uri de disc
+        (.m2ts / .mts) — ffprobe listeaza fiecare stream de DOUA
+        ori pe fisierele cu structura de program Blu-ray (o data
+        prin [PROGRAM], o data normal) → numaratorile de piste se
+        dublau. Aceeasi clasa cu dublarea IAMF-in-MP4 (v88, deja
+        rezolvata pe audio) si DJI (stream video v:0). v88
+        deduplicase DOAR audio (pentru IAMF); mostra .m2ts a expus
+        ca ramasesera:
+          - numarul de subtitrari in analiza media (raporta "2"
+            pentru 1 pista PGS);
+          - dialogul audio per-pista, care se declansa fals pe un
+            .m2ts cu o singura pista audio (o vedea ca doua).
+        Fix: dedupe pe index (sort -u / set de indecsi vazuti) pe
+        caile ramase — get_subtitles_info (analiza media) +
+        dialogul multi-audio (numar piste + enumerare) + eticheta
+        de audio spatial (folosita de avertismentele Trim & Concat /
+        Remux) — cu paritate bash + PowerShell (helper nou
+        Get-AudioTrackCountDedup in PS1). NU afecteaza maparea la
+        encode (indecsii relativi a:N nu se dubleaza) — doar
+        numaratorile, dialogul si etichetele. Burn-in embedded
+        neafectat (scaneaza doar mp4/mov/mkv/m4v, nu .m2ts).
+
+  Teste noi: test_v91_ts_program_dedup.{sh,ps1} (source-level pe
+  ambele clase + functional hermetic cu .ts sintetic care reproduce
+  dublarea de program: 1-audio → 1, 2-audio → 2). test_v76_p7_to_81
+  extins cu sectiuni FEL reale (sample-gated) + advisory P7. Suite
+  finale pe bitii finali (secvential): bash 89/0/2 din 91 [848s] +
+  PS1 83/83 [659s]. Blast radius: 5 fisiere src (av_common +
+  av_check.{sh,ps1} + av_encode.ps1 + av_mux.ps1 — advisory =
+  mesaj in helperi existenti; dedupe = numaratori) + 2 teste noi +
+  1 test extins; zero chei profil, zero state persistent nou.
 
 ═══════════════════════════════════════════════════════════════
   v90 — Eclipsa pastrata si la Burn-in (graft pe output)
