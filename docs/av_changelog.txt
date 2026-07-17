@@ -3,10 +3,90 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v91 | 164 bug-uri fixate | 280+ features
-  239 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 20 tools + 6 profile + 3 burnin presets + 181 teste [174 test_* + 7 infra]) | ~47000 linii cod+teste | ~7600 linii documentatie
+  TOTAL: v92 | 164 bug-uri fixate | 281+ features
+  243 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 183 teste [176 test_* + 7 infra]) | ~47800 linii cod+teste | ~7700 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v92 — AV1 Dolby Vision / HDR10+: OBU-urile de metadata mutate
+        la pozitia conforma (reorder in engine-ul T.35)
+═══════════════════════════════════════════════════════════════
+
+  Inchide preventiv singurul punct "tolerat" ramas pe AV1 Dolby
+  Vision (documentat din v72): uneltele de injectare scriu OBU-ul
+  de metadata la inceputul temporal unit-ului, in timp ce
+  specificatia Dolby Vision AV1 il cere dupa toate cadrele
+  non-shown — GPAC (MP4Box) avertiza la fiecare import "Dolby
+  Vision metadata OBU must appear after all non-shown frames...
+  may be non-compliant with the Dolby Vision specification".
+
+  ADD Reorder OBU la pozitia conforma — modulul intern care repara
+        octetul de aliniere T.35 (v56) REPOZITIONEAZA acum, in
+        aceeasi trecere, OBU-urile de metadata DV si/sau HDR10+
+        dupa toate cadrele non-shown, imediat inaintea cadrului
+        afisat (DV inaintea HDR10+ in hibrizi) — exact layoutul
+        din continutul DV AV1 real. Mutarea e pur pozitionala:
+        metadata ramane byte-identica la extract, video-ul e
+        neatins, dimensiunile nu se schimba. Acoperita automat pe
+        TOATE caile de injectare AV1 (DV, HDR10+ pe hardware,
+        hibrizi DV+HDR10+, inclusiv cazul HDR10+ inline din
+        encoder — DV-ul injectat intra inaintea lui) prin cele
+        doua puncte centrale existente, fara niciun sit nou de
+        apel. Temporal unit-urile anomale (fara cadru afisat, OBU
+        fara camp de dimensiune) raman neatinse si sunt raportate
+        onest. Validat pe TREI oracole independente: continutul
+        DV AV1 real (layout identic), verificatorul GPAC (242 /
+        484 avertismente inainte → ZERO pe toate lanturile) si un
+        encoder cu DV/HDR10+ nativ (SVT-AV1-HDR) — output-ul
+        pipeline-ului e structural identic cu ce ar fi produs
+        encoderul nativ. Decode strict dav1d fara nicio eroare;
+        dvcC se scrie corect in continuare (MP4Box dvp= si
+        mkvmerge). De retinut: dvp= ramane necesar oricum —
+        auto-detect-ul MP4Box nu scrie dvcC pe AV1 nici pe
+        continut conform (constatare empirica v92).
+
+  ADD Resursa de test SVT-AV1-HDR + installere — encoderul fork
+        SVT-AV1-HDR (suport nativ --dolby-vision-rpu si
+        --hdr10plus-json, inexistente in SVT-AV1 mainline) e
+        folosit ca referinta de dezvoltare/validare: produce
+        stream-uri cu plasarea conforma si stream-uri svtav1-
+        inline HDR10+ pe care ffmpeg-ul legat de mainline nu le
+        poate genera. Installere noi tools/svtav1hdr_installer
+        .{sh,ps1} (Windows validat cu download real; Linux x86-64
+        si macOS descarca de pe release-urile oficiale; Termux /
+        ARM — mesaj onest, nu exista build). Instalat DELIBERAT
+        in subfolder, NU in PATH: detectia de capabilitati
+        hdr10plus-json probeaza intai SvtAv1EncApp, iar binarul
+        fork ar raspunde "da" pentru un libsvtav1 mainline care
+        nu are optiunea → encode esuat in loc de fallback-ul
+        gratios HDR10 static (dovedit empiric in ambele directii).
+        Suita NU il cheama la encodare.
+
+  Paritate bash + PowerShell: engine partajat (zero cod oglinda),
+  mesajele celor doua puncte de apel actualizate identic.
+
+  Teste noi: test_v92_obu_reorder.{sh,ps1} (bash 18 / PS1 19 —
+  source-level + functional hermetic pe IVF sintetic craftat, doar
+  python: mutare dupa non-shown, DV inaintea HDR10+-ului nativ,
+  izolarea modurilor dv/hdr10plus, no-op pe plasare deja conforma,
+  TU anomal sarit onest; + sectiune reala sample-gated cu
+  verificare de plasare pe tot stream-ul, RPU byte-identic
+  pre/post, decode curat si oracolul de import GPAC). Probe
+  adversariale la audit: extension header, multi-DV per TU,
+  metadata dupa cadrul afisat, reduced_still, framing frame-header
+  + tile-group, OBU final fara size field, TU gol, leb128
+  multi-byte, idempotenta reorder-ului — toate corecte. 1
+  santinela veche actualizata (test_v63_hdr_roundtrip — literalul
+  recalcularii de frame size).
+
+  Suite finale pe bitii finali (secvential, AMBELE re-rulate
+  integral pt confirmare — rezultate identice, zero flake):
+  bash 90/0/2 din 92 [789s] + PS1 84/84 [711s]. Blast radius: 1 engine
+  (av1_dv_t35_repair.py) + 2 mesaje calleri (av_common.sh +
+  av_encode.ps1) + 2 installere noi + 2 teste noi + 1 santinela
+  actualizata + .gitignore; zero chei profil, zero state nou,
+  zero situri noi de apel.
 
 ═══════════════════════════════════════════════════════════════
   v91 — Dolby Vision Profil 7 FEL validat + advisory pe copy +

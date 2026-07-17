@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v91** — 164 bugs fixed · 280+ features · ~47 000 LoC · 239 files
+**v92** — 164 bugs fixed · 281+ features · ~47 800 LoC · 243 files
 
 ---
 
@@ -30,7 +30,7 @@ The same workflow runs identically across all four platforms — bash and PowerS
 - **More accurate HDR brightness measurement** (v79) — the opt-in *measure real MaxCLL/MaxFALL from video* pass (used mainly for HLG→HDR10, where the source carries no light-level metadata) now takes the brightest of the three colors (max R/G/B) per pixel per CTA-861.3 instead of perceived luma, so highly saturated bright highlights (red/blue) are no longer underestimated and the written MaxCLL reflects the true peak. Still opt-in (`HDR10_MEASURE_CLL`), one analysis pass, mastering display unchanged
 - **Unified telemetry** — DJI · GoPro GPMF · Sony NMEA · Garmin VIRB FIT · QuickTime ISO 6709 → one 24-column normalized CSV (v54) + SRT overlay tracks
 - **Richer telemetry** (v54) — DJI full per-sample GPS track (fixes Osmo Action 6) with computed speed/heading + G-force; GoPro ACCL/GYRO + GPS9 (Hero 11/12/13); Garmin FIT enhanced speed/altitude + fixed temperature; GPS fix quality / sats / HDOP; modern KML `<gx:Track>` import (Strava / Garmin / Google)
-- **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / P7→8.1 dual-layer-aware / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched)
+- **Metadata-only HDR/DV tools** (v55/v56) — RPU profile transforms (force 8.1 / P5→8.1 / P7→8.1 dual-layer-aware / 8.1 preserving mapping / →P10 AV1) via the correct `editor` path, HDR10+→DV hybrid with source-derived L6 mastering metadata, aggregated RPU inspect summary + `--verify` HDR10+ + RPU JSON export, **remove DV / remove HDR10+** layers, **plot DV L1/L2/L8 → PNG**; HEVC + AV1, lossless on video. **AV1 DV inject now works** — auto-repairs the missing T.35 alignment byte that `av1dovi_tool` drops (dav1d-compatible; HDR10+ in hybrids untouched) **and re-positions the metadata OBUs to the spec-compliant spot** (v92: after all non-shown frames, immediately before the shown frame — matching real-world DV AV1 content; GPAC/MP4Box no longer flags the placement)
 - **Mux tools** (v49 + v50) — standalone script, 3 lossless flows: **Remux** (per-stream selection + per-target compat matrix), **Demux** (smart per-codec wrapping: video→`.mkv`, audio→`.mka`, subs→native ext, chapters→Matroska XML), **Mux** (combine video + N audio/subs/chapters/attachments into a fresh container). Input: mkv/webm/mp4/m4v/mov/ts/m2ts/mts/vob/mxf
 - **Spec-compliant HDR10/HLG output** (v52 SW + v53 HW) — fixed a long-standing VUI signaling bug (streams reported `color_*=unknown`, silently disabling x265 `hdr10-opt`); now correct end-to-end across SW encoders and all 6 HW backends, via `-x265-params`/`-svtav1-params` plus post-encode bitstream filters
 - **Rate control: CRF · 1-pass · 2-pass VBR** (v51 + v53) — true 2-pass on SW encoders, NVENC `-multipass fullres` on `ENCODE_MODE=3`; automatic VBV/Level/Tier; HDR10 static metadata (Mastering Display + MaxCLL) injected on all PQ output, with opt-in **measured** MaxCLL/MaxFALL (v63)
@@ -259,7 +259,7 @@ AV-Encoder-Suite/
 │   ├── burnin_render.py        # v48 — Python+matplotlib HUD render engine
 │   ├── burnin_designer.py      # v84 — local web server for the visual HUD layout designer
 │   ├── burnin_designer.html    # v84 — designer UI (single page, vanilla JS, served locally)
-│   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat)
+│   ├── av1_dv_t35_repair.py    # v56 — AV1 DV T.35 trailing-byte repair (dav1d compat) + v92 spec-compliant OBU reorder
 │   ├── dji_djmd_dlogm.py       # v62 — DJI Action 6 D-Log M detector (djmd protobuf .2.4.1==19)
 │   ├── apv_hdr10plus.py        # v69 — APV HDR10+ engine (ST 2094-40 inject/extract/probe)
 │   ├── dv_p7_analyze.py        # v76 — DV Profile 7 enhancement-layer classifier (MEL / FEL-safe / FEL-complex)
@@ -418,6 +418,6 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v91** — 164 bugs fixed · 280+ features · ~47 000 LoC · 239 files
+Current: **v92** — 164 bugs fixed · 281+ features · ~47 800 LoC · 243 files
 
-*v91 highlights:* Dolby Vision Profile 7 → 8.1 conversion validated end-to-end on real dual-layer FEL samples (MEL / FEL-safe / FEL-complex gate, encode-preserve, both platforms) · a non-blocking advisory on copy paths (stream-copy / Remux / Trim & Concat) explaining that P7 is a Blu-ray profile TVs don't decode from files — convert to 8.1 for universal playback · PGS image subtitles validated (burn-in, Demux → `.sup`, Remux keep-on-MKV / drop-on-MP4) · and a fix for Blu-ray transport streams (`.m2ts`/`.mts`) where ffmpeg lists every stream twice via the `[PROGRAM]` grouping — subtitle and audio-track counts are now de-duplicated (the v88 IAMF-dedup class, completed for subtitles and the multi-audio dialog).
+*v92 highlights:* AV1 Dolby Vision / HDR10+ metadata OBUs are now placed at the **spec-compliant position** — the inject tools write them at the start of each temporal unit, while the Dolby Vision AV1 spec (and all real-world DV AV1 content) wants them after all non-shown frames, immediately before the shown frame, DV before HDR10+ in hybrids; the T.35 repair engine now re-positions them in the same pass (pure byte-span move: metadata byte-identical on extract, video untouched, dav1d decode clean, GPAC/MP4Box import with **zero** placement warnings — validated against real content, GPAC's checker, and a native DV/HDR10+ encoder as three independent oracles) · plus optional `tools/svtav1hdr_installer.{sh,ps1}` for the SVT-AV1-HDR fork encoder used as a dev/test reference (deliberately installed off PATH).

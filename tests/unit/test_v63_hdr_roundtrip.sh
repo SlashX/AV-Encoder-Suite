@@ -24,7 +24,7 @@ assert_contains "$COMMON" 'verify_dv_survived' "verify_dv_survived (plasa de sig
 assert_contains "$ENGINE" "DV_PROVIDER = 0x003B"        "engine: provider DV Dolby 0x003B"
 assert_contains "$ENGINE" 'b"\x80"'                     "engine: re-adauga trailing byte 0x80"
 assert_contains "$ENGINE" "leb_enc(len(new_payload))"   "engine: recalc obu_size (leb128)"
-assert_contains "$ENGINE" "len(new_fr).to_bytes(4"      "engine: recalc IVF frame size"
+assert_contains "$ENGINE" "len(rtu).to_bytes(4"      "engine: recalc IVF frame size (v92: pe TU-ul post-reorder)"
 assert_contains "$ENGINE" "copy verbatim"               "engine: non-DV (HDR10+) copiat intact"
 
 # ── 3. Functional — round-trip pe sample real (skip daca lipseste) ──

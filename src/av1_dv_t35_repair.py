@@ -19,8 +19,21 @@
 # (lasa 0x3C intact), calea HDR10+ cheama mode=hdr10plus, iar hibridul HW (ambele
 # inject-uri buggy) cheama mode=both.
 #
+# FAZA 2 — reorder la pozitia conforma (v92): uneltele inject scriu OBU-ul de
+# metadata la INCEPUTUL temporal unit-ului; spec-ul Dolby Vision AV1 il cere
+# DUPA toate cadrele non-shown (GPAC/MP4Box avertizeaza "Dolby Vision metadata
+# OBU must appear after all non-shown frames"), iar continutul DV AV1 real +
+# encoderele cu suport nativ (SVT-AV1-HDR --dolby-vision-rpu/--hdr10plus-json)
+# il pun imediat INAINTEA cadrului shown, in ordinea DV apoi HDR10+. Reorder-ul
+# muta spans byte-identice in interiorul TU-ului (nicio dimensiune nu se
+# schimba, metadata ramane byte-identica la extract); un T.35 NEmutat lipit de
+# cadrul shown ramane ultimul (DV-ul mutat intra inaintea lui — cazul svtav1-
+# inline HDR10+). TU-urile anomale (fara cadru shown, OBU tinta fara size
+# field) raman NEATINSE — mai bine plasarea veche decat un stream corupt.
+#
 # Opereaza pe IVF (low-overhead bitstream, obu_has_size_field=1).
-# A se aplica EXACT O DATA, pe output-ul av1dovi_tool / av1hdr10plus_tool inject.
+# A se aplica EXACT O DATA, pe output-ul av1dovi_tool / av1hdr10plus_tool
+# inject (repair-ul 0x80 NU e idempotent; reorder-ul singur ar fi).
 #
 # Engine partajat bash <-> PowerShell (ca burnin_render.py); doar stdlib.
 #   usage: av1_dv_t35_repair.py <in.ivf> <out.ivf> [dv|hdr10plus|both]
@@ -99,6 +112,84 @@ def fix_tu(tu, providers):
     return bytes(out), fixed
 
 
+def reorder_tu(tu, state, providers):
+    """v92: muta OBU-urile T.35 din `providers` imediat inaintea cadrului shown
+    (dupa toate cadrele non-shown — pozitia conforma DV AV1, identica cu
+    continutul real si cu encoderele native). Mutare pura de spans, dimensiunea
+    TU-ului NU se schimba. Return (bytes, mutat 0|1, sarit 0|1)."""
+    spans = []          # (start, end, kind, provider, has_size)
+    p = 0; n = len(tu)
+    while p < n:
+        start = p
+        hdr = tu[p]
+        obu_type = (hdr >> 3) & 0x0f
+        ext = (hdr >> 2) & 1
+        has_size = (hdr >> 1) & 1
+        hdr_len = 1 + (1 if ext else 0)
+        q = p + hdr_len
+        if has_size:
+            if q >= n:
+                return tu, 0, 1              # header trunchiat -> TU neatins
+            size, ln = leb_dec(tu, q); pstart = q + ln
+        else:
+            size = n - q; pstart = q
+        end = pstart + size
+        if end > n:
+            return tu, 0, 1                  # OBU depaseste TU -> neatins
+        payload = tu[pstart:end]
+        kind = 'other'; prov = None
+        if obu_type == 1 and size:           # SEQ_HDR -> reduced_still (bit 5)
+            state['reduced_still'] = (payload[0] >> 3) & 1
+        elif obu_type == 5 and size:         # METADATA -> T.35 DV / HDR10+
+            mtype, mln = leb_dec(payload, 0)
+            if mtype == 4 and mln + 2 < len(payload):
+                cc = payload[mln]
+                po = mln + (2 if cc == 0xff else 1)
+                if po + 1 < len(payload):
+                    pv = (payload[po] << 8) | payload[po + 1]
+                    if pv in (DV_PROVIDER, HDR10PLUS_PROVIDER):
+                        kind = 't35'; prov = pv
+        elif obu_type in (3, 6) and size:    # FRAME_HEADER | FRAME
+            if state['reduced_still']:
+                kind = 'shown'
+            else:
+                b = payload[0]
+                if (b >> 7) & 1:             # show_existing_frame
+                    kind = 'shown'
+                elif (b >> 4) & 1:           # show_frame (dupa frame_type, 2 biti)
+                    kind = 'shown'
+        spans.append((start, end, kind, prov, has_size))
+        p = end
+
+    movable = [i for i, s in enumerate(spans)
+               if s[2] == 't35' and s[3] in providers]
+    if not movable:
+        return tu, 0, 0
+    if any(not spans[i][4] for i in movable):
+        return tu, 0, 1                      # OBU tinta fara size field -> mutarea l-ar corupe
+    shown = [i for i, s in enumerate(spans) if s[2] == 'shown']
+    if not shown:
+        return tu, 0, 1                      # TU fara cadru shown (anomalie) -> neatins
+    ins = shown[0]
+    # inseram inaintea rulady contigue de T.35 NEmutate lipite de cadrul shown
+    # (HDR10+-ul nativ svtav1 ramane DUPA DV-ul mutat — ordinea din continutul real)
+    while ins - 1 >= 0 and spans[ins - 1][2] == 't35' \
+            and spans[ins - 1][3] not in providers:
+        ins -= 1
+    ordered = sorted(movable, key=lambda i: spans[i][3] != DV_PROVIDER)
+    if movable == list(range(ins - len(movable), ins)) and movable == ordered:
+        return tu, 0, 0                      # deja conform -> no-op (idempotent)
+    out = bytearray()
+    for i, (a, b, kind, prov, _hs) in enumerate(spans):
+        if i == ins:
+            for j in ordered:
+                out += tu[spans[j][0]:spans[j][1]]
+        if kind == 't35' and prov in providers:
+            continue
+        out += tu[a:b]
+    return bytes(out), 1, 0
+
+
 def providers_for_mode(mode):
     """mode -> set de terminal_provider_code de reparat."""
     if mode == "hdr10plus":
@@ -117,15 +208,23 @@ def repair(src, dst, mode="dv"):
     hdrlen = int.from_bytes(data[6:8], "little")
     out = bytearray(data[:hdrlen])
     p = hdrlen; total = 0; nframes = 0
+    moved = 0; skipped = 0
+    state = {"reduced_still": 0}
     while p + 12 <= len(data):
         fsz = int.from_bytes(data[p:p + 4], "little")
         ts = data[p + 4:p + 12]
         fr = data[p + 12:p + 12 + fsz]; p += 12 + fsz
         new_fr, fx = fix_tu(fr, providers); total += fx; nframes += 1
-        out += len(new_fr).to_bytes(4, "little") + ts + new_fr
+        # v92: reorder la pozitia conforma, pe TU-ul deja reparat
+        rtu, mv, sk = reorder_tu(new_fr, state, providers)
+        if len(rtu) != len(new_fr):          # garda: mutarea nu schimba lungimea
+            rtu = new_fr; mv = 0; sk = 1
+        moved += mv; skipped += sk
+        out += len(rtu).to_bytes(4, "little") + ts + rtu
     open(dst, "wb").write(out)
     sys.stderr.write(
-        f"av1_dv_t35_repair: mode={mode} frames={nframes} t35_fixed={total}\n")
+        f"av1_dv_t35_repair: mode={mode} frames={nframes} t35_fixed={total}"
+        f" moved={moved} skipped={skipped}\n")
     return 0
 
 

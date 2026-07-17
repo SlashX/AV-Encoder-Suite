@@ -3393,7 +3393,11 @@ function _Get-AvPython {
 
 # Repair-Av1DvT35 — re-adauga trailing byte-ul T.35 (0x80) pe care av1dovi_tool
 # inject-rpu il arunca din OBU-urile DV (crate dolby_vision 3.3.x); dav1d il
-# cere. In-place pe IVF. Soft-fail daca python/engine lipsesc (Test-DvSurvived
+# cere. v92: acelasi engine REPOZITIONEAZA OBU-ul de metadata la pozitia
+# conforma (dupa toate cadrele non-shown, imediat inaintea cadrului shown — ca
+# in continutul DV AV1 real; GPAC altfel avertizeaza "must appear after all
+# non-shown frames"). Metadata ramane byte-identica la extract.
+# In-place pe IVF. Soft-fail daca python/engine lipsesc (Test-DvSurvived
 # prinde pierderea ulterior). Engine partajat src/av1_dv_t35_repair.py.
 function Repair-Av1DvT35 {
     param([string]$File, [string]$Mode = "dv")   # v76: Mode = dv | hdr10plus | both
@@ -3412,7 +3416,7 @@ function Repair-Av1DvT35 {
     & $py $engine $File $fixed $Mode 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $fixed) -and (Get-Item $fixed).Length -gt 0) {
         Move-Item -Force $fixed $File
-        Write-Host "  ${lbl}: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" -ForegroundColor Green
+        Write-Host "  ${lbl}: T.35 AV1 reparat + OBU reordonat conform (0x80 pt dav1d; metadata inaintea cadrului shown)" -ForegroundColor Green
         return $true
     }
     Remove-Item $fixed -Force -ErrorAction SilentlyContinue

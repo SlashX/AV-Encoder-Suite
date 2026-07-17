@@ -2282,6 +2282,10 @@ _apv_hdr10plus_inject_output() {
 # v56: repara trailing byte-ul T.35 (0x80) pe care av1dovi_tool inject-rpu il
 # arunca din OBU-urile DV (crate dolby_vision 3.3.x). dav1d il cere; fara el,
 # DV-ul e pierdut silentios. Engine partajat src/av1_dv_t35_repair.py.
+# v92: acelasi engine REPOZITIONEAZA OBU-ul de metadata la pozitia conforma
+# (dupa toate cadrele non-shown, imediat inaintea cadrului shown — ca in
+# continutul DV AV1 real; GPAC altfel avertizeaza "must appear after all
+# non-shown frames"). Metadata ramane byte-identica la extract.
 # In-place pe fisierul IVF dat. Soft-fail: daca python/engine lipsesc, doar
 # avertizeaza (verify_dv_survived prinde pierderea ulterior).
 _repair_av1_dv_t35() {
@@ -2303,7 +2307,7 @@ _repair_av1_dv_t35() {
     fixed=$(av_mktemp_ext ivf)
     if "$py" "$engine" "$f" "$fixed" "$mode" >>"${LOG_FILE:-/dev/null}" 2>&1 && [ -s "$fixed" ]; then
         mv -f "$fixed" "$f"
-        echo "  $lbl: T.35 AV1 reparat (trailing byte re-adaugat pt dav1d)" | tee -a "${LOG_FILE:-/dev/null}" >&2
+        echo "  $lbl: T.35 AV1 reparat + OBU reordonat conform (0x80 pt dav1d; metadata inaintea cadrului shown)" | tee -a "${LOG_FILE:-/dev/null}" >&2
         return 0
     fi
     rm -f "$fixed"

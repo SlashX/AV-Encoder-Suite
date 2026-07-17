@@ -124,6 +124,22 @@ src/cavernize/
 src/tools/cavernize/
 src/CavernizeGUI.exe
 src/tools/CavernizeGUI.exe
+# ── SVT-AV1-HDR / SvtAv1EncApp (v92 — resursa de TEST: encoder AV1 cu DV/HDR10+ nativ) ──
+# Fork-ul SVT-AV1-HDR (juliobbv-p) expune --dolby-vision-rpu si --hdr10plus-json →
+# oracol pt plasarea conforma a OBU-urilor de metadata + producerea stream-urilor
+# svtav1-inline pe care ffmpeg-ul cu SVT-AV1 mainline NU le poate genera. Locatia
+# recomandata = subfolder (NU direct in src/, care intra pe PATH la teste): binarul
+# fork pe PATH ar da fals-pozitiv in _check_svtav1_hdr10plus_caps (probeaza
+# SvtAv1EncApp intai, dar encoderul real al suitei e libsvtav1 din ffmpeg, care
+# poate sa NU aiba hdr10plus-json). Installer: tools/svtav1hdr_installer.{sh,ps1}.
+# Intrarile pe fisier (src/ root) sunt DEFENSIVE — acopera si plasarea manuala
+# direct in src/ (git ramane curat; caveat-ul de PATH de mai sus ramane valabil).
+src/svtav1hdr/
+src/tools/svtav1hdr/
+src/SvtAv1EncApp.exe
+src/tools/SvtAv1EncApp.exe
+src/svtav1hdr_version.txt
+src/tools/svtav1hdr_version.txt
 
 # ── LUT-uri (.cube) — resurse de testare (testing only, NU se commit) ──
 # Furnizate de utilizator (Apple/DJI/Samsung/creative, ~12MB fiecare,

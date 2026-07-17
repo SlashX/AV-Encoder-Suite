@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v91
+  Documentatie Setup & Utilizare — v92
 ═══════════════════════════════════════════════════════════════
 
 
@@ -1981,6 +1981,20 @@ CUPRINS
   dupa injectare, chirurgical (HDR10+ din hibrizi NU este atins), deci DV
   supravietuieste corect. Necesita Python 3; daca lipseste, fluxul verifica
   si avertizeaza onest (in loc de "complet" fals). HEVC nu a fost afectat.
+
+  v92: acelasi modul REPOZITIONEAZA acum si OBU-ul de metadata la pozitia
+  ceruta de specificatia Dolby Vision AV1 — dupa toate cadrele non-shown,
+  imediat inaintea cadrului afisat (DV inaintea HDR10+ in hibrizi), exact ca
+  in continutul DV AV1 real. Uneltele de injectare il scriau la inceputul
+  temporal unit-ului, iar GPAC/MP4Box avertiza "Dolby Vision metadata OBU
+  must appear after all non-shown frames... may be non-compliant". Mutarea e
+  pur pozitionala (metadata ramane byte-identica, video neatins) si se aplica
+  automat pe toate caile de injectare AV1 (DV, HDR10+ pe HW, hibrizi) —
+  importul in GPAC iese acum fara niciun avertisment, iar fisierele au acelasi
+  layout intern ca discurile/streamurile DV reale. Pentru dezvoltare/validare
+  exista optional tools/svtav1hdr_installer.{sh,ps1} (encoderul SVT-AV1-HDR cu
+  DV/HDR10+ nativ, folosit DOAR ca referinta de test — suita nu il cheama la
+  encodare; se instaleaza deliberat in subfolder, nu in PATH).
 
   Pipeline (3 pasi):
     1) Extract RPU sursa (codec-aware: HEVC → dovi_tool, AV1 → av1dovi_tool)
