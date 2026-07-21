@@ -30,6 +30,8 @@ Assert-Match $enc 'stream_side_data=dv_profile'     "Invoke-DvMp4Mux HEVC: cites
 
 # ── FUNCTIONAL (gardat) ───────────────────────────────────────────────
 $MP4BOX = if ($env:AV_TOOL_MP4BOX)  { $env:AV_TOOL_MP4BOX } else { 'mp4box' }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $MP4BOX -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $MP4BOX = (Resolve-Path $gpacLocal).Path }
 $MKVM   = if ($env:AV_TOOL_MKVMERGE){ $env:AV_TOOL_MKVMERGE } elseif (Test-Path (Join-Path $src 'mkvmerge.exe')) { Join-Path $src 'mkvmerge.exe' } else { 'mkvmerge' }
 $smP5  = Join-Path $src 'Test-Jellyfin-4K-DV-P5.mp4'
 $smP81 = Join-Path $src 'Test-Jellyfin-4K-DV-P8.1.mp4'

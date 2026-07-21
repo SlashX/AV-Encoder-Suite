@@ -4209,7 +4209,7 @@ function Invoke-DvMp4Mux {
         [Parameter(Mandatory)][string]$Output,
         [string]$DvRef = ""
     )
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
     # dvp= EXPLICIT pt AMBELE codec-uri (v75). HEVC: auto-detect-ul MP4Box mislabeleaza P8.4
     # (HLG) ca profil 5 (tag + dvcC gresite) -> dvp=profil.compat il forteaza corect. AV1
@@ -4334,7 +4334,7 @@ function Test-DjiNativeMeta {
 # output MP4/MOV + djmd in original. $true/$false; pe esec $Output NEATINS.
 function Add-DjiNativeMeta {
     param([Parameter(Mandatory)][string]$Original, [Parameter(Mandatory)][string]$Output)
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
     $oext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
     if ($oext -notin @('mp4','mov','m4v','qt')) { return $false }
@@ -4452,7 +4452,7 @@ function Invoke-AtmosMp4Signal {
     param([Parameter(Mandatory)][string]$File)
     $ext = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLowerInvariant()
     if ($ext -notin @('mp4','mov','m4v')) { return }
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return }
     $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
     if (-not $nb) { return }
@@ -4540,7 +4540,7 @@ function Invoke-IamfAuthor {
     # v89: -AudioSource optional — audio-ul se ia de AICI (ex. WAV-ul 7.1.4 randat de
     # Cavern), iar video/subtitrari/capitole raman din $Source; gol → $Source (back-compat v88).
     param([string]$Source, [string]$Output, [string]$Layout, [string]$Bitrate = "256k", [string]$AudioSource = "")
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { Write-Host "  ✗ MP4Box lipseste (necesar pt IAMF-in-MP4)" -ForegroundColor Red; return $false }
     $raw = Join-Path (Split-Path $Output -Parent) ("iamfauth_" + [guid]::NewGuid().ToString("N") + ".iamf")
     $fcArgs = @(); $sg1 = ""; $sg2 = ""; $sidArgs = @()
@@ -4633,7 +4633,7 @@ function Invoke-IamfAuthor {
 # WAV RIFF are limita 4GiB (~62min 12ch/48k) → honest-fail. $true ok / $false esec (soft).
 function Invoke-AtmosRender714 {
     param([string]$Source, [string]$WavOut, [int]$Track = 0)
-    $cav = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } else { "CavernizeGUI" }
+    $cav = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe"))) { Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe" } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "tools\cavernize\CavernizeGUI.exe"))) { Join-Path $PSScriptRoot "tools\cavernize\CavernizeGUI.exe" } else { "CavernizeGUI" }
     $cavCmd = Get-Command $cav -ErrorAction SilentlyContinue
     if (-not $cavCmd) {
         Write-Host "  ✗ Cavern lipseste (instaleaza cu tools/cavernize_installer.ps1 sau seteaza AV_TOOL_CAVERNIZE)" -ForegroundColor Red
@@ -4688,7 +4688,7 @@ function Invoke-IamfPreserve {
         Write-Host "    audio ramane Opus multi-pista simplu. Foloseste MP4/MOV ca sa pastrezi Eclipsa." -ForegroundColor Yellow
         return $false
     }
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) {
         Write-Host "  ⚠ MP4Box lipseste — grupul Eclipsa/IAMF nu poate fi re-scris (audio ramane Opus simplu)." -ForegroundColor Yellow
         return $false
@@ -6175,7 +6175,7 @@ if ($mainChoice -eq "2") {
     # v88: Eclipsa/IAMF — traieste DOAR in MP4/MOV (Matroska/WebM nu au mapare IAMF: nici
     # ffmpeg, nici mkvmerge) + cere MP4Box pt impachetare (ffmpeg scrie doar raw .iamf).
     if ($eaCodec -eq "iamf") {
-        $iamfMux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+        $iamfMux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
         if (-not (Get-Command $iamfMux -ErrorAction SilentlyContinue)) {
             Write-Host "  EROARE: MP4Box (GPAC) lipseste — necesar pt IAMF-in-MP4." -ForegroundColor Red
             Write-Host "  Instaleaza cu tools/mp4box_installer.ps1 sau seteaza AV_TOOL_MP4BOX." -ForegroundColor Yellow
@@ -6276,7 +6276,7 @@ if ($mainChoice -eq "2") {
             # indiferent de bed (5.1 JOC / 7.1 TrueHD). Fara tool / bed ales / DTS:X → clasic.
             $iamfSp = Get-AudioSpatialKind -File $f.FullName -AIdx 0
             $iamfRMode = ""
-            $cavTool = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } else { "CavernizeGUI" }
+            $cavTool = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe"))) { Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe" } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "tools\cavernize\CavernizeGUI.exe"))) { Join-Path $PSScriptRoot "tools\cavernize\CavernizeGUI.exe" } else { "CavernizeGUI" }
             $cavPresent = [bool](Get-Command $cavTool -ErrorAction SilentlyContinue)
             if ($iamfSp -like "atmos*" -and $cavPresent) {
                 $iamfRMode = if ($env:AV_ATMOS_ECLIPSA_POLICY) { $env:AV_ATMOS_ECLIPSA_POLICY } else { "" }

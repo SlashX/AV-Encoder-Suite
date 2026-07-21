@@ -3,10 +3,107 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v92 | 164 bug-uri fixate | 281+ features
+  TOTAL: v93 | 165 bug-uri fixate | 282+ features
   243 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 183 teste [176 test_* + 7 infra]) | ~47800 linii cod+teste | ~7700 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v93 — Unelte co-locate langa scripturi (GPAC + Cavernize):
+        zero cai absolute + validare pe ffmpeg 2026-07-20
+═══════════════════════════════════════════════════════════════
+
+  Suita devine complet self-contained pe Windows: pachetele
+  portabile cu DLL-uri (GPAC/MP4Box, Cavernize) pot sta in
+  subfoldere LANGA scripturi si sunt gasite automat — fara
+  variabile de mediu, fara PATH, fara nicio cale absoluta.
+  Exe-urile simple (ffmpeg, dovi_tool, mkvmerge, exiftool...)
+  puse direct langa scripturi erau DEJA gasite automat;
+  subfolderele erau exceptia — acum acoperita.
+
+  ADD Rezolvare co-locata MP4Box (GPAC) — ordinea: env
+        AV_TOOL_MP4BOX (override suprem) → <folderul scripturilor>
+        /GPAC/mp4box.exe (daca exista) → numele de pe PATH (ca
+        inainte). Pachetul GPAC nu poate sta "plat" (mp4box.exe
+        cere DLL-urile langa el) → subfolder dedicat. Cablata in
+        canonul bash (blocul config av_common.sh, forma if pe o
+        linie — set-e safe) + toate 11 resolverele PS1 inline
+        (av_encode ×6, av_mux ×3, av_telemetry, av_burnin —
+        forma AST-safe pe o linie). Fara folder → comportament
+        identic cu v92. Pe POSIX (Termux/Linux/macOS) folderul cu
+        .exe nu exista → calea pkg-manager/PATH ramane, neatinsa.
+
+  ADD Rezolvare co-locata Cavernize (Cavern) — acelasi model, in
+        DOUA locatii: cavernize/ (plasare manuala, ca GPAC) si
+        tools/cavernize/ (unde dezarhiveaza installer-ul); env
+        AV_TOOL_CAVERNIZE ramane suprem. Cablata in canonul bash
+        + cele 2 situri PS1 (render 7.1.4 + gate-ul din dialogul
+        audio-only). Installer-ul anunta acum onest ca suita il
+        gaseste automat din tools/cavernize (env-ul ramane doar
+        pentru locatii atipice).
+
+  FIX Cai absolute de dev-box hardcodate in 3 teste (v87/v88/v89
+        PS1) — lookup-urile de rezerva pointau la o cale absoluta
+        locala; inlocuite cu lookup RELATIV la repo. Consecinta
+        reala reparata: functionalul Atmos→Eclipsa din test_v89
+        PS1 rula GATED silentios cand CavernizeGUI nu era pe PATH,
+        desi pachetul exista langa scripturi → cu rezolvarea noua,
+        render-ul Cavern real + authoring-ul IAMF ruleaza din nou
+        in suita (32 → 43 asertiuni).
+
+  UPDATE Lookup-urile proprii din testele functionale MP4Box
+        uniformizate pe acelasi fallback co-locat (v72 matrix,
+        v72 av1-mp4, v75 dv-flows, v75 metadata-matrix, v78 dji,
+        v92 oracolul GPAC pe PS1, v88 bash) → suita ramane complet
+        functionala si fara GPAC pe PATH. Testele bash care
+        sourceaza av_common INAINTE de lookup beneficiau automat —
+        zero edit (v71/v72×2/v75×2/v78). SvtAv1EncApp ramane
+        DELIBERAT fara auto-rezolvare (regula v92: caps-check-ul
+        ar da fals-pozitiv hdr10plus-json pe mainline).
+
+  SYNC Lista variabilelor AV_TOOL_* din documentatie completata cu
+        AV_TOOL_CAVERNIZE (scapata la v89) + nota despre
+        rezolvarea co-locata.
+
+  VALIDARE Build-ul ffmpeg de pe masina de dezvoltare actualizat:
+        2026-06-26-git-d66e84695b → 2026-07-20-git-c23123630e
+        (gyan full build). Toate cele 398 de commit-uri FFmpeg
+        dintre build-uri analizate → ZERO modificari necesare in
+        suita; ambele suite complete verzi pe build-ul nou.
+        Premise re-confirmate empiric: movenc tot NU scrie
+        extensia Atmos/JOC in dec3 (semnalizarea v87 ramane
+        necesara; bonus upstream: ultimul pachet EAC3 nu se mai
+        pierde la trailer), SVT-AV1 4.2.0 mainline tot fara
+        hdr10plus-json (fallback-ul HDR10 static + regula
+        SVT-AV1-HDR raman), IAMF tot aplatizat la orice mux
+        (grafturile raman necesare), raw HEVC→MKV tot refuzat
+        (pasul MP4 ramane). Noutati FARA impact asupra suitei:
+        side data SMPTE 2094-50 expus de hevcdec (numele nu
+        contine "HDR10+" → zero fals-pozitive in detectie), piste
+        de date itut_t35 in MOV (cad gratios pe -dn / Demux),
+        rework encoder AAC (coder NMR implicit — calitate mai buna
+        la acelasi bitrate), encoder nou apv_vulkan (auto-detect-ul
+        liboapv neafectat), fix-uri lut3d 3DLUTSIZE / stdin-fd0 /
+        hevc_mp4toannexb extradata / drain ac3enc.
+
+  Paritate bash + PowerShell: aceeasi ordine de rezolvare (env →
+  co-locat → PATH) pe ambele platforme — bash in canonul unic
+  av_common.sh, PS1 in resolverele inline (conventia AST-safe).
+
+  Teste: test_v71_mp4box_dvcc extins (bash 21 / PS1 28 — exact-
+  match pe forma noua a resolverelor + santinele fallback) +
+  test_v89_atmos_eclipsa extins (bash 48 / PS1 43 — santinele
+  fallback ambele locatii + lookup co-locat in functional). Audit
+  complet: review linie-cu-linie pe toate diff-urile (20 fisiere),
+  EOL uniform, zero cai absolute in fisierele versionate, matrice
+  de edge-case-uri (env setat / env invalid / folder absent /
+  sourcing dublu idempotent / set-e) → zero bug.
+
+  Suite finale pe bitii finali (secvential): bash 90/0/2 din 92
+  [879s] + PS1 84/84 [750s]. Blast radius: 5 fisiere src
+  (av_common.sh + av_encode/av_mux/av_telemetry/av_burnin .ps1) +
+  2 installere + 13 teste; zero chei profil, zero state nou, zero
+  situri noi de apel.
 
 ═══════════════════════════════════════════════════════════════
   v92 — AV1 Dolby Vision / HDR10+: OBU-urile de metadata mutate

@@ -43,6 +43,8 @@ Assert-Match $muxPs ([regex]::Escape('$isAv1 = $rawExt -in @(''ivf'',''av1'',''o
 
 # ── 7. FUNCTIONAL — AV1 DV IVF → Invoke-DvMp4Mux REAL → MP4 → dvcC + RPU ────
 $mp4box  = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $mp4box = (Resolve-Path $gpacLocal).Path }
 $av1dovi = if ($env:AV_TOOL_AV1DOVI) { $env:AV_TOOL_AV1DOVI } else { "av1dovi_tool" }
 $sample  = Get-ChildItem $SRC -Filter '*DV*AV1*.mkv' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($sample -and (Get-Command ffmpeg -EA SilentlyContinue) -and (Get-Command ffprobe -EA SilentlyContinue) `

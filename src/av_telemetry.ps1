@@ -921,7 +921,7 @@ function Test-DjiNativeMeta {
 }
 function Add-DjiNativeMeta {
     param([Parameter(Mandatory)][string]$Original, [Parameter(Mandatory)][string]$Output)
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return $false }
     $oext = [System.IO.Path]::GetExtension($Output).TrimStart('.').ToLowerInvariant()
     if ($oext -notin @('mp4','mov','m4v','qt')) { return $false }

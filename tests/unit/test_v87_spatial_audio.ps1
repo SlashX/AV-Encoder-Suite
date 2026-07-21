@@ -137,8 +137,9 @@ if ($haveTools -and (Test-Path $sample) -and (Test-Path $dtsx)) {
         # functional semnalizare dec3 JOC (gated pe MP4Box; pe Windows ruleaza REAL)
         $oldMp4boxEnv = $env:AV_TOOL_MP4BOX
         $mp4box = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
-        if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe")) {
-            $mp4box = "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe"; $env:AV_TOOL_MP4BOX = $mp4box
+        $gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # copia co-locata (v93) — fara cai absolute
+        if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) {
+            $mp4box = (Resolve-Path $gpacLocal).Path; $env:AV_TOOL_MP4BOX = $mp4box
         }
         if (Get-Command $mp4box -ErrorAction SilentlyContinue) {
             Import-AvEncodeFunctions -Names @('Invoke-AtmosMp4Signal')

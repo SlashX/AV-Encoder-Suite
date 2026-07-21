@@ -20,6 +20,8 @@ $root = if ($env:PROJECT_ROOT) { $env:PROJECT_ROOT } else { (Resolve-Path (Join-
 $SRC  = Join-Path $root 'src'
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$SRC;$env:PATH" }
 $MP4BOX = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { 'mp4box' }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $MP4BOX -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $MP4BOX = (Resolve-Path $gpacLocal).Path }
 $MKVM   = if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } elseif (Test-Path (Join-Path $SRC 'mkvmerge.exe')) { Join-Path $SRC 'mkvmerge.exe' } else { 'mkvmerge' }
 $env:AV_TOOL_MKVMERGE = $MKVM; $env:AV_TOOL_MP4BOX = $MP4BOX
 

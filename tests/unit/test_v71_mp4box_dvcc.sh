@@ -19,6 +19,10 @@ MUX="$(cat "$SCRIPT_DIR/av_mux.sh")"
 
 # ── 1. AV_TOOL_MP4BOX in blocul config ────────────────────────────────────
 assert_contains "$COMMON" 'AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"' "AV_TOOL_MP4BOX in blocul config"
+# v93: fallback co-locat — pachetul GPAC portabil poate sta in src/GPAC/ (gitignored);
+# rezolvarea e RELATIVA la SCRIPT_DIR (zero cai absolute), env-ul ramane override suprem
+assert_contains "$COMMON" '-f "$SCRIPT_DIR/GPAC/mp4box.exe"' "v93: fallback co-locat src/GPAC (relativ la SCRIPT_DIR)"
+assert_contains "$COMMON" 'if [[ "$AV_TOOL_MP4BOX" == "mp4box" &&' "v93: fallback DOAR cand env nu a suprascris (forma if, set-e safe)"
 
 # ── 2. helper _mux_dv_mp4: definit + foloseste variabila + gating MP4/MOV ──
 assert_eq "function" "$(type -t _mux_dv_mp4)" "_mux_dv_mp4 definit (sourced)"

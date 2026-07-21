@@ -15,7 +15,8 @@ $muxPs  = Get-Content (Join-Path $SRC "av_mux.ps1") -Raw
 
 # ── 1. AV_TOOL_MP4BOX in config (canon partajat) + resolver PS1 inline ────
 Assert-Match $common ([regex]::Escape('AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"')) "AV_TOOL_MP4BOX in blocul config (canon bash)"
-Assert-Match $enc ([regex]::Escape('if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }')) "resolver PS1 inline env-overridable (AST-safe)"
+Assert-Match $enc ([regex]::Escape('if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }')) "resolver PS1 inline env-overridable + fallback co-locat src\GPAC (AST-safe, v93)"
+Assert-Match $common ([regex]::Escape('-f "$SCRIPT_DIR/GPAC/mp4box.exe"')) "v93: fallback co-locat src/GPAC si in canonul bash (relativ, fara cai absolute)"
 
 # ── 2. Invoke-DvMp4Mux: definit + gating MP4/MOV + :fps + #trackID ────────
 Assert-Match $enc 'function Invoke-DvMp4Mux' "Invoke-DvMp4Mux definit"
@@ -27,7 +28,7 @@ Assert-Match $enc ([regex]::Escape('${Original}#${dec}')) "Invoke-DvMp4Mux: -add
 Assert-Match $enc ([regex]::Escape('if (Invoke-DvMp4Mux -RawHevc $Modified -Original $Original -Output $Output) { return $true }')) "Invoke-HdvCombineWithOriginal: MP4Box pe ramura mp4/mov"
 Assert-Match $enc ([regex]::Escape('Invoke-DvMp4Mux -RawHevc $injectedTemp -Original $outFile -Output $finalTemp')) "triple-layer: MP4Box pe ramura mp4/mov"
 Assert-Match $muxPs 'function Invoke-AvMuxDvSignal' "av_mux: dispatch Invoke-AvMuxDvSignal definit (DRY Mux+Remux)"
-Assert-Match $muxPs ([regex]::Escape('if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }')) "av_mux dispatch: MP4Box inline (mp4/mov)"
+Assert-Match $muxPs ([regex]::Escape('if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }')) "av_mux dispatch: MP4Box inline + fallback co-locat (mp4/mov, v93)"
 Assert-Match $muxPs ([regex]::Escape('Invoke-AvMuxDvSignal -Raw $rxRaw -Built $finalOut -Target $Target')) "av_mux Remux: DV-aware post-process (#1)"
 
 # ── 3b. passthrough stream-copy: dispatch+resignal partajat in av_encode.ps1 + 3 situri ──
@@ -43,6 +44,8 @@ Assert-Eq $true (Test-Path (Join-Path $SRC "tools\mp4box_installer.sh")) "instal
 
 # ── 5. FUNCTIONAL — hibrid HEVC multi-track → dvcC via Invoke-DvMp4Mux ─────
 $mp4box = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # copia co-locata (v93) — fara cai absolute
+if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $mp4box = (Resolve-Path $gpacLocal).Path }
 $dovi = if ($env:AV_TOOL_DOVI) { $env:AV_TOOL_DOVI } else { "dovi_tool" }
 $haveAll = (Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue) `
            -and (Get-Command $dovi -ErrorAction SilentlyContinue) -and (Get-Command $mp4box -ErrorAction SilentlyContinue)

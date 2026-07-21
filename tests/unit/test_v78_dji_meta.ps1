@@ -61,6 +61,8 @@ AssertHas $encPs '$env:AV_TOOL_MP4BOX'  "PS1: unealta via `$env:AV_TOOL_MP4BOX"
 $ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
 if (-not $ffprobe) { $env:PATH = "$src;$env:PATH" }
 $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $mux -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $mux = (Resolve-Path $gpacLocal).Path }
 $dji = Get-ChildItem (Join-Path $src 'DJI_*.MP4') -ErrorAction SilentlyContinue | Select-Object -First 1
 if ((Get-Command ffprobe -ErrorAction SilentlyContinue) -and (Get-Command $mux -ErrorAction SilentlyContinue) -and $dji) {
     # extrage cele 3 functii REALE din av_telemetry.ps1 (AST)

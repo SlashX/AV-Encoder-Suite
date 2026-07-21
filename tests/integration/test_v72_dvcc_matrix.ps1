@@ -17,6 +17,8 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$src
 
 # unelte (env-overridable; default in src/ pe dev-box)
 $MP4BOX  = if ($env:AV_TOOL_MP4BOX)  { $env:AV_TOOL_MP4BOX }  else { 'mp4box' }
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $MP4BOX -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $MP4BOX = (Resolve-Path $gpacLocal).Path }
 $MKVM    = if ($env:AV_TOOL_MKVMERGE){ $env:AV_TOOL_MKVMERGE } elseif (Test-Path (Join-Path $src 'mkvmerge.exe')) { Join-Path $src 'mkvmerge.exe' } else { 'mkvmerge' }
 $DOVI    = if ($env:AV_TOOL_DOVI)    { $env:AV_TOOL_DOVI }    else { 'dovi_tool' }
 $AV1DOVI = if ($env:AV_TOOL_AV1DOVI) { $env:AV_TOOL_AV1DOVI } else { 'av1dovi_tool' }

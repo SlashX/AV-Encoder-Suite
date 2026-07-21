@@ -98,7 +98,16 @@ AV_TOOL_SVTAV1ENCAPP="${AV_TOOL_SVTAV1ENCAPP:-SvtAv1EncApp}"    # SVT-AV1 standa
 AV_TOOL_MKVMERGE="${AV_TOOL_MKVMERGE:-mkvmerge}"               # MKVToolNix (dvcC de container pe hibride HEVC DV pe MKV, v70)
 AV_TOOL_MKVEXTRACT="${AV_TOOL_MKVEXTRACT:-mkvextract}"          # MKVToolNix (extract BL+EL+RPU din P7 MKV pt conversia P7->8.1, v76)
 AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"                      # GPAC MP4Box (dvcC de container pe hibride HEVC DV pe MP4/MOV, v71)
+# v93: GPAC co-locat — pachetul portabil poate sta in src/GPAC/ (gitignored, dev-box
+# Windows); daca env nu a suprascris numele si copia exista, o preferam (relativ la
+# SCRIPT_DIR — zero cai absolute). Fara folder → numele de pe PATH ramane (productie).
+if [[ "$AV_TOOL_MP4BOX" == "mp4box" && -f "$SCRIPT_DIR/GPAC/mp4box.exe" ]]; then AV_TOOL_MP4BOX="$SCRIPT_DIR/GPAC/mp4box.exe"; fi
 AV_TOOL_CAVERNIZE="${AV_TOOL_CAVERNIZE:-CavernizeGUI}"          # Cavern (render Atmos → canale 7.1.4 pt Eclipsa, v89; Windows/macOS)
+# v93: Cavern co-locat — pachetul portabil poate sta in src/cavernize/ (manual, ca GPAC)
+# sau src/tools/cavernize/ (unde dezarhiveaza installer-ul); ambele gitignored. Rezolvare
+# RELATIVA la SCRIPT_DIR (zero cai absolute), env-ul ramane override suprem.
+if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/cavernize/CavernizeGUI.exe"; fi
+if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"; fi
 AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
 AV_ENGINE_DV_P7="${AV_ENGINE_DV_P7:-$SCRIPT_DIR/dv_p7_analyze.py}"  # clasificator EL (MEL/FEL) pt P7->8.1 (v76)
 

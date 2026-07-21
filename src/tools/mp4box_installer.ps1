@@ -69,6 +69,9 @@ Write-Host "     (sau release-ul stabil) si ruleaza installer-ul Windows."
 Write-Host "  2) SAU descarca pachetul portabil, dezarhiveaza-l undeva (pastreaza"
 Write-Host "     TOATE DLL-urile langa mp4box.exe — nu e standalone), apoi seteaza:"
 Write-Host '       $env:AV_TOOL_MP4BOX = "D:\cale\catre\GPAC\mp4box.exe"'
+Write-Host "  3) SAU pune folderul portabil dezarhivat direct ca src\GPAC\ (langa"
+Write-Host "     scripturi): suita gaseste automat src\GPAC\mp4box.exe — fara env,"
+Write-Host "     fara PATH, fara cai absolute (v93)."
 Write-Host ""
 Write-Host "Dupa instalare, suita scrie automat dvcC pe hibridele HEVC DV → MP4/MOV."
 if (-not $env:AV_NONINTERACTIVE) { Read-Host "`nApasa Enter pentru a iesi" }

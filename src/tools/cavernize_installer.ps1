@@ -87,8 +87,12 @@ if ($exe) {
     Write-Host "INSTALARE REUSITA!" -ForegroundColor Green
     Write-Host "  $($exe.FullName)"
     Write-Host ""
-    Write-Host "Ca suita sa-l gaseasca, seteaza (sau adauga folderul in PATH):"
-    Write-Host "  `$env:AV_TOOL_CAVERNIZE = `"$($exe.FullName)`""
+    if ($exe.FullName -ieq (Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe")) {
+        Write-Host "Suita il gaseste AUTOMAT de aici (co-locat in tools\cavernize — fara env, fara PATH; v93)."
+    } else {
+        Write-Host "Ca suita sa-l gaseasca, seteaza (sau adauga folderul in PATH):"
+        Write-Host "  `$env:AV_TOOL_CAVERNIZE = `"$($exe.FullName)`""
+    }
     Write-Host ""
     Write-Host "Note:" -ForegroundColor Yellow
     Write-Host "  - Cavernize cere ffmpeg in PATH (suita il are deja daca encodezi)."

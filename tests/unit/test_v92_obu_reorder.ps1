@@ -215,6 +215,8 @@ elif cmd == 'verify':
             $mal = ($dec | Select-String -Pattern 'malformed' | Measure-Object).Count
             Assert-Eq "0" "$mal" "real: decode dav1d fara Malformed T.35"
             $mp4boxName = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { 'MP4Box' }
+            $gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # co-locat (v93) — fara cai absolute
+            if (-not (Get-Command $mp4boxName -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) { $mp4boxName = (Resolve-Path $gpacLocal).Path }
             if (Get-Command $mp4boxName -EA SilentlyContinue) {
                 $w = (& $mp4boxName -add "$(Join-Path $tmp 'real_fix.ivf'):dvp=10.1" -new (Join-Path $tmp 'real_fix.mp4') 2>&1 |
                     Select-String 'Dolby' | Measure-Object).Count

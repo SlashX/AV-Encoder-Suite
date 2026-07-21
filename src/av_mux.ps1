@@ -199,7 +199,7 @@ function Invoke-AtmosMp4Signal {
     param([Parameter(Mandatory)][string]$File)
     $ext = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLowerInvariant()
     if ($ext -notin @('mp4','mov','m4v')) { return }
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) { return }
     $nb = (@(& ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 $File 2>$null) | Where-Object { $_ -match '^\d' }).Count
     if (-not $nb) { return }
@@ -282,7 +282,7 @@ function Invoke-IamfPreserve {
         Write-Host "    audio ramane Opus multi-pista simplu. Foloseste MP4/MOV ca sa pastrezi Eclipsa." -ForegroundColor Yellow
         return $false
     }
-    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+    $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
     if (-not (Get-Command $mux -ErrorAction SilentlyContinue)) {
         Write-Host "  ⚠ MP4Box lipseste — grupul Eclipsa/IAMF nu poate fi re-scris (audio ramane Opus simplu)." -ForegroundColor Yellow
         return $false
@@ -629,7 +629,7 @@ function Invoke-AvMuxDvSignal {
             $ok = ($LASTEXITCODE -eq 0 -and (Test-Path $dvFinal) -and (Get-Item $dvFinal).Length -gt 0)
         }
     } else {
-        $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
+        $mux = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "GPAC\mp4box.exe"))) { Join-Path $PSScriptRoot "GPAC\mp4box.exe" } else { "mp4box" }
         # HEVC: MP4Box auto-detecteaza DV din NAL-uri. AV1 (.ivf/.av1/.obu): auto-detect-ul
         # refuza plasarea OBU DV de la av1dovi_tool -> dvp= EXPLICIT (v72), care scrie dvcC
         # oricum. Compat din $DvRef (sursa la Remux/passthrough) sau $Built, fallback 10.1.

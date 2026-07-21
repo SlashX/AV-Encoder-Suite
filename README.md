@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v92** — 164 bugs fixed · 281+ features · ~47 800 LoC · 243 files
+**v93** — 165 bugs fixed · 282+ features · ~47 800 LoC · 243 files
 
 ---
 
@@ -379,7 +379,7 @@ Tests dependent on ffmpeg/ffprobe/python3/exiftool auto-skip when the binary is 
 | `Cavernize` (Cavern) | optional, renders Atmos objects → 7.1.4 channels for Eclipsa/IAMF authoring (v89); needs .NET Desktop 8+ | `cavernize_installer.sh` (macOS guide; Linux/Termux unavailable) | `cavernize_installer.ps1` (official portable zip) |
 | Profile diff | Compare `.conf` files | `profile_diff.sh A B` | `profile_diff.ps1 A B` |
 
-AV1 forks install with renamed binaries (`av1dovi_tool`, `av1hdr10plus_tool`) so they coexist with HEVC upstream. Since v69, every external tool name is overridable via `AV_TOOL_*` environment variables (plain name or full path) — e.g. `AV_TOOL_DOVI=dovi-tool` for distros that ship renamed binaries.
+AV1 forks install with renamed binaries (`av1dovi_tool`, `av1hdr10plus_tool`) so they coexist with HEVC upstream. Since v69, every external tool name is overridable via `AV_TOOL_*` environment variables (plain name or full path) — e.g. `AV_TOOL_DOVI=dovi-tool` for distros that ship renamed binaries. Since v93, DLL-based portable packages are also auto-discovered when co-located next to the scripts — GPAC in `src/GPAC/`, Cavernize in `src/cavernize/` (or `src/tools/cavernize/`, where the installer unpacks); resolution order: env override → co-located folder → PATH. Plain single-exe tools placed next to the scripts were already found automatically.
 
 ---
 
@@ -418,6 +418,6 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v92** — 164 bugs fixed · 281+ features · ~47 800 LoC · 243 files
+Current: **v93** — 165 bugs fixed · 282+ features · ~47 800 LoC · 243 files
 
-*v92 highlights:* AV1 Dolby Vision / HDR10+ metadata OBUs are now placed at the **spec-compliant position** — the inject tools write them at the start of each temporal unit, while the Dolby Vision AV1 spec (and all real-world DV AV1 content) wants them after all non-shown frames, immediately before the shown frame, DV before HDR10+ in hybrids; the T.35 repair engine now re-positions them in the same pass (pure byte-span move: metadata byte-identical on extract, video untouched, dav1d decode clean, GPAC/MP4Box import with **zero** placement warnings — validated against real content, GPAC's checker, and a native DV/HDR10+ encoder as three independent oracles) · plus optional `tools/svtav1hdr_installer.{sh,ps1}` for the SVT-AV1-HDR fork encoder used as a dev/test reference (deliberately installed off PATH).
+*v93 highlights:* the suite is now fully **self-contained on Windows** — DLL-based portable tool packages are auto-discovered from folders sitting next to the scripts (GPAC/MP4Box from `src/GPAC/`, Cavernize from `src/cavernize/` or `src/tools/cavernize/`), with `AV_TOOL_*` env still the supreme override and PATH the final fallback; no absolute paths anywhere (dev-box paths removed from the test suite too, which re-enabled a silently-gated real Cavern render test) · toolchain revalidated against the 2026-07-20 FFmpeg git build — all 398 upstream commits reviewed, **zero suite changes needed**; premises re-confirmed empirically (movenc still writes no Atmos/JOC `dec3` extension so the v87 signaling stays required, mainline SVT-AV1 4.2.0 still lacks `hdr10plus-json`, IAMF still flattens on any mux, raw HEVC→MKV still refused) and the new upstream side-data types (SMPTE 2094-50, `itut_t35` tracks) cause no false positives in detection; both full suites green on the new build.

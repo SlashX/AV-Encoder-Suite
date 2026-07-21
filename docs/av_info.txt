@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v92
+  Documentatie Setup & Utilizare — v93
 ═══════════════════════════════════════════════════════════════
 
 
@@ -3120,10 +3120,18 @@ CUPRINS
               AV_TOOL_MKVMERGE      (default: mkvmerge — optional, dvcC DV pe MKV)
               AV_TOOL_MKVEXTRACT    (default: mkvextract — optional, extract strat P7 BL+EL+RPU pt conversia 7→8.1, v76)
               AV_TOOL_MP4BOX        (default: mp4box — optional, dvcC DV pe MP4/MOV, v71)
+              AV_TOOL_CAVERNIZE     (default: CavernizeGUI — optional, render Atmos → 7.1.4 pt Eclipsa, v89)
               AV_ENGINE_APV_HDR10PLUS (default: src/apv_hdr10plus.py)
               AV_ENGINE_DV_P7       (default: src/dv_p7_analyze.py — clasificare strat P7 MEL/FEL, v76)
             Exemplu: AV_TOOL_DOVI=dovi-tool bash av_launcher.sh
             Windows: $env:AV_TOOL_DOVI = "C:\tools\dovi_tool.exe"
+            v93 — pachetele portabile cu DLL-uri pot sta si LANGA scripturi,
+            fara env si fara PATH: GPAC in src/GPAC/ (mp4box.exe + DLL-urile
+            lui) si Cavernize in src/cavernize/ sau src/tools/cavernize/
+            (unde dezarhiveaza installer-ul). Ordinea de rezolvare: env
+            (override suprem) → folderul co-locat → numele de pe PATH.
+            Exe-urile simple (dovi_tool, mkvmerge, exiftool...) puse direct
+            langa scripturi erau deja gasite automat.
 
   PROBLEMA: La encodarea APV cu HDR10+ nu apare "decode-check referinta"
   SOLUTIE:  Pasul e OPTIONAL si tacut — apare doar daca decodorul de

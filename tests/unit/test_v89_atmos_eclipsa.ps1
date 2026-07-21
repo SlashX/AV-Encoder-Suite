@@ -47,6 +47,13 @@ Assert-Contains $psText 'tools/cavernize_installer' `
 # ── paritate bash ─────────────────────────────────────────────────────
 Assert-Match $avcText '(?m)^AV_TOOL_CAVERNIZE="\$\{AV_TOOL_CAVERNIZE:-' `
     "bash: AV_TOOL_CAVERNIZE in blocul config (forma canonica)"
+# v93: fallback co-locat (ca GPAC/mp4box) — relativ, fara cai absolute; env ramane suprem
+Assert-Match $avcText ([regex]::Escape('-f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe"')) `
+    "v93: fallback co-locat src/cavernize in canonul bash"
+Assert-Match $avcText ([regex]::Escape('-f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"')) `
+    "v93: fallback co-locat src/tools/cavernize (locatia installer-ului)"
+Assert-Match $psText ([regex]::Escape('elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "cavernize\CavernizeGUI.exe")))')) `
+    "v93: resolver PS1 cu fallback co-locat (ambele situri, replace-all)"
 Assert-Match $avcText '(?m)^_atmos_render_714\(\)' "bash: helperul _atmos_render_714 exista"
 Assert-Match $avcText 'audio_src="\$\{5:-\$1\}"' "bash: _iamf_author are arg 5 audio_src"
 foreach ($msg in @(
@@ -71,10 +78,13 @@ Assert-Match $instPs 'WindowsDesktop' "installer PS1: check .NET Desktop Runtime
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$src;" + $env:PATH }
 $hasIamfMux = ((& ffmpeg -hide_banner -muxers 2>$null) | Out-String) -match ' iamf '
 $cav = if ($env:AV_TOOL_CAVERNIZE) { $env:AV_TOOL_CAVERNIZE } else { "CavernizeGUI" }
+$cavLocal = @((Join-Path $PSScriptRoot "..\..\src\cavernize\CavernizeGUI.exe"), (Join-Path $PSScriptRoot "..\..\src\tools\cavernize\CavernizeGUI.exe")) | Where-Object { Test-Path $_ } | Select-Object -First 1  # co-locat (v93) — fara cai absolute
+if (-not (Get-Command $cav -ErrorAction SilentlyContinue) -and $cavLocal) { $cav = (Resolve-Path $cavLocal).Path }
 $oldMp4boxEnv = $env:AV_TOOL_MP4BOX
 $mp4box = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
-if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe")) {
-    $mp4box = "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe"; $env:AV_TOOL_MP4BOX = $mp4box
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # copia co-locata (v93) — fara cai absolute
+if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) {
+    $mp4box = (Resolve-Path $gpacLocal).Path; $env:AV_TOOL_MP4BOX = $mp4box
 }
 $sample = Join-Path $src "Dolby_Tone714_Atmos_20s.mkv"
 if ($hasIamfMux -and (Get-Command $cav -ErrorAction SilentlyContinue) -and `

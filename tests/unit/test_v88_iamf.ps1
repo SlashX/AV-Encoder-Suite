@@ -180,8 +180,9 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { $env:PATH = "$src
 $hasIamfMux = ((& ffmpeg -hide_banner -muxers 2>$null) | Out-String) -match ' iamf '
 $oldMp4boxEnv = $env:AV_TOOL_MP4BOX
 $mp4box = if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" }
-if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe")) {
-    $mp4box = "D:\Pers\APPS\APPPortable\GPAC\MP4Box.exe"; $env:AV_TOOL_MP4BOX = $mp4box
+$gpacLocal = Join-Path $PSScriptRoot "..\..\src\GPAC\mp4box.exe"  # copia co-locata (v93) — fara cai absolute
+if (-not (Get-Command $mp4box -ErrorAction SilentlyContinue) -and (Test-Path $gpacLocal)) {
+    $mp4box = (Resolve-Path $gpacLocal).Path; $env:AV_TOOL_MP4BOX = $mp4box
 }
 if ($hasIamfMux -and (Get-Command $mp4box -ErrorAction SilentlyContinue)) {
     # Invoke-IamfAuthor/Preserve depind tranzitiv de Get-IamfLayout (regula v63)

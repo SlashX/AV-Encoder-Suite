@@ -222,6 +222,8 @@ assert_eq "1" "$(grep -cF 'la burn-in audio-ul se copiaza prin ffmpeg' "$BURNPS"
 # ── functional (gated: ffmpeg cu muxer iamf + MP4Box) ────────────────
 command -v ffmpeg >/dev/null 2>&1 || export PATH="$SRC:$PATH"
 _MP4BOX="${AV_TOOL_MP4BOX:-MP4Box}"
+# v93: fallback co-locat (ca productia) — pachetul GPAC portabil din src/GPAC/, fara PATH/env
+if ! command -v "$_MP4BOX" >/dev/null 2>&1 && [ -f "$SRC/GPAC/mp4box.exe" ]; then _MP4BOX="$SRC/GPAC/mp4box.exe"; fi
 if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -muxers 2>/dev/null | grep -q ' iamf '; then
     echo "  (functional sarit — ffmpeg fara muxer iamf)"
 elif ! command -v "$_MP4BOX" >/dev/null 2>&1; then

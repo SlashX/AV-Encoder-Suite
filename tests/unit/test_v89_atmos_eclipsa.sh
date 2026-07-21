@@ -18,6 +18,13 @@ PS="$SRC/av_encode.ps1"
 # ── source-level bash: config + helper in av_common.sh ────────────────
 assert_eq "1" "$(grep -c '^AV_TOOL_CAVERNIZE="\${AV_TOOL_CAVERNIZE:-' "$AVC")" \
     "AV_TOOL_CAVERNIZE e in blocul config (forma canonica — santinela no_hardcoded_tools o deriva)"
+# v93: fallback co-locat (ca GPAC/mp4box) — ambele locatii, forma if (set-e safe), relativ la SCRIPT_DIR
+assert_contains "$(cat "$AVC")" '-f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe"' \
+    "v93: fallback co-locat src/cavernize (relativ la SCRIPT_DIR)"
+assert_contains "$(cat "$AVC")" '-f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"' \
+    "v93: fallback co-locat src/tools/cavernize (locatia installer-ului)"
+assert_contains "$(cat "$AVC")" 'if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" &&' \
+    "v93: fallback DOAR cand env nu a suprascris (forma if, set-e safe)"
 assert_eq "1" "$(grep -c '^_atmos_render_714()' "$AVC")" \
     "helperul _atmos_render_714 exista in av_common.sh"
 _arh=$(sed -n '/^_atmos_render_714()/,/^}/p' "$AVC")
