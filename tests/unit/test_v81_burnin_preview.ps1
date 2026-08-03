@@ -35,6 +35,22 @@ Assert-Eq $true ($bps.Contains('if ($script:PreviewStill)')) "PS1: ramura still"
 Assert-Eq $true ($bps.Contains('--single'))                 "PS1: still --single"
 Assert-Eq $true ($bps.Contains('Invoke-Item $stOut'))       "PS1: auto-open"
 Assert-Eq $true ($bps.Contains('PreviewMode = $true'))      "PS1: ADITIV clip 5s pastrat"
+# v94 (B15): still-ul cade la MIJLOCUL clipului, nu la inceputul ferestrei de 5s
+Assert-Eq $true ($bps.Contains('$mid = $Duration / 2.0'))   "B15: helper-ul calculeaza mijlocul real"
+Assert-Eq $true ($bps.Contains('Mid         = (Format-Inv $mid)')) "B15: mijlocul e expus in hashtable"
+Assert-Eq $true ($bps.Contains('if ($pw.Valid) { $stT = $pw.Mid }')) "B15: still consuma Mid, nu Start"
+Assert-Eq $true ($bps.Contains('$m = $Duration / 2.0 - 2.5')) "B15: fereastra clipului de 5s NEatinsa"
+# functional: mijloc vs inceput-fereastra pe cateva durate
+# NB: formatare InvariantCulture — pe locale EU „{0:0.###}" ar da virgula zecimala
+# (exact motivul pentru care productia foloseste Format-Inv).
+$inv = [System.Globalization.CultureInfo]::InvariantCulture
+foreach ($case in @(@(8.008,'4.004','1.504'), @(6.0,'3','0.5'), @(4.0,'2','0'))) {
+    $d = [double]$case[0]
+    $mid = $d / 2.0
+    $st  = $d / 2.0 - 2.5; if ($st -lt 0) { $st = 0.0 }
+    Assert-Eq $case[1] ($mid.ToString('0.###', $inv)) "B15: durata ${d}s → still la mijloc"
+    Assert-Eq $case[2] ($st.ToString('0.###', $inv))  "B15: durata ${d}s → clip 5s porneste la mid-2.5"
+}
 
 # ── 4. Functional: engine single/grid + render complet + composite ──
 $py = Get-Command python -ErrorAction SilentlyContinue

@@ -272,12 +272,17 @@ def write_csv_normalized(points, path, brand):
 def write_srt(points, path):
     with open(path,'w') as f:
         for i,p in enumerate(points):
-            sv=p.get('speed','0')
-            try: sk=f"{float(sv)*3.6:.1f}" if sv else "0.0"
-            except: sk="0.0"
+            # v94 (B8): Speed doar cand sursa chiar are viteza (KML n-are) — inainte iesea
+            # "Speed: 0.0 km/h", care se citeste ca viteza masurata zero. Paritate cu bash.
+            sv=p.get('speed','')
+            try: sk=f"{float(sv)*3.6:.1f}" if sv not in ('',None) else None
+            except: sk=None
             s1,s2=i,i+1
+            _fields=[]
+            if sk is not None: _fields.append(f"Speed: {sk} km/h")
+            _fields.append(f"Alt: {p.get('alt','N/A')}m")
             f.write(f"{i+1}\n{s1//3600:02d}:{(s1%3600)//60:02d}:{s1%60:02d},000 --> {s2//3600:02d}:{(s2%3600)//60:02d}:{s2%60:02d},000\n")
-            f.write(f"Speed: {sk} km/h | Alt: {p.get('alt','N/A')}m\nGPS: {p['lat']}, {p['lon']}\n")
+            f.write(" | ".join(_fields) + f"\nGPS: {p['lat']}, {p['lon']}\n")
             hr=f" | HR: {p['hr']}bpm" if p.get('hr') else ""
             cad=f" | Cad: {p['cad']}rpm" if p.get('cad') else ""
             if hr or cad: f.write(f"{hr}{cad}\n")

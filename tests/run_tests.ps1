@@ -58,6 +58,15 @@ foreach ($t in $tests) {
                 Write-Host "  X $rel (0 asertiuni — no-op?)" -ForegroundColor Red
                 $failed++
                 $failedNames.Add("$rel (0 asertiuni)") | Out-Null
+            # v94: no-op PARTIAL — o functie NEimportata (sau scrisa greșit) arunca la
+            # mijlocul testului, restul aserţiunilor nu mai ruleaza, dar contorul e >0
+            # deci garda de mai sus nu prinde. Semnatura: „is not recognized". S-a
+            # intamplat de doua ori in campania v94 (Assert-Equal inexistent, si
+            # test_v64_mezzanine fara _helpers.ps1 → PASS cu 48 in loc de 54 aserţiuni).
+            } elseif (Select-String -LiteralPath $log -Pattern 'is not recognized as a name of a cmdlet|CommandNotFoundException' -Quiet -ErrorAction SilentlyContinue) {
+                Write-Host "  X $rel (functie/cmdlet inexistent — no-op partial?)" -ForegroundColor Red
+                $failed++
+                $failedNames.Add("$rel (no-op partial)") | Out-Null
             } else {
                 Write-Host "  + $rel" -ForegroundColor Green
                 $passed++

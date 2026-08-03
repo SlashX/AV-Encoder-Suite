@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v93
+  Documentatie Setup & Utilizare — v94
 ═══════════════════════════════════════════════════════════════
 
 
@@ -3138,3 +3138,66 @@ CUPRINS
             referinta OpenAPV (oapv_app_dec) e instalat. Ruleaza
             tools/openapv_validator.sh / .ps1. Verificarea principala
             (re-extragere + comparare metadata) ruleaza oricum.
+
+  PROBLEMA: (v94) Fisierele sau folderele cu SPATIU in nume nu mergeau
+            la encodare pe Windows
+  SOLUTIE:  Reparat in v94. Inainte, lansarea procesului unea
+            argumentele fara sa le citeze, deci "my clip.mp4" sau un
+            folder "My Videos" spargea comanda ffmpeg in bucati.
+            Afecta encodarea principala, 2-pass, stream copy si bara
+            de progres. Nu mai e nevoie de nicio redenumire.
+
+  PROBLEMA: (v94) x265 nu producea nimic pe 1080p60 / 1440p / 2.7K sau
+            pe material vertical, in VBR sau 2-pass
+  SOLUTIE:  Reparat in v94. Level-ul cerut encoderului se calcula din
+            latimea imaginii, nu din numarul de samples, rata de
+            samples si latura maxima — x265 primea un level prea mic
+            si se oprea. Acum e calculat pe tabelele din specificatie.
+            Pe CRF level-ul e doar informativ (nu se trimite
+            encoderului), deci acolo x265 poate declara singur un
+            level mai mare — normal.
+
+  PROBLEMA: (v94) AV1 in VBR sau 2-pass nu producea nimic / "2-pass"-ul
+            dadea acelasi rezultat ca 1-pass
+  SOLUTIE:  Reparat in v94. Doua cauze distincte: (1) suita trimitea
+            un plafon de bitrate pe care SVT-AV1 il refuza in afara
+            modului CRF — acum pe SVT se trimite doar bitrate-ul tinta
+            (maxrate/bufsize rama pentru libaom-av1, x265, x264);
+            (2) pe build-urile unde sintaxa de statistici nu e
+            implementata, pass 1 nu scria fisierul, iar esecul era
+            invizibil (mesaj pe nivel informativ, cod de ieșire 0) →
+            "2-pass" devenea doua rulari 1-pass. Suportul e verificat
+            acum prin rezultat (apare fisierul de statistici?), nu
+            dupa versiunea raportata de ffmpeg.
+
+  PROBLEMA: (v94) Encodarea Opus esua pe surse cu layout 5.1(side)
+  SOLUTIE:  Reparat in v94. libopus nu accepta 5.1(side) (layout tipic
+            la AC3 si DTS), iar filtrul de conversie intra in conflict
+            cu normalizarea de volum cand amandoua cadeau pe aceeasi
+            pista. Filtrele audio se emit acum dintr-un punct unic,
+            compuse in acelasi lant.
+
+  PROBLEMA: (v94) Cand dau raspunsurile prin pipe / dintr-un script,
+            se aleg valori goale in loc de cele implicite
+  SOLUTIE:  Reparat in v94, pe Windows. Daca raspunsurile se terminau
+            inainte de ultima intrebare, valorile implicite anuntate
+            in meniu ("[implicit: 2]") cadeau pe gol — pe fluxul
+            audio-only asta ducea la avertismente false de
+            incompatibilitate si la encode esuat. Acum, cand intrarea
+            se termina, se aplica default-ul anuntat. La rulare
+            interactiva nu a existat niciodata problema (Enter da
+            default-ul corect).
+
+  PROBLEMA: (v94) Burn-in-ul spune "nicio pereche gasita" desi .srt /
+            .ass / _norm.csv sta langa video
+  SOLUTIE:  Reparat in v94. Auxiliarul se caută acum INTAI langa
+            video si abia apoi in folderul de output — adica exact ce
+            promitea deja mesajul de eroare.
+
+  PROBLEMA: (v94) Meniul de encoder din PowerShell si-a schimbat
+            numerele
+  SOLUTIE:  Intentionat: APV a trecut pe pozitia 5 si ProRes pe 6, ca
+            in meniul bash; "HW Encode", care exista doar pe Windows,
+            a coborat pe 7. Astfel pozitiile 1-6 sunt identice pe cele
+            doua platforme. Profilele salvate stocheaza NUMELE
+            encoderului, nu numarul din meniu → nu sunt afectate.

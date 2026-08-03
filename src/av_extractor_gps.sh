@@ -237,11 +237,14 @@ if choice in ('3', '4'):
     with open(srt_path, 'w') as f:
         for i, p in enumerate(points):
             t = p.get('time', '')
-            speed_val = p.get('speed', '0')
+            # v94 (B8): campul Speed se scrie DOAR cand sursa chiar are viteza. Inainte,
+            # absenta lui producea "Speed: 0.0 km/h" — se citeste ca viteza masurata zero,
+            # ceea ce e fals (GPX/KML fara <speed> nu spun nimic despre viteza).
+            speed_val = p.get('speed', '')
             try:
-                speed_kmh = f"{float(speed_val) * 3.6:.1f}" if speed_val else "0.0"
+                speed_kmh = f"{float(speed_val) * 3.6:.1f}" if speed_val not in ('', None) else None
             except:
-                speed_kmh = "0.0"
+                speed_kmh = None
 
             # SRT timing — use index as seconds if no proper time parsing
             sec_start = i
@@ -249,9 +252,14 @@ if choice in ('3', '4'):
             h1, m1, s1 = sec_start // 3600, (sec_start % 3600) // 60, sec_start % 60
             h2, m2, s2 = sec_end // 3600, (sec_end % 3600) // 60, sec_end % 60
 
+            _fields = []
+            if speed_kmh is not None:
+                _fields.append(f"Speed: {speed_kmh} km/h")
+            _fields.append(f"Alt: {p.get('alt', 'N/A')}m")
+
             f.write(f"{i+1}\n")
             f.write(f"{h1:02d}:{m1:02d}:{s1:02d},000 --> {h2:02d}:{m2:02d}:{s2:02d},000\n")
-            f.write(f"Speed: {speed_kmh} km/h | Alt: {p.get('alt', 'N/A')}m\n")
+            f.write(" | ".join(_fields) + "\n")
             f.write(f"GPS: {p['lat']}, {p['lon']}\n")
             f.write(f"\n")
     print(f"  [OK] SRT: {name}_gps.srt ({len(points)} entries)")
@@ -528,18 +536,23 @@ if choice in ('3', '4'):
     srt_path = os.path.join(output_dir, f"{name}_gps.srt")
     with open(srt_path, 'w') as f:
         for i, p in enumerate(points):
-            speed_val = p.get('speed', '0')
+            # v94 (B8): Speed doar cand exista in sursa (vezi nota din parserul GPX)
+            speed_val = p.get('speed', '')
             try:
-                speed_kmh = f"{float(speed_val) * 3.6:.1f}" if speed_val else "0.0"
+                speed_kmh = f"{float(speed_val) * 3.6:.1f}" if speed_val not in ('', None) else None
             except:
-                speed_kmh = "0.0"
+                speed_kmh = None
             sec_start = i
             sec_end = i + 1
             h1, m1, s1 = sec_start // 3600, (sec_start % 3600) // 60, sec_start % 60
             h2, m2, s2 = sec_end // 3600, (sec_end % 3600) // 60, sec_end % 60
+            _fields = []
+            if speed_kmh is not None:
+                _fields.append(f"Speed: {speed_kmh} km/h")
+            _fields.append(f"Alt: {p.get('alt', 'N/A')}m")
             f.write(f"{i+1}\n")
             f.write(f"{h1:02d}:{m1:02d}:{s1:02d},000 --> {h2:02d}:{m2:02d}:{s2:02d},000\n")
-            f.write(f"Speed: {speed_kmh} km/h | Alt: {p.get('alt', 'N/A')}m\n")
+            f.write(" | ".join(_fields) + "\n")
             f.write(f"GPS: {p['lat']}, {p['lon']}\n")
             hr_str = f" | HR: {p['hr']}bpm" if p.get('hr') else ""
             cad_str = f" | Cad: {p['cad']}rpm" if p.get('cad') else ""
@@ -736,7 +749,18 @@ if choice in ('3', '4'):
             h2, m2, s2 = sec_end // 3600, (sec_end % 3600) // 60, sec_end % 60
             f.write(f"{i+1}\n")
             f.write(f"{h1:02d}:{m1:02d}:{s1:02d},000 --> {h2:02d}:{m2:02d}:{s2:02d},000\n")
-            f.write(f"Alt: {p.get('alt', 'N/A')}m\n")
+            # v94 (B8): KML nu are camp de viteza, dar daca parserul il populeaza candva,
+            # forma e identica cu GPX/FIT (Speed doar cand exista) → paritate cu PS1.
+            _kml_speed = p.get('speed', '')
+            try:
+                _kml_kmh = f"{float(_kml_speed) * 3.6:.1f}" if _kml_speed not in ('', None) else None
+            except:
+                _kml_kmh = None
+            _fields = []
+            if _kml_kmh is not None:
+                _fields.append(f"Speed: {_kml_kmh} km/h")
+            _fields.append(f"Alt: {p.get('alt', 'N/A')}m")
+            f.write(" | ".join(_fields) + "\n")
             f.write(f"GPS: {p['lat']}, {p['lon']}\n\n")
     print(f"  [OK] SRT: {name}_gps.srt ({len(points)} entries)")
 

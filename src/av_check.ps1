@@ -28,7 +28,7 @@ function Format-Bytes {
     param([long]$b)
     if ($b -ge 1GB) { "{0:F2} GB" -f ($b/1GB) }
     elseif ($b -ge 1MB) { "{0:F1} MB" -f ($b/1MB) }
-    else { "{0} KB" -f ($b/1KB) }
+    else { "{0:F0} KB" -f ($b/1KB) }   # v94 (O9): fara F0 iesea "490,43359375 KB"
 }
 
 function Get-FFprobeValue {
@@ -501,6 +501,17 @@ foreach ($f in $inputFiles) {
     }
     $fsMB = [math]::Round($f.Length / 1MB, 1)
     $fpsRaw = Get-FFprobeValue $f.FullName "v:0" "avg_frame_rate"
+    # v94 (P1): in CSV, FPS-ul se scrie ZECIMAL, ca in bash (`awk '{printf "%.2f",$1/$2}'`).
+    # PS1 punea fractia bruta (`60000/1001`), deci un consumator de CSV primea alt TIP de
+    # valoare dupa platforma. InvariantCulture e obligatoriu: pe locale RO ar iesi „59,94" —
+    # campul e emis intre ghilimele, deci un parser conform nu se rupe, dar valoarea ar
+    # depinde de locale-ul masinii si un consumator care taie naiv pe virgula s-ar decala.
+    # Afisajul pe ecran ramane fractia bruta (informatie exacta pentru cine se uita la ea).
+    $fpsCsv = "N/A"
+    if ($fpsRaw -match '^(\d+)/(\d+)$' -and [double]$Matches[2] -gt 0) {
+        $fpsCsv = ([double]$Matches[1] / [double]$Matches[2]).ToString("0.00",
+                  [System.Globalization.CultureInfo]::InvariantCulture)
+    }
     $bitrateRaw = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
     $durRaw = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
@@ -573,9 +584,15 @@ foreach ($f in $inputFiles) {
     $subCount = 0; $subSeen = @{}; $subLangList = @(); $subCurDup = $false
     foreach ($sl in $subStreams) {
         if ("$sl" -match '^index=(\d+)') {
-            $si = $Matches[1]
-            if ($subSeen.ContainsKey($si)) { $subCurDup = $true }
-            else { $subCurDup = $false; $subSeen[$si] = $true; $subCount++ }
+            # v94 (B1): `$subIdx`, NU `$si` — `$si` e hashtable-ul de source-info primit mai
+            # sus de la Get-SourceInfo, iar suprascrierea lui aici il distrugea pentru tot
+            # restul iteratiei. Efect: ORICE fisier cu subtitrari raporta „SDR", cu
+            # Format_sursa/PixelFormat goale si MaxCLL/MasterDisplay disparute (regresie v91,
+            # aparuta la portarea INLINE a dedupe-ului; bash e imun fiindca acolo e o
+            # functie cu `local`).
+            $subIdx = $Matches[1]
+            if ($subSeen.ContainsKey($subIdx)) { $subCurDup = $true }
+            else { $subCurDup = $false; $subSeen[$subIdx] = $true; $subCount++ }
         } elseif ("$sl" -match '^TAG:language=(.+)' -and -not $subCurDup) {
             $slang = $Matches[1]
             if ($slang -ne 'und') { $subLangList += $slang }
@@ -640,15 +657,31 @@ foreach ($f in $inputFiles) {
     # Encoder recommendation
     $srcCodec = $si.codec
     $encRec = "libx265 (optiune sigura universala)"
-    if     ($tipHdr -eq "Dolby Vision")                          { $encRec = "libx265 (singurul care suporta DV)" }
+    # v94 (P2): aliniat cu `get_encoder_recommendation` (av_check.sh). Erau TREI divergente:
+    #   (a) ORDINEA — bash verifica DJI INAINTEA tipurilor HDR, PS1 dupa → un DJI HDR primea
+    #       mesajul generic HDR in loc de cel DJI (si invers, un DJI SDR nu spunea „AV1 ~30%");
+    #   (b) „HDR10+ metadata native" doar la x265 — fals din v60 (svtav1 pastreaza HDR10+
+    #       inline prin hdr10plus-json), la fel ca mesajul DV, fals din v44;
+    #   (c) ramurile APV si DNxHR lipseau complet din PS1 → cadeau pe mesajul generic.
+    # Pastrez varianta corecta din fiecare parte (DJI diferentiaza HDR/HLG vs SDR, ca bash).
+    if ($tipHdr -eq "Dolby Vision") {
+        $encRec = "libx265 sau AV1/SVT (ambele pastreaza DV)"
+    } elseif ($dji.isDji) {
+        $encRec = if ($tipHdr -match "HDR" -or $tipHdr -eq "HLG") {
+            "libx265 (HDR/HLG DJI — compresie buna, metadata pastrate)"
+        } else {
+            "libx265 sau AV1/SVT (SDR DJI — AV1 ~30% mai mic)"
+        }
+    }
     elseif ($tipHdr -eq "HDR10+")                                { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10+)" }
     elseif ($tipHdr -eq "HDR10")                                 { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10)" }
     elseif ($tipHdr -eq "HLG")                                   { $encRec = "libx265 sau AV1/SVT (HLG nativ — transfer=arib-std-b67)" }
-    elseif ($dji.isDji)                                          { $encRec = "libx265 (fisier DJI — metadata pastrate)" }
+    elseif ($srcCodec -eq "h264")                                { $encRec = "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)" }
+    elseif ($srcCodec -eq "hevc")                                { $encRec = "AV1/SVT (HEVC→AV1 ~20-30% mai mic)" }
     elseif ($srcCodec -eq "av1")                                 { $encRec = "Deja AV1 — re-encode nu e recomandat" }
     elseif ($srcCodec -eq "prores")                              { $encRec = "libx265 sau AV1 (ProRes→compresie ~70-80% mai mic)" }
-    elseif ($srcCodec -eq "hevc" -and $tipHdr -eq "SDR")         { $encRec = "AV1/SVT (HEVC→AV1 ~20-30% mai mic)" }
-    elseif ($srcCodec -eq "h264")                                { $encRec = "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)" }
+    elseif ($srcCodec -eq "apv")                                 { $encRec = "libx265 sau AV1 (APV→compresie ~70-80% mai mic)" }
+    elseif ($srcCodec -eq "dnxhd")                               { $encRec = "libx265 sau AV1 (DNxHR→compresie ~70-80% mai mic)" }
 
     # Estimates
     $bpsX265 = if ([int]$w -ge 3840) { 10000000 } elseif ([int]$w -ge 1920) { 4000000 } else { 2000000 }
@@ -729,7 +762,7 @@ foreach ($f in $inputFiles) {
     # bash: %s pe toate text fields, %d pe numerice
     # Numerice (fara quote): fsMB, durSec, csv_aCh, audioTracks, csv_djmd, csv_dbgi, csv_djtc
     # Text fields (cu quote): toate celelalte 30
-    "`"$($f.Name)`",`"$($si.fmt)`",`"$container`",$fsMB,$durSec,`"${w}x${h}`",`"$($si.pixFmt)`",`"$fpsRaw`",`"$bitrateMbps`",`"$tipHdr`",`"$dvProf`",`"$($hdr.colorPrimaries)`",`"$($hdr.colorSpace)`",`"$($hdr.colorRange)`",`"$($hdr.maxCll)`",`"$($hdr.maxFall)`",`"$($hdr.masterDisplay)`",`"$($hdr.hdr10PlusScenes)`",`"$logProf`",`"$csv_ac`",`"$csv_abk`",`"$csv_aSRk`",`"$csv_aBD`",`"$csv_aLay`",`"$csv_aLang`",$csv_aCh,$audioTracks,`"$subStr`",`"$chapStr`",`"$attStr`",$csv_djmd,$csv_dbgi,$csv_djtc,`"$encRec`",`"$estX265`",`"$estX264`",`"$estAV1`",`"$estProRes`"" |
+    "`"$($f.Name)`",`"$($si.fmt)`",`"$container`",$fsMB,$durSec,`"${w}x${h}`",`"$($si.pixFmt)`",`"$fpsCsv`",`"$bitrateMbps`",`"$tipHdr`",`"$dvProf`",`"$($hdr.colorPrimaries)`",`"$($hdr.colorSpace)`",`"$($hdr.colorRange)`",`"$($hdr.maxCll)`",`"$($hdr.maxFall)`",`"$($hdr.masterDisplay)`",`"$($hdr.hdr10PlusScenes)`",`"$logProf`",`"$csv_ac`",`"$csv_abk`",`"$csv_aSRk`",`"$csv_aBD`",`"$csv_aLay`",`"$csv_aLang`",$csv_aCh,$audioTracks,`"$subStr`",`"$chapStr`",`"$attStr`",$csv_djmd,$csv_dbgi,$csv_djtc,`"$encRec`",`"$estX265`",`"$estX264`",`"$estAV1`",`"$estProRes`"" |
         Out-File $csvPath -Append -Encoding UTF8
 }
 

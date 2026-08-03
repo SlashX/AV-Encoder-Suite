@@ -79,10 +79,16 @@ preview_compute_window() {
     if ! awk -v d="$dur" 'BEGIN{exit !(d+0 > 0.05)}'; then
         PREVIEW_T_START=0
         PREVIEW_DURATION=0
+        PREVIEW_T_MID=0
         return 1
     fi
     PREVIEW_T_START=$(awk -v d="$dur" 'BEGIN{m=d/2-2.5; printf "%.3f", (m>0)?m:0}')
     PREVIEW_DURATION=$(awk -v d="$dur" 'BEGIN{printf "%.3f", (d<5)?d:5}')
+    # v94 (B15): mijlocul REAL al clipului. `PREVIEW_T_START` e inceputul FERESTREI de 5s
+    # (mid - 2.5), corect pentru clipul de preview fiindca il centreaza pe mijloc — dar
+    # greşit pentru still, care e UN cadru: pe un clip de 8s ar cadea la 1.5s in loc de 4s,
+    # iar pe clipuri <5s se prabuseste la cadrul 0 (unde telemetria e adesea inca inactiva).
+    PREVIEW_T_MID=$(awk -v d="$dur" 'BEGIN{printf "%.3f", d/2}')
     return 0
 }
 
@@ -128,7 +134,13 @@ scan_for_pairs() {
         [[ "$name" == *_telem   ]] && continue
         [[ "$name" == *_subs    ]] && continue
         [[ "$name" == *_preview ]] && continue
-        local aux="$OUTPUT_DIR/${name}${paired_ext}"
+        # v94 (B6): cauta auxiliarul INTAI langa video, apoi in OUTPUT_DIR — exact ce promitea
+        # deja mesajul de eroare („<name>.srt langa video sau in OUTPUT_DIR") si ce face corect
+        # img_scan_dir mai jos. Inainte se cauta DOAR in OUTPUT_DIR, deci workflow-ul natural
+        # (film.mkv + film.srt impreuna in InputVideos) raporta „nicio pereche gasita".
+        local _dir_of; _dir_of="$(dirname "$vid")"
+        local aux="$_dir_of/${name}${paired_ext}"
+        [ -s "$aux" ] || aux="$OUTPUT_DIR/${name}${paired_ext}"
         [ -s "$aux" ] || continue
         local meta=""
         if [ -n "$meta_extract_fn" ]; then meta=$("$meta_extract_fn" "$aux"); fi
@@ -698,7 +710,8 @@ hud_flow() {
         # ── Still layout preview (Tier 1): 1 cadru compus, FARA encode video ──
         if [ "$PREVIEW_STILL" -eq 1 ]; then
             local _st_t=0
-            preview_compute_window "$vid_dur" && _st_t="$PREVIEW_T_START"
+            # v94 (B15): mijlocul real, nu inceputul ferestrei de 5s
+            preview_compute_window "$vid_dur" && _st_t="$PREVIEW_T_MID"
             local _st_dir="$AV_TEMP_DIR/burnin_still_${name}_$$"
             mkdir -p "$_st_dir"
             local _st_grid=()

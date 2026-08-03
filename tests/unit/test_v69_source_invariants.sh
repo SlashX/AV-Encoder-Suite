@@ -26,6 +26,50 @@ crlf=$(cd "$PROJECT_ROOT" && git ls-files --eol -- '*.sh' 2>/dev/null \
     | grep -E 'i/crlf|w/crlf|i/mixed|w/mixed' || true)
 assert_eq "" "$crlf" "A: zero CRLF in fisierele .sh tracked (git ls-files --eol) ($crlf)"
 
+# ── A2. CRLF in ORICE fisier text urmarit (v94, B18) ─────────────────
+# Pana in v94 se pazeau DOAR fisierele .sh. Campania a rescris integral cu CRLF
+# sase fisiere — src/av_encode.ps1, src/av_mux.ps1, src/av_trimconcat.sh,
+# docs/av_changelog.txt, README.md, tests/unit/test_v49_mux.ps1 si .gitignore
+# (acesta din urma FARA nicio schimbare de continut) — si doar cel .sh a fost
+# prins. Tot repo-ul e LF (`core.autocrlf=input`, zero exceptii), deci orice
+# CRLF e drift de editare: nu strica PowerShell-ul, dar transforma orice diff
+# viitor intr-o rescriere de fisier intreg si ascunde schimbarile reale.
+crlf_all=$(cd "$PROJECT_ROOT" && git ls-files --eol -- \
+    '*.sh' '*.ps1' '*.py' '*.md' '*.txt' '*.html' '*.conf' '.gitignore' 2>/dev/null \
+    | grep -E 'i/crlf|w/crlf|i/mixed|w/mixed' | cut -f2 | tr '\n' ' ' || true)
+crlf_all="${crlf_all%% }"
+assert_eq "" "$crlf_all" "A2: zero CRLF in fisierele text urmarite ($crlf_all)"
+
+# Fisierele NOI (inca necommit-uite) nu apar in `git ls-files --eol` — exact golul
+# prin care a scapat un test nou scris cu CRLF. NU folosim grep pe continut (pe MSYS
+# stratul text-mode adauga CR la CITIRE si ar raporta absolut tot) si nici `od -c`
+# (verificat: nu prinde nimic). Comparam dimensiunea inainte/dupa `tr -d '\r'`:
+# binar-sigur si corect inclusiv cand CR-ul cade exact pe granita de bloc a lui od.
+crlf_new=""
+while IFS= read -r _nf; do
+    [ -n "$_nf" ] && [ -f "$PROJECT_ROOT/$_nf" ] || continue
+    if [ "$(tr -d '\r' < "$PROJECT_ROOT/$_nf" | wc -c)" != "$(wc -c < "$PROJECT_ROOT/$_nf")" ]; then
+        crlf_new="$crlf_new $_nf"
+    fi
+done < <(cd "$PROJECT_ROOT" && git ls-files --others --exclude-standard -- \
+    '*.sh' '*.ps1' '*.py' '*.md' '*.txt' '*.html' '*.conf' 2>/dev/null)
+crlf_new="${crlf_new# }"
+assert_eq "" "$crlf_new" "A2b: zero CRLF in fisierele text NOI, necommit-uite ($crlf_new)"
+
+# ── A3. BOM UTF-8 (v94, B18) ─────────────────────────────────────────
+# src/av_encode.ps1 a capatat un BOM in campanie si era SINGURUL din proiect.
+# Pe PowerShell nu se vede, dar e o inconsistenta pe care nimeni n-o cauta.
+bom_hits=""
+while IFS= read -r _bf; do
+    [ -n "$_bf" ] && [ -f "$PROJECT_ROOT/$_bf" ] || continue
+    if [ "$(od -An -tx1 -N3 "$PROJECT_ROOT/$_bf" 2>/dev/null | tr -d ' \n')" = "efbbbf" ]; then
+        bom_hits="$bom_hits $_bf"
+    fi
+done < <(cd "$PROJECT_ROOT" && git ls-files -- \
+    '*.sh' '*.ps1' '*.py' '*.md' '*.txt' '*.html' '*.conf' '.gitignore' 2>/dev/null)
+bom_hits="${bom_hits# }"
+assert_eq "" "$bom_hits" "A3: zero BOM UTF-8 in fisierele text urmarite ($bom_hits)"
+
 # ── B. Anti-pattern-uri ffprobe ──────────────────────────────────────
 b_hits=$(grep -rn 'frame_side_data=type\|side_data_list' "$SRC"/*.sh "$SRC"/*.ps1 2>/dev/null \
     | grep -vE '^[^:]+:[0-9]+:\s*#' || true)

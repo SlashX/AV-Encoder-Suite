@@ -83,13 +83,24 @@ function Get-TelemetryBrand {
     return "unknown"
 }
 
+# v94 (B3): indexul REAL al streamului, citit din campul `index`, NU pozitia in lista.
+# Pe fisierele cu track groups (DJI/QuickTime) ffprobe listeaza prin grupuri — linii goale,
+# duplicate si ordine ne-naturala (index=4 poate aparea INAINTEA lui index=1) → numarand
+# pozitiile, `tmcd` primea indexul pistei AUDIO si `djmd` pe al cover-ului, deci se extragea
+# continut GRESIT (djmd.bin = JPEG, tmcd.bin = AAC) iar `dbgi` nu se extragea deloc.
+# Acelasi tipar corect ca Get-DjiNativeMetaIds (v78).
 function Get-TelemetryTrackIdx {
     param([string]$file, [string]$tag)
-    $idx = 0
-    $tags = & ffprobe -v error -show_entries stream=codec_tag_string,codec_name -of csv=p=0 $file 2>$null
-    foreach ($t in $tags) {
-        if ($t -imatch $tag) { return $idx }
-        $idx++
+    $lines = & ffprobe -v error -show_entries stream=index,codec_tag_string,codec_name `
+                -of default=noprint_wrappers=1 $file 2>$null
+    $curIdx = $null
+    foreach ($l in $lines) {
+        $s = "$l".Trim()
+        if ($s -match '^index=(\d+)$') { $curIdx = $Matches[1]; continue }
+        if ($s -match '^(codec_tag_string|codec_name)=(.*)$') {
+            $val = $Matches[2]
+            if ($curIdx -ne $null -and $val -and $val -imatch $tag) { return [int]$curIdx }
+        }
     }
     return -1
 }
@@ -871,22 +882,31 @@ if want_srt and pts:
 
 function Process-DJIRaw {
     param([System.IO.FileInfo]$f, [string]$name)
-    $rawIdx = 0
-    $tags = & ffprobe -v error -show_entries stream=codec_tag_string,codec_name -of csv=p=0 $f.FullName 2>$null
-    foreach ($tag in $tags) {
+    # v94 (B3): index REAL din campul `index` + dedupe — vezi nota de la Get-TelemetryTrackIdx.
+    # Inainte se numarau POZITIILE din lista, iar pe track groups (DJI) asta insemna
+    # `-map 0:<alt stream>`: djmd.bin iesea JPEG, tmcd.bin iesea AAC, dbgi nu se extragea.
+    $lines = & ffprobe -v error -show_entries stream=index,codec_tag_string,codec_name `
+                -of default=noprint_wrappers=1 $f.FullName 2>$null
+    $curIdx = $null; $seen = @{}
+    foreach ($l in $lines) {
+        $s = "$l".Trim()
+        if ($s -match '^index=(\d+)$') { $curIdx = $Matches[1]; continue }
+        if ($s -notmatch '^(codec_tag_string|codec_name)=(.*)$') { continue }
+        $tag = $Matches[2]
+        if ($null -eq $curIdx -or -not $tag -or $seen.ContainsKey($curIdx)) { continue }
         $outFile = $null; $fmt = "data"
-        if     ($tag -imatch "djmd")     { $outFile = "${name}_djmd.bin" }
-        elseif ($tag -imatch "dbgi")     { $outFile = "${name}_dbgi.bin" }
-        elseif ($tag -imatch "tmcd")     { $outFile = "${name}_tmcd.bin" }
+        if     ($tag -imatch "djmd")       { $outFile = "${name}_djmd.bin" }
+        elseif ($tag -imatch "dbgi")       { $outFile = "${name}_dbgi.bin" }
+        elseif ($tag -imatch "tmcd")       { $outFile = "${name}_tmcd.bin" }
         elseif ($tag -imatch "mjpeg|jpeg") { $outFile = "${name}_cover.jpg"; $fmt = "mjpeg" }
         if ($outFile) {
+            $seen[$curIdx] = $true
             $outPath = Join-Path $OutputDir $outFile
-            & ffmpeg -v error -i $f.FullName -map "0:$rawIdx" -c copy -f $fmt $outPath -y 2>$null
+            & ffmpeg -v error -i $f.FullName -map "0:$curIdx" -c copy -f $fmt $outPath -y 2>$null
             if ((Test-Path $outPath) -and (Get-Item $outPath).Length -gt 0) {
                 Write-Host "  [OK] $outFile ($(Format-Bytes (Get-Item $outPath).Length))" -ForegroundColor Green
             } else { Remove-Item $outPath -Force -ErrorAction SilentlyContinue }
         }
-        $rawIdx++
     }
 }
 
@@ -1246,26 +1266,31 @@ function Invoke-EmbedTelemetryLossless {
         if ($wantCsvNorm) {
             $ffArgs.AddRange([string[]]@("-attach",$csvNorm))
             $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","filename=$([System.IO.Path]::GetFileName($csvNorm))"))
             $attIdx++
         }
         if ($wantCsvBasic) {
             $ffArgs.AddRange([string[]]@("-attach",$csvBasic))
             $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","filename=$([System.IO.Path]::GetFileName($csvBasic))"))
             $attIdx++
         }
         if ($wantCsvFull) {
             $ffArgs.AddRange([string[]]@("-attach",$csvFull))
             $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=text/csv"))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","filename=$([System.IO.Path]::GetFileName($csvFull))"))
             $attIdx++
         }
         if ($wantGpx) {
             $ffArgs.AddRange([string[]]@("-attach",$gpxFile))
             $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=application/gpx+xml"))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","filename=$([System.IO.Path]::GetFileName($gpxFile))"))
             $attIdx++
         }
         if ($wantKml) {
             $ffArgs.AddRange([string[]]@("-attach",$kmlFile))
             $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","mimetype=application/vnd.google-earth.kml+xml"))
+            $ffMeta.AddRange([string[]]@("-metadata:s:t:${attIdx}","filename=$([System.IO.Path]::GetFileName($kmlFile))"))
             $attIdx++
         }
     }

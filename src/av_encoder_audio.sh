@@ -525,12 +525,19 @@ for file in "${FILES[@]}"; do
     # v68: avertisment compat container pe pistele COPIATE (codec incompatibil → ar esua)
     warn_incompat_audio_copies "$file"
 
+    # v94 (B7): filtrele audio dintr-un PUNCT UNIC (aformat pt libopus + loudnorm compuse).
+    # Mod `raw` — aici ffmpeg se cheama DIRECT, deci fara ghilimele (la eval ar fi invers).
+    # NB: FARA `local` — aici suntem in `for file`, la nivel de SCRIPT, nu intr-o functie
+    # (buclele nu sunt functii; regula v66). `local` ar tipari „can only be used in a
+    # function" la fiecare fisier si ar intoarce non-zero.
+    AUDIO_FILTERS=$(build_audio_filters "$file" raw)
+
     # shellcheck disable=SC2086
     ffmpeg -i "$file" \
         $MAP_FLAGS \
         -map_metadata 0 -map_chapters 0 \
         -c:v copy \
-        $AUDIO_PARAMS \
+        $AUDIO_PARAMS $AUDIO_FILTERS \
         $SUB_CODEC -c:t copy \
         $_audio_codec_tag $CONTAINER_FLAGS \
         -nostats "$output" 2>>"$LOG_FILE"

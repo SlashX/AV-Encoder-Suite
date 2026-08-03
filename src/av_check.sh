@@ -337,7 +337,7 @@ get_log_profile() {
 get_encoder_recommendation() {
     local src_fmt="$1" type_hdr="$2" is_dji="$3"
     if [[ "$type_hdr" == "Dolby Vision" ]]; then
-        echo "libx265 (singurul care suporta DV)"; return
+        echo "libx265 sau AV1/SVT (ambele pastreaza DV)"; return
     fi
     if [ "$is_dji" -eq 1 ]; then
         [[ "$type_hdr" == *"HDR"* || "$type_hdr" == "HLG" ]] \
@@ -345,7 +345,9 @@ get_encoder_recommendation() {
             || echo "libx265 sau AV1/SVT (SDR DJI — AV1 ~30% mai mic)"
         return
     fi
-    if   [[ "$type_hdr" == "HDR10+" ]];                              then echo "libx265 (HDR10+ metadata native)"
+    # v94 (P2): AV1 pastreaza HDR10+ inline (svtav1 cu hdr10plus-json, v60) — „metadata native"
+    # doar la x265 era invechit, ca si mesajul DV de mai sus. Paritate cu PS1.
+    if   [[ "$type_hdr" == "HDR10+" ]];                              then echo "libx265 sau AV1/SVT (ambele suporta HDR10+)"
     elif [[ "$type_hdr" == "HDR10" ]];                               then echo "libx265 sau AV1/SVT (ambele suporta HDR10)"
     elif [[ "$type_hdr" == "HLG" ]];                                 then echo "libx265 sau AV1/SVT (HLG nativ — transfer=arib-std-b67)"
     elif [[ "$src_fmt"  == *"H.264"* ]];                             then echo "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)"

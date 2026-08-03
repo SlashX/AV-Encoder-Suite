@@ -8,8 +8,14 @@ $ErrorActionPreference = "Stop"
 $env:PATH = "$PSScriptRoot;$env:PATH"
 
 $ScriptDir   = $PSScriptRoot
-$InputDir    = Join-Path $ScriptDir "InputVideos"
-$OutputDir   = Join-Path $ScriptDir "OutputVideos"
+# v94 (B5): respecta env AV_INPUT_DIR / AV_OUTPUT_DIR — paritate cu bash (INPUT_DIR/OUTPUT_DIR)
+# si cu celelalte standalone-uri PS1 (av_check / av_mux / av_telemetry / av_extractor_gps, v85 O3).
+# av_burnin.ps1 era SINGURUL fara override, deci burn-in-ul PS1 nu putea fi directionat spre
+# alt folder in CI/testare (de-aia test_v85_menu_e2e.ps1 recurge la copierea scriptului).
+if ($env:AV_INPUT_DIR)  { $InputDir  = $env:AV_INPUT_DIR }
+else                    { $InputDir  = Join-Path $ScriptDir "InputVideos" }
+if ($env:AV_OUTPUT_DIR) { $OutputDir = $env:AV_OUTPUT_DIR }
+else                    { $OutputDir = Join-Path $ScriptDir "OutputVideos" }
 $TempBase    = Join-Path $ScriptDir "Temp"
 $PresetsDir  = Join-Path $ScriptDir "burnin_presets"
 $RenderPy    = Join-Path $ScriptDir "burnin_render.py"
@@ -87,17 +93,23 @@ function Format-Inv {
 function Get-PreviewWindow {
     param([double]$Duration)
     if ($Duration -le 0.05) {
-        return @{ Valid = $false; Start = "0"; Duration = "0"; StartNum = 0.0; DurationNum = 0.0 }
+        return @{ Valid = $false; Start = "0"; Duration = "0"; StartNum = 0.0; DurationNum = 0.0; Mid = "0"; MidNum = 0.0 }
     }
     $m = $Duration / 2.0 - 2.5
     if ($m -lt 0) { $m = 0.0 }
     $d = if ($Duration -lt 5) { $Duration } else { 5.0 }
+    # v94 (B15): `Start` e inceputul FERESTREI de 5s (mid - 2.5) — corect pentru clipul de
+    # preview, greşit pentru still (UN cadru): pe 8s ar cadea la 1.5s in loc de 4s, iar pe
+    # clipuri <5s la cadrul 0. `Mid` = mijlocul real. Mirror av_burnin.sh.
+    $mid = $Duration / 2.0
     return @{
         Valid       = $true
         Start       = (Format-Inv $m)
         Duration    = (Format-Inv $d)
         StartNum    = $m
         DurationNum = $d
+        Mid         = (Format-Inv $mid)
+        MidNum      = $mid
     }
 }
 
@@ -908,7 +920,13 @@ function Get-PairedFiles {
         Get-ChildItem -Path $dir.Path -Recurse -Depth 1 -File -Include "*.mp4","*.mov","*.mkv","*.m4v" -ErrorAction SilentlyContinue | ForEach-Object {
             $name = $_.BaseName
             if ($name -like "*_hud" -or $name -like "*_telem" -or $name -like "*_subs" -or $name -like "*_preview") { return }
-            $aux = Join-Path $OutputDir "${name}${PairedSuffix}"
+            # v94 (B6): auxiliarul se cauta INTAI langa video, apoi in OutputDir — exact ce
+            # promite mesajul de eroare si ce face corect Get-ImgPairs. Inainte doar OutputDir,
+            # deci film.mkv + film.srt puse impreuna in InputVideos nu formau pereche.
+            $aux = Join-Path $_.DirectoryName "${name}${PairedSuffix}"
+            if (-not ((Test-Path $aux) -and (Get-Item $aux).Length -gt 0)) {
+                $aux = Join-Path $OutputDir "${name}${PairedSuffix}"
+            }
             if (-not ((Test-Path $aux) -and (Get-Item $aux).Length -gt 0)) { return }
             $meta = ""
             if ($MetaFn) { $meta = & $MetaFn $aux }
@@ -1114,7 +1132,7 @@ function Invoke-HudFlow {
             [double]::TryParse($vidDur, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$vidDurNum) | Out-Null
             $stT = "0"
             $pw = Get-PreviewWindow -Duration $vidDurNum
-            if ($pw.Valid) { $stT = $pw.Start }
+            if ($pw.Valid) { $stT = $pw.Mid }   # v94 (B15): mijlocul real, nu inceputul ferestrei de 5s
             $stDir = Join-Path $TempBase ("burnin_still_{0}_{1}" -f $p.Name, [System.Diagnostics.Process]::GetCurrentProcess().Id)
             New-Item -ItemType Directory -Force -Path $stDir | Out-Null
             $gridTxt = if ($script:PreviewGrid) { " + grila" } else { "" }

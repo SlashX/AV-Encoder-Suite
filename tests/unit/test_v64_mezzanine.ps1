@@ -1,7 +1,9 @@
 # v64 — DNxHR + ProRes corectitudine (mirror al test_v64_mezzanine.sh).
 #   DNxHR LB/SQ/HQ = 8-bit yuv422p (10-bit respins); HQX = yuv422p10le.
 #   ProRes: fara -bits_per_mb; XQ = profil 5 nativ (tag "XQ").
+#   v94 (O4): + bsf-urile de culoare pentru ProRes/APV.
 . "$PSScriptRoot\..\framework.ps1"
+. "$PSScriptRoot\..\_helpers.ps1"
 
 $ROOT = if ($env:PROJECT_ROOT) { $env:PROJECT_ROOT } else { (Resolve-Path "$PSScriptRoot\..\..").Path }
 $SRC  = Join-Path $ROOT 'src'
@@ -118,4 +120,49 @@ if ((Get-Command ffmpeg -EA SilentlyContinue) -and (Get-Command ffprobe -EA Sile
     }
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# ── v94 (O4): ProRes si APV pierdeau semnalizarea de culoare a sursei ──
+# Ambele isi scriu propriul atom/header si ignora `-color_*` (verificat) → sursa
+# bt709/bt709/bt709 ieseа bt709/smpte170m/unknown. Reparat cu bsf-urile dedicate.
+# DNxHR nu are bsf — acolo gamut-ul se pastreaza doar pe MXF (limitare v74).
+# NB: $SRC a fost suprascris mai sus de $src (fisier video) — PowerShell e
+# case-insensitive la variabile. Folosim $ENC, incarcat la inceputul testului.
+$ENCO4 = $ENC
+Assert-Match $ENCO4 'function Get-MezzColorBsf' "O4: helperul e definit"
+Assert-Match $ENCO4 ([regex]::Escape("Get-MezzColorBsf -Kind 'prores' -File `$f.FullName")) "O4: cablat pe ProRes"
+Assert-Match $ENCO4 ([regex]::Escape("Get-MezzColorBsf -Kind 'apv' -File `$f.FullName"))    "O4: cablat pe APV"
+Assert-Match $ENCO4 ([regex]::Escape('+ $proresColorBsf')) "O4: bsf-ul intra in ffArgs (ProRes)"
+Assert-Match $ENCO4 ([regex]::Escape('+ $apvColorBsf'))    "O4: bsf-ul intra in ffArgs (APV)"
+
+if ((Get-Command ffmpeg -EA SilentlyContinue) -and (Get-Command ffprobe -EA SilentlyContinue)) {
+    Import-AvEncodeFunctions -Names @('Get-MezzColorBsf','Get-H273Code')
+    $tmpO = Join-Path ([System.IO.Path]::GetTempPath()) ("mezzo4_" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmpO | Out-Null
+    try {
+        # culoarea se pune prin -x264-params (regula v62 — `-color_*` nu propaga in VUI)
+        $full = Join-Path $tmpO "full.mp4"
+        & ffmpeg -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" `
+            -c:v libx264 -preset ultrafast -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709" `
+            $full 2>$null | Out-Null
+        $bp = Get-MezzColorBsf -Kind 'prores' -File $full
+        $ba = Get-MezzColorBsf -Kind 'apv'    -File $full
+        Assert-Match $bp[1] ([regex]::Escape("prores_metadata=color_primaries=bt709:color_trc=bt709:colorspace=bt709")) `
+            "O4: ProRes → bsf cu numele culorii sursei"
+        Assert-Match $ba[1] ([regex]::Escape("apv_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1")) `
+            "O4: APV → bsf cu coduri H.273"
+        # sursa care NU declara culoarea → gol (nu inventam)
+        $plain = Join-Path $tmpO "plain.mp4"
+        & ffmpeg -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" `
+            -c:v libx264 -preset ultrafast $plain 2>$null | Out-Null
+        Assert-Eq 0 (Get-MezzColorBsf -Kind 'prores' -File $plain).Count "O4: sursa fara culoare → gol (ProRes)"
+        Assert-Eq 0 (Get-MezzColorBsf -Kind 'apv'    -File $plain).Count "O4: sursa fara culoare → gol (APV)"
+        Assert-Eq 0 (Get-MezzColorBsf -Kind 'prores' -File "").Count     "O4: fara fisier → gol"
+        # functional: bsf-ul produce eticheta corecta
+        $prOut = Join-Path $tmpO "pr.mov"
+        & ffmpeg -v error -y -t 1 -i $full -an -c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le @bp $prOut 2>$null | Out-Null
+        $trcO4 = (& ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nw=1:nk=1 $prOut 2>$null | Select-Object -First 1)
+        Assert-Eq "bt709" "$trcO4".Trim() "O4 functional: ProRes + bsf → transfer=bt709"
+    } finally { Remove-Item $tmpO -Recurse -Force -EA SilentlyContinue }
+}
+
 Invoke-TestSummary

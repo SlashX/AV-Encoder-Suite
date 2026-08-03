@@ -116,4 +116,42 @@ if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
         assert_file_exists "$tmpd/mxf_pcm.mxf" "functional: MXF + PCM produce output"
     fi
 fi
+
+# ── v94 (O4): ProRes si APV pierdeau semnalizarea de culoare a sursei ──
+# Ambele isi scriu propriul atom/header si ignora `-color_*` (verificat) → sursa
+# bt709/bt709/bt709 ieseа bt709/smpte170m/unknown. Reparat cu bsf-urile dedicate.
+# DNxHR nu are bsf — acolo gamut-ul se pastreaza doar pe MXF (limitare v74).
+PR_SRC="$(cat "$SCRIPT_DIR/av_encoder_prores.sh")"
+APV_SRC="$(cat "$SCRIPT_DIR/av_encoder_apv.sh")"
+assert_contains "$PR_SRC"  '_mezz_color_bsf prores' "O4: ProRes cere bsf-ul de culoare"
+assert_contains "$PR_SRC"  '$_pr_color_bsf'         "O4: ProRes il injecteaza in comanda"
+assert_contains "$APV_SRC" '_mezz_color_bsf apv'    "O4: APV cere bsf-ul de culoare"
+assert_contains "$APV_SRC" '$_apv_color_bsf'        "O4: APV il injecteaza in comanda"
+
+if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+    source "$SCRIPT_DIR/av_common.sh" 2>/dev/null
+    tmpo="$(mktemp -d)"
+    # sursa cu culoare COMPLETA (via -x264-params: `-color_*` nu propaga in VUI, regula v62)
+    ffmpeg -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" \
+        -c:v libx264 -preset ultrafast -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709" \
+        "$tmpo/full.mp4" 2>/dev/null
+    bsf_pr=$(_mezz_color_bsf prores "$tmpo/full.mp4")
+    bsf_apv=$(_mezz_color_bsf apv "$tmpo/full.mp4")
+    assert_contains "$bsf_pr"  "prores_metadata=color_primaries=bt709:color_trc=bt709:colorspace=bt709" \
+        "O4: ProRes → bsf cu numele culorii sursei"
+    assert_contains "$bsf_apv" "apv_metadata=color_primaries=1:transfer_characteristics=1:matrix_coefficients=1" \
+        "O4: APV → bsf cu coduri H.273"
+    # sursa care NU declara culoarea → GOL (nu inventam)
+    ffmpeg -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" \
+        -c:v libx264 -preset ultrafast "$tmpo/plain.mp4" 2>/dev/null
+    assert_eq "" "$(_mezz_color_bsf prores "$tmpo/plain.mp4")" "O4: sursa fara culoare → bsf gol (ProRes)"
+    assert_eq "" "$(_mezz_color_bsf apv    "$tmpo/plain.mp4")" "O4: sursa fara culoare → bsf gol (APV)"
+    assert_eq "" "$(_mezz_color_bsf prores)"                   "O4: fara fisier → bsf gol"
+    # functional: bsf-ul chiar produce eticheta corecta prin eval (calea reala de encode)
+    # shellcheck disable=SC2086
+    eval "ffmpeg -v error -y -t 1 -i \"$tmpo/full.mp4\" -an -c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le $bsf_pr \"$tmpo/pr.mov\"" 2>/dev/null
+    trc=$(ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of default=nw=1:nk=1 "$tmpo/pr.mov" 2>/dev/null | tr -d '\r')
+    assert_eq "bt709" "$trc" "O4 functional: ProRes + bsf prin eval → transfer=bt709"
+    rm -rf "$tmpo"
+fi
 true

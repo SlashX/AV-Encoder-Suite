@@ -68,6 +68,13 @@ for t in "${TESTS[@]}"; do
                 echo "  ${RED}✗${RESET} $name ${DIM}(0 asertiuni — no-op?)${RESET}"
                 failed=$((failed+1))
                 failed_names+=("$name (0 asertiuni)")
+            # v94: no-op PARTIAL — o functie inexistenta arunca la mijlocul testului,
+            # restul aserţiunilor nu mai ruleaza, dar contorul e >0 deci garda de mai sus
+            # nu prinde. Mirror al gardei din run_tests.ps1 (acolo clasa a lovit de 2 ori).
+            elif grep -qE 'command not found|is not recognized as a name of a cmdlet' "$log"; then
+                echo "  ${RED}✗${RESET} $name ${DIM}(functie/comanda inexistenta — no-op partial?)${RESET}"
+                failed=$((failed+1))
+                failed_names+=("$name (no-op partial)")
             else
                 echo "  ${GREEN}✓${RESET} $name"
                 passed=$((passed+1))

@@ -45,4 +45,49 @@ if ((Get-Command ffmpeg -EA SilentlyContinue) -and (Get-Command ffprobe -EA Sile
     }
     Remove-Item $tmp -Recurse -Force -EA SilentlyContinue
 }
+
+# ── 3. v94 (O3) — sursele SDR simple isi pastreaza culoarea si pe HW ──
+# Pana in v93, fara niciun mod HDR, $hwColorFlags ramanea GOL si encoderul HW isi scria
+# propriul VUI (validat pe QSV: sursa bt709 → output transfer=smpte170m, matrice pierduta).
+# Acum se re-afirma culoarea REALA a sursei — nu bt709 fix (materialul PAL/NTSC ramane corect).
+Assert-Match $ENC 'function Get-H273Code'          "PS1: Get-H273Code definit"
+Assert-Match $ENC 'function Get-HwVuiBsfFromSource' "PS1: Get-HwVuiBsfFromSource definit"
+Assert-Match $ENC ([regex]::Escape('Get-HwVuiBsfFromSource -EncCodec $hwEncCodec -File $f.FullName')) `
+    "PS1: fallback-ul SDR e cablat in bucla de encode"
+
+Import-AvEncodeFunctions -Names @('Get-H273Code','Get-HwVuiBsfFromSource')
+Assert-Eq 1  (Get-H273Code "primaries" "bt709")       "H.273 PS1: primaries bt709 → 1"
+Assert-Eq 1  (Get-H273Code "transfer"  "bt709")       "H.273 PS1: transfer bt709 → 1"
+Assert-Eq 1  (Get-H273Code "matrix"    "bt709")       "H.273 PS1: matrix bt709 → 1"
+Assert-Eq 5  (Get-H273Code "primaries" "bt470bg")     "H.273 PS1: primaries bt470bg (PAL) → 5"
+Assert-Eq 5  (Get-H273Code "transfer"  "gamma28")     "H.273 PS1: transfer gamma28 → 5"
+Assert-Eq 9  (Get-H273Code "primaries" "bt2020")      "H.273 PS1: primaries bt2020 → 9"
+Assert-Eq 16 (Get-H273Code "transfer"  "smpte2084")   "H.273 PS1: transfer PQ → 16"
+Assert-Eq 18 (Get-H273Code "transfer"  "arib-std-b67") "H.273 PS1: transfer HLG → 18"
+Assert-Eq $null (Get-H273Code "primaries" "unknown")  "H.273 PS1: valoare necunoscuta → null"
+Assert-Eq $null (Get-H273Code "matrix"    "")         "H.273 PS1: valoare goala → null"
+
+if ((Get-Command ffmpeg -EA SilentlyContinue) -and (Get-Command ffprobe -EA SilentlyContinue)) {
+    $tmp2 = Join-Path ([System.IO.Path]::GetTempPath()) ("hwvui_" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmp2 | Out-Null
+    try {
+        # NB: culoarea se pune prin `-x264-params` (regula v62 Bug 2 — `-color_*` NU propaga
+        # in VUI la x264, deci un fixture facut cu ele ar raporta `unknown`).
+        $sdr = Join-Path $tmp2 "sdr.mp4"
+        & ffmpeg -hide_banner -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" `
+            -c:v libx264 -preset ultrafast -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709" `
+            $sdr 2>$null | Out-Null
+        $bsfSdr = Get-HwVuiBsfFromSource -EncCodec "hevc_qsv" -File $sdr
+        Assert-Eq 2 $bsfSdr.Count "O3 PS1: sursa SDR bt709 → BSF emis"
+        Assert-Match $bsfSdr[1] ([regex]::Escape("colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1")) `
+            "O3 PS1: BSF re-afirma exact 1/1/1"
+        # sursa fara culoare declarata → NU inventam nimic
+        $plain = Join-Path $tmp2 "plain.mp4"
+        & ffmpeg -hide_banner -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" `
+            -c:v libx264 -preset ultrafast $plain 2>$null | Out-Null
+        Assert-Eq 0 (Get-HwVuiBsfFromSource -EncCodec "hevc_qsv" -File $plain).Count `
+            "O3 PS1: sursa fara culoare declarata → BSF gol (nu inventam)"
+    } finally { Remove-Item $tmp2 -Recurse -Force -EA SilentlyContinue }
+}
+
 Invoke-TestSummary

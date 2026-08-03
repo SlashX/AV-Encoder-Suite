@@ -811,7 +811,7 @@ function Invoke-RemuxFlow {
     Write-Host "  4) webm  - web open (VP9/AV1 + Opus only)"
     Write-Host ""
     $tc = Read-Host "Alege 1-4 [implicit: 1]"
-    $Target = switch ($tc) { "2" {"mp4"} "3" {"mov"} "4" {"webm"} default {"mkv"} }
+    $Target = switch ("$tc") { "2" {"mp4"} "3" {"mov"} "4" {"webm"} default {"mkv"} }
 
     $total = 0; $ok = 0; $skip = 0; $fail = 0
     foreach ($f in $selectedFiles) {
@@ -1412,7 +1412,11 @@ function Read-MuxPickList {
         [bool]$AllowNone,
         [string]$Label
     )
-    $arr = @($Files)
+    # v94 (B4): `[object[]]` in loc de `@()` — pe PowerShell 7.6 / .NET 10, `@()` aplicat pe un
+    # `System.Collections.Generic.List[object]` arunca „Argument types do not match" (pe
+    # `List[string]` nu), iar fluxul Mux murea aici, imediat dupa banner. `[object[]]`,
+    # `.ToArray()` si enumerarea prin pipeline sunt neafectate.
+    $arr = [object[]]$Files
     if ($arr.Count -eq 0) {
         Write-Host "  ($Label`: niciun fisier disponibil in InputVideos)" -ForegroundColor DarkGray
         if ($AllowNone) { return ,@() }
@@ -1515,7 +1519,7 @@ function Invoke-MuxFlow {
     Write-Host "  4) webm  - VP8/VP9/AV1 + Opus/Vorbis"
     Write-Host ""
     $tc = Read-Host "Alege 1-4 [implicit: 1]"
-    $Target = switch ($tc) { "2" {"mp4"} "3" {"mov"} "4" {"webm"} "" {"mkv"} "1" {"mkv"} default { $null } }
+    $Target = switch ("$tc") { "2" {"mp4"} "3" {"mov"} "4" {"webm"} "" {"mkv"} "1" {"mkv"} default { $null } }
     if ($null -eq $Target) { Write-Host "Optiune invalida." -ForegroundColor Red; return }
 
     # ── Output overwrite check (earlier — sa nu pierdem timpul cu metadata daca user anuleaza) ──
@@ -1784,6 +1788,11 @@ function Invoke-MuxFlow {
             $mime = Get-MuxAttachMime -Ext $afExt
             $attachArgs.Add("-attach") | Out-Null; $attachArgs.Add($af) | Out-Null
             $attachArgs.Add("-metadata:s:t:$attachIdx") | Out-Null; $attachArgs.Add("mimetype=$mime") | Out-Null
+            # v94 (B2): `filename` EXPLICIT — ffmpeg il deriva din calea lui `-attach` taind
+            # doar dupa `/`, deci cu separator Windows `\` pastreaza calea ABSOLUTA intreaga
+            # ca nume de attachment. Cu basename, rezultatul e identic pe ambele platforme.
+            $attachArgs.Add("-metadata:s:t:$attachIdx") | Out-Null
+            $attachArgs.Add("filename=$([System.IO.Path]::GetFileName($af))") | Out-Null
             $attachIdx++
         }
     }

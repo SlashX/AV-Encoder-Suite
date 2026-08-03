@@ -110,9 +110,14 @@ encoder_setup_file() {
     # ── Comanda ffmpeg ────────────────────────────────────────────────
     # FARA -bits_per_mb: rate-control nativ per profil. Fortarea 8000 (max)
     # umfla toate profilele la acelasi bitrate (proxy ~16x peste nominal).
+    # v94 (O4): prores_ks isi scrie propriul atom de culoare si pierde semnalizarea sursei
+    # (bt709/bt709/bt709 → bt709/smpte170m/unknown). `-color_*` NU ajuta (verificat) — doar
+    # bsf-ul prores_metadata. Gol cand sursa nu declara tot sau nu e exprimabil in bsf.
+    local _pr_color_bsf
+    _pr_color_bsf=$(_mezz_color_bsf prores "$file")
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v prores_ks -profile:v $profile_num -pix_fmt $pixfmt \
-        -vendor apl0 \
+        -vendor apl0 $_pr_color_bsf \
         $VIDEO_FILTER $AUDIO_PARAMS"
     return 0
 }

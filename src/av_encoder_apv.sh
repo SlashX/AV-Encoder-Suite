@@ -149,9 +149,14 @@ encoder_setup_file() {
     # -oapv-params = override avansat (optional, key=value:key=value)
     local apv_extra_arg=""
     [[ -n "$APV_EXTRA" ]] && apv_extra_arg="-oapv-params $APV_EXTRA"
+    # v94 (O4): liboapv isi scrie propria semnalizare de culoare si pierde-o pe a sursei
+    # (bt709/bt709/bt709 → bt709/smpte170m/unknown), la fel ca ProRes. Reparat cu bsf-ul
+    # apv_metadata (coduri H.273). Gol cand sursa nu declara toate trei valorile.
+    local _apv_color_bsf
+    _apv_color_bsf=$(_mezz_color_bsf apv "$file")
     FFMPEG_CMD="ffmpeg -threads $THREADS -i \"\$file\" $MAP_FLAGS \
         -c:v $APV_ENCODER -preset $APV_PRESET -qp $APV_QP $apv_extra_arg -pix_fmt $pixfmt \
-        $VIDEO_FILTER $AUDIO_PARAMS"
+        $_apv_color_bsf $VIDEO_FILTER $AUDIO_PARAMS"
     return 0
 }
 

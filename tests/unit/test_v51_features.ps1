@@ -39,6 +39,17 @@ Assert-Eq "5.0" (Get-MinLevelForResolution -Codec 'hevc' -Width 3840 -Height 216
 Assert-Eq "5.1" (Get-MinLevelForResolution -Codec 'hevc' -Width 3840 -Height 2160 -Fps 60) "HEVC 4K60 min 5.1"
 Assert-Eq "4.1" (Get-MinLevelForResolution -Codec 'h264' -Width 1920 -Height 1080 -Fps 30) "H.264 1080p min 4.1"
 
+# v94 (B10b) — SANTINELA: level-ul se calculeaza din SAMPLES + RATA + latura maxima,
+# NU din latime. Cazurile de mai jos ieseau subdimensionate pana in v93 si faceau x265
+# sa refuze sa porneasca ("picture dimensions are out of range") → encode 0 octeti.
+Assert-Eq "5.0" (Get-MinLevelForResolution -Codec 'hevc' -Width 2688 -Height 1512 -Fps 60) "B10b: HEVC 2.7K DJI (era 4.1 → esec)"
+Assert-Eq "5.0" (Get-MinLevelForResolution -Codec 'hevc' -Width 2560 -Height 1440 -Fps 30) "B10b: HEVC 1440p (era 4.0 → esec)"
+Assert-Eq "4.0" (Get-MinLevelForResolution -Codec 'hevc' -Width 1080 -Height 1920 -Fps 30) "B10b: HEVC portret 1080x1920 (era 3.0 → esec)"
+Assert-Eq "5.0" (Get-MinLevelForResolution -Codec 'hevc' -Width 1440 -Height 2560 -Fps 30) "B10b: HEVC portret 1440x2560 (era 3.1 → esec)"
+Assert-Eq "5.0" (Get-MinLevelForResolution -Codec 'av1'  -Width 2688 -Height 1512 -Fps 60) "B10b: AV1 2.7K DJI (era 4.1)"
+Assert-Eq "5.1" (Get-MinLevelForResolution -Codec 'h264' -Width 2688 -Height 1512 -Fps 60) "B10b: H.264 2.7K DJI 60fps (era 5.0, rata prea mare)"
+Assert-Eq "4.1" (Get-MinLevelForResolution -Codec 'h264' -Width 1080 -Height 1920 -Fps 30) "B10b: H.264 portret (era 3.0)"
+
 # Suggest-VbvForTarget — escaladare Main → High Tier
 $s = Suggest-VbvForTarget -Codec 'hevc' -TargetKbps 4000 -Width 1920 -Height 1080 -Fps 30
 Assert-Eq "4.0" $s.Level "HEVC 4Mbps 1080p30 → 4.0"

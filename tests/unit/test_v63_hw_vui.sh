@@ -58,4 +58,53 @@ if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
     fi
     rm -rf "$tmpd"
 fi
+
+# ── 3. v94 (O3) — sursele SDR simple isi pastreaza culoarea si pe HW ──
+# Pana in v93, cand nu exista niciun mod HDR, _HW_VUI_BSF ramanea GOL si encoderul HW isi
+# scria propriul VUI (validat pe QSV: sursa bt709 → output transfer=smpte170m, matrice
+# pierduta). Acum se re-afirma culoarea REALA a sursei — nu bt709 fix, ca sa nu stricam
+# materialul PAL/NTSC vechi.
+if command -v ffprobe >/dev/null 2>&1; then
+    assert_eq "1" "$(_h273_code primaries bt709)"      "H.273: primaries bt709 → 1"
+    assert_eq "1" "$(_h273_code transfer  bt709)"      "H.273: transfer bt709 → 1"
+    assert_eq "1" "$(_h273_code matrix    bt709)"      "H.273: matrix bt709 → 1"
+    assert_eq "5" "$(_h273_code primaries bt470bg)"    "H.273: primaries bt470bg (PAL) → 5"
+    assert_eq "5" "$(_h273_code transfer  gamma28)"    "H.273: transfer gamma28 → 5"
+    assert_eq "9" "$(_h273_code primaries bt2020)"     "H.273: primaries bt2020 → 9"
+    assert_eq "16" "$(_h273_code transfer smpte2084)"  "H.273: transfer PQ → 16"
+    assert_eq "18" "$(_h273_code transfer arib-std-b67)" "H.273: transfer HLG → 18"
+    assert_eq ""  "$(_h273_code primaries unknown)"    "H.273: valoare necunoscuta → gol"
+    assert_eq ""  "$(_h273_code matrix    '')"         "H.273: valoare goala → gol"
+
+    tmpc="$(mktemp -d)"
+    if command -v ffmpeg >/dev/null 2>&1; then
+        # sursa cu culoare declarata → BSF cu EXACT valorile ei.
+        # NB: culoarea se pune prin `-x264-params` (regula v62 Bug 2 — steagurile
+        # `-color_*` NU propaga in VUI la x264, deci un fixture facut cu ele ar raporta
+        # `unknown` si ar testa altceva decat credem).
+        ffmpeg -hide_banner -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" \
+            -c:v libx264 -preset ultrafast \
+            -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709" \
+            "$tmpc/sdr.mp4" 2>/dev/null
+        HW_HDR_MODE="" _HW_VUI_BSF=""
+        _hw_hdr_setup hevc "$tmpc/sdr.mp4"
+        assert_contains "$_HW_VUI_BSF" "colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1" \
+            "O3: sursa SDR bt709 → BSF re-afirma 1/1/1"
+        # sursa fara culoare declarata → NU inventam nimic
+        ffmpeg -hide_banner -v error -y -f lavfi -i "testsrc2=duration=1:size=256x256:rate=10" \
+            -c:v libx264 -preset ultrafast "$tmpc/plain.mp4" 2>/dev/null
+        HW_HDR_MODE="" _HW_VUI_BSF=""
+        _hw_hdr_setup hevc "$tmpc/plain.mp4"
+        assert_eq "" "$_HW_VUI_BSF" "O3: sursa fara culoare declarata → BSF gol (nu inventam)"
+    fi
+    # fara fisier (apel vechi cu 1 argument) → back-compat, BSF gol
+    HW_HDR_MODE="" _HW_VUI_BSF=""
+    _hw_hdr_setup hevc
+    assert_eq "" "$_HW_VUI_BSF" "O3: apel fara fisier → BSF gol (back-compat)"
+    # modurile HDR raman NEatinse
+    HW_HDR_MODE="hw_hdr10" _HW_VUI_BSF=""
+    _hw_hdr_setup hevc "$tmpc/sdr.mp4"
+    assert_contains "$_HW_VUI_BSF" "transfer_characteristics=16" "O3: hw_hdr10 ramane PQ (neatins)"
+    rm -rf "$tmpc"
+fi
 true

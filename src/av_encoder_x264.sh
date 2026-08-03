@@ -277,11 +277,17 @@ encoder_setup_file() {
     [[ -n "$_x264_hrd_param" ]] && _x264_parts="${_x264_parts:+${_x264_parts}:}${_x264_hrd_param}"
     [[ -n "$EXTRA_X264" ]] && _x264_parts="${_x264_parts:+${_x264_parts}:}${EXTRA_X264}"
     [[ -n "$_x264_parts" ]] && x264extra="-x264-params $_x264_parts"
-    local video_params="-profile:v $local_profile -level:v $x264_level -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-} ${x264_hlg_color_flags}"
+    # v94 (B10a): `-level:v` se trimite DOAR pe VBR/2-pass (unde nal-hrd are nevoie de el).
+    # Pe CRF ramane informational: x264 nu refuza un level subdimensionat, dar il SCRIE in
+    # stream (validat: 1080x1920 cu `-level:v 3.0` → `level=30`, desi singur deduce `level=42`)
+    # → semnalizare falsa catre playerele/TV-urile care valideaza level-ul.
+    local _x264_level_flag=""
+    [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]] && _x264_level_flag="-level:v $x264_level"
+    local video_params="-profile:v $local_profile $_x264_level_flag -pix_fmt $x264_pixfmt $x264_bf $x264_refs ${LOG_COLOR_FLAGS:-} ${x264_hlg_color_flags}"
     if [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
         log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt | HRD=vbr"
     else
-        log "  Profil: $local_profile | Level: $x264_level | PixFmt: $x264_pixfmt"
+        log "  Profil: $local_profile | Level: $x264_level (informational) | PixFmt: $x264_pixfmt"
     fi
     log "  Container: $CONTAINER | Preset: $PRESET | Tune: ${TUNE_OPT:-fara}"
 

@@ -33,15 +33,28 @@ detect_brand() {
 }
 
 # Index track-ului telemetry (gpmd / djmd) — pentru ffmpeg -map
+# v94 (B3): indexul REAL al streamului, citit din campul `index`, NU numarul liniei.
+# Pe fisierele cu track groups (DJI/QuickTime) ffprobe listeaza prin grupuri: linii goale,
+# duplicate si ordine ne-naturala (ex. index=4 apare INAINTEA lui index=1) → numarand liniile,
+# `tmcd` primea indexul pistei AUDIO si `djmd` pe al cover-ului → extrageam continut GRESIT
+# (djmd.bin = JPEG, tmcd.bin = AAC), iar `dbgi` nu se extragea deloc.
+# Acelasi tipar corect ca `_dji_native_meta_ids` (v78). Dedupe pe index (prima aparitie castiga).
 detect_telemetry_track_idx() {
     local file="$1"; local target_tag="$2"
-    local idx=0
-    while IFS= read -r tag; do
-        if echo "$tag" | grep -qi "$target_tag"; then
-            echo "$idx"; return 0
-        fi
-        idx=$((idx + 1))
-    done < <(ffprobe -v error -show_entries stream=codec_tag_string,codec_name -of csv=p=0 "$file" 2>/dev/null)
+    local idx="" tag="" line
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        case "$line" in
+            index=*) idx="${line#index=}"; tag="" ;;
+            codec_tag_string=*|codec_name=*)
+                tag="${line#*=}"
+                if [[ -n "$idx" && -n "$tag" ]] && echo "$tag" | grep -qi "$target_tag"; then
+                    echo "$idx"; return 0
+                fi
+                ;;
+        esac
+    done < <(ffprobe -v error -show_entries stream=index,codec_tag_string,codec_name \
+                -of default=noprint_wrappers=1 "$file" 2>/dev/null)
     return 1
 }
 
@@ -815,23 +828,35 @@ if want_srt and pts:
 
 process_dji_raw() {
     local file="$1"; local name="$2"
-    local local_idx=0
-    while IFS= read -r tag; do
-        if echo "$tag" | grep -qi "djmd"; then
-            ffmpeg -v error -i "$file" -map 0:$local_idx -c copy -f data "$OUTPUT_DIR/${name}_djmd.bin" -y </dev/null 2>/dev/null
-            [ -s "$OUTPUT_DIR/${name}_djmd.bin" ] && echo "  [OK] djmd: ${name}_djmd.bin ($(du -h "$OUTPUT_DIR/${name}_djmd.bin" | cut -f1))" || rm -f "$OUTPUT_DIR/${name}_djmd.bin"
-        elif echo "$tag" | grep -qi "dbgi"; then
-            ffmpeg -v error -i "$file" -map 0:$local_idx -c copy -f data "$OUTPUT_DIR/${name}_dbgi.bin" -y </dev/null 2>/dev/null
-            [ -s "$OUTPUT_DIR/${name}_dbgi.bin" ] && echo "  [OK] dbgi: ${name}_dbgi.bin ($(du -h "$OUTPUT_DIR/${name}_dbgi.bin" | cut -f1))" || rm -f "$OUTPUT_DIR/${name}_dbgi.bin"
-        elif echo "$tag" | grep -qi "tmcd"; then
-            ffmpeg -v error -i "$file" -map 0:$local_idx -c copy -f data "$OUTPUT_DIR/${name}_tmcd.bin" -y </dev/null 2>/dev/null
-            [ -s "$OUTPUT_DIR/${name}_tmcd.bin" ] && echo "  [OK] tmcd: ${name}_tmcd.bin ($(du -h "$OUTPUT_DIR/${name}_tmcd.bin" | cut -f1))" || rm -f "$OUTPUT_DIR/${name}_tmcd.bin"
-        elif echo "$tag" | grep -qiE "mjpeg|jpeg"; then
-            ffmpeg -v error -i "$file" -map 0:$local_idx -c copy -f mjpeg "$OUTPUT_DIR/${name}_cover.jpg" -y </dev/null 2>/dev/null
-            [ -s "$OUTPUT_DIR/${name}_cover.jpg" ] && echo "  [OK] cover: ${name}_cover.jpg ($(du -h "$OUTPUT_DIR/${name}_cover.jpg" | cut -f1))" || rm -f "$OUTPUT_DIR/${name}_cover.jpg"
-        fi
-        local_idx=$((local_idx + 1))
-    done < <(ffprobe -v error -show_entries stream=codec_tag_string,codec_name -of csv=p=0 "$file" 2>/dev/null)
+    # v94 (B3): index REAL din campul `index` + dedupe — vezi nota de la
+    # detect_telemetry_track_idx. Inainte se numarau LINIILE, iar pe track groups (DJI)
+    # asta insemna `-map 0:<alt stream>`: djmd.bin iesea JPEG, tmcd.bin iesea AAC, dbgi lipsea.
+    local _cur_idx="" _tag="" line _seen=" "
+    _dji_raw_one() {   # $1=index  $2=eticheta  $3=extensie  $4=format ffmpeg
+        local _i="$1" _lbl="$2" _ext="$3" _fmt="$4"
+        local _out="$OUTPUT_DIR/${name}_${_lbl}.${_ext}"
+        ffmpeg -v error -i "$file" -map "0:$_i" -c copy -f "$_fmt" "$_out" -y </dev/null 2>/dev/null
+        if [ -s "$_out" ]; then echo "  [OK] $_lbl: ${name}_${_lbl}.${_ext} ($(du -h "$_out" | cut -f1))"
+        else rm -f "$_out"; fi
+    }
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        case "$line" in
+            index=*) _cur_idx="${line#index=}"; _tag="" ;;
+            codec_tag_string=*|codec_name=*)
+                _tag="${line#*=}"
+                [[ -z "$_cur_idx" || -z "$_tag" ]] && continue
+                case "$_seen" in *" $_cur_idx "*) continue ;; esac
+                if   echo "$_tag" | grep -qi "djmd";        then _seen="$_seen$_cur_idx "; _dji_raw_one "$_cur_idx" djmd  bin  data
+                elif echo "$_tag" | grep -qi "dbgi";        then _seen="$_seen$_cur_idx "; _dji_raw_one "$_cur_idx" dbgi  bin  data
+                elif echo "$_tag" | grep -qi "tmcd";        then _seen="$_seen$_cur_idx "; _dji_raw_one "$_cur_idx" tmcd  bin  data
+                elif echo "$_tag" | grep -qiE "mjpeg|jpeg"; then _seen="$_seen$_cur_idx "; _dji_raw_one "$_cur_idx" cover jpg  mjpeg
+                fi
+                ;;
+        esac
+    done < <(ffprobe -v error -show_entries stream=index,codec_tag_string,codec_name \
+                -of default=noprint_wrappers=1 "$file" 2>/dev/null)
+    unset -f _dji_raw_one
 }
 
 process_dji_strip() {
@@ -1123,26 +1148,31 @@ embed_telemetry_lossless() {
         if [[ $want_csv_norm -eq 1 ]]; then
             ff_args+=(-attach "$csv_norm")
             ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            ff_meta+=("-metadata:s:t:${att_idx}" "filename=$(basename "$csv_norm")")
             att_idx=$((att_idx+1))
         fi
         if [[ $want_csv_basic -eq 1 ]]; then
             ff_args+=(-attach "$csv_basic")
             ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            ff_meta+=("-metadata:s:t:${att_idx}" "filename=$(basename "$csv_basic")")
             att_idx=$((att_idx+1))
         fi
         if [[ $want_csv_full -eq 1 ]]; then
             ff_args+=(-attach "$csv_full")
             ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=text/csv")
+            ff_meta+=("-metadata:s:t:${att_idx}" "filename=$(basename "$csv_full")")
             att_idx=$((att_idx+1))
         fi
         if [[ $want_gpx -eq 1 ]]; then
             ff_args+=(-attach "$gpx_file")
             ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=application/gpx+xml")
+            ff_meta+=("-metadata:s:t:${att_idx}" "filename=$(basename "$gpx_file")")
             att_idx=$((att_idx+1))
         fi
         if [[ $want_kml -eq 1 ]]; then
             ff_args+=(-attach "$kml_file")
             ff_meta+=("-metadata:s:t:${att_idx}" "mimetype=application/vnd.google-earth.kml+xml")
+            ff_meta+=("-metadata:s:t:${att_idx}" "filename=$(basename "$kml_file")")
             att_idx=$((att_idx+1))
         fi
     fi

@@ -29,6 +29,20 @@ assert_contains "$BSH" 'if [ "$PREVIEW_STILL" -eq 1 ]; then' "bash: ramura still
 assert_contains "$BSH" '--single "$_st_t"'            "bash: still foloseste engine --single"
 assert_contains "$BSH" 'av_open_path "$_st_out"'      "bash: auto-open PNG"
 assert_contains "$BSH" 'PREVIEW_MODE=1'               "bash: ADITIV — calea clip 5s pastrata"
+# v94 (B15): still-ul cade la MIJLOCUL clipului, nu la inceputul ferestrei de 5s
+assert_contains "$BSH" 'PREVIEW_T_MID=$(awk -v d="$dur" '"'"'BEGIN{printf "%.3f", d/2}'"'"')' \
+    "B15: helper-ul expune mijlocul real"
+assert_contains "$BSH" '_st_t="$PREVIEW_T_MID"'       "B15: still consuma mijlocul, nu Start"
+assert_contains "$BSH" 'PREVIEW_T_START=$(awk -v d="$dur" '"'"'BEGIN{m=d/2-2.5;' \
+    "B15: fereastra clipului de 5s NEatinsa (mid-2.5)"
+# functional: formulele pe cateva durate (mijloc vs inceput fereastra)
+for _pair in "8.008:4.004:1.504" "6:3.000:0.500" "4:2.000:0.000"; do
+    _d="${_pair%%:*}"; _rest="${_pair#*:}"; _wantmid="${_rest%%:*}"; _wantstart="${_rest##*:}"
+    _mid=$(awk -v d="$_d" 'BEGIN{printf "%.3f", d/2}')
+    _srt=$(awk -v d="$_d" 'BEGIN{m=d/2-2.5; printf "%.3f", (m>0)?m:0}')
+    assert_eq "$_wantmid"   "$_mid" "B15: durata ${_d}s → still la mijloc"
+    assert_eq "$_wantstart" "$_srt" "B15: durata ${_d}s → clip 5s porneste la mid-2.5"
+done
 
 # ── 3. av_burnin.ps1: mirror ────────────────────────────────────────
 assert_contains "$BPS" 'PreviewStill'                 "PS1: state PreviewStill"

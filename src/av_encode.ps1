@@ -45,6 +45,112 @@ function Ensure-TempDir {
 # per fisier. Consumat de fiecare apel Start-Process ffmpeg.
 $script:ffmpegWorkDir = ""
 
+# v94 (B11): `Start-Process -ArgumentList <array>` uneste elementele cu SPATIU si NU le
+# citeaza — orice argument care contine un spatiu (cale de input/output, LUT-ul livrat de
+# DJI „DJI OSMO Action 6 D-LogM to Rec.709 LUT-11.17.cube", un folder „My Videos") se rupe
+# in mai multe argumente, iar ffmpeg primeste gunoi: „Error opening input file …\my." /
+# „Error initializing the muxer for OSMO" → encode 0 octeti. Operatorul de apel
+# `& ffmpeg @args` citeaza corect (si asa fac toate standalone-urile), dar aici avem nevoie
+# de obiectul Process (progress bar + WaitForExit + ExitCode) si de -RedirectStandardError,
+# deci ramanem pe Start-Process si citam noi, dupa regulile CommandLineToArgvW.
+# `ProcessStartInfo.ArgumentList` (care ar face-o singura) NU exista pe .NET Framework 4.x
+# = PowerShell 5.1 → nu e o optiune. Acelasi tratament manual exista deja la CavernizeGUI (v89).
+# Bash e NEafectat: caile intra in filtre intre ghilimele simple, iar `eval` le respecta.
+function ConvertTo-NativeArgLine {
+    param([string[]]$Arguments)
+    $parts = @()
+    foreach ($a in $Arguments) {
+        $s = [string]$a
+        if ($s -eq '') {
+            $parts += '""'
+        } elseif ($s -notmatch '[\s"]') {
+            $parts += $s
+        } else {
+            # backslash-urile care preced un ghilimel se dubleaza (CommandLineToArgvW)
+            $q = $s -replace '(\\*)"', '$1$1\"'
+            $q = $q -replace '(\\+)$', '$1$1'
+            $parts += ('"' + $q + '"')
+        }
+    }
+    return ($parts -join ' ')
+}
+
+# v94 (O3): pe o sursa SDR simpla nu exista niciun mod HDR, deci pana acum nu se
+# scria niciun BSF si encoderul HW isi punea propriul VUI, pierzand semnalizarea
+# sursei (validat pe QSV: bt709/bt709/bt709 → bt709/smpte170m/unknown). Re-afirmam
+# EXACT valorile sursei, NU bt709 fix — un DVD PAL (bt470bg) nu trebuie transformat
+# in bt709. Daca sursa nu le declara pe toate trei, nu inventam nimic (BSF gol, ca
+# inainte). Codurile sunt ITU-T H.273; paritate cu bash `_h273_code`.
+function Get-H273Code {
+    param([string]$Kind, [string]$Value)
+    $v = ($Value -replace "[`r`n]", "").Trim()
+    switch ($Kind) {
+        "primaries" {
+            switch -Regex ($v) {
+                '^bt709$' { return 1 } '^bt470m$' { return 4 } '^bt470bg$' { return 5 }
+                '^smpte170m$' { return 6 } '^smpte240m$' { return 7 } '^film$' { return 8 }
+                '^bt2020$' { return 9 } '^smpte428' { return 10 } '^smpte431$' { return 11 }
+                '^smpte432$' { return 12 } default { return $null }
+            }
+        }
+        "transfer" {
+            switch -Regex ($v) {
+                '^bt709$' { return 1 } '^(gamma22|bt470m)$' { return 4 }
+                '^(gamma28|bt470bg)$' { return 5 } '^smpte170m$' { return 6 }
+                '^smpte240m$' { return 7 } '^linear$' { return 8 }
+                '^(log100|log)$' { return 9 } '^(log316|log_sqrt)$' { return 10 }
+                '^iec61966[-_]2[-_]4$' { return 11 } '^bt1361e?$' { return 12 }
+                '^iec61966[-_]2[-_]1$' { return 13 } '^bt2020[-_]10(bit)?$' { return 14 }
+                '^bt2020[-_]12(bit)?$' { return 15 } '^smpte2084$' { return 16 }
+                '^smpte428' { return 17 } '^arib-std-b67$' { return 18 }
+                default { return $null }
+            }
+        }
+        "matrix" {
+            switch -Regex ($v) {
+                '^(gbr|rgb)$' { return 0 } '^bt709$' { return 1 } '^fcc$' { return 4 }
+                '^bt470bg$' { return 5 } '^smpte170m$' { return 6 } '^smpte240m$' { return 7 }
+                '^ycgco$' { return 8 } '^bt2020(nc|_ncl)$' { return 9 }
+                '^bt2020(c|_cl)$' { return 10 } default { return $null }
+            }
+        }
+        default { return $null }
+    }
+}
+
+# v94 (O4): ProRes si APV isi scriu propria semnalizare de culoare si pierd-o pe a sursei
+# (validat: sursa bt709/bt709/bt709 → output bt709/smpte170m/unknown la AMBELE). Aceeasi
+# clasa cu O3 de pe HW, dar pe encodere SW. Se repara cu bitstream filterele dedicate:
+#   prores_metadata — valori ca NUME, dintr-un set RESTRANS (transfer: doar bt709/PQ/HLG)
+#   apv_metadata    — coduri numerice ITU-T H.273 (acelasi vocabular ca Get-H273Code)
+# DNxHR nu are bsf; acolo gamut-ul se pastreaza doar pe MXF (limitare de container, v74).
+# `-color_*` NU ajuta la niciunul (verificat empiric). Emitem bsf-ul DOAR cand sursa
+# declara toate trei valorile SI toate sunt exprimabile — altfel gol (nu inventam si nu
+# etichetam pe jumatate). Paritate cu bash `_mezz_color_bsf`.
+function Get-MezzColorBsf {
+    param([ValidateSet('prores','apv')][string]$Kind, [string]$File)
+    if (-not $File) { return @() }
+    $raw = & ffprobe -v error -select_streams v:0 `
+        -show_entries stream=color_primaries,color_transfer,color_space `
+        -of default=noprint_wrappers=1 $File 2>$null
+    $map = @{}
+    foreach ($line in @($raw)) {
+        if ($line -match '^\s*([a-z_]+)=(.*)$') { $map[$Matches[1]] = ($Matches[2]).Trim() }
+    }
+    $sp = $map['color_primaries']; $st = $map['color_transfer']; $sm = $map['color_space']
+    if ($Kind -eq 'prores') {
+        if ($sp -notin @('bt709','bt470bg','smpte170m','bt2020','smpte431','smpte432')) { return @() }
+        if ($st -notin @('bt709','smpte2084','arib-std-b67')) { return @() }
+        if ($sm -notin @('bt709','smpte170m','bt2020nc')) { return @() }
+        return @("-bsf:v","prores_metadata=color_primaries=${sp}:color_trc=${st}:colorspace=${sm}")
+    }
+    $cp = Get-H273Code "primaries" $sp
+    $ct = Get-H273Code "transfer"  $st
+    $cm = Get-H273Code "matrix"    $sm
+    if ($null -eq $cp -or $null -eq $ct -or $null -eq $cm) { return @() }
+    return @("-bsf:v","apv_metadata=color_primaries=${cp}:transfer_characteristics=${ct}:matrix_coefficients=${cm}")
+}
+
 # v61: pregateste un fisier (HDR10+ JSON) pentru a fi referit inline intr-un param
 # `:`-separat: seteaza CWD-ul ffmpeg pe directorul lui si returneaza numele gol
 # (colon-free). Pe bash nu e necesar (caile sunt colon-free) — helper exclusiv PS1.
@@ -765,7 +871,7 @@ function Invoke-ConcatFlow {
     Write-Host "  2) mp4"
     Write-Host "  3) mov"
     $contCh = Read-Host "Alege 1-3 [default: 1]"
-    $container = switch ($contCh) { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
+    $container = switch ("$contCh") { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
 
     if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null }
     $outPath = Join-Path $OutputDir "${outName}.${container}"
@@ -807,8 +913,13 @@ function Invoke-ConcatFlow {
         Write-Host "  Concat stream copy..." -ForegroundColor Green
         # v68: audio copiat in containerul ales → avertizeaza pistele incompatibile (per sursa)
         foreach ($s in $selected) { Show-IncompatAudioCopyWarnings -File $s.FullName -Container $container -ReencInputs @() -SkipInputs @() }
+        # v94 (B9): `-map 0` include pista `tmcd` (pusa AUTOMAT de muxerul MP4/MOV in orice
+        # .mp4), care prin concat demuxer ajunge de tip UNKNOWN → muxerul refuza („Cannot map
+        # stream #0:N - unsupported type") → 0 octeti. Se intampla pe ORICE tinta, inclusiv
+        # MP4→MP4 (verificat) — deci nu e o chestiune de container. `-dn` / `-map -0:d` NU
+        # ajuta (nu mai e „data", e „unknown"); doar `-ignore_unknown` o filtreaza.
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt,
-            "-map","0","-map_metadata","0","-c","copy",
+            "-map","0","-ignore_unknown","-map_metadata","0","-c","copy",
             "-avoid_negative_ts","make_zero",$outPath)
         Invoke-FfmpegWithProgress -Label "Concat (copy)" -TotalSeconds ([int]$totalS) -Arguments $ffArgs | Out-Null
         # v73: surse DV -> -c copy pierde dvcC la ->MP4/MOV (pastrat la ->MKV de ffmpeg).
@@ -1141,7 +1252,7 @@ function Invoke-PipelineFlow {
         Write-Host "  2) libx264 (H.264)"
         Write-Host "  3) libsvtav1 (AV1)"
         $cc = Read-Host "Alege 1-3"
-        $codec = switch ($cc) { "2" {"libx264"} "3" {"libsvtav1"} default {"libx265"} }
+        $codec = switch ("$cc") { "2" {"libx264"} "3" {"libsvtav1"} default {"libx265"} }
         $crf = Read-Host "CRF [default: 22]"
         if (-not $crf) { $crf = "22" }
         Write-Host "Preset:" -ForegroundColor Cyan
@@ -1149,7 +1260,7 @@ function Invoke-PipelineFlow {
         Write-Host "  2) slow (calitate mai buna)"
         Write-Host "  3) fast"
         $pp = Read-Host "Alege 1-3"
-        $preset = switch ($pp) { "2" {"slow"} "3" {"fast"} default {"medium"} }
+        $preset = switch ("$pp") { "2" {"slow"} "3" {"fast"} default {"medium"} }
     } else {
         Write-Host "  → Video: stream copy. Defaults fallback (dacă incompat): libx265 CRF 22 medium" -ForegroundColor Gray
     }
@@ -1173,7 +1284,7 @@ function Invoke-PipelineFlow {
     Write-Host "  2) mp4"
     Write-Host "  3) mov"
     $contCh = Read-Host "Alege 1-3"
-    $container = switch ($contCh) { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
+    $container = switch ("$contCh") { "2" {"mp4"} "3" {"mov"} default {"mkv"} }
 
     Write-Host "Capitole automate (1 capitol per segment, marker timeline)?" -ForegroundColor Cyan
     Write-Host "  1) Da [default]"
@@ -1559,18 +1670,21 @@ function Invoke-PipelineFlow {
     }
     Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
     Write-Host "  Durata totala: $(Format-Seconds $pipelineTotalS)" -ForegroundColor Green
+    # v94 (B9): vezi nota din fluxul Concat — `-map 0` cara si `tmcd`, care prin concat
+    # demuxer devine tip UNKNOWN → orice muxer o refuza → 0 octeti. Doar `-ignore_unknown`
+    # o filtreaza (nu `-dn`, nu `-map -0:d`).
     if ($smartCopy) {
         $chapIn = @(); $chapMap = @()
         if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
-            "-map","0","-map_metadata","0") + $chapMap + @(
+            "-map","0","-ignore_unknown","-map_metadata","0") + $chapMap + @(
             "-c","copy","-avoid_negative_ts","make_zero",$outPath)
         Invoke-FfmpegWithProgress -Label "Pass 3/3 (copy)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     } elseif ($audioOnly) {
         $chapIn = @(); $chapMap = @()
         if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
-            "-map","0","-map_metadata","0") + $chapMap + @("-c:v","copy") +
+            "-map","0","-ignore_unknown","-map_metadata","0") + $chapMap + @("-c:v","copy") +
             $aArgs + @("-avoid_negative_ts","make_zero",$outPath)
         Invoke-FfmpegWithProgress -Label "Pass 3/3 (audio-only)" -TotalSeconds ([int]$pipelineTotalS) -Arguments $ffArgs | Out-Null
     } elseif ($useFilter) {
@@ -1594,8 +1708,13 @@ function Invoke-PipelineFlow {
     } else {
         $chapIn = @(); $chapMap = @()
         if ($chaptersFile) { $chapIn = @("-i",$chaptersFile); $chapMap = @("-map_chapters","1") }
+        # v94 (B17): si calea de RE-ENCODE are nevoie de -ignore_unknown, nu doar cele de
+        # copy. `-map 0` cara pista `tmcd` (muxerul mov o adauga oricarui .mp4), care prin
+        # concat demuxer devine tip UNKNOWN → muxerul refuza ("Cannot map stream #0:N -
+        # unsupported type") → 0 octeti. Re-encodarea video NU schimba asta: stream-ul
+        # necunoscut ramane mapat. Fixul B9 acoperise doar caile de copy.
         $ffArgs = @("-y","-f","concat","-safe","0","-i",$concatTxt) + $chapIn + @(
-            "-map","0","-map_metadata","0") + $chapMap + @(
+            "-map","0","-ignore_unknown","-map_metadata","0") + $chapMap + @(
             "-c:v",$codec,"-crf",$crf,"-preset",$preset) +
             $hdrPixArgs + $hdrColorArgs + $hdrX265Args + $hdrSvtArgs + $plCtag +
             $aArgs + @($outPath)
@@ -1643,7 +1762,7 @@ function Format-Bytes {
     param([long]$b)
     if ($b -ge 1GB) { "{0:F2} GB" -f ($b/1GB) }
     elseif ($b -ge 1MB) { "{0:F1} MB" -f ($b/1MB) }
-    else { "{0} KB" -f ($b/1KB) }
+    else { "{0:F0} KB" -f ($b/1KB) }   # v94 (O9): fara F0 iesea „490,43359375 KB"
 }
 
 function Get-FFprobeValue {
@@ -1744,7 +1863,7 @@ function Invoke-2PassEncode {
     $startP1 = Get-Date
     # v61: CWD pe $AV_TEMP_DIR — stats= (si eventual dhdr10-info) refera fisiere prin nume gol
     $wd2 = @{}; if ($script:ffmpegWorkDir) { $wd2['WorkingDirectory'] = $script:ffmpegWorkDir }
-    $proc1 = Start-Process ffmpeg -ArgumentList $p1Args -NoNewWindow -PassThru -RedirectStandardError $errFile1 @wd2
+    $proc1 = Start-Process ffmpeg -ArgumentList (ConvertTo-NativeArgLine $p1Args) -NoNewWindow -PassThru -RedirectStandardError $errFile1 @wd2
     Show-Progress -proc $proc1 -progFile $prog1 -durSec $DurationSec -startTime $startP1 -Label "$Label P1"
     $proc1.WaitForExit()
     if (Test-Path $errFile1) { Get-Content $errFile1 | Add-Content -Path $LogFile }
@@ -1762,7 +1881,7 @@ function Invoke-2PassEncode {
     $errFile2 = "$AV_TEMP_DIR\fferr_p2_$PID.txt"
     $p2Args = $script:ffmpegCmdPass2 + $TrailingArgs2 + @("-progress",$ProgressFile,"-nostats")
     $startP2 = Get-Date
-    $proc2 = Start-Process ffmpeg -ArgumentList $p2Args -NoNewWindow -PassThru -RedirectStandardError $errFile2 @wd2
+    $proc2 = Start-Process ffmpeg -ArgumentList (ConvertTo-NativeArgLine $p2Args) -NoNewWindow -PassThru -RedirectStandardError $errFile2 @wd2
     Show-Progress -proc $proc2 -progFile $ProgressFile -durSec $DurationSec -startTime $startP2 -Label "$Label P2"
     $proc2.WaitForExit()
     if (Test-Path $errFile2) { Get-Content $errFile2 | Add-Content -Path $LogFile }
@@ -1787,16 +1906,33 @@ function Test-SvtAv1TwoPassCaps {
     $script:svtav1TwoPassSupported = $false
     $script:svtav1DetectSource = ""
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { return $false }
-    $verOutput = & ffmpeg -version 2>$null | Out-String
-    if ($verOutput -match 'libsvtav1\s+(\d+)\.(\d+)') {
-        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-        $script:svtav1TwoPassSupported = ($major -gt 1) -or ($major -eq 1 -and $minor -ge 4)
-        $script:svtav1DetectSource = "version=$major.$minor"
-    } else {
-        # Fallback optimist: assume modern build
+    # v94 (B13): PROBA REALA pe REZULTAT, nu ghicit din `ffmpeg -version` si nici dupa exit
+    # code / mesaj. Build-urile care listeaza doar „libsvtav1" (fara versiune) cadeau pe
+    # fallback-ul „optimist" → sintaxa inline `pass=N:stats=` chiar si acolo unde NU e
+    # implementata. Esecul e perfid: `-v error` nu arata nimic (mesajul „Error parsing option
+    # stats" e pe nivel info), exit code-ul ramane 0, dar fisierul de statistici nu se scrie
+    # niciodata → pass 2 moare cu „Svt[error]: RC stats buffer not available".
+    # Singurul semnal de incredere e FISIERUL. Probam un cadru cu nume gol + CWD (forma din
+    # productie, care ocoleste si drive-colon-ul din v61). Paritate cu bash.
+    Ensure-TempDir
+    $probeDir = Join-Path $AV_TEMP_DIR ("svtprobe_" + [guid]::NewGuid().ToString("N").Substring(0,8))
+    New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+    $probeStats = Join-Path $probeDir "svtprobe.passlog"
+    Push-Location $probeDir
+    try {
+        & ffmpeg -v error -y -f lavfi -i "testsrc2=s=256x256:r=30:d=1" `
+            -c:v libsvtav1 -b:v 2000k `
+            -svtav1-params "preset=12:pass=1:stats=svtprobe.passlog" -f null - 2>&1 | Out-Null
+    } catch {
+    } finally { Pop-Location }
+    if ((Test-Path $probeStats) -and ((Get-Item $probeStats).Length -gt 0)) {
         $script:svtav1TwoPassSupported = $true
-        $script:svtav1DetectSource = "assumed-modern"
+        $script:svtav1DetectSource = "proba=inline-scrie-stats"
+    } else {
+        $script:svtav1TwoPassSupported = $false
+        $script:svtav1DetectSource = "proba=inline-fara-stats"
     }
+    Remove-Item $probeDir -Recurse -Force -ErrorAction SilentlyContinue
     return $script:svtav1TwoPassSupported
 }
 
@@ -1858,40 +1994,91 @@ function Get-VbvCaps {
     }
 }
 
+# v94 (B10b): level-ul se decide din NUMARUL de samples (MaxLumaPs / MaxFS), din RATA
+# de samples (w × h × fps) si din limita pe o singura latura — NU din latime, cum era
+# pana in v93. Banda pe latime dadea 4.1 pentru 2688x1512 (DJI Action 6) si 3.0 pentru
+# 1080x1920 (portret), iar x265 refuza sa porneasca: "picture dimensions are out of
+# range for specified level" → encode 0 octeti (inaltimea era primita ca parametru dar
+# niciodata folosita). Tabelele sunt cele din spec: H.265 A.4 / H.264 A.3 / AV1 A.3.
+# Oglinda exacta a `_min_level_for_res` (av_common.sh) — aceleasi tabele, aceeasi ordine.
+# Coloane: Level / MaxSize / MaxRate / MaxW / MaxH
+#   hevc → samples (MaxLumaPs / MaxLumaSr), latura max = floor(sqrt(MaxLumaPs × 8))
+#   h264 → MACROBLOCURI 16x16 (MaxFS / MaxMBPS), latura max = floor(sqrt(MaxFS × 8))
+#   av1  → samples (MaxPicSize / MaxDisplayRate) + MaxHSize / MaxVSize din spec
+# Nivelurile cu constrangeri IDENTICE apar o singura data: H.264 4.0≡4.1 (pastram 4.1,
+# nivelul conventional pentru 1080p, cu MaxBR mai mare), AV1 5.2≡5.3 si 6.2≡6.3.
 function Get-MinLevelForResolution {
     param([string]$Codec, [int]$Width, [int]$Height, [double]$Fps = 30)
-    $fpsInt = [int][Math]::Round($Fps)
+    # AwayFromZero, NU rotunjirea implicita: .NET foloseste „banker's rounding", deci
+    # [Math]::Round(12.5) da 12, in timp ce bash (`printf "%d", fps+0.5`) da 13. 12.5 fps
+    # e o rata reala (PAL half-rate), iar la o granita de rata cei 8% diferenta ar putea
+    # alege alt level pe cele doua platforme. Aici nu e o preferinta de rotunjire, e paritate.
+    $fpsInt = [int][Math]::Round($Fps, [MidpointRounding]::AwayFromZero)
     if ($fpsInt -lt 1) { $fpsInt = 30 }
+    if ($Width  -lt 1) { $Width  = 1920 }
+    if ($Height -lt 1) { $Height = 1080 }
+
+    # [long] obligatoriu — rata de samples pe 8K120 depaseste Int32.
+    [long]$size = 0; [long]$rate = 0; [long]$dimW = 0; [long]$dimH = 0
+    $tbl = $null; $fallback = "6.2"
     switch ($Codec) {
         "hevc" {
-            if     ($Width -ge 7680) { return "6.1" }
-            elseif ($Width -ge 3840 -and $fpsInt -gt 60) { return "5.2" }
-            elseif ($Width -ge 3840 -and $fpsInt -gt 30) { return "5.1" }
-            elseif ($Width -ge 3840) { return "5.0" }
-            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.1" }
-            elseif ($Width -ge 1920) { return "4.0" }
-            elseif ($Width -ge 1280) { return "3.1" }
-            else { return "3.0" }
+            $tbl = @(
+                @("3.0",     552960L,      16588800L,  2103L,  2103L),
+                @("3.1",     983040L,      33177600L,  2804L,  2804L),
+                @("4.0",    2228224L,      66846720L,  4222L,  4222L),
+                @("4.1",    2228224L,     133693440L,  4222L,  4222L),
+                @("5.0",    8912896L,     267386880L,  8444L,  8444L),
+                @("5.1",    8912896L,     534773760L,  8444L,  8444L),
+                @("5.2",    8912896L,    1069547520L,  8444L,  8444L),
+                @("6.0",   35651584L,    1069547520L, 16888L, 16888L),
+                @("6.1",   35651584L,    2139095040L, 16888L, 16888L),
+                @("6.2",   35651584L,    4278190080L, 16888L, 16888L)
+            )
+            $dimW = $Width; $dimH = $Height
+            $size = [long]$Width * [long]$Height; $rate = $size * $fpsInt
         }
         "h264" {
-            if     ($Width -ge 3840 -and $fpsInt -gt 60) { return "6.0" }
-            elseif ($Width -ge 3840) { return "5.1" }
-            elseif ($Width -ge 2560) { return "5.0" }
-            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.2" }
-            elseif ($Width -ge 1920) { return "4.1" }
-            elseif ($Width -ge 1280) { return "3.1" }
-            else { return "3.0" }
+            $tbl = @(
+                @("3.0",       1620L,         40500L,   113L,   113L),
+                @("3.1",       3600L,        108000L,   169L,   169L),
+                @("3.2",       5120L,        216000L,   202L,   202L),
+                @("4.1",       8192L,        245760L,   256L,   256L),
+                @("4.2",       8704L,        522240L,   263L,   263L),
+                @("5.0",      22080L,        589824L,   420L,   420L),
+                @("5.1",      36864L,        983040L,   543L,   543L),
+                @("5.2",      36864L,       2073600L,   543L,   543L),
+                @("6.0",     139264L,       4177920L,  1055L,  1055L),
+                @("6.1",     139264L,       8355840L,  1055L,  1055L),
+                @("6.2",     139264L,      16711680L,  1055L,  1055L)
+            )
+            $dimW = [long][Math]::Ceiling($Width  / 16.0)
+            $dimH = [long][Math]::Ceiling($Height / 16.0)
+            $size = $dimW * $dimH; $rate = $size * $fpsInt
         }
         "av1" {
-            if     ($Width -ge 7680) { return "6.1" }
-            elseif ($Width -ge 3840 -and $fpsInt -gt 60) { return "5.2" }
-            elseif ($Width -ge 3840 -and $fpsInt -gt 30) { return "5.1" }
-            elseif ($Width -ge 3840) { return "5.0" }
-            elseif ($Width -ge 1920 -and $fpsInt -gt 30) { return "4.1" }
-            elseif ($Width -ge 1920) { return "4.0" }
-            else { return "4.0" }
+            $tbl = @(
+                @("4.0",    2359296L,      70778880L,  6144L,  3456L),
+                @("4.1",    2359296L,     141557760L,  6144L,  3456L),
+                @("5.0",    8912896L,     267386880L,  8192L,  4352L),
+                @("5.1",    8912896L,     534773760L,  8192L,  4352L),
+                @("5.2",    8912896L,    1069547520L,  8192L,  4352L),
+                @("6.0",   35651584L,    1069547520L, 16384L,  8704L),
+                @("6.1",   35651584L,    2139095040L, 16384L,  8704L),
+                @("6.2",   35651584L,    4278190080L, 16384L,  8704L)
+            )
+            $dimW = $Width; $dimH = $Height
+            $size = [long]$Width * [long]$Height; $rate = $size * $fpsInt
+        }
+        default { return "4.0" }
+    }
+
+    foreach ($e in $tbl) {
+        if ($size -le $e[1] -and $rate -le $e[2] -and $dimW -le $e[3] -and $dimH -le $e[4]) {
+            return $e[0]
         }
     }
+    return $fallback
 }
 
 function Suggest-VbvForTarget {
@@ -2380,10 +2567,15 @@ function Get-SourceInfo {
     $codec    = Get-FFprobeValue $file "v:0" "codec_name"
     $pixFmt   = Get-FFprobeValue $file "v:0" "pix_fmt"
     $transfer = Get-FFprobeValue $file "v:0" "color_transfer"
-    $hdrPlus  = & ffprobe -v error -show_frames -select_streams v:0 `
+    # v94 (P6): probe-ul de side-data se captureaza O SINGURA DATA — acelasi output
+    # contine si semnalul DV („Dolby Vision Metadata" / „Dolby Vision RPU Data"), deci
+    # detectia DV vine pe GRATIS, fara ffprobe suplimentar.
+    $sideData = & ffprobe -v error -show_frames -select_streams v:0 `
         -read_intervals "%+#5" `
         -show_entries frame_side_data=side_data_type `
-        "$file" 2>$null | Select-String "HDR10+"
+        "$file" 2>$null
+    $hdrPlus  = $sideData | Select-String "HDR10+"
+    $isDVsd   = [bool]($sideData | Select-String "Dolby Vision")
     $is10bit  = $pixFmt -match "10"
     $isHDRPlus = [bool]$hdrPlus
     # v69: HDR10+ pe surse APV — decoderul ffmpeg ignora T.35 → probe engine (3 AU)
@@ -2396,15 +2588,19 @@ function Get-SourceInfo {
     $isHLG    = ($transfer -eq "arib-std-b67") -and (-not $isHDRPlus) -and ($transfer -ne "smpte2084")
     $fmt = switch ($codec) {
         "h264" { if ($is10bit) { "H.264 10bit" } else { "H.264 8bit" } }
+        # v94 (P6): ramura HLG lipsea — o sursa HLG aparea „10bit SDR". Bash o are
+        # de mult in `get_source_format` (av_check.sh) → aliniere de paritate.
         "hevc" {
             if     ($isHDRPlus) { "H.265 HEVC HDR10+" }
             elseif ($isHDR)     { "H.265 HEVC HDR10"  }
+            elseif ($isHLG)     { "H.265 HEVC HLG"    }
             elseif ($is10bit)   { "H.265 HEVC 10bit SDR" }
             else                { "H.265 HEVC 8bit SDR"  }
         }
         "av1" {
             if     ($isHDRPlus) { "AV1 HDR10+"    }
             elseif ($isHDR)     { "AV1 HDR10"     }
+            elseif ($isHLG)     { "AV1 HLG"       }
             elseif ($is10bit)   { "AV1 10bit SDR" }
             else                { "AV1 8bit SDR"  }
         }
@@ -2418,6 +2614,11 @@ function Get-SourceInfo {
         isHDR    = $isHDR
         isHDRPlus= $isHDRPlus
         isHLG    = $isHLG
+        # v94 (P6): marcaj DV din ACELASI probe. NU intra in `fmt` (coloana CSV ramane
+        # aliniata cu bash `get_source_format`, care tine DV-ul in coloana lui separata) —
+        # e folosit doar la afisajul per-fisier din bucla de encode, unde altfel un fisier
+        # Dolby Vision aparea „HDR10" (P8.1) sau chiar „10bit SDR" (P5 / P8.4).
+        isDV     = $isDVsd
         transfer = $transfer
     }
 }
@@ -3031,7 +3232,7 @@ function Invoke-StreamCopy {
               @("-c:v","copy") + $audioParams + $scSubCodec + @("-c:t","copy") +
               $scContFlags + @("-progress",$scProgFile,"-nostats",$outFile)
     $scErrFile = "$AV_TEMP_DIR\fferr_sc_$PID.txt"
-    $scProc = Start-Process ffmpeg -ArgumentList $scArgs -NoNewWindow -PassThru `
+    $scProc = Start-Process ffmpeg -ArgumentList (ConvertTo-NativeArgLine $scArgs) -NoNewWindow -PassThru `
         -RedirectStandardError $scErrFile
     Show-Progress -proc $scProc -progFile $scProgFile -durSec $durSec -startTime $scStart -Label "Stream copy"
     $scProc.WaitForExit()
@@ -3305,7 +3506,11 @@ function Extract-Hdr10PlusMetadata {
     }
     Remove-Item $rawTmp -Force -ErrorAction SilentlyContinue
     if ((Test-Path $jsonFile) -and (Get-Item $jsonFile).Length -gt 0) {
-        $count = (Select-String -Path $jsonFile -Pattern "BezierCurveData|TargetedSystemDisplay" -AllMatches).Matches.Count
+        # v94 (O7): numara SCENE, nu chei. `BezierCurveData` + `TargetedSystemDisplay...`
+        # exista AMANDOUA per intrare SceneInfo → vechiul pattern dadea 2× (374 in loc de
+        # 187), iar pe continut fara curbe Bezier ar fi dat 1× → numar inconsistent.
+        # `SequenceFrameIndex` apare exact o data per intrare (ca la calea APV).
+        $count = (Select-String -Path $jsonFile -Pattern "SequenceFrameIndex" -AllMatches).Matches.Count
         Write-Host "  HDR10+: Metadata extrasa ($count scene descriptors)" -ForegroundColor Green
         return $jsonFile
     } else {
@@ -4397,7 +4602,18 @@ function Invoke-DvContainerSignal {
     if ($ok -and (Test-Path $tmp) -and (Get-Item $tmp).Length -gt 0) {
         Move-Item -Force $tmp $Built
         Write-Host "  dvcC de container scris (DV pe TV)" -ForegroundColor DarkGray
-    } elseif (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    } else {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        # v94 (P5-dvcC): esecul era TACIT — fluxul raporta „✓ complet" desi fisierul iesea FARA
+        # semnalizare de container, adica exact diferenta dintre „DV activ pe TV" si „DV dormant"
+        # (motivul pentru care s-au facut v70-v72). Paritate cu _dv_container_signal (bash).
+        # numele uneltei din env (forma canonica: literal pe ACEEASI linie cu AV_TOOL_ — vezi santinela no_hardcoded_tools)
+        $needTool = if ($Target -eq 'mkv') { if ($env:AV_TOOL_MKVMERGE) { $env:AV_TOOL_MKVMERGE } else { "mkvmerge" } } else { if ($env:AV_TOOL_MP4BOX) { $env:AV_TOOL_MP4BOX } else { "mp4box" } }
+        $needTool = [System.IO.Path]::GetFileName($needTool)   # afisaj: doar numele, nu calea co-locata (v93)
+        Write-Host "  ⚠ dvcC de container NU a putut fi scris ($needTool indisponibil sau esuat)." -ForegroundColor Yellow
+        Write-Host "    Stratul DV ramane in bitstream (playerele PC il vad), dar TV-urile care" -ForegroundColor Yellow
+        Write-Host "    decid dupa dvcC vor reda ca HDR10. Instaleaza $needTool (tools/) si reia." -ForegroundColor Yellow
+    }
 }
 
 # v71: re-scrie dvcC pe un output produs prin STREAM-COPY dintr-un DV HEVC (ffmpeg -c
@@ -5166,7 +5382,8 @@ function Invoke-InspectMetadata {
             Write-Host "  ✓ Metadata HDR10+ dinamica: PREZENTA (--verify)" -ForegroundColor Green
             $hpJson = Extract-Hdr10PlusMetadata $file
             if ($hpJson -and (Test-Path $hpJson)) {
-                $scenes = (Select-String -Path $hpJson -Pattern "BezierCurveData|TargetedSystemDisplay" -AllMatches).Matches.Count
+                # v94 (O7): o cheie UNICA per intrare SceneInfo (vezi Extract-Hdr10PlusMetadata)
+                $scenes = (Select-String -Path $hpJson -Pattern "SequenceFrameIndex" -AllMatches).Matches.Count
                 Write-Host "  Scene descriptors: $scenes"
                 Remove-Item $hpJson -Force -ErrorAction SilentlyContinue
             }
@@ -6008,7 +6225,7 @@ function Invoke-FfmpegWithProgress {
     $allArgs  = @("-progress", $progFile, "-nostats") + $Arguments
     # v61: CWD pe $AV_TEMP_DIR cand pipeline-ul refera HDR10+ JSON prin nume gol inline
     $wd = @{}; if ($script:ffmpegWorkDir) { $wd['WorkingDirectory'] = $script:ffmpegWorkDir }
-    $proc = Start-Process -FilePath ffmpeg -ArgumentList $allArgs -NoNewWindow -PassThru `
+    $proc = Start-Process -FilePath ffmpeg -ArgumentList (ConvertTo-NativeArgLine $allArgs) -NoNewWindow -PassThru `
         -RedirectStandardError $errFile @wd
     $startTime = Get-Date
     Show-Progress -proc $proc -progFile $progFile -durSec $TotalSeconds -startTime $startTime -Label $Label
@@ -6104,7 +6321,7 @@ if ($mainChoice -eq "2") {
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host "Container: 1-mp4  2-mkv [impl]  3-mov  4-webm" -ForegroundColor Cyan
     $eaCont = Read-Host "Alege [implicit: 2]"
-    $eaContainer = switch ($eaCont) { "1"{"mp4"} "3"{"mov"} "4"{"webm"} default{"mkv"} }
+    $eaContainer = switch ("$eaCont") { "1"{"mp4"} "3"{"mov"} "4"{"webm"} default{"mkv"} }
     $eaFlags = if ($eaContainer -in @("mkv","webm")) { @() } else { @("-movflags","+faststart") }
 
     Write-Host "Audio: 1-AAC 192k/384k/768k [impl] 2-AAC custom 3-Opus 128k/256k/512k 4-Opus custom 5-FLAC 6-FLAC custom 7-E-AC3 8-AC3 9-LPCM 10-Eclipsa (IAMF)" -ForegroundColor Cyan
@@ -6289,7 +6506,7 @@ if ($mainChoice -eq "2") {
                         Write-Host "   2) Doar bed-ul de canale (clasic)"
                         Write-Host "   3) Sari fisierul"
                         $iamfRR = Read-Host "  Alege 1-3 [implicit: 1]"
-                        $iamfRMode = switch ($iamfRR) { "2" {"bed"} "3" {"skip"} default {"render"} }
+                        $iamfRMode = switch ("$iamfRR") { "2" {"bed"} "3" {"skip"} default {"render"} }
                     }
                 }
             }
@@ -6520,9 +6737,17 @@ if ($mainChoice -eq "2") {
         # audio optional (0:a? → surse video-only nu dau eroare) + subs/attach.
         # NU mapeaza track-uri de date (0:d) — evita incompatibilitati mp4/mov.
         # v67: $eaSkipMaps (negative maps pt pistele S=skip) imediat dupa -map 0:a?
+        # v94 (B7): libopus refuza layout-urile „(side)" (`5.1(side)` = tipic AC3/DTS din filme)
+        # → encode esuat, 0 octeti. Remapare la standard, pe fiecare pista re-encodata cu opus.
+        # Paritate cu av_encoder_audio.sh (bash). Aici nu exista loudnorm pe acest flux, deci
+        # nu e nevoie de compunere — dar `-filter:a:N` ramane emis dintr-un singur loc.
+        $eaOpusFilters = @()
+        foreach ($oi in @([regex]::Matches(($eaAP -join ' '), '-c:a:(\d+)\s+libopus') | ForEach-Object { $_.Groups[1].Value })) {
+            $eaOpusFilters += @("-filter:a:$oi", "aformat=channel_layouts=mono|stereo|3.0|4.0|quad|5.0|5.1|6.1|7.1")
+        }
         $eaArgs = @("-i",$f.FullName,"-map","0:v","-map","0:a?","-map","0:s?","-map","0:t?") +
                   $eaSkipMaps +
-                  @("-map_metadata","0","-map_chapters","0","-c:v","copy") + $eaAP + $eaSubArgs + $eaCodecTag +
+                  @("-map_metadata","0","-map_chapters","0","-c:v","copy") + $eaAP + $eaOpusFilters + $eaSubArgs + $eaCodecTag +
                   $eaFlags + @("-nostats",$outFile)
         & ffmpeg @eaArgs 2>>$eaLog
 
@@ -6641,24 +6866,50 @@ if ($mainChoice -eq "3") {
         # prinde si AV1 DV (codec_tag [0][0][0][0]); checkul codec_tag de dinainte rata AV1 DV
         # → sumarul afisa "HDR10" pe surse AV1 DV. Get-SourceInfoExtended calculat o data, aici.
         $chkLogInfo = Get-SourceInfoExtended $f.FullName $dji
+        # v94 (audit pre-release): aceeasi prioritate ca in av_check — DV > LOG > HDR10+ >
+        # HDR10 > HLG > SDR. Lipseau ramurile LOG si HLG, deci o sursa HLG aparea aici
+        # „Tip HDR: SDR" desi randul de deasupra spunea „H.265 HEVC HLG", iar una Log tot
+        # „SDR" desi profilul Log se afiseaza pe randul urmator. `$chkLogInfo` si `$si`
+        # sunt deja calculate mai sus → zero probe-uri in plus.
         $tipHdr = "SDR"; $dvProf = "N/A"
-        if     ($si.isHDRPlus) { $tipHdr = "HDR10+" }
-        elseif ($si.isHDR)     { $tipHdr = "HDR10"  }
-        if ($chkLogInfo.isDV) { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
+        if     ($chkLogInfo.isDV)       { $tipHdr = "Dolby Vision"; $dvProf = Get-DVProfile $f.FullName }
+        elseif ($chkLogInfo.logProfile) { $tipHdr = "SDR (LOG)" }
+        elseif ($si.isHDRPlus)          { $tipHdr = "HDR10+" }
+        elseif ($si.isHDR)              { $tipHdr = "HDR10"  }
+        elseif ($si.isHLG)              { $tipHdr = "HLG"    }
 
         # LOG Profile detect (reuse Get-SourceInfoExtended de mai sus)
         $chkLogProfile = if ($chkLogInfo.logProfile) { Get-LogProfileLabel $chkLogInfo.logProfile } else { "N/A" }
 
         # Recomandare encoder
+        # v94 (P2, extins la auditul pre-release): asta e a TREIA copie a recomandarii
+        # (langa `get_encoder_recommendation` din av_check.sh si oglinda ei din av_check.ps1)
+        # si primise doar mesajul DV actualizat, nu si restul alinierii → acelasi fisier
+        # primea DOUA recomandari diferite, dupa cum treceai prin „Verifica fisiere" sau prin
+        # sumarul de dinaintea encodarii. Aliniat cu varianta canonica: DJI se verifica
+        # INAINTEA tipurilor HDR (altfel un DJI HDR primeste mesajul generic), mesajul DJI
+        # diferentiaza HDR/HLG vs SDR, iar ramurile HLG / APV / DNxHR lipseau complet.
+        # Odata ce `$tipHdr` de mai sus are acelasi domeniu de valori ca in av_check,
+        # blocul e oglinda LITERALA a functiei canonice — fara conditii de alt fel.
         $encRec = "libx265 (optiune sigura universala)"
-        if     ($tipHdr -eq "Dolby Vision")                          { $encRec = "libx265 (singurul care suporta DV)" }
+        if ($tipHdr -eq "Dolby Vision") {
+            $encRec = "libx265 sau AV1/SVT (ambele pastreaza DV)"
+        } elseif ($dji.isDji) {
+            $encRec = if ($tipHdr -match "HDR" -or $tipHdr -eq "HLG") {
+                "libx265 (HDR/HLG DJI — compresie buna, metadata pastrate)"
+            } else {
+                "libx265 sau AV1/SVT (SDR DJI — AV1 ~30% mai mic)"
+            }
+        }
         elseif ($tipHdr -eq "HDR10+")                                { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10+)" }
         elseif ($tipHdr -eq "HDR10")                                 { $encRec = "libx265 sau AV1/SVT (ambele suporta HDR10)" }
-        elseif ($dji.isDji)                                          { $encRec = "libx265 (fisier DJI — metadata pastrate)" }
+        elseif ($tipHdr -eq "HLG")                                   { $encRec = "libx265 sau AV1/SVT (HLG nativ — transfer=arib-std-b67)" }
+        elseif ($srcCodec -eq "h264")                                { $encRec = "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)" }
+        elseif ($srcCodec -eq "hevc")                                { $encRec = "AV1/SVT (HEVC→AV1 ~20-30% mai mic)" }
         elseif ($srcCodec -eq "av1")                                 { $encRec = "Deja AV1 — re-encode nu e recomandat" }
         elseif ($srcCodec -eq "prores")                              { $encRec = "libx265 sau AV1 (ProRes→compresie ~70-80% mai mic)" }
-        elseif ($srcCodec -eq "hevc" -and $tipHdr -eq "SDR")         { $encRec = "AV1/SVT (HEVC→AV1 ~20-30% mai mic)" }
-        elseif ($srcCodec -eq "h264")                                { $encRec = "libx265 (H.264→H.265 ~40% mai mic) sau AV1 (~50%)" }
+        elseif ($srcCodec -eq "apv")                                 { $encRec = "libx265 sau AV1 (APV→compresie ~70-80% mai mic)" }
+        elseif ($srcCodec -eq "dnxhd")                               { $encRec = "libx265 sau AV1 (DNxHR→compresie ~70-80% mai mic)" }
 
         # Estimare dimensiune output
         $bpsX265 = if ([int]$w -ge 3840) { 10000000 } elseif ([int]$w -ge 1920) { 4000000 } else { 2000000 }
@@ -6666,7 +6917,11 @@ if ($mainChoice -eq "3") {
         $bpsAV1  = if ([int]$w -ge 3840) { 8000000  } elseif ([int]$w -ge 1920) { 3000000 } else { 1500000 }
         # ProRes bitrate fix per profil (HQ default ~220 Mbps)
         $bpsProRes = if ([int]$w -ge 3840) { 880000000 } elseif ([int]$w -ge 1920) { 220000000 } else { 110000000 }
-        if ($tipHdr -match "HDR|Dolby") { $bpsX265 = [int]($bpsX265 * 1.3); $bpsAV1 = [int]($bpsAV1 * 1.3) }
+        # v94 (audit pre-release): `HLG` lipsea din factorul de 1.3, desi HLG e tot HDR
+        # (BT.2100, 10-bit, gama larga) si cere acelasi bitrate in plus. Ambele copii din
+        # av_check il aveau. Pana acum era oricum inaccesibil aici — `$tipHdr` nu lua
+        # valoarea „HLG" (vezi mai sus) — deci sursele HLG primeau estimari de SDR.
+        if ($tipHdr -match "HDR|Dolby|HLG") { $bpsX265 = [int]($bpsX265 * 1.3); $bpsAV1 = [int]($bpsAV1 * 1.3) }
         $estX265 = Get-SizeEst $bpsX265 $durSec
         $estX264 = Get-SizeEst $bpsX264 $durSec
         $estAV1  = Get-SizeEst $bpsAV1  $durSec
@@ -7374,17 +7629,21 @@ Write-Host "║  1-libx265  H.265/HEVC [implicit]        ║" -ForegroundColor C
 Write-Host "║  2-libx264  H.264/AVC                    ║" -ForegroundColor Cyan
 Write-Host "║  3-AV1      codec viitor, compresie max  ║" -ForegroundColor Cyan
 Write-Host "║  4-DNxHR    Avid mezzanine, lossless     ║" -ForegroundColor Cyan
-Write-Host "║  5-ProRes   Apple profesional (mov)       ║" -ForegroundColor Cyan
-Write-Host "║  6-HW Encode  GPU accelerat (NVENC/QSV)  ║" -ForegroundColor Cyan
-Write-Host "║  7-APV      Samsung pro intra-frame      ║" -ForegroundColor Cyan
+Write-Host "║  5-APV      Samsung pro intra-frame      ║" -ForegroundColor Cyan
+Write-Host "║  6-ProRes   Apple profesional (mov)       ║" -ForegroundColor Cyan
+Write-Host "║  7-HW Encode  GPU accelerat (NVENC/QSV)  ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 $encChoice = Read-Host "Alege 1-7 [implicit: 1]"
+# v94 (O10): pozitiile 1-6 coincid acum cu meniul bash (av_launcher.sh) — APV pe 5,
+# ProRes pe 6. Inainte erau inversate, singura divergenta de numerotare intre platforme.
+# „HW Encode" e intrare PS1-only (pe bash MediaCodec e submeniu de dupa encoder) → o
+# lasam la coada, pe 7, ca sa nu deplaseze nimic din ce exista si pe bash.
 $useX264  = ($encChoice -eq "2")
 $useAV1   = ($encChoice -eq "3")
 $useDNxHR = ($encChoice -eq "4")
-$useProRes = ($encChoice -eq "5")
-$useHWEnc  = ($encChoice -eq "6")
-$useAPV    = ($encChoice -eq "7")
+$useAPV    = ($encChoice -eq "5")
+$useProRes = ($encChoice -eq "6")
+$useHWEnc  = ($encChoice -eq "7")
 $av1Impl  = "libsvtav1"
 if ($useAV1) {
     Write-Host "  1-libsvtav1 rapid [implicit]  2-libaom-av1 calitate maxima" -ForegroundColor Cyan
@@ -7404,7 +7663,7 @@ if ($useDNxHR) {
     Write-Host "║  5-444 ~440 Mbps 4:4:4 grading       ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     $dnxhrChoice = Read-Host "Alege 1-5 [implicit: 2]"
-    $dnxhrProfile = switch ($dnxhrChoice) {
+    $dnxhrProfile = switch ("$dnxhrChoice") {
         "1" { "lb" } "3" { "hq" } "4" { "hqx" } "5" { "444" } default { "sq" }
     }
     $dnxhrLabel = switch ($dnxhrProfile) {
@@ -7429,7 +7688,7 @@ if ($useProRes) {
     Write-Host "║  6-4444 XQ  ~500 Mbps  maxim          ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     $proresChoice = Read-Host "Alege 1-6 [implicit: 4]"
-    $proresProfile = switch ($proresChoice) {
+    $proresProfile = switch ("$proresChoice") {
         "1" { "proxy" } "2" { "lt" } "3" { "standard" } "5" { "4444" } "6" { "xq" } default { "hq" }
     }
     $proresLabel = switch ($proresProfile) {
@@ -7455,14 +7714,14 @@ if ($useAPV) {
     Write-Host "║  6-4:4:4 + alpha 12-bit (4444-12)    ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
     $apvPfChoice = Read-Host "Alege 1-6 [implicit: 1]"
-    $apvPixFmt = switch ($apvPfChoice) {
+    $apvPixFmt = switch ("$apvPfChoice") {
         "2" { "422_12" } "3" { "444_10" } "4" { "444_12" } "5" { "4444_10" } "6" { "4444_12" } default { "422_10" }
     }
     Write-Host "  Profil: APV $apvPixFmt" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Preset viteza: 1-fastest  2-fast  3-medium [impl]  4-slow  5-placebo" -ForegroundColor Cyan
     $apvSpChoice = Read-Host "  Alege 1-5 [implicit: 3]"
-    $apvPreset = switch ($apvSpChoice) {
+    $apvPreset = switch ("$apvSpChoice") {
         "1" { "fastest" } "2" { "fast" } "4" { "slow" } "5" { "placebo" } default { "medium" }
     }
     Write-Host "  Preset: $apvPreset" -ForegroundColor Green
@@ -7551,15 +7810,15 @@ if ($useHWEnc) {
     if ($hwEncCodec -match "nvenc") {
         Write-Host "Preset NVENC: 1-p1(fastest) 2-p2 3-p3 4-p4(medium) 5-p5 6-p6 7-p7(slowest/best)" -ForegroundColor Cyan
         $hwpc = Read-Host "Alege [implicit: 4]"
-        $hwEncPreset = switch ($hwpc) { "1"{"p1"} "2"{"p2"} "3"{"p3"} "5"{"p5"} "6"{"p6"} "7"{"p7"} default{"p4"} }
+        $hwEncPreset = switch ("$hwpc") { "1"{"p1"} "2"{"p2"} "3"{"p3"} "5"{"p5"} "6"{"p6"} "7"{"p7"} default{"p4"} }
     } elseif ($hwEncCodec -match "qsv") {
         Write-Host "Preset QSV: 1-veryfast 2-fast 3-medium 4-slow 5-veryslow" -ForegroundColor Cyan
         $hwpc = Read-Host "Alege [implicit: 3]"
-        $hwEncPreset = switch ($hwpc) { "1"{"veryfast"} "2"{"fast"} "4"{"slow"} "5"{"veryslow"} default{"medium"} }
+        $hwEncPreset = switch ("$hwpc") { "1"{"veryfast"} "2"{"fast"} "4"{"slow"} "5"{"veryslow"} default{"medium"} }
     } else {
         Write-Host "Preset AMF: 1-speed 2-balanced 3-quality" -ForegroundColor Cyan
         $hwpc = Read-Host "Alege [implicit: 2]"
-        $hwEncPreset = switch ($hwpc) { "1"{"speed"} "3"{"quality"} default{"balanced"} }
+        $hwEncPreset = switch ("$hwpc") { "1"{"speed"} "3"{"quality"} default{"balanced"} }
     }
     Write-Host "  Preset: $hwEncPreset" -ForegroundColor Green
 
@@ -7603,7 +7862,7 @@ $x264ProfileGlobal = "auto"
 if ($useX264) {
     Write-Host "Profil x264: 1-high  2-high10  3-high422  A-Auto [recomandat]" -ForegroundColor Cyan
     $pc = Read-Host "Alege [implicit: A]"
-    $x264ProfileGlobal = switch ($pc) { "1"{"high"} "2"{"high10"} "3"{"high422"} default{"auto"} }
+    $x264ProfileGlobal = switch ("$pc") { "1"{"high"} "2"{"high10"} "3"{"high422"} default{"auto"} }
     Write-Host "  Profil: $x264ProfileGlobal" -ForegroundColor Green
 }
 
@@ -7634,7 +7893,7 @@ if ($useProRes) {
     Write-Host "║  3-mkv  flexibil                         ║" -ForegroundColor White
     Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
     $contChoice = Read-Host "Alege 1-3 [implicit: 1]"
-    $container  = switch ($contChoice) { "2"{"mov"} "3"{"mkv"} default{"mp4"} }
+    $container  = switch ("$contChoice") { "2"{"mov"} "3"{"mkv"} default{"mp4"} }
 } elseif ($useAV1) {
     Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  1-mp4  compatibil maxim                 ║" -ForegroundColor Cyan
@@ -7642,7 +7901,7 @@ if ($useProRes) {
     Write-Host "║  3-webm WebM (AV1 nativ, web)           ║" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
     $contChoice = Read-Host "Alege [implicit: 2]"
-    $container  = switch ($contChoice) { "1"{"mp4"} "3"{"webm"} default{"mkv"} }
+    $container  = switch ("$contChoice") { "1"{"mp4"} "3"{"webm"} default{"mkv"} }
 } else {
     Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║  1-mp4  compatibil maxim                 ║" -ForegroundColor Cyan
@@ -7650,7 +7909,7 @@ if ($useProRes) {
     Write-Host "║  3-mov  Apple / Final Cut                ║" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
     $contChoice = Read-Host "Alege [implicit: 2]"
-    $container  = switch ($contChoice) { "1"{"mp4"} "3"{"mov"} default{"mkv"} }
+    $container  = switch ("$contChoice") { "1"{"mp4"} "3"{"mov"} default{"mkv"} }
 }
 Write-Host "  Container: $container" -ForegroundColor Green
 $containerFlags = Get-ContainerFlags $container
@@ -7668,7 +7927,7 @@ Write-Host "║  5) 1280 — HD 720p                  ║" -ForegroundColor Whit
 Write-Host "║  6) Custom (introdu width)           ║" -ForegroundColor White
 Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
 $resChoice = Read-Host "Alege 1-6 [implicit: 1]"
-$scaleWidth = switch ($resChoice) {
+$scaleWidth = switch ("$resChoice") {
     "2" { 3840 } "3" { 2560 } "4" { 1920 } "5" { 1280 }
     "6" {
         $cw = Read-Host "  Introdu width (minim 320, numar par)"
@@ -7703,7 +7962,7 @@ Write-Host "║  7) 23.976 fps (Blu-ray/Netflix)     ║" -ForegroundColor White
 Write-Host "║  8) Custom                            ║" -ForegroundColor White
 Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
 $fpsChoice = Read-Host "Alege 1-8 [implicit: 1]"
-$targetFps = switch ($fpsChoice) {
+$targetFps = switch ("$fpsChoice") {
     "2" { "60" } "3" { "50" } "4" { "30" } "5" { "25" } "6" { "24" } "7" { "24000/1001" }
     "8" {
         $cf = Read-Host "  Introdu FPS (ex: 29.97, 48, 120)"
@@ -7739,7 +7998,7 @@ Write-Host "╚═════════════════════�
 $vfChoice = Read-Host "Alege 1-10 [implicit: 1]"
 $vfIsVidstab = $false
 $vfIsUpscale4K = $false
-$vfPreset = switch ($vfChoice) {
+$vfPreset = switch ("$vfChoice") {
     "2" { "nlmeans=h=1.0:s=7:p=3:r=5" }
     "3" { "hqdn3d=luma_spatial=4:chroma_spatial=3:luma_tmp=6:chroma_tmp=4.5" }
     "4" { "nlmeans=h=3.0:s=7:p=5:r=9" }
@@ -8398,7 +8657,10 @@ foreach ($f in $inputFiles) {
     $durRaw    = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
     $durSec    = if ($durRaw -match '^\d+') { [int]([double]$durRaw) } else { 0 }
-    Write-Host "  Format sursa: $($si.fmt)" -ForegroundColor White
+    # v94 (P6): pe DV, eticheta de baza singura e inselatoare (P8.1 → „HDR10",
+    # P5/P8.4 → „10bit SDR"), iar linia asta e singurul indiciu din bucla.
+    $dvMark = if ($si.isDV) { " + Dolby Vision" } else { "" }
+    Write-Host "  Format sursa: $($si.fmt)$dvMark" -ForegroundColor White
 
     # Video filter (scale + preset + fps) — no upscale
     $vfParts = @()
@@ -8750,13 +9012,44 @@ foreach ($f in $inputFiles) {
             Write-Host "  Loudnorm: analiza esuata — skip normalizare" -ForegroundColor Yellow
         }
     }
+    # v94 (B7): libopus REFUZA layout-urile „(side)" — `5.1(side)` e chiar layout-ul tipic al
+    # pistelor AC3/DTS din filme → encode esuat, 0 octeti. Remapam la standard.
+    # ffmpeg pastreaza DOAR ULTIMA aparitie a unui `-filter:a:N` (verificat), deci aformat NU
+    # poate fi emis separat de loudnorm cand cad pe aceeasi pista — se COMPUN aici.
+    # Paritate cu build_audio_filters (av_common.sh).
+    $opusLayouts = "aformat=channel_layouts=mono|stereo|3.0|4.0|quad|5.0|5.1|6.1|7.1"
+    $opusIdx = @([regex]::Matches(($audioParams -join ' '), '-c:a:(\d+)\s+libopus') |
+                 ForEach-Object { $_.Groups[1].Value })
+    if ($opusIdx.Count -gt 0) {
+        $lnIdx = if ($loudnormFlag.Count -ge 2) { ($loudnormFlag[0] -replace '^-filter:a:','') } else { $null }
+        $lnExpr = if ($loudnormFlag.Count -ge 2) { $loudnormFlag[1] } else { $null }
+        $newFlags = @()
+        foreach ($oi in $opusIdx) {
+            $chain = $opusLayouts
+            if ($lnIdx -ne $null -and $oi -eq $lnIdx) { $chain = "$chain,$lnExpr"; $lnIdx = $null }
+            $newFlags += @("-filter:a:$oi", $chain)
+        }
+        if ($lnIdx -ne $null -and $lnExpr) { $newFlags += @("-filter:a:$lnIdx", $lnExpr) }
+        $loudnormFlag = $newFlags
+    }
 
     $rateParams = @(); $crfFlag = @()
     $is2Pass = ($encMode -eq "3")
     if ($encMode -eq "2" -or $encMode -eq "3") {
-        $rateParams = @("-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize)
-        if ($is2Pass) { Write-Host "  VBR 2-pass: $vbrTarget" -ForegroundColor White }
-        else { Write-Host "  VBR 1-pass: $vbrTarget" -ForegroundColor White }
+        # v94 (B12): libsvtav1 REFUZA plafonul de bitrate in VBR — "Svt[error]: Max Bitrate
+        # only supported with CRF mode" → encoderul nici nu porneste (0 octeti). Suita
+        # calculeaza mereu maxrate = target x 1.5, deci AV1 VBR (1-pass SI 2-pass) nu a
+        # functionat niciodata pe SVT. maxrate/bufsize raman pentru x265/x264/libaom;
+        # pe SVT ramane VBR pur. Paritate cu av_encoder_av1.sh.
+        $svtNoVbv = ($useAV1 -and $av1Impl -eq "libsvtav1")
+        if ($svtNoVbv) {
+            $rateParams = @("-b:v",$vbrTarget)
+        } else {
+            $rateParams = @("-b:v",$vbrTarget,"-maxrate",$vbrMaxrate,"-bufsize",$vbrBufsize)
+        }
+        $vbvNote = if ($svtNoVbv) { " (fara plafon — SVT-AV1 nu suporta maxrate in VBR)" } else { "" }
+        if ($is2Pass) { Write-Host "  VBR 2-pass: $vbrTarget$vbvNote" -ForegroundColor White }
+        else { Write-Host "  VBR 1-pass: $vbrTarget$vbvNote" -ForegroundColor White }
     } else {
         $crf = if ($customCrf) { [int]$customCrf }
                elseif ($useX264) { if ([int]$width -ge 3840){20}elseif([int]$width -ge 1920){19}else{18} }
@@ -8776,7 +9069,16 @@ foreach ($f in $inputFiles) {
     $vbvSug = Suggest-VbvForTarget -Codec $codecKey -TargetKbps $targetKbpsV -Width ([int]$width) -Height $heightV -Fps $srcFps
     $script:autoLevel = $vbvSug.Level
     $script:autoTier  = $vbvSug.Tier
-    Write-Host "  $($codecKey.ToUpper()) level: $($vbvSug.Level) $($vbvSug.Tier.ToUpper()) tier" -ForegroundColor DarkGray
+    # v94 (B10a): pe CRF level-ul e DOAR informational (nu se trimite encoderului) — paritate
+    # cu mesajul din av_encoder_x265.sh / _x264 / _av1.
+    $lvlNote = if ($encMode -eq "2" -or $encMode -eq "3") { "" } else { " (informational)" }
+    # v94 (O8): linia se afiseaza DOAR pe codecurile care au level-uri (h264/hevc/av1).
+    # Pe APV/ProRes/DNxHR `$codecKey` cadea pe „hevc" prin `else` → eticheta falsa
+    # („HEVC level" pe un encode APV). bash nu o afiseaza deloc acolo (linia traieste
+    # in av_encoder_x265/x264/av1.sh) → asta restabileste si paritatea.
+    if (-not $useDNxHR -and -not $useProRes -and -not $useAPV) {
+        Write-Host "  $($codecKey.ToUpper()) level: $($vbvSug.Level) $($vbvSug.Tier.ToUpper()) tier$lvlNote" -ForegroundColor DarkGray
+    }
     # Reset 2-pass state per fisier
     Clear-2PassState
     # Reset HDR10 static state per fisier
@@ -8801,6 +9103,8 @@ foreach ($f in $inputFiles) {
     $tripleLayerTargetCodec = "hevc"
     $hdr10PlusJson = ""
     $doviRpuFile = ""
+    # v94 (B14): setat de siturile care chiar adauga dhdr10-info= / hdr10plus-json=
+    $script:hdr10PlusInlineApplied = $false
     # v76: reset defensiv state HW HDR10+ preserve per fisier (setat in dialogul HDR10+ HW)
     $hwHdr10PlusInject = $false; $hwHdr10PlusCodec = ""
     # v69: reset defensiv state APV HDR10+ per fisier (setat in sectiunea APV)
@@ -8943,10 +9247,14 @@ foreach ($f in $inputFiles) {
         if ($extraParams)         { $x264Parts += $extraParams }
         if ($x264Parts.Count -gt 0) { $x264ExtraFlag = @("-x264-params", ($x264Parts -join ":")) }
         $x264ColorFlags = if ($script:logColorFlags) { $script:logColorFlags } else { @() }
+        # v94 (B10a): `-level:v` doar pe VBR/2-pass (unde nal-hrd il cere). Pe CRF ramane
+        # informational — x264 nu refuza un level subdimensionat, dar il SCRIE in stream
+        # (1080x1920 cu `-level:v 3.0` → level=30, desi singur deduce 42) → semnalizare falsa.
+        $x264LevelFlag = if ($encMode -eq "2" -or $encMode -eq "3") { @("-level:v",$x264Level) } else { @() }
         if ($encMode -eq "2" -or $encMode -eq "3") {
             Write-Host "  Profil: $x264Profile | Level: $x264Level | HRD=vbr | Container: $container" -ForegroundColor White
         } else {
-            Write-Host "  Profil: $x264Profile | Level: $x264Level | Container: $container" -ForegroundColor White
+            Write-Host "  Profil: $x264Profile | Level: $x264Level (informational) | Container: $container" -ForegroundColor White
         }
 
         if ($is2Pass) {
@@ -8955,13 +9263,13 @@ foreach ($f in $inputFiles) {
             $script:codecTagKey = "h264"  # v57: pt trailing codec_tag
             $script:ffmpegCmdPass1 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag +
-                @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                @("-profile:v",$x264Profile) + $x264LevelFlag + @("-pix_fmt",$x264PixFmt) +
                 $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
                 $videoFilter + $fpsFlag + $rateParams +
                 @("-pass","1","-passlogfile",$script:statsFile,"-an","-sn","-f","null","NUL")
             $script:ffmpegCmdPass2 = @("-y","-threads","0","-i",$f.FullName) + $mapFlags +
                 @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag +
-                @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                @("-profile:v",$x264Profile) + $x264LevelFlag + @("-pix_fmt",$x264PixFmt) +
                 $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
                 $videoFilter + $fpsFlag + $rateParams +
                 @("-pass","2","-passlogfile",$script:statsFile) + $audioParams
@@ -8969,7 +9277,7 @@ foreach ($f in $inputFiles) {
             $codecTag = Get-CodecTagForContainer "h264" $container
             $ffArgs = @("-threads","0","-i",$f.FullName) + $mapFlags +
                       @("-c:v","libx264","-preset",$selectedPreset) + $tuneFlag + $crfFlag +
-                      @("-profile:v",$x264Profile,"-level:v",$x264Level,"-pix_fmt",$x264PixFmt) +
+                      @("-profile:v",$x264Profile) + $x264LevelFlag + @("-pix_fmt",$x264PixFmt) +
                       $x264BF + $x264Refs + $x264ExtraFlag + $x264ColorFlags +
                       $videoFilter + $fpsFlag + $rateParams + $audioParams + $loudnormFlag +
                       (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
@@ -9053,6 +9361,8 @@ foreach ($f in $inputFiles) {
                             $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                             if ($hdr10PlusJson) {
                                 $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $hdr10PlusJson)"
+                                # v94 (B14): stratul HDR10+ chiar intra in encode
+                                $script:hdr10PlusInlineApplied = $true
                                 Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
                             }
                         }
@@ -9093,6 +9403,7 @@ foreach ($f in $inputFiles) {
                         if ($hdr10pInlineOk) {
                             $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $jsonPath)"
                             $hdr10PlusJson = $jsonPath
+                            $script:hdr10PlusInlineApplied = $true   # v94 (B14)
                         } else {
                             Write-Host "  HDR10+: Inline injection indisponibila — DV RPU post-encode ramane functional" -ForegroundColor Yellow
                         }
@@ -9111,6 +9422,7 @@ foreach ($f in $inputFiles) {
                         if ($jsonPath -and $hdr10pInlineOk) {
                             $hdr10PlusAv1Param = ":hdr10plus-json=$(Get-InlineParamName $jsonPath)"
                             $hdr10PlusJson = $jsonPath
+                            $script:hdr10PlusInlineApplied = $true   # v94 (B14)
                         } elseif ($jsonPath) {
                             Write-Host "  HDR10+: Metadata extrasa dar inline injection indisponibila — fallback HDR10 static" -ForegroundColor Yellow
                         }
@@ -9229,8 +9541,12 @@ foreach ($f in $inputFiles) {
         if ($extraParams -and $av1Impl -eq "libsvtav1") { $svtParams += ":$extraParams" }
         $libaomExtra = if ($extraParams -and $av1Impl -eq "libaom-av1") { $extraParams -split '\s+' | Where-Object { $_ } } else { @() }
         # v51: -level pe libsvtav1
+        # v94 (B10a): doar pe VBR/2-pass. Pe CRF ramane informational — svtav1 tolereaza un
+        # level subdimensionat, dar il scrie in stream → semnalizare gresita catre playere.
         $av1LevelFlag = @()
-        if ($av1Impl -eq "libsvtav1") { $av1LevelFlag = @("-level",$script:autoLevel) }
+        if ($av1Impl -eq "libsvtav1" -and ($encMode -eq "2" -or $encMode -eq "3")) {
+            $av1LevelFlag = @("-level",$script:autoLevel)
+        }
 
         if ($av1Impl -eq "libsvtav1") {
             if ($is2Pass) {
@@ -9383,6 +9699,30 @@ foreach ($f in $inputFiles) {
                 "sdr"   { return @("-bsf:v","${bsfName}=${primKey}=1:transfer_characteristics=1:matrix_coefficients=1") }
                 default { return @() }
             }
+        }
+
+        # Construieste BSF-ul de VUI din culoarea REALA a sursei (v94 O3). Gol daca sursa
+        # nu declara toate trei campurile → nu inventam semnalizare.
+        function Get-HwVuiBsfFromSource {
+            param([string]$EncCodec, [string]$File)
+            $codecKey = if ($EncCodec -match "^hevc_") { "hevc" }
+                        elseif ($EncCodec -match "^av1_")  { "av1" }
+                        elseif ($EncCodec -match "^h264_") { "h264" }
+                        else { return @() }
+            $raw = & ffprobe -v error -select_streams v:0 `
+                -show_entries stream=color_primaries,color_transfer,color_space `
+                -of default=noprint_wrappers=1 $File 2>$null
+            $map = @{}
+            foreach ($line in @($raw)) {
+                if ($line -match '^\s*([a-z_]+)=(.*)$') { $map[$Matches[1]] = $Matches[2] }
+            }
+            $cp = Get-H273Code "primaries" $map['color_primaries']
+            $ct = Get-H273Code "transfer"  $map['color_transfer']
+            $cm = Get-H273Code "matrix"    $map['color_space']
+            if ($null -eq $cp -or $null -eq $ct -or $null -eq $cm) { return @() }
+            $bsfName = "${codecKey}_metadata"
+            $primKey = if ($codecKey -eq "hevc") { "colour_primaries" } else { "color_primaries" }
+            return @("-bsf:v","${bsfName}=${primKey}=${cp}:transfer_characteristics=${ct}:matrix_coefficients=${cm}")
         }
 
         # v46: DV source detection + DV preserve via HW (HEVC/AV1 target only)
@@ -9614,6 +9954,12 @@ foreach ($f in $inputFiles) {
             $hwColorFlags = Get-HwVuiBsf -EncCodec $hwEncCodec -Mode "hdr10"
             if ($hwSupports10bit) { $hwPixFmt = "p010le" }
         }
+        # v94 (O3): SDR simplu — niciun mod HDR nu a setat BSF-ul, deci encoderul HW ar
+        # scrie propriul VUI si ar pierde semnalizarea sursei. Re-afirmam culoarea REALA a
+        # sursei (nu bt709 fix). Paritate cu ramura `*)` din bash `_hw_hdr_setup`.
+        if ($hwColorFlags.Count -eq 0) {
+            $hwColorFlags = Get-HwVuiBsfFromSource -EncCodec $hwEncCodec -File $f.FullName
+        }
 
         if ($skipFile) { $totalSkipped++; continue }
         if ($doStreamCopy) {
@@ -9687,9 +10033,12 @@ foreach ($f in $inputFiles) {
         $proresMapFlags = @("-map","0:v:0","-map","0:a?","-map","0:s?","-map_metadata","0","-map_chapters","0")
 
         # FARA -bits_per_mb: rate-control nativ per profil (8000=max umfla toate profilele egal)
+        # v94 (O4): prores_ks isi scrie propriul atom de culoare si pierde semnalizarea
+        # sursei (`-color_*` NU ajuta) → bsf prores_metadata. Gol daca sursa nu declara tot.
+        $proresColorBsf = Get-MezzColorBsf -Kind 'prores' -File $f.FullName
         $ffArgs = @("-threads","0","-i",$f.FullName) + $proresMapFlags +
                   @("-c:v","prores_ks","-profile:v",$profileNum,"-pix_fmt",$proresPixFmt,
-                    "-vendor","apl0") +
+                    "-vendor","apl0") + $proresColorBsf +
                   $videoFilter + $fpsFlag + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                   $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
@@ -9821,9 +10170,12 @@ foreach ($f in $inputFiles) {
         "  APV $apvPixFmt | Preset: $apvPreset | QP: $apvQp | Container: $container" | Out-File $LogFile -Append -Encoding UTF8
         $apvMapFlags = @("-map","0:v:0","-map","0:a?","-map","0:s?","-map_metadata","0","-map_chapters","0")
 
+        # v94 (O4): liboapv pierde semnalizarea de culoare a sursei, la fel ca ProRes →
+        # bsf apv_metadata (coduri H.273). Gol daca sursa nu declara toate trei valorile.
+        $apvColorBsf = Get-MezzColorBsf -Kind 'apv' -File $f.FullName
         $ffArgs = @("-threads","0","-i",$f.FullName) + $apvMapFlags +
                   @("-c:v",$apvEncoder,"-preset",$apvPreset,"-qp",$apvQp) + $apvExtraArg +
-                  @("-pix_fmt",$apvPixFmtFf) +
+                  @("-pix_fmt",$apvPixFmtFf) + $apvColorBsf +
                   $videoFilter + $fpsFlag + $audioParams + $loudnormFlag +
                   (Get-SubtitleCodec $f.FullName $container) + @("-c:t","copy") +
                   $containerFlags + @("-progress",$progFile,"-nostats",$outFile)
@@ -9901,6 +10253,7 @@ foreach ($f in $inputFiles) {
                 $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                 if ($hdr10PlusJson) {
                     $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):"
+                    $script:hdr10PlusInlineApplied = $true   # v94 (B14)
                     Write-Host "  HDR10+ inline pregatit (langa DV RPU real)" -ForegroundColor Green
                 }
             }
@@ -9928,14 +10281,23 @@ foreach ($f in $inputFiles) {
                     }
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
-                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):" }
+                    if ($hdr10PlusJson) {
+                        $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):"
+                        $script:hdr10PlusInlineApplied = $true   # v94 (B14)
+                    }
                 }
                 default {
                     # preserve HDR10+ metadata
                     $hdr10PlusJson = Extract-Hdr10PlusMetadata $f.FullName
                     $colorParams = @("-color_primaries","bt2020","-color_trc","smpte2084","-colorspace","bt2020nc")
                     $x265Hdr = "hdr-opt=1:repeat-headers=1:hdr10=1:"
-                    if ($hdr10PlusJson) { $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):" }
+                    if ($hdr10PlusJson) {
+                        $x265Hdr += "dhdr10-info=$(Get-InlineParamName $hdr10PlusJson):"
+                        # v94 (B14): ramura asta n-ajunge la eticheta triple-layer (fara DV),
+                        # dar flagul inseamna „inline-ul CHIAR s-a aplicat" — il setam peste
+                        # tot, ca sa ramana adevarat daca logica etichetei se muta candva.
+                        $script:hdr10PlusInlineApplied = $true
+                    }
                 }
             }
 
@@ -10029,9 +10391,13 @@ foreach ($f in $inputFiles) {
         # v51: Level / Tier / HRD (informational pe CRF, HRD-binding pe VBR/2-pass)
         $x265LvlIdc = ($script:autoLevel -replace '\.','')
         $x265HighTier = if ($script:autoTier -eq "high") { 1 } else { 0 }
-        $x265LevelParams = "level-idc=${x265LvlIdc}:high-tier=${x265HighTier}"
+        # v94 (B10a): level-idc DOAR pe VBR/2-pass (unde HRD il cere). Pe CRF ramane
+        # informational — x265 deduce singur level-ul corect. Injectat pe CRF, un level
+        # subdimensionat facea x265 sa REFUZE sa porneasca ("picture dimensions are out of
+        # range" / "frame rate is out of range") → 0 octeti pe 1080p60, 1440p, 2.7K, portret.
+        $x265LevelParams = ""
         if ($encMode -eq "2" -or $encMode -eq "3") {
-            $x265LevelParams += ":hrd=1"
+            $x265LevelParams = "level-idc=${x265LvlIdc}:high-tier=${x265HighTier}:hrd=1"
         }
         # v52: VUI color signaling EXPLICIT in x265-params — ffmpeg -color_primaries
         # / -color_trc nu propaga la libx265 (x265 dezactiveaza hdr10-opt automat
@@ -10134,7 +10500,7 @@ foreach ($f in $inputFiles) {
     } else {
         # v61: CWD pe $AV_TEMP_DIR cand un param inline (dhdr10-info) refera JSON prin nume gol
         $wd = @{}; if ($script:ffmpegWorkDir) { $wd['WorkingDirectory'] = $script:ffmpegWorkDir }
-        $proc = Start-Process ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru `
+        $proc = Start-Process ffmpeg -ArgumentList (ConvertTo-NativeArgLine $ffArgs) -NoNewWindow -PassThru `
             -RedirectStandardError $errFile @wd
         Show-Progress -proc $proc -progFile $progFile -durSec $durSec -startTime $startTime -Label $encLabel
         $proc.WaitForExit()
@@ -10147,9 +10513,19 @@ foreach ($f in $inputFiles) {
     if ($exitCode -ne 0) {
         Write-Host "  EROARE encode!" -ForegroundColor Red
         # v38: tail stderr inline pentru diagnoza rapida
+        # v94 (DIAG): intai liniile care CONTIN eroarea, nu doar coada — cauza reala apare de
+        # obicei la inceput (ex. „x265 [error]: picture dimensions are out of range"), iar coada
+        # arata doar consecinta („Invalid data found..."), care trimite spre sursa, nu spre param.
         if (Test-Path $errFile) {
-            Write-Host "  ⚠ ffmpeg exit $exitCode — ultimele linii stderr:" -ForegroundColor Yellow
-            Get-Content $errFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            $errHits = @(Select-String -Path $errFile -Pattern '\[error\]|^error|: error|Cannot open|Unable to open|Invalid |not supported|No such file' -ErrorAction SilentlyContinue | Select-Object -First 5)
+            if ($errHits.Count -gt 0) {
+                Write-Host "  ⚠ ffmpeg exit $exitCode — cauza probabila:" -ForegroundColor Yellow
+                $errHits | ForEach-Object { Write-Host "    $($_.Line)" -ForegroundColor DarkGray }
+                Write-Host "    (stderr complet: $LogFile)" -ForegroundColor DarkGray
+            } else {
+                Write-Host "  ⚠ ffmpeg exit $exitCode — ultimele linii stderr:" -ForegroundColor Yellow
+                Get-Content $errFile -Tail 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            }
             Remove-Item $errFile -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path $outFile) { Remove-Item $outFile -Force }
@@ -10167,7 +10543,12 @@ foreach ($f in $inputFiles) {
     # ── Triple-layer: injecteaza DV RPU in output (HEVC sau AV1) ─────
     if ($tripleLayerMode -and $doviRpuFile) {
         $tlCodec = if ($tripleLayerTargetCodec) { $tripleLayerTargetCodec } else { "hevc" }
-        $tlLabel = if ($tlCodec -eq "av1") { "DV P10 + HDR10 + HDR10+ (AV1)" } else { "DV 8.1 + HDR10 + HDR10+ (HEVC)" }
+        # v94 (B14): eticheta se construieste din CE S-A INJECTAT efectiv (mirror
+        # av_common.sh). tripleLayerMode se seteaza la ORICE DV-preserve, inclusiv pe
+        # surse fara HDR10+, iar pe AV1 stratul poate lipsi si cand sursa il are
+        # (libsvtav1 fara `hdr10plus-json`) → revendicarea neconditionata minte.
+        $tlHp    = if ($script:hdr10PlusInlineApplied) { " + HDR10+" } else { "" }
+        $tlLabel = if ($tlCodec -eq "av1") { "DV P10 + HDR10$tlHp (AV1)" } else { "DV 8.1 + HDR10$tlHp (HEVC)" }
         Write-Host "  Triple-layer: Injectez DV RPU in output ($tlCodec)..." -ForegroundColor Cyan
         $rawExt = if ($tlCodec -eq "av1") { "ivf" } else { "hevc" }
         $rawTemp = Join-Path $AV_TEMP_DIR ("raw_"+[guid]::NewGuid().ToString("N")+".$rawExt")
@@ -10232,22 +10613,25 @@ foreach ($f in $inputFiles) {
                     # v56: guard onest AV1 — inject-rpu produce metadata T.35 pe care ffmpeg
                     # o arunca silentios la pachetizare (rc=0, output ne-gol) si DV se pierde.
                     if ($tlCodec -eq "av1" -and -not (Test-DvSurvived -File $outFile -Codec $tlCodec)) {
-                        Write-Host "  Triple-layer: ⚠ DV pierdut la re-mux (known issue AV1 inject-rpu T.35 — Tier 4); output pastreaza HDR10/HDR10+" -ForegroundColor Yellow
+                        Write-Host "  Triple-layer: ⚠ DV pierdut la re-mux (known issue AV1 inject-rpu T.35 — Tier 4); output pastreaza HDR10$tlHp" -ForegroundColor Yellow
                         "  Triple-layer: DV pierdut (AV1 T.35 known issue)" | Out-File $LogFile -Append -Encoding UTF8
                     } else {
                         Write-Host "  Triple-layer: $tlLabel — OK" -ForegroundColor Green
                         "  Triple-layer: $tlLabel" | Out-File $LogFile -Append -Encoding UTF8
                     }
                 } else {
-                    Write-Host "  Triple-layer: Re-mux esuat — output fara DV (HDR10+ pastrat)" -ForegroundColor Yellow
+                    Write-Host "  Triple-layer: Re-mux esuat — output fara DV (HDR10$tlHp pastrat)" -ForegroundColor Yellow
                     Remove-Item $finalTemp -Force -ErrorAction SilentlyContinue
                 }
             } else {
-                Write-Host "  Triple-layer: Injectare RPU esuata — output fara DV" -ForegroundColor Yellow
+                # v94 (B14, paritate): bash spunea de mult CE ramane pastrat pe aceste doua
+                # cai; PS1 se oprea la „fara DV" si lasa userul sa ghiceasca. Acum ambele
+                # raporteaza identic — si conditionat, ca sa nu revendice un HDR10+ absent.
+                Write-Host "  Triple-layer: Injectare RPU esuata — output fara DV (HDR10$tlHp pastrat)" -ForegroundColor Yellow
             }
             Remove-Item $injectedTemp -Force -ErrorAction SilentlyContinue
         } else {
-            Write-Host "  Triple-layer: Extractie raw $tlCodec esuata" -ForegroundColor Yellow
+            Write-Host "  Triple-layer: Extractie raw $tlCodec esuata — output fara DV (HDR10$tlHp pastrat)" -ForegroundColor Yellow
         }
         Remove-Item $rawTemp -Force -ErrorAction SilentlyContinue
         if ($hybHp) { Remove-Item $hybHp -Force -ErrorAction SilentlyContinue }

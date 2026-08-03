@@ -922,9 +922,15 @@ trimconcat_flow_concat() {
         # v68: audio copiat in containerul ales → avertizeaza pistele incompatibile
         # (codec audio nesuportat de container la copy). Per sursa (concat = N→1).
         for _cf in "${selected[@]}"; do warn_incompat_audio_copies "$_cf" "$container" ""; done
+        # v94 (B9): `-map 0` mapeaza SI pista `tmcd` (pe care muxerul MP4/MOV o adauga
+        # AUTOMAT oricarui .mp4), iar prin concat demuxer ea ajunge de tip UNKNOWN → muxerul
+        # refuza: „Cannot map stream #0:N - unsupported type" → output 0 octeti.
+        # Se intampla pe ORICE tinta, inclusiv MP4→MP4 (verificat), deci NU e o chestiune de
+        # container. `-dn` si `-map -0:d` NU ajuta (pista nu mai e „data", e „unknown");
+        # singurul care o filtreaza e `-ignore_unknown` — exact ce sugereaza si ffmpeg.
         run_ffmpeg_with_progress "Concat (copy)" "$total_s" \
             -y -f concat -safe 0 -i "$concat_txt" \
-            -map 0 -map_metadata 0 -c copy \
+            -map 0 -ignore_unknown -map_metadata 0 -c copy \
             -avoid_negative_ts make_zero \
             "$out_path"
         # v73: daca sursele sunt DV, -c copy pierde dvcC de container la →MP4/MOV (pastrat la
@@ -1695,12 +1701,18 @@ trimconcat_flow_pipeline() {
         esac
         [[ -n "$_pl_tagcodec" ]] && _pl_ctag=$(codec_tag_for_container "$_pl_tagcodec" "$container")
     fi
+    # v94 (B9/B17): vezi nota din trimconcat_flow_concat — `-map 0` cara si pista `tmcd`,
+    # care prin concat demuxer devine tip UNKNOWN → orice muxer o refuza → 0 octeti.
+    # `-ignore_unknown` e singurul care o filtreaza (nu `-dn`, nu `-map -0:d`).
+    # v94 (B17): se aplica pe TOATE cele 3 cai de mai jos, inclusiv RE-ENCODE — fixul B9
+    # initial acoperise doar copy/audio-only, dar re-encodarea video nu schimba nimic:
+    # stream-ul necunoscut ramane mapat, deci muxerul refuza la fel (verificat empiric).
     if (( smart_copy == 1 )); then
         chap_in=(); chap_map=()
         if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
         run_ffmpeg_with_progress "Pass 3/3 (copy)" "$pipeline_total_s" \
             -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
-            -map 0 -map_metadata 0 "${chap_map[@]}" -c copy \
+            -map 0 -ignore_unknown -map_metadata 0 "${chap_map[@]}" -c copy \
             -avoid_negative_ts make_zero \
             "$out_path"
     elif (( audio_only == 1 )); then
@@ -1708,7 +1720,7 @@ trimconcat_flow_pipeline() {
         if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
         run_ffmpeg_with_progress "Pass 3/3 (audio-only)" "$pipeline_total_s" \
             -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
-            -map 0 -map_metadata 0 "${chap_map[@]}" -c:v copy \
+            -map 0 -ignore_unknown -map_metadata 0 "${chap_map[@]}" -c:v copy \
             "${aopt[@]}" \
             -avoid_negative_ts make_zero \
             "$out_path"
@@ -1736,7 +1748,7 @@ trimconcat_flow_pipeline() {
         if [[ -n "$chapters_file" ]]; then chap_in=(-i "$chapters_file"); chap_map=(-map_chapters 1); fi
         run_ffmpeg_with_progress "Pass 3/3 ($codec)" "$pipeline_total_s" \
             -y -f concat -safe 0 -i "$concat_txt" "${chap_in[@]}" \
-            -map 0 -map_metadata 0 "${chap_map[@]}" \
+            -map 0 -ignore_unknown -map_metadata 0 "${chap_map[@]}" \
             -c:v "$codec" -crf "$crf" -preset "$preset" \
             "${hdr_pix_args[@]}" "${hdr_color_args[@]}" "${hdr_x265_args[@]}" "${hdr_svt_args[@]}" $_pl_ctag \
             "${aopt[@]}" \

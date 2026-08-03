@@ -3,10 +3,307 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v93 | 165 bug-uri fixate | 282+ features
-  243 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 183 teste [176 test_* + 7 infra]) | ~47800 linii cod+teste | ~7700 linii documentatie
+  TOTAL: v94 | 183 bug-uri fixate | 282+ features
+  253 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 193 teste [186 test_* + 7 infra]) | ~49500 linii cod+teste | ~8300 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v94 — Campanie de audit complet pe toate fluxurile:
+        18 bug-uri reparate, 6 dintre ele blocante
+═══════════════════════════════════════════════════════════════
+
+  Nu adauga functii noi. Fiecare flux al suitei a fost pilotat
+  prin MENIURILE REALE, pe fisiere reale, pe ambele platforme —
+  encodare, metadata, subtitrari, audio, telemetrie, mux, burn-in,
+  trim/concat. Sase dintre bug-urile gasite faceau ca fluxul
+  respectiv sa NU produca nimic; restul pierdeau tacut date sau
+  raportau lucruri care nu erau adevarate.
+
+  Tiparul recurent: bug-urile traiau in spatiul dintre "functiile
+  merg" si "fluxul real merge". Suita de teste era verde tot timpul.
+
+  ── Fluxuri care nu produceau NIMIC ──────────────────────────
+
+  FIX x265 refuza sa porneasca pe rezolutii uzuale — level-ul
+        cerut encoderului se calcula din LATIMEA imaginii, nu din
+        numarul de samples, rata de samples si latura maxima (cum
+        cere specificatia). Pe 1080p60, 1440p, 2.7K si pe orice
+        material vertical, x265 primea un level subdimensionat si
+        se oprea → 0 octeti, in modurile VBR si 2-pass. Rescris pe
+        tabelele din specificatie (HEVC / H.264 / AV1), bash si
+        PowerShell identic pe toate cele 19 cazuri de test. Pe CRF
+        level-ul e acum DOAR informativ (nu se mai trimite
+        encoderului — acolo nu are ce constrange).
+        Tot acolo: o rata de cadre aflata exact la jumatate de
+        unitate se rotunjea diferit pe cele doua platforme.
+        PowerShell rotunjeste implicit "la par" (12.5 → 12), bash
+        in sus (→ 13). 12.5 e o rata reala (jumatate de PAL), iar
+        la o granita din tabel acelasi fisier ar fi primit level-uri
+        diferite pe Windows si pe Linux. Aliniat.
+
+  FIX Orice cale cu spatiu rupea encodarea pe Windows — lansarea
+        procesului unea argumentele FARA sa le citeze, deci un
+        fisier "my clip.mp4" sau un folder "My Videos" spargea
+        comanda ffmpeg in bucati. Reparat cu un compunator de linie
+        de comanda conform regulilor de citare Windows (5 puncte de
+        apel: 2-pass, stream copy, progres, encodarea principala).
+        Cel mai banal bug al campaniei si totusi cel mai probabil
+        sa fie intalnit de un utilizator real — nu s-a vazut pana
+        acum fiindca tot arborele de dezvoltare e fara spatii.
+
+  FIX AV1 VBR nu a functionat NICIODATA pe SVT-AV1 — suita
+        trimitea mereu un plafon de bitrate (maxrate = target x
+        1.5), iar SVT-AV1 il REFUZA in VBR ("Max Bitrate only
+        supported with CRF mode") → encoderul nici nu porneste.
+        Afecta VBR 1-pass si 2-pass. maxrate/bufsize ramane pentru
+        libaom-av1, x265 si x264; pe SVT se trimite doar bitrate-ul
+        tinta, cu mesaj onest ca nu exista plafon.
+
+  FIX "2-pass"-ul AV1 era in realitate doua rulari 1-pass —
+        sintaxa de statistici nu e implementata pe toate build-urile,
+        iar acolo esecul e perfid: mesajul e pe nivel informativ
+        (invizibil), codul de iesire ramane 0, dar fisierul de
+        statistici nu se scrie → pass 2 moare. Detectia ghicea din
+        versiunea raportata de ffmpeg; acum se probeaza REZULTATUL
+        (chiar apare fisierul de statistici?).
+
+  FIX Encodarea Opus esua complet pe surse 5.1(side) — layout-ul
+        5.1(side), tipic la AC3 si DTS, nu e acceptat de libopus,
+        iar filtrul de conversie intra in conflict cu normalizarea
+        de volum cand amandoua cad pe aceeasi pista (al doilea
+        filtru il suprascrie pe primul, tacut). Filtrele audio se
+        emit acum dintr-un PUNCT UNIC, compuse in acelasi lant.
+
+  FIX Concat MP4→MKV (varianta implicita!) esua complet — pista de
+        timecode a sursei intra in selectia de streamuri si
+        Matroska o refuza. Reparat pe toate cele 4 cai de concat.
+
+  FIX Aceeasi cauza lovea si Pipeline-ul cand pasul final RE-ENCODA
+        (nu doar cand copia): pista de timecode ramane mapata si
+        la re-encodare, deci muxerul refuza la fel → 0 octeti.
+        Prima reparatie acoperise doar caile de copy. Acum toate
+        cele patru cai de concat sunt tratate, pe ambele platforme.
+
+  FIX Fluxul Mux din PowerShell era complet nefunctional pe
+        PowerShell 7.6+ / .NET 10 — se oprea la prima lista de
+        fisiere.
+
+  ── Date pierdute sau raportate gresit ───────────────────────
+
+  FIX Telemetria "raw streams" extragea STREAMURILE GRESITE, pe
+        ambele platforme — se folosea pozitia din lista in loc de
+        indexul real de stream.
+
+  FIX Analiza media clasifica gresit ORICE fisier cu subtitrari
+        (regresie aparuta in v91).
+
+  FIX Attachment-urile primeau CALEA ABSOLUTA ca nume de fisier
+        (Windows), in 12 puncte.
+
+  FIX Burn-in-ul (HUD / SRT / ASS) nu gasea fisierul auxiliar cand
+        acesta sta LANGA video — se cauta doar in folderul de
+        output, desi mesajul de eroare promitea ambele locuri.
+        Adica exact workflow-ul natural (film.mkv + film.srt
+        impreuna) raporta "nicio pereche gasita".
+
+  FIX ProRes si APV pierdeau semnalizarea de culoare a sursei
+        (bt709 → smpte170m/unknown): encoderele isi scriu propria
+        semnalizare, iar steagurile de culoare ale ffmpeg nu o
+        corecteaza. Reparat cu filtrele de bitstream dedicate
+        (prores_metadata cu nume, apv_metadata cu coduri
+        ITU-T H.273).
+
+  FIX Pe hardware, sursele SDR simple ieseau mis-tagged (pe QSV:
+        bt709 → smpte170m/unknown). Se re-afirma acum culoarea
+        REALA a sursei, nu una presupusa.
+
+  FIX Eticheta de final a hibridului DV+HDR10+ revendica un strat
+        HDR10+ care putea sa nu existe — mesajul era fix, desi
+        modul hibrid se activeaza la ORICE pastrare de DV, inclusiv
+        pe surse fara HDR10+, iar pe AV1 stratul se poate pierde
+        chiar cand sursa il are (build fara suportul necesar).
+        Eticheta se compune acum din ce s-a injectat efectiv;
+        acelasi lucru in cele 4 mesaje de eroare vecine.
+
+  FIX Previzualizarea pe un singur cadru nu cadea la mijlocul
+        clipului, cum anunta mesajul, ci cu 2.5 secunde mai
+        devreme — pe clipuri de pana la 5 secunde ajungea chiar pe
+        primul cadru, unde telemetria e adesea inca inactiva
+        (viteza 0, GPS neprins). Adica exact opusul scopului
+        (verifici aranjarea pe date reprezentative). Fereastra
+        clipului de 5 secunde a ramas neatinsa.
+
+  FIX Cand raspunsurile la prompturi vin din pipe sau dintr-un
+        script si se termina inainte de ultima intrebare, TOATE
+        valorile implicite anuntate in meniuri cadeau pe gol in loc
+        de default (PowerShell). Pe fluxul audio-only asta insemna
+        avertismente false ("aac incompatibil cu containerul") si
+        encode ESUAT. Reparat in 22 de puncte.
+
+  FIX Semnalizarea DV de container: cand nu poate fi scrisa, se
+        spune acum explicit — inainte suita raporta "complet" chiar
+        si atunci.
+
+  FIX SRT-ul de telemetrie omite campul de viteza cand sursa nu-l
+        are (in loc sa scrie un rand gol).
+
+  ── Corecturi de afisaj si de paritate ───────────────────────
+
+  UPDATE Numarul de "scene descriptors" afisat la extragerea
+        HDR10+ era DUBLU (374 in loc de 187) — se numarau doua chei
+        care coexista in aceeasi intrare. Corectat in toate cele 3
+        locuri (encodare + HDR/DV tools → Inspect).
+
+  UPDATE Linia de level nu se mai afiseaza pe ProRes / DNxHR / APV,
+        unde nu are sens (aparea ca "HEVC level"). bash nu o afisa
+        acolo — deci se restabileste si paritatea.
+
+  UPDATE Dimensiunile sub 1 MB se afiseaza rotunjit ("490 KB", nu
+        "490,43359375 KB") — in ambele locuri unde apar.
+
+  UPDATE Meniul de encoder din PowerShell: APV trece pe pozitia 5
+        si ProRes pe 6, ca in meniul bash; intrarea "HW Encode",
+        care exista doar pe Windows, coboara pe 7. Astfel pozitiile
+        1-6 sunt identice pe cele doua platforme. Profilele
+        stocheaza numele encoderului, nu numarul din meniu → fara
+        efect pe profilele salvate.
+
+  UPDATE Eticheta sursei arata acum Dolby Vision si HLG si acolo
+        unde erau ascunse (un DV 8.1 aparea ca "HDR10", un P5 ca
+        "10bit SDR").
+
+  UPDATE av_burnin.ps1 accepta si el variabilele de mediu pentru
+        folderele de intrare/iesire, ca celelalte scripturi.
+
+  UPDATE Doua dintre cele patru mesaje de esec ale hibridului
+        spuneau, pe Windows, doar ca output-ul ramane fara Dolby
+        Vision — nu si ce se pastreaza totusi in el. bash o spunea
+        de mult; gol de paritate mai vechi, nu din campania asta.
+        Acum ambele platforme raporteaza identic si conditionat (se
+        mentioneaza HDR10+ doar cand stratul chiar a intrat).
+
+  UPDATE Recomandarea de encoder era invechita si diferea intre
+        locurile unde apare. Doua mesaje erau pur si simplu false:
+        "libx265 (singurul care suporta DV)" — neadevarat din v44,
+        AV1 pastreaza si el Dolby Vision — si "libx265 (HDR10+
+        metadata native)", neadevarat din v60. In plus, sursele DJI
+        erau verificate DUPA tipurile HDR pe una dintre cai (deci un
+        DJI HDR primea mesajul generic), iar sursele HLG, APV si
+        DNxHR nu aveau deloc un raspuns dedicat. Recomandarea exista
+        in TREI locuri — analiza media pe fiecare platforma, plus
+        sumarul de dinaintea encodarii — si al treilea ramasese in
+        urma, deci acelasi fisier primea doua raspunsuri diferite
+        dupa cum il priveai. Toate trei dau acum acelasi rezultat,
+        verificat pe 19 combinatii de sursa.
+
+  UPDATE Sumarul de dinaintea encodarii clasifica sursa mai sarac
+        decat analiza media: nu avea deloc valorile "HLG" si
+        "SDR (LOG)". O sursa HLG aparea acolo "Tip HDR: SDR", desi
+        randul de deasupra spunea "H.265 HEVC HLG", iar una Log tot
+        "SDR", desi profilul Log se afiseaza pe randul urmator.
+        Aceeasi lipsa se vedea si in estimarea de dimensiune: HLG e
+        tot HDR (10-bit, gama larga) si cere acelasi spor de
+        bitrate, pe care analiza media il aplica de mult. Ambele
+        aliniate, fara nicio verificare in plus a fisierului.
+
+  ── Plasa de teste: completari si corecturi ──────────────────
+
+  ADD Validarea input-ului de la utilizator a primit primul ei
+        test. Campania a lovit accidental cinci validatoare
+        (raspunsuri decalate): parametri extra ai encoderului,
+        bitrate VBR, interval de trim inversat, optiune de meniu
+        inexistenta, selectie goala. Toate s-au comportat corect —
+        dar niciunul nu era acoperit, deci dovada era intamplatoare.
+        Acum sunt testate contractele complete, pe ambele platforme.
+
+  UPDATE Matricea de compatibilitate a Remux-ului (33 de verificari)
+        se muta in propriul test si valideaza acum copia care CHIAR
+        ruleaza. Cele doua functii ajutatoare exista si intr-un al
+        doilea loc, unde nu sunt insa chemate de nimic — iar testul
+        importa exact din acel loc, deci verifica un cod inert. Cele
+        doua copii diferiseră intre ele, iar cea inerta rama in urma
+        cu doua corecturi. Testul nou documenteaza si starea asta,
+        ca la o viitoare curatenie sa fie limpede ce se scoate.
+
+  FIX Un test afirma OPUSUL comportamentului real si trecea:
+        susţinea ca 2-pass nu e permis pe NVENC, desi din v53 chiar
+        e permis (NVENC il face intern). Cauza: verifica o functie
+        pe care nimic nu o cheama, ramasa cu politica de dinaintea
+        acelei versiuni. Regula reala e in alt loc, e mai completa
+        si era deja acoperita — deci nu lipsea acoperire, doar
+        testul dezinforma. Afirma acum politica in vigoare, per
+        backend, pe ambele platforme.
+
+  FIX Un test trecea din motivul GRESIT — verifica detectia de
+        brand pentru telemetrie, dar functia are nevoie intern de
+        alta functie ajutatoare, care nu era incarcata: apelul
+        arunca, rezultatul iesea gol, iar verificarea accepta tocmai
+        valoarea goala. Ar fi trecut verde si daca detectia era
+        complet rupta. Gasit de garda de mai jos, la prima ei
+        rulare completa. Se incarca acum si dependenta, plus o
+        verificare care confirma ca a fost incarcata — altfel „gol"
+        ramane ambiguu intre „nu are telemetrie" si „a esuat".
+
+  ADD Rulatorul de teste semnaleaza si no-op-ul PARTIAL: pana acum
+        detecta doar un test care nu executa nicio verificare, dar o
+        functie inexistenta care arunca la MIJLOC lasa contorul
+        pornit, deci testul raporta trecere. Semnalat acum ca eșec.
+
+  ADD Santinele permanente pentru clasele de bug care nu erau
+        pazite de nimic: linia de comanda cu spatii, plafonul de
+        bitrate pe AV1, statisticile de 2-pass, eticheta compusa a
+        hibridului, numaratoarea de scene, valorile implicite ale
+        prompturilor cand intrarea se termina, si domeniul de
+        valabilitate al declaratiilor locale in bash (regula
+        incalcata a doua oara in istoria proiectului). Detectorul
+        ultimei santinele e scris sa nu dea fals-pozitive pe
+        acoladele din blocurile de text si pe functiile indentate,
+        si se auto-verifica pe o violare plantata.
+
+  FIX Sase fisiere fusesera rescrise integral cu alte terminatii de
+        linie decat cele ale proiectului, iar unul capatase si un
+        marcaj de codificare la inceput — fara nicio schimbare de
+        continut (unul dintre ele era chiar identic cu versiunea
+        anterioara). Pe un script bash asta conteaza: interpretorul
+        de pe Linux si macOS citeste caracterul in plus ca parte din
+        comanda. Fisierul afectat a fost prins de santinela existenta,
+        dar ea pazea DOAR scripturile bash — restul trecusera nevazute.
+        Toate normalizate; santinela acopera acum orice fisier text din
+        proiect (inclusiv cele inca necommit-uite) si verifica si
+        marcajul de codificare. Detectorul se auto-verifica pe trei
+        violari plantate; metoda de citire e pe octeti, fiindca pe
+        Windows cautarea obisnuita in text raporteaza fals absolut
+        toate fisierele.
+
+  Paritate bash + PowerShell: toate reparatiile sunt oglindite, cu
+  doua excepatii structurale — valorile implicite ale prompturilor
+  sunt o capcana specifica PowerShell (bash trateaza identic "gol"
+  si "nesetat"), iar domeniul declaratiilor locale e o capcana
+  specifica bash (PowerShell nu are constructia).
+
+  Teste noi: test_v94_argline.{sh,ps1} · test_v94_av1_vbr.{sh,ps1}
+  · test_v94_metadata_labels.{sh,ps1} · test_v94_prompt_defaults.ps1
+  · test_v94_local_scope.sh. Extinse: test_v51_features,
+  test_v63_hw_vui, test_v64_mezzanine, test_v81_burnin_preview,
+  test_v65_apv.
+
+  Validare: matricea de metadata parcursa integral prin meniuri —
+  HDR10+ si Dolby Vision in toate directiile, inclusiv intre
+  codecuri (HEVC↔AV1, cu adaptarea automata a profilului), hibrid
+  DV+HDR10+ cu cele 3 straturi verificate in MKV si in MP4, Profil
+  7 → 8.1 la encodare, si HDR10+ pe APV in toate cele 6
+  combinatii — aici bitstream-urile produse de bash si de
+  PowerShell au iesit IDENTICE la octet, metadata inclusa.
+  Matricea x265 reluata integral dupa reparatie, pe rezolutiile
+  care esuau.
+
+  Suite finale pe bitii finali (secvential): bash 95/0/2 din 97
+  [875s] + PowerShell 89/89 [620s]. Blast radius: 20 fisiere src +
+  13 teste corectate/extinse + 2 fisiere de infrastructura de test
+  + 10 teste noi; zero chei de profil noi, un singur camp de stare
+  nou (marcajul care spune daca stratul HDR10+ a intrat efectiv in
+  encode).
 
 ═══════════════════════════════════════════════════════════════
   v93 — Unelte co-locate langa scripturi (GPAC + Cavernize):

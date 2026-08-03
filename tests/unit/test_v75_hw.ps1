@@ -35,7 +35,10 @@ Assert-Match $enc '\$doviSmart = & ffprobe.*codec_tag_string' "smart-copy guard 
 Assert-Match $enc '\[bool\]\$isHdr, \[bool\]\$isDV'      "Show-X264Dialog primeste param isDV"
 Assert-Match $enc 'if \(\$isDV\) \{ \$srcLabel = "Dolby Vision' "eticheta x264 DV via param isDV (nu codec_tag)"
 Assert-Match $enc 'Show-X264Dialog .+\$logInfo\.isDV'   "call-site x264 paseaza logInfo.isDV"
-Assert-Match $enc 'if \(\$chkLogInfo\.isDV\) \{ \$tipHdr = "Dolby Vision"' "sumar pre-encode foloseste chkLogInfo.isDV"
+# NB (v94): regexul e tolerant la spatiere — linia face parte dintr-un lant `if/elseif`
+# aliniat pe coloane, iar santinela pazeste PROPRIETATEA (conditia e `$chkLogInfo.isDV`,
+# adica detectia din side_data, NU `codec_tag`), nu formatarea.
+Assert-Match $enc 'if\s+\(\$chkLogInfo\.isDV\)\s*\{\s*\$tipHdr = "Dolby Vision"' "sumar pre-encode foloseste chkLogInfo.isDV"
 
 # ── 6. v75 audit: ramura HDR10 simplu pe HW re-afirma VUI prin BSF (paritate bash
 #      _hw_hdr_setup hw_hdr10; robust pe TOATE backendurile, nu doar QSV-propagare). ──

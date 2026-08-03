@@ -33,7 +33,11 @@ Assert-Match $COMMON ([regex]::Escape('APV_QP)               echo "intrange:0,63
 Assert-Eq $false ([bool]($COMMON -match 'APV_PROFILE\)'))       "schema: APV_PROFILE vechi scos"
 
 # ── 4. PS1 paritate completa ──────────────────────────────────────────
-Assert-Match $ENC ([regex]::Escape('$useAPV    = ($encChoice -eq "7")')) "PS1: APV optiunea 7"
+# v94 (O10): APV a trecut de pe 7 pe 5, ca sa coincida cu meniul bash (5=APV, 6=ProRes);
+# „HW Encode" (PS1-only) a coborat pe 7.
+Assert-Match $ENC ([regex]::Escape('$useAPV    = ($encChoice -eq "5")')) "PS1: APV optiunea 5 (paritate bash)"
+Assert-Match $ENC ([regex]::Escape('$useProRes = ($encChoice -eq "6")')) "PS1: ProRes optiunea 6 (paritate bash)"
+Assert-Match $ENC ([regex]::Escape('$useHWEnc  = ($encChoice -eq "7")')) "PS1: HW Encode (PS1-only) la coada, pe 7"
 Assert-Match $ENC ([regex]::Escape('$useAPV    = ($ENCODER -eq "apv")'))  "PS1: APV in profile-load"
 Assert-Match $ENC ([regex]::Escape('profil / pixel format'))    "PS1: meniu pixfmt"
 Assert-Match $ENC ([regex]::Escape('Container APV'))            "PS1: container APV"

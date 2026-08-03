@@ -38,7 +38,17 @@ assert_contains "$COMMON" 'APV_QP)               echo "intrange:0,63"' "schema: 
 assert_not_contains "$COMMON" 'APV_PROFILE)'     "schema: APV_PROFILE vechi scos"
 
 # ── 4. PS1 paritate completa ──────────────────────────────────────────
-assert_contains "$ENC_PS1" '$useAPV    = ($encChoice -eq "7")'  "PS1: APV optiunea 7 in meniu"
+# v94 (O10): APV a trecut de pe 7 pe 5, ca sa coincida cu meniul bash (5=APV, 6=ProRes);
+# „HW Encode" (PS1-only) a coborat pe 7.
+assert_contains "$ENC_PS1" '$useAPV    = ($encChoice -eq "5")'  "PS1: APV optiunea 5 (paritate bash)"
+assert_contains "$ENC_PS1" '$useProRes = ($encChoice -eq "6")'  "PS1: ProRes optiunea 6 (paritate bash)"
+assert_contains "$ENC_PS1" '$useHWEnc  = ($encChoice -eq "7")'  "PS1: HW Encode (PS1-only) la coada, pe 7"
+# santinela de paritate: ordinea encoderelor comune e identica pe cele doua platforme
+for _i in 1:libx265 2:libx264 3:AV1 4:DNxHR 5:APV 6:ProRes; do
+    _n="${_i%%:*}"; _e="${_i##*:}"
+    assert_contains "$(sed -n '374,390p' "$SCRIPT_DIR/av_launcher.sh")" "$_n) $_e" \
+        "bash: poziţia $_n = $_e"
+done
 assert_contains "$ENC_PS1" '$useAPV    = ($ENCODER -eq "apv")'  "PS1: APV in profile-load"
 assert_contains "$ENC_PS1" 'profil / pixel format'              "PS1: meniu pixfmt APV"
 assert_contains "$ENC_PS1" 'Container APV'                      "PS1: container APV"

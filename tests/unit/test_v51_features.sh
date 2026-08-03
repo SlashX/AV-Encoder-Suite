@@ -35,6 +35,17 @@ assert_eq "5.0" "$(_min_level_for_res hevc 3840 2160 30)" "HEVC 4K30 min level 5
 assert_eq "5.1" "$(_min_level_for_res hevc 3840 2160 60)" "HEVC 4K60 min level 5.1"
 assert_eq "4.1" "$(_min_level_for_res h264 1920 1080 30)" "H.264 1080p min level 4.1"
 
+# v94 (B10b) — SANTINELA: level-ul se calculeaza din SAMPLES + RATA + latura maxima,
+# NU din latime. Cazurile de mai jos ieseau subdimensionate pana in v93 si faceau x265
+# sa refuze sa porneasca ("picture dimensions are out of range") → encode 0 octeti.
+assert_eq "5.0" "$(_min_level_for_res hevc 2688 1512 60)" "B10b: HEVC 2.7K DJI (era 4.1 → esec)"
+assert_eq "5.0" "$(_min_level_for_res hevc 2560 1440 30)" "B10b: HEVC 1440p (era 4.0 → esec)"
+assert_eq "4.0" "$(_min_level_for_res hevc 1080 1920 30)" "B10b: HEVC portret 1080x1920 (era 3.0 → esec)"
+assert_eq "5.0" "$(_min_level_for_res hevc 1440 2560 30)" "B10b: HEVC portret 1440x2560 (era 3.1 → esec)"
+assert_eq "5.0" "$(_min_level_for_res av1  2688 1512 60)" "B10b: AV1 2.7K DJI (era 4.1)"
+assert_eq "5.1" "$(_min_level_for_res h264 2688 1512 60)" "B10b: H.264 2.7K DJI 60fps (era 5.0, rata prea mare)"
+assert_eq "4.1" "$(_min_level_for_res h264 1080 1920 30)" "B10b: H.264 portret (era 3.0)"
+
 # suggest_vbv_for_target — escaladare automata Main → High Tier
 sug=$(suggest_vbv_for_target hevc 4000 1920 1080 30)
 assert_eq "4.0 main 6000 8000" "$sug" "HEVC 4000kbps 1080p30 → 4.0 Main"
@@ -96,17 +107,42 @@ assert_eq "" "$STATS_DIR" "cleanup clears STATS_DIR"
 assert_eq "" "$FFMPEG_CMD_PASS1" "cleanup clears FFMPEG_CMD_PASS1"
 assert_eq "" "$FFMPEG_CMD_PASS2" "cleanup clears FFMPEG_CMD_PASS2"
 
-# hw_2pass_allowed
+# ── Gate-ul 2-pass × HW: politica VIE, nu cea din functia moarta (v94/O11) ──
+# `hw_2pass_allowed()` din av_common.sh NU e chemata de nimic (zero apeluri in src) si
+# codifica politica de dinainte de v53: "niciun backend HW nu suporta 2-pass". Testul de
+# aici afirma pana in v94 exact asta — inclusiv "NVENC → 2-pass NOT allowed" — ceea ce
+# CONTRAZICE codul viu: din v53 NVENC suporta 2-pass intern (`-multipass fullres`).
+# Un test care trece dar spune opusul comportamentului real dezinformeaza, deci afirmam
+# acum politica VIE, pe logica din av_launcher.sh (oglindita in av_encode.ps1).
+LAUNCH_TXT="$(cat "$SCRIPT_DIR/av_launcher.sh")"
+assert_contains "$LAUNCH_TXT" '[[ "${HW_BACKEND:-sw}" != "sw" ]] && _is_hw_active=1' \
+    "gate viu: orice backend != sw = HW activ"
+assert_contains "$LAUNCH_TXT" '[[ "${HW_BACKEND:-}" == "nvenc" ]] && _hw_supports_2pass=1' \
+    "gate viu: NVENC SUPORTA 2-pass (v53, -multipass fullres)"
+assert_contains "$LAUNCH_TXT" 'if [[ "$ENCODE_MODE" == "3" ]] && [ $_is_hw_active -eq 1 ] && [ $_hw_supports_2pass -eq 0 ]; then' \
+    "gate viu: mode=3 respins doar pe HW care NU suporta 2-pass"
+# aceeasi politica, replicata → contract explicit per backend
+_live_2pass_ok() {
+    local be="${1:-sw}" hw=0 sup=0
+    [[ "$be" != "sw" ]] && hw=1
+    [[ "$be" == "nvenc" ]] && sup=1
+    [[ $hw -eq 0 || $sup -eq 1 ]]
+}
+for be in sw nvenc; do
+    if _live_2pass_ok "$be"; then assert_eq "permis" "permis" "2-pass pe '$be': permis"
+    else assert_eq "permis" "respins" "2-pass pe '$be': permis"; fi
+done
+for be in qsv vaapi videotoolbox amf mediacodec; do
+    if _live_2pass_ok "$be"; then assert_eq "respins" "permis" "2-pass pe '$be': respins"
+    else assert_eq "respins" "respins" "2-pass pe '$be': respins"; fi
+done
+# paritate: PS1 are acelasi gate (nvenc = singurul HW cu 2-pass)
+assert_contains "$(cat "$SCRIPT_DIR/av_encode.ps1")" \
+    '$hwSupports2Pass = ($useHWEnc -and ($hwEncCodec -match "nvenc"))' \
+    "paritate PS1: acelasi gate 2-pass × HW"
+# NB (O11): `hw_2pass_allowed` si `get_null_output` sunt cod MORT in av_common.sh — cand se
+# sterg, aceasta nota si eventualele referinte rămase trebuie scoase. Vezi v94_audit.md/O11.
 HW_BACKEND=sw
-hw_2pass_allowed; assert_zero $? "SW backend → 2-pass allowed"
-HW_BACKEND=nvenc
-hw_2pass_allowed; assert_nonzero $? "NVENC backend → 2-pass NOT allowed"
-HW_BACKEND=mediacodec
-hw_2pass_allowed; assert_nonzero $? "MediaCodec → 2-pass NOT allowed"
-HW_BACKEND=sw
-
-# get_null_output portability
-assert_eq "/dev/null" "$(get_null_output)" "bash null output → /dev/null"
 
 # ══════════════════════════════════════════════════════════════════════
 # Faza B: per-encoder integration — markers in encoder files

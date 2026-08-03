@@ -21,6 +21,36 @@ foreach ($f in $shFiles) {
 }
 Assert-Eq 0 $crlf.Count "A: zero CRLF in fisierele .sh ($($crlf -join ', '))"
 
+# ── A2 + A3. CRLF si BOM in ORICE fisier text (v94, B18) ─────────────
+# Pana in v94 se pazeau DOAR fisierele .sh. Campania a rescris integral cu CRLF
+# sase fisiere (src/av_encode.ps1, src/av_mux.ps1, src/av_trimconcat.sh,
+# docs/av_changelog.txt, README.md, tests/unit/test_v49_mux.ps1, .gitignore —
+# ultimul fara nicio schimbare de continut) si a pus un BOM pe av_encode.ps1,
+# singurul din proiect. Tot repo-ul e LF fara BOM, deci ambele sunt drift de
+# editare. Citim BYTES (nu Get-Content) — fidel si pe fisierele noi netracked.
+# Enumerarea trece prin git, NU recursiv pe disc: pachetele portabile livrate
+# in src/ (GPAC, cavernize) au propriile .txt/.py in CRLF si sunt gitignorate,
+# deci un scan recursiv ar raporta fisiere care nu ne apartin. `--others
+# --exclude-standard` adauga fisierele NOI care inca n-au fost commit-uite
+# (exact golul prin care a scapat un test nou scris cu CRLF).
+$globs = @('*.sh','*.ps1','*.py','*.md','*.txt','*.html','*.conf','.gitignore')
+$rel = @(& git -C $ROOT ls-files -- @globs) +
+       @(& git -C $ROOT ls-files --others --exclude-standard -- @globs)
+$crlfAll = @(); $bomAll = @()
+foreach ($r in ($rel | Where-Object { $_ } | Sort-Object -Unique)) {
+    $full = Join-Path $ROOT $r
+    if (-not (Test-Path -LiteralPath $full)) { continue }
+    $bytes = [System.IO.File]::ReadAllBytes($full)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $bomAll += $r
+    }
+    for ($i = 1; $i -lt $bytes.Length; $i++) {
+        if ($bytes[$i] -eq 0x0A -and $bytes[$i-1] -eq 0x0D) { $crlfAll += $r; break }
+    }
+}
+Assert-Eq 0 $crlfAll.Count "A2: zero CRLF in fisierele text ($($crlfAll -join ', '))"
+Assert-Eq 0 $bomAll.Count  "A3: zero BOM UTF-8 in fisierele text ($($bomAll -join ', '))"
+
 # ── B. Anti-pattern-uri ffprobe ──────────────────────────────────────
 $bHits = @()
 foreach ($f in (Get-ChildItem "$SRC\*.sh", "$SRC\*.ps1")) {

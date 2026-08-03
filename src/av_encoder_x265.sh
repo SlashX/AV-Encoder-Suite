@@ -285,10 +285,16 @@ encoder_setup_file() {
     _tier=$(echo "$_vbv_suggest" | awk '{print $2}')
     local _lvl_idc="${_lvl//./}"   # 4.1 → 41
     local _high_tier_flag=0; [ "$_tier" = "high" ] && _high_tier_flag=1
-    X265_LEVEL_PARAMS="level-idc=${_lvl_idc}:high-tier=${_high_tier_flag}"
+    # v94 (B10a): level-idc se injecteaza DOAR pe VBR/2-pass, unde HRD chiar are nevoie de
+    # el. Pe CRF ramane strict informational (cum spunea deja mesajul de mai jos) — x265
+    # deduce singur level-ul corect din rezolutie+fps. Injectat pe CRF, un level subdimensionat
+    # facea x265 sa REFUZE sa porneasca ("picture dimensions are out of range for specified
+    # level" / "frame rate is out of range") → encode 0 octeti pe 1080p60, 1440p, 2.7K si pe
+    # orice material PORTRET.
+    X265_LEVEL_PARAMS=""
     # HRD compliance doar pe VBR/2-pass (encoder respecta caps level)
     if [[ "$ENCODE_MODE" == "2" || "$ENCODE_MODE" == "3" ]]; then
-        X265_LEVEL_PARAMS="${X265_LEVEL_PARAMS}:hrd=1"
+        X265_LEVEL_PARAMS="level-idc=${_lvl_idc}:high-tier=${_high_tier_flag}:hrd=1"
         log "  HEVC level: $_lvl ${_tier^^} tier | HRD=on"
     else
         log "  HEVC level: $_lvl ${_tier^^} tier (informational)"
@@ -330,6 +336,9 @@ encoder_setup_file() {
         # hdr10p_rc=0: metadata extrasa in HDR10PLUS_JSON → injectam cu dhdr10-info
         if [[ -n "${HDR10PLUS_JSON:-}" ]]; then
             hdr10plus_param=":dhdr10-info=${HDR10PLUS_JSON}"
+            # v94 (B14): marcam ca stratul HDR10+ chiar intra in encode — eticheta
+            # triple-layer se construieste din acest flag, nu hardcodat.
+            HDR10PLUS_INLINE_APPLIED=1
             log "  HDR10+: Metadata va fi injectata (dhdr10-info)"
         fi
         # hdr10p_rc=1: HDR10 static (fara dhdr10-info)

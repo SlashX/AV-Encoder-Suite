@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v93** — 165 bugs fixed · 282+ features · ~47 800 LoC · 243 files
+**v94** — 183 bugs fixed · 282+ features · ~49 500 LoC · 253 files
 
 ---
 
@@ -418,6 +418,8 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v93** — 165 bugs fixed · 282+ features · ~47 800 LoC · 243 files
+Current: **v94** — 183 bugs fixed · 282+ features · ~49 500 LoC · 253 files
+
+*v94 highlights:* a full **audit campaign** — no new features; every flow was driven through the **real menus**, on real files, on both platforms. Sixteen bugs fixed, six of which meant the flow produced **nothing at all**: x265 refused to start on ordinary resolutions (1080p60 / 1440p / 2.7K / any vertical footage) because the level was derived from image *width* instead of samples + sample rate + max dimension — now table-driven per spec, and informational-only on CRF · **any path containing a space** broke encoding on Windows (process launch joined arguments without quoting, so `my clip.mp4` or a `My Videos` folder split the ffmpeg command) · **AV1 VBR never worked** on SVT-AV1, 1-pass or 2-pass, because the suite always sent a bitrate ceiling that SVT rejects outside CRF mode · AV1 "2-pass" was silently **two 1-pass runs** on builds where the stats syntax is unimplemented (info-level message, exit 0, no stats file) — now probed by *result*, not by version string · Opus failed outright on `5.1(side)` sources (typical for AC3/DTS) · Concat MP4→MKV, the default combination, failed on the source timecode track. Plus honest reporting where it was wrong: the hybrid DV+HDR10+ completion label no longer claims an HDR10+ layer that isn't there, ProRes/APV keep the source colour signalling, single-frame preview actually lands mid-clip, and piped/scripted runs now get the announced menu defaults instead of empty values. Validation covered the metadata matrix end-to-end through the menus (HDR10+ and Dolby Vision in every direction incl. cross-codec, three-layer hybrid in MKV and MP4, Profile 7 → 8.1 on encode, HDR10+ on APV in all six combinations — where bash and PowerShell produced **byte-identical** bitstreams, metadata included).
 
 *v93 highlights:* the suite is now fully **self-contained on Windows** — DLL-based portable tool packages are auto-discovered from folders sitting next to the scripts (GPAC/MP4Box from `src/GPAC/`, Cavernize from `src/cavernize/` or `src/tools/cavernize/`), with `AV_TOOL_*` env still the supreme override and PATH the final fallback; no absolute paths anywhere (dev-box paths removed from the test suite too, which re-enabled a silently-gated real Cavern render test) · toolchain revalidated against the 2026-07-20 FFmpeg git build — all 398 upstream commits reviewed, **zero suite changes needed**; premises re-confirmed empirically (movenc still writes no Atmos/JOC `dec3` extension so the v87 signaling stays required, mainline SVT-AV1 4.2.0 still lacks `hdr10plus-json`, IAMF still flattens on any mux, raw HEVC→MKV still refused) and the new upstream side-data types (SMPTE 2094-50, `itut_t35` tracks) cause no false positives in detection; both full suites green on the new build.

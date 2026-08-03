@@ -19,6 +19,13 @@ trap 'rm -rf "$tmpd"; _test_summary' EXIT
 command -v cygpath >/dev/null 2>&1 && tmpd="$(cygpath -m "$tmpd")"
 IN="$tmpd/in"; OUT="$tmpd/out"; mkdir -p "$IN" "$OUT"
 
+# v94: AV_TEMP_DIR propriu, IZOLAT. Fara el, av_trimconcat foloseste <src>/Temp, iar daca
+# acolo exista subfoldere reziduale (trim_*/concat_*/pipeline_*/preview_* — pastrate DELIBERAT
+# pentru recovery), `tc_scan_leftover_temp` afiseaza un prompt SUPLIMENTAR care decaleaza tot
+# stdin-ul pilotat → „Selectie invalida" si fail fals-pozitiv, dependent de ce a rulat inainte.
+# Izolarea e preferabila curatarii lui <src>/Temp: nu atinge datele reale ale userului.
+export AV_TEMP_DIR="$tmpd/avtemp"; mkdir -p "$AV_TEMP_DIR"
+
 # fixture: clip SDR mic + SRT pereche (pairing: video in IN, .srt in OUT)
 ffmpeg -v error -f lavfi -i "testsrc=duration=2:size=320x180:rate=25" \
     -pix_fmt yuv420p -c:v libx265 -x265-params log-level=none "$IN/clip.mp4" -y </dev/null 2>/dev/null

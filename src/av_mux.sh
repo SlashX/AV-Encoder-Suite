@@ -1573,6 +1573,11 @@ mux_flow() {
             mime=$(mux_attach_mime "$af_ext")
             attach_args+=("-attach" "$af")
             attach_args+=("-metadata:s:t:$attach_idx" "mimetype=$mime")
+            # v94 (B2): `filename` EXPLICIT. Fara el, ffmpeg il deriva din calea data lui
+            # `-attach` taind doar dupa ultimul `/` — pe Windows (separator `\`) pastreaza
+            # CALEA ABSOLUTA intreaga ca nume de attachment (scurgere de path + nume invalid
+            # la extragere). Cu basename, rezultatul e identic pe ambele platforme.
+            attach_args+=("-metadata:s:t:$attach_idx" "filename=$(basename "$af")")
             attach_idx=$((attach_idx+1))
         done
     fi

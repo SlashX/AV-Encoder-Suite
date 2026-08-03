@@ -1788,7 +1788,9 @@ extract_hdr10plus_metadata() {
     rm -f "$_raw_tmp"
     if [ -s "$json_file" ]; then
         local count
-        count=$(grep -c '"BezierCurveData"\|"TargetedSystemDisplayMaximumLuminance"' "$json_file" 2>/dev/null)
+        # v94 (O7): vezi nota din av_encode.ps1 — numaram SCENE (o cheie unica per
+        # intrare SceneInfo), nu chei care coexista in aceeasi intrare.
+        count=$(grep -c '"SequenceFrameIndex"' "$json_file" 2>/dev/null)
         echo "  HDR10+: Metadata extrasa ($count scene descriptors)" | tee -a "${LOG_FILE:-/dev/null}" >&2
         echo "$json_file"
         return 0
@@ -2574,6 +2576,16 @@ _dv_container_signal() {
         echo "  dvcC de container scris (DV pe TV)"
     else
         rm -f "$tmp" 2>/dev/null   # esec → pastreaza $built (graceful); return 0
+        # v94 (P5-dvcC): esecul era TACUT — fluxul raporta „✓ ... complet" iar userul primea un
+        # fisier FARA semnalizare de container, adica exact diferenta dintre „DV activ pe TV" si
+        # „DV dormant" (motivul pentru care s-au facut v70-v72). Acum spunem onest ce lipseste.
+        # numele uneltei vine din variabila de config (santinela no_hardcoded_tools);
+        # basename pt afisaj — variabila poate contine calea co-locata completa (v93)
+        local _need_tool="$AV_TOOL_MP4BOX"; [[ "$target" == "mkv" ]] && _need_tool="$AV_TOOL_MKVMERGE"
+        _need_tool="$(basename "$_need_tool")"
+        echo "  ⚠ dvcC de container NU a putut fi scris ($_need_tool indisponibil sau esuat)."
+        echo "    Stratul DV ramane in bitstream (playerele PC il vad), dar TV-urile care"
+        echo "    decid dupa dvcC vor reda ca HDR10. Instaleaza $_need_tool (tools/) si reia."
     fi
     return 0
 }
@@ -4078,6 +4090,56 @@ _apply_vidstab() {
     fi
 }
 
+# v94 (B7): layout-ul cerut de encoder. libopus REFUZA layout-urile „(side)" — `5.1(side)`
+# e chiar layout-ul tipic al pistelor AC3/DTS din filme → encode esuat, 0 octeti
+# („Invalid channel layout 5.1(side) for specified mapping family -1"). `-mapping_family 1`
+# NU rezolva (verificat). Lista de mai jos remapeaza (side)→standard si lasa neatinse
+# layout-urile deja valide (7.1 ramane 7.1, verificat).
+_audio_layout_filter() {
+    case "$1" in
+        libopus) echo "aformat=channel_layouts=mono|stereo|3.0|4.0|quad|5.0|5.1|6.1|7.1" ;;
+        *)       echo "" ;;
+    esac
+}
+
+# v94 (B7): PUNCT UNIC care emite `-filter:a:N` pentru toate pistele audio.
+# Motiv: ffmpeg pastreaza DOAR ULTIMA aparitie a unui `-filter:a:N` (verificat empiric —
+# `-filter:a:0 aformat=... -filter:a:0 volume=...` pierde TACUT aformat-ul si encode-ul pica).
+# Deci aformat si loudnorm NU pot fi emise din locuri diferite: aici se compun in acelasi lant.
+# Output-ul intra in `eval $FFMPEG_CMD $LOUDNORM_FILTER ...` → expresia se QUOTEAZA (contine
+# `|`, altfel eval o interpreteaza ca pipe → „stereo: command not found", verificat).
+# Arg 2 `quote_mode`: `eval` (implicit) → expresiile se quoteaza, pt `eval $FFMPEG_CMD ...`;
+# `raw` → fara ghilimele, pt comenzile care ruleaza ffmpeg DIRECT (av_encoder_audio.sh).
+# Distinctia conteaza: la eval, `|` nequotat devine pipe (comanda rupta); la apel direct,
+# ghilimelele ar ajunge LITERAL in argumentul ffmpeg (filtru invalid).
+build_audio_filters() {
+    local file="$1" quote_mode="${2:-eval}"
+    local _q="'"; [[ "$quote_mode" == "raw" ]] && _q=""
+    local -a parts=()
+    # pistele re-encodate cu libopus (indecsi OUTPUT), derivate din AUDIO_PARAMS
+    local -a opus_idx=()
+    local i
+    while read -r i; do [[ -n "$i" ]] && opus_idx+=("$i"); done < <(
+        printf '%s\n' "${AUDIO_PARAMS:-}" | grep -oE '\-c:a:[0-9]+[[:space:]]+libopus' | grep -oE '[0-9]+' )
+    # loudnorm (poate lipsi) — reutilizam analiza existenta
+    local ln ln_idx="" ln_expr=""
+    ln=$(get_loudnorm_filter "$file")
+    if [[ -n "$ln" ]]; then
+        ln_idx=$(printf '%s' "$ln" | sed -n 's/^-filter:a:\([0-9]\+\) .*/\1/p')
+        ln_expr=$(printf '%s' "$ln" | sed -n 's/^-filter:a:[0-9]\+ \(.*\)$/\1/p')
+    fi
+    for i in "${opus_idx[@]}"; do
+        local chain; chain=$(_audio_layout_filter libopus)
+        if [[ -n "$ln_idx" && "$i" == "$ln_idx" && -n "$ln_expr" ]]; then
+            chain="${chain},${ln_expr}"; ln_idx=""   # consumat aici, nu-l mai emitem separat
+        fi
+        parts+=("-filter:a:$i" "${_q}${chain}${_q}")
+    done
+    # loudnorm pe o pista care NU e opus (sau fara piste opus)
+    if [[ -n "$ln_idx" && -n "$ln_expr" ]]; then parts+=("-filter:a:$ln_idx" "${_q}${ln_expr}${_q}"); fi
+    printf '%s' "${parts[*]}"
+}
+
 get_loudnorm_filter() {
     local file="$1"
     [[ "${AUDIO_NORMALIZE:-0}" != "1" ]] && { echo ""; return; }
@@ -4222,9 +4284,17 @@ run_2pass_encode() {
 
     if [ $rc1 -ne 0 ]; then
         log "  EROARE Pass 1 (rc=$rc1):"
+        # v94 (DIAG): vezi nota din run_encode_loop — cauza sta la inceput, nu in coada.
         if [[ -s "$stderr_file1" ]]; then
-            echo "  ⚠ ffmpeg Pass 1 exit $rc1 — ultimele linii stderr:"
-            tail -10 "$stderr_file1" | sed 's/^/    /'
+            local _e1
+            _e1=$(grep -aiE '\[error\]|^error|: error|Cannot open|Unable to open|Invalid |not supported|No such file' "$stderr_file1" 2>/dev/null | head -5)
+            if [[ -n "$_e1" ]]; then
+                echo "  ⚠ ffmpeg Pass 1 exit $rc1 — cauza probabila:"
+                echo "$_e1" | sed 's/^/    /'
+            else
+                echo "  ⚠ ffmpeg Pass 1 exit $rc1 — ultimele linii stderr:"
+                tail -10 "$stderr_file1" | sed 's/^/    /'
+            fi
         fi
         rm -f "$prog_file1" "$stderr_file1"
         return $rc1
@@ -4251,9 +4321,17 @@ run_2pass_encode() {
 
     if [ $rc2 -ne 0 ]; then
         log "  EROARE Pass 2 (rc=$rc2):"
+        # v94 (DIAG): vezi nota din run_encode_loop — cauza sta la inceput, nu in coada.
         if [[ -s "$stderr_file2" ]]; then
-            echo "  ⚠ ffmpeg Pass 2 exit $rc2 — ultimele linii stderr:"
-            tail -10 "$stderr_file2" | sed 's/^/    /'
+            local _e2
+            _e2=$(grep -aiE '\[error\]|^error|: error|Cannot open|Unable to open|Invalid |not supported|No such file' "$stderr_file2" 2>/dev/null | head -5)
+            if [[ -n "$_e2" ]]; then
+                echo "  ⚠ ffmpeg Pass 2 exit $rc2 — cauza probabila:"
+                echo "$_e2" | sed 's/^/    /'
+            else
+                echo "  ⚠ ffmpeg Pass 2 exit $rc2 — ultimele linii stderr:"
+                tail -10 "$stderr_file2" | sed 's/^/    /'
+            fi
         fi
         rm -f "$prog_file2" "$stderr_file2"
         return $rc2
@@ -4273,19 +4351,33 @@ _check_svtav1_2pass_caps() {
     SVTAV1_2PASS_SUPPORTED=0
     SVTAV1_DETECT_SOURCE=""
     command -v ffmpeg >/dev/null 2>&1 || return 1
-    # Parse "libsvtav1 1.7.0" sau "libsvtav1 1.4" din ffmpeg -version
-    local v
-    v=$(ffmpeg -version 2>/dev/null | grep -oE 'libsvtav1[[:space:]]+[0-9]+\.[0-9]+(\.[0-9]+)?' \
-        | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [[ -n "$v" ]]; then
-        # Comparare float via awk (bash nu suporta float comparison nativ)
-        SVTAV1_2PASS_SUPPORTED=$(awk -v ver="$v" 'BEGIN{print (ver+0 >= 1.4) ? 1 : 0}')
-        SVTAV1_DETECT_SOURCE="version=$v"
-    else
-        # Fallback optimist: assume modern build (ffmpeg n6.0+ statistical normal in 2026)
+    # v94 (B13): PROBA REALA pe REZULTAT, nu ghicit din `ffmpeg -version` si nici dupa
+    # exit code / mesaj. Multe build-uri (inclusiv gyan.dev 2026) listeaza doar „libsvtav1"
+    # FARA versiune → vechiul fallback „optimist" alegea sintaxa inline `pass=N:stats=`
+    # chiar si pe build-uri care NU o implementeaza. Acolo esecul e perfid:
+    #   - `ffmpeg -v error` NU arata nimic (mesajul „Error parsing option stats" e pe
+    #     nivel info, deci invizibil la loglevel-ul cu care probam);
+    #   - exit code-ul ramane 0 (eroarea e neletala la pass 1);
+    #   - dar fisierul de statistici NU se scrie niciodata → pass 2 moare cu
+    #     „Svt[error]: RC stats buffer not available", adica 2-pass-ul e de fapt rupt.
+    # Singurul semnal de incredere e deci FISIERUL. Probam un cadru cu nume gol + CWD
+    # (exact forma folosita in productie, care ocoleste si drive-colon-ul din v61) si ne
+    # uitam daca statisticile chiar au aparut. Default = 0 = sintaxa generica
+    # `-pass/-passlogfile`, verificata ca scrie stats-ul pe build-urile fara inline.
+    local _probe_dir _probe_stats
+    _probe_dir=$(av_mktemp_dir)
+    _probe_stats="$_probe_dir/svtprobe.passlog"
+    ( cd "$_probe_dir" 2>/dev/null && ffmpeg -v error -y -f lavfi \
+        -i "testsrc2=s=256x256:r=30:d=1" -c:v libsvtav1 -b:v 2000k \
+        -svtav1-params "preset=12:pass=1:stats=svtprobe.passlog" -f null - ) >/dev/null 2>&1 || true
+    if [ -s "$_probe_stats" ]; then
         SVTAV1_2PASS_SUPPORTED=1
-        SVTAV1_DETECT_SOURCE="assumed-modern"
+        SVTAV1_DETECT_SOURCE="proba=inline-scrie-stats"
+    else
+        SVTAV1_2PASS_SUPPORTED=0
+        SVTAV1_DETECT_SOURCE="proba=inline-fara-stats"
     fi
+    rm -rf "$_probe_dir" 2>/dev/null
     return 0
 }
 
@@ -4371,43 +4463,88 @@ get_vbv_caps() {
 
 # Determină level minim conform rezoluției × fps (luma sample rate).
 # Returnează string level "X.Y".
+#
+# v94 (B10b): level-ul se decide din NUMARUL de samples (MaxLumaPs / MaxFS), din RATA
+# de samples (w × h × fps) si din limita pe o singura latura — NU din latime, cum era
+# pana in v93. Banda pe latime dadea 4.1 pentru 2688x1512 (DJI Action 6) si 3.0 pentru
+# 1080x1920 (portret), iar x265 refuza sa porneasca: "picture dimensions are out of
+# range for specified level" → encode 0 octeti (inaltimea era primita ca parametru dar
+# niciodata folosita). Tabelele sunt cele din spec: H.265 A.4 / H.264 A.3 / AV1 A.3.
+# Formatul unei intrari: level:max_size:max_rate:max_w:max_h
+#   hevc → samples (MaxLumaPs / MaxLumaSr), latura max = floor(sqrt(MaxLumaPs × 8))
+#   h264 → MACROBLOCURI 16x16 (MaxFS / MaxMBPS), latura max = floor(sqrt(MaxFS × 8))
+#   av1  → samples (MaxPicSize / MaxDisplayRate) + MaxHSize / MaxVSize din spec
+# Nivelurile cu constrangeri IDENTICE apar o singura data: H.264 4.0≡4.1 (pastram 4.1,
+# nivelul conventional pentru 1080p, cu MaxBR mai mare), AV1 5.2≡5.3 si 6.2≡6.3.
 _min_level_for_res() {
-    local codec="$1" w="$2" h="$3" fps="${4:-30}"
-    # Folosim aproximari pragmatice. Conversie fps real cu awk pentru float.
+    local codec="$1" w="${2:-0}" h="${3:-0}" fps="${4:-30}"
+    # Curata \r (ffprobe.exe pe git-bash scrie CRLF) si spatiile — altfel validarea
+    # numerica de mai jos ar respinge o latime perfect valida si am cadea pe 1920x1080.
+    w="${w//[$'\r'$'\n'[:space:]]/}"; h="${h//[$'\r'$'\n'[:space:]]/}"
+    fps="${fps//[$'\r'$'\n'[:space:]]/}"
+    # Conversie fps real cu awk pentru float.
     local fps_int
-    fps_int=$(awk "BEGIN{printf \"%d\", ($fps + 0.5)}")
-    [ -z "$fps_int" ] || [ "$fps_int" -lt 1 ] && fps_int=30
+    fps_int=$(awk "BEGIN{printf \"%d\", ($fps + 0.5)}" 2>/dev/null)
+    if ! [[ "$fps_int" =~ ^[0-9]+$ ]] || [ "$fps_int" -lt 1 ]; then fps_int=30; fi
+    if ! [[ "$w" =~ ^[0-9]+$ ]] || [ "$w" -lt 1 ]; then w=1920; fi
+    if ! [[ "$h" =~ ^[0-9]+$ ]] || [ "$h" -lt 1 ]; then h=1080; fi
 
+    local tbl="" fallback="" size rate dim_w dim_h
     case "$codec" in
         hevc)
-            if   [ "$w" -ge 7680 ]; then echo "6.1"
-            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "5.2"
-            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 30 ]; then echo "5.1"
-            elif [ "$w" -ge 3840 ]; then echo "5.0"
-            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.1"
-            elif [ "$w" -ge 1920 ]; then echo "4.0"
-            elif [ "$w" -ge 1280 ]; then echo "3.1"
-            else echo "3.0"; fi
+            tbl="3.0:552960:16588800:2103:2103"
+            tbl="$tbl 3.1:983040:33177600:2804:2804"
+            tbl="$tbl 4.0:2228224:66846720:4222:4222"
+            tbl="$tbl 4.1:2228224:133693440:4222:4222"
+            tbl="$tbl 5.0:8912896:267386880:8444:8444"
+            tbl="$tbl 5.1:8912896:534773760:8444:8444"
+            tbl="$tbl 5.2:8912896:1069547520:8444:8444"
+            tbl="$tbl 6.0:35651584:1069547520:16888:16888"
+            tbl="$tbl 6.1:35651584:2139095040:16888:16888"
+            tbl="$tbl 6.2:35651584:4278190080:16888:16888"
+            fallback="6.2"
+            size=$(( w * h )); rate=$(( size * fps_int )); dim_w=$w; dim_h=$h
             ;;
         h264)
-            if   [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "6.0"
-            elif [ "$w" -ge 3840 ]; then echo "5.1"
-            elif [ "$w" -ge 2560 ]; then echo "5.0"
-            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.2"
-            elif [ "$w" -ge 1920 ]; then echo "4.1"
-            elif [ "$w" -ge 1280 ]; then echo "3.1"
-            else echo "3.0"; fi
+            tbl="3.0:1620:40500:113:113"
+            tbl="$tbl 3.1:3600:108000:169:169"
+            tbl="$tbl 3.2:5120:216000:202:202"
+            tbl="$tbl 4.1:8192:245760:256:256"
+            tbl="$tbl 4.2:8704:522240:263:263"
+            tbl="$tbl 5.0:22080:589824:420:420"
+            tbl="$tbl 5.1:36864:983040:543:543"
+            tbl="$tbl 5.2:36864:2073600:543:543"
+            tbl="$tbl 6.0:139264:4177920:1055:1055"
+            tbl="$tbl 6.1:139264:8355840:1055:1055"
+            tbl="$tbl 6.2:139264:16711680:1055:1055"
+            fallback="6.2"
+            dim_w=$(( (w + 15) / 16 )); dim_h=$(( (h + 15) / 16 ))
+            size=$(( dim_w * dim_h )); rate=$(( size * fps_int ))
             ;;
         av1)
-            if   [ "$w" -ge 7680 ]; then echo "6.1"
-            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 60 ]; then echo "5.2"
-            elif [ "$w" -ge 3840 ] && [ "$fps_int" -gt 30 ]; then echo "5.1"
-            elif [ "$w" -ge 3840 ]; then echo "5.0"
-            elif [ "$w" -ge 1920 ] && [ "$fps_int" -gt 30 ]; then echo "4.1"
-            elif [ "$w" -ge 1920 ]; then echo "4.0"
-            else echo "4.0"; fi
+            tbl="4.0:2359296:70778880:6144:3456"
+            tbl="$tbl 4.1:2359296:141557760:6144:3456"
+            tbl="$tbl 5.0:8912896:267386880:8192:4352"
+            tbl="$tbl 5.1:8912896:534773760:8192:4352"
+            tbl="$tbl 5.2:8912896:1069547520:8192:4352"
+            tbl="$tbl 6.0:35651584:1069547520:16384:8704"
+            tbl="$tbl 6.1:35651584:2139095040:16384:8704"
+            tbl="$tbl 6.2:35651584:4278190080:16384:8704"
+            fallback="6.2"
+            size=$(( w * h )); rate=$(( size * fps_int )); dim_w=$w; dim_h=$h
             ;;
+        *) echo "4.0"; return 0 ;;
     esac
+
+    local e lv c_size c_rate c_w c_h
+    for e in $tbl; do
+        IFS=':' read -r lv c_size c_rate c_w c_h <<< "$e"
+        if [ "$size" -le "$c_size" ] && [ "$rate" -le "$c_rate" ] \
+           && [ "$dim_w" -le "$c_w" ] && [ "$dim_h" -le "$c_h" ]; then
+            echo "$lv"; return 0
+        fi
+    done
+    echo "$fallback"
 }
 
 # Sugerează nivelul + tier-ul + maxrate + bufsize pentru un target bitrate dat.
@@ -5630,8 +5767,83 @@ build_mediacodec_cmd() {
 # HW_HDR_MODE valori: ""/sdr | hw_hdr10 | hw_hlg | hw_sdr (tonemap)
 # ══════════════════════════════════════════════════════════════════════
 
+# v94 (O3): traduce numele ffprobe ale culorii in codurile numerice ITU-T H.273 cerute de
+# bitstream filtere. Echo gol pentru orice valoare necunoscuta/„unknown" — apelantul trateaza
+# golul ca „sursa nu declara, nu inventam".
+# Args: $1 = primaries|transfer|matrix, $2 = valoarea ffprobe
+_h273_code() {
+    local kind="$1" v="$2"
+    v="${v//[$'\r'$'\n']/}"
+    case "$kind" in
+        primaries)
+            case "$v" in
+                bt709) echo 1 ;; bt470m) echo 4 ;; bt470bg) echo 5 ;; smpte170m) echo 6 ;;
+                smpte240m) echo 7 ;; film) echo 8 ;; bt2020) echo 9 ;; smpte428*) echo 10 ;;
+                smpte431) echo 11 ;; smpte432) echo 12 ;; *) echo "" ;;
+            esac ;;
+        transfer)
+            case "$v" in
+                bt709) echo 1 ;; gamma22|bt470m) echo 4 ;; gamma28|bt470bg) echo 5 ;;
+                smpte170m) echo 6 ;; smpte240m) echo 7 ;; linear) echo 8 ;;
+                log100|log) echo 9 ;; log316|log_sqrt) echo 10 ;;
+                iec61966-2-4|iec61966_2_4) echo 11 ;; bt1361e|bt1361) echo 12 ;;
+                iec61966-2-1|iec61966_2_1) echo 13 ;; bt2020-10|bt2020_10bit) echo 14 ;;
+                bt2020-12|bt2020_12bit) echo 15 ;; smpte2084) echo 16 ;; smpte428*) echo 17 ;;
+                arib-std-b67) echo 18 ;; *) echo "" ;;
+            esac ;;
+        matrix)
+            case "$v" in
+                gbr|rgb) echo 0 ;; bt709) echo 1 ;; fcc) echo 4 ;; bt470bg) echo 5 ;;
+                smpte170m) echo 6 ;; smpte240m) echo 7 ;; ycgco) echo 8 ;;
+                bt2020nc|bt2020_ncl) echo 9 ;; bt2020c|bt2020_cl) echo 10 ;; *) echo "" ;;
+            esac ;;
+        *) echo "" ;;
+    esac
+}
+
+# v94 (O4): ProRes si APV isi scriu propria semnalizare de culoare si pierd-o pe a sursei
+# (validat: sursa bt709/bt709/bt709 → output bt709/smpte170m/unknown la AMBELE). Aceeasi
+# clasa cu O3 de pe HW, dar pe encodere SW. Se repara cu bitstream filterele dedicate:
+#   prores_metadata — valori ca NUME, dintr-un set RESTRANS (transfer: doar bt709/PQ/HLG)
+#   apv_metadata    — coduri numerice ITU-T H.273 (acelasi vocabular ca _h273_code)
+# DNxHR nu are bsf; acolo gamut-ul se pastreaza doar pe MXF (limitare de container, v74).
+# Emitem bsf-ul DOAR cand sursa declara toate trei valorile SI toate sunt exprimabile —
+# altfel gol, ca sa nu inventam si sa nu etichetam pe jumatate.
+# Args: $1 = prores|apv, $2 = fisier sursa. Echo: fragmentul "-bsf:v ..." sau gol.
+_mezz_color_bsf() {
+    local kind="$1" src_file="${2:-}"
+    if [[ -z "$src_file" ]]; then echo ""; return 0; fi
+    local info sp st sm
+    info=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=color_primaries,color_transfer,color_space \
+        -of default=noprint_wrappers=1 "$src_file" 2>/dev/null | tr -d '\r')
+    sp=$(echo "$info" | awk -F= '$1=="color_primaries"{print $2; exit}')
+    st=$(echo "$info" | awk -F= '$1=="color_transfer"{print $2; exit}')
+    sm=$(echo "$info" | awk -F= '$1=="color_space"{print $2; exit}')
+    case "$kind" in
+        prores)
+            case "$sp" in bt709|bt470bg|smpte170m|bt2020|smpte431|smpte432) ;; *) echo ""; return 0 ;; esac
+            case "$st" in bt709|smpte2084|arib-std-b67) ;; *) echo ""; return 0 ;; esac
+            case "$sm" in bt709|smpte170m|bt2020nc) ;; *) echo ""; return 0 ;; esac
+            echo "-bsf:v prores_metadata=color_primaries=${sp}:color_trc=${st}:colorspace=${sm}"
+            ;;
+        apv)
+            local cp ct cm
+            cp=$(_h273_code primaries "$sp")
+            ct=$(_h273_code transfer  "$st")
+            cm=$(_h273_code matrix    "$sm")
+            if [[ -n "$cp" && -n "$ct" && -n "$cm" ]]; then
+                echo "-bsf:v apv_metadata=color_primaries=${cp}:transfer_characteristics=${ct}:matrix_coefficients=${cm}"
+            else
+                echo ""
+            fi
+            ;;
+        *) echo "" ;;
+    esac
+}
+
 # Helper comun: returneaza pix_fmt + profile + BSF (VUI inject) pe baza HW_HDR_MODE
-# Args: $1 = enc_codec (hevc/h264/av1)
+# Args: $1 = enc_codec (hevc/h264/av1), $2 = fisierul sursa (optional, pentru O3)
 # Output globals: _HW_PIX_FMT / _HW_PROFILE / _HW_VUI_BSF
 #
 # v53 fix: ffmpeg -color_primaries/-color_trc/-colorspace flags NU propaga corect
@@ -5644,7 +5856,7 @@ build_mediacodec_cmd() {
 #   PQ transfer=16 / HLG transfer=18 / BT.709 transfer=1
 #   BT.2020nc matrix=9 / BT.709 matrix=1
 _hw_hdr_setup() {
-    local enc_codec="$1"
+    local enc_codec="$1" src_file="${2:-}"
     _HW_PIX_FMT="yuv420p"
     _HW_VUI_BSF=""
     _HW_PROFILE=""
@@ -5691,6 +5903,33 @@ _hw_hdr_setup() {
                 VIDEO_FILTER="-vf $sdr_vf"
             fi
             ;;
+        *)
+            # v94 (O3): sursa SDR simpla — niciun mod HDR, deci pana acum nu se scria niciun
+            # BSF si encoderul HW isi punea propriul VUI, pierzand semnalizarea sursei
+            # (validat pe QSV: sursa bt709/bt709/bt709 → output bt709/smpte170m/unknown,
+            # adica transfer BT.601 si matrice pierduta). Re-afirmam EXACT valorile sursei,
+            # NU bt709 fix: un DVD PAL (bt470bg) nu trebuie transformat in bt709. Daca sursa
+            # nu le declara pe toate trei, nu inventam nimic — BSF gol, ca inainte.
+            if [[ -n "$src_file" ]]; then
+                local _cinfo _sp _st _sm _cp _ct _cm
+                _cinfo=$(ffprobe -v error -select_streams v:0 \
+                    -show_entries stream=color_primaries,color_transfer,color_space \
+                    -of default=noprint_wrappers=1 "$src_file" 2>/dev/null | tr -d '\r')
+                _sp=$(echo "$_cinfo" | awk -F= '$1=="color_primaries"{print $2; exit}')
+                _st=$(echo "$_cinfo" | awk -F= '$1=="color_transfer"{print $2; exit}')
+                _sm=$(echo "$_cinfo" | awk -F= '$1=="color_space"{print $2; exit}')
+                _cp=$(_h273_code primaries "$_sp")
+                _ct=$(_h273_code transfer  "$_st")
+                _cm=$(_h273_code matrix    "$_sm")
+                if [[ -n "$_cp" && -n "$_ct" && -n "$_cm" ]]; then
+                    if [[ "$enc_codec" == "hevc" ]]; then
+                        _HW_VUI_BSF="-bsf:v ${bsf_name}=colour_primaries=${_cp}:transfer_characteristics=${_ct}:matrix_coefficients=${_cm}"
+                    else
+                        _HW_VUI_BSF="-bsf:v ${bsf_name}=color_primaries=${_cp}:transfer_characteristics=${_ct}:matrix_coefficients=${_cm}"
+                    fi
+                fi
+            fi
+            ;;
     esac
 
     # Back-compat: _HW_COLOR_FLAGS pastrat ca empty pentru ramurile care il citesc
@@ -5732,7 +5971,7 @@ build_nvenc_cmd() {
         rate_flags="-rc vbr -cq $crf -b:v 0"
     fi
 
-    _hw_hdr_setup "$enc_codec"
+    _hw_hdr_setup "$enc_codec" "$file"
 
     log "  NVENC: $enc_name | preset $preset | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
@@ -5763,7 +6002,7 @@ build_qsv_cmd() {
         rate_flags="-global_quality $crf -look_ahead 1"
     fi
 
-    _hw_hdr_setup "$enc_codec"
+    _hw_hdr_setup "$enc_codec" "$file"
     # QSV foloseste nv12 pentru SDR (nu yuv420p)
     [[ "$_HW_PIX_FMT" == "yuv420p" ]] && _HW_PIX_FMT="nv12"
 
@@ -5794,7 +6033,7 @@ build_vaapi_cmd() {
         rate_flags="-rc_mode CQP -qp $crf"
     fi
 
-    _hw_hdr_setup "$enc_codec"
+    _hw_hdr_setup "$enc_codec" "$file"
     local upload_fmt="nv12"
     [[ "$_HW_PIX_FMT" == "p010le" ]] && upload_fmt="p010"
 
@@ -5836,7 +6075,7 @@ build_videotoolbox_cmd() {
         rate_flags="-q:v $q"
     fi
 
-    _hw_hdr_setup "$enc_codec"
+    _hw_hdr_setup "$enc_codec" "$file"
 
     log "  VideoToolbox: $enc_name | q $q (slot $slot) | pix_fmt $_HW_PIX_FMT${HW_HDR_MODE:+ | hdr=$HW_HDR_MODE}"
 
@@ -5878,7 +6117,7 @@ build_amf_cmd() {
         fi
     fi
 
-    _hw_hdr_setup "$enc_codec"
+    _hw_hdr_setup "$enc_codec" "$file"
 
     # v42.1: -usage transcoding (default AMF e "ultralowlatency" — gresit pentru offline)
     local usage_flags="-usage transcoding"
@@ -6615,6 +6854,8 @@ run_encode_loop() {
         [[ -n "${DOVI_RPU_FILE:-}" ]] && rm -f "$DOVI_RPU_FILE"
         HDR10PLUS_JSON=""; DOVI_RPU_FILE=""
         TRIPLE_LAYER_MODE=0; TRIPLE_LAYER_TARGET_CODEC=""
+        # v94 (B14): setat de encodere EXACT unde intra dhdr10-info / hdr10plus-json
+        HDR10PLUS_INLINE_APPLIED=0
         # v69: APV HDR10+ state (setat de av_encoder_apv encoder_setup_file)
         [[ -n "${APV_HDR10PLUS_JSON:-}" ]] && rm -f "$APV_HDR10PLUS_JSON"
         APV_HDR10PLUS_JSON=""; APV_HDR10PLUS_INJECT=0
@@ -6702,9 +6943,13 @@ run_encode_loop() {
             fi
         fi
 
+        # v94 (B7): build_audio_filters emite TOATE `-filter:a:N` (aformat pt libopus +
+        # loudnorm, compuse in acelasi lant) — un singur emitent, altfel ultimul flag il
+        # suprascrie TACIT pe primul. Se cheama si cand loudnorm e off (pt aformat).
         LOUDNORM_FILTER=""
-        [[ "$AUDIO_NORMALIZE" == "1" ]] && [[ "$AUDIO_CODEC_ARG" != "copy" ]] && \
-            LOUDNORM_FILTER=$(get_loudnorm_filter "$file")
+        if [[ "$AUDIO_CODEC_ARG" != "copy" ]]; then
+            LOUDNORM_FILTER=$(build_audio_filters "$file")
+        fi
         TRF_FILE=""; _apply_vidstab "$file"
 
         PROGRESS_FILE=$(mktemp); START_TIME=$(date +%s)
@@ -6733,10 +6978,22 @@ run_encode_loop() {
         [[ -n "${TRF_FILE:-}" ]] && rm -f "$TRF_FILE"; TRF_FILE=""
         if [ $FFMPEG_EXIT -ne 0 ]; then
             log "  EROARE encodare (cod $FFMPEG_EXIT)"
-            # v38: arata ultimele linii stderr inline pentru diagnoza rapida
+            # v38: arata stderr inline pentru diagnoza rapida.
+            # v94 (DIAG): intai liniile care CONTIN eroarea, nu doar coada. Cauza reala apare
+            # de obicei la INCEPUT (ex. „x265 [error]: picture dimensions are out of range for
+            # specified level"), iar coada arata doar consecinta („Invalid data found when
+            # processing input") — care trimite spre sursa, nu spre parametrul gresit.
             if [[ -s "$_enc_err" ]]; then
-                echo "  ⚠ ffmpeg exit $FFMPEG_EXIT — ultimele linii stderr:"
-                tail -10 "$_enc_err" | sed 's/^/    /'
+                local _err_hits
+                _err_hits=$(grep -aiE '\[error\]|^error|: error|Cannot open|Unable to open|Invalid |not supported|No such file' "$_enc_err" 2>/dev/null | head -5)
+                if [[ -n "$_err_hits" ]]; then
+                    echo "  ⚠ ffmpeg exit $FFMPEG_EXIT — cauza probabila:"
+                    echo "$_err_hits" | sed 's/^/    /'
+                    echo "    (stderr complet: $LOG_FILE)"
+                else
+                    echo "  ⚠ ffmpeg exit $FFMPEG_EXIT — ultimele linii stderr:"
+                    tail -10 "$_enc_err" | sed 's/^/    /'
+                fi
             fi
             rm -f "$_enc_err"
             [[ -n "${HDR10PLUS_JSON:-}" ]] && rm -f "$HDR10PLUS_JSON"; HDR10PLUS_JSON=""
@@ -6756,10 +7013,16 @@ run_encode_loop() {
         # ── Triple-layer: injecteaza DV RPU in output (HEVC sau AV1) ──
         if [[ "${TRIPLE_LAYER_MODE:-0}" == "1" ]] && [[ -n "${DOVI_RPU_FILE:-}" ]]; then
             local _tl_codec="${TRIPLE_LAYER_TARGET_CODEC:-hevc}"
-            local _tl_label
+            local _tl_label _tl_hp
+            # v94 (B14): eticheta se construieste din CE S-A INJECTAT efectiv.
+            # TRIPLE_LAYER_MODE se seteaza la ORICE DV-preserve (inclusiv surse fara
+            # HDR10+), iar pe AV1 stratul HDR10+ poate lipsi si cand sursa il are
+            # (libsvtav1 fara `hdr10plus-json`) → revendicarea neconditionata minte.
+            _tl_hp=""
+            [[ "${HDR10PLUS_INLINE_APPLIED:-0}" == "1" ]] && _tl_hp=" + HDR10+"
             case "$_tl_codec" in
-                av1) _tl_label="DV P10 + HDR10 + HDR10+ (AV1)" ;;
-                *)   _tl_label="DV 8.1 + HDR10 + HDR10+ (HEVC)" ;;
+                av1) _tl_label="DV P10 + HDR10${_tl_hp} (AV1)" ;;
+                *)   _tl_label="DV 8.1 + HDR10${_tl_hp} (HEVC)" ;;
             esac
             log "  Triple-layer: Injectez DV RPU in output ($_tl_codec)..."
             local raw_temp injected_temp _ext _extract_args
@@ -6839,20 +7102,20 @@ run_encode_loop() {
                         # v56: guard onest AV1 — inject-rpu produce metadata T.35 pe care ffmpeg
                         # o arunca silentios la pachetizare (rc=0, output ne-gol) si DV se pierde.
                         if [[ "$_tl_codec" == "av1" ]] && ! verify_dv_survived "$output" "$_tl_codec"; then
-                            log "  Triple-layer: ⚠ DV pierdut la re-mux (known issue AV1 inject-rpu T.35 — Tier 4); output pastreaza HDR10/HDR10+"
+                            log "  Triple-layer: ⚠ DV pierdut la re-mux (known issue AV1 inject-rpu T.35 — Tier 4); output pastreaza HDR10${_tl_hp}"
                         else
                             log "  Triple-layer: $_tl_label — OK"
                         fi
                     else
-                        log "  Triple-layer: Re-mux esuat — output fara DV (HDR10+ pastrat)"
+                        log "  Triple-layer: Re-mux esuat — output fara DV (HDR10${_tl_hp} pastrat)"
                         rm -f "$final_temp"
                     fi
                 else
-                    log "  Triple-layer: Injectare RPU esuata — output fara DV (HDR10+ pastrat)"
+                    log "  Triple-layer: Injectare RPU esuata — output fara DV (HDR10${_tl_hp} pastrat)"
                 fi
                 rm -f "$injected_temp"
             else
-                log "  Triple-layer: Extractie raw $_tl_codec esuata — output fara DV (HDR10+ pastrat)"
+                log "  Triple-layer: Extractie raw $_tl_codec esuata — output fara DV (HDR10${_tl_hp} pastrat)"
             fi
             rm -f "$raw_temp"
             [[ -n "$_hyb_hp" ]] && rm -f "$_hyb_hp"

@@ -73,6 +73,20 @@ _hdv_combine_with_original() {
           && ( "${output##*.}" == "mp4" || "${output##*.}" == "mov" || "${output##*.}" == "m4v" ) ]]; then
         _mux_dv_mp4 "$modified" "$original" "$output" && return 0
     fi
+    # v94 (P5-dvcC): am ajuns aici => niciun mux dvcC n-a reusit (unealta lipsa sau esuata) si
+    # cadem pe ffmpeg direct, care NU scrie semnalizarea de container. Inainte, fluxul raporta
+    # „✓ complet" fara sa spuna nimic → userul primea DV dormant pe TV. Acum e onest.
+    case "${output##*.}" in
+        mkv|mp4|mov|m4v)
+            # numele uneltei din variabila de config (santinela no_hardcoded_tools);
+            # basename pt afisaj — variabila poate contine calea co-locata completa (v93)
+            local _dvsig_tool="$AV_TOOL_MP4BOX"; [[ "${output##*.}" == "mkv" ]] && _dvsig_tool="$AV_TOOL_MKVMERGE"
+            _dvsig_tool="$(basename "$_dvsig_tool")"
+            echo "  ⚠ dvcC de container NU a putut fi scris ($_dvsig_tool indisponibil sau esuat)."
+            echo "    DV ramane in bitstream (playerele PC il vad), dar TV-urile care decid dupa"
+            echo "    dvcC vor reda ca HDR10. Instaleaza $_dvsig_tool (tools/) si reia."
+            ;;
+    esac
     # shellcheck disable=SC2086
     ffmpeg -v error -i "$modified" -i "$original" \
         -map 0:v:0 -map 1:a? -map 1:s? -map 1:t? \
@@ -405,7 +419,8 @@ hdv_flow_inspect() {
             hp_json=$(extract_hdr10plus_metadata "$file" 2>/dev/null)
             if [[ -n "$hp_json" ]] && [ -s "$hp_json" ]; then
                 local scenes
-                scenes=$(grep -c '"BezierCurveData"\|"TargetedSystemDisplay"' "$hp_json" 2>/dev/null)
+                # v94 (O7): o cheie UNICA per intrare SceneInfo (vezi extract_hdr10plus_metadata)
+                scenes=$(grep -c '"SequenceFrameIndex"' "$hp_json" 2>/dev/null)
                 echo "  Scene descriptors: $scenes"
                 rm -f "$hp_json"
             fi

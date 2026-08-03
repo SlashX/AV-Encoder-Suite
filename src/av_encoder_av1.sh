@@ -241,16 +241,28 @@ encoder_setup_file() {
     fi
 
     # ── Rate control ──────────────────────────────────────────────────
+    # v94 (B12): libsvtav1 REFUZA plafonul de bitrate in VBR — "Svt[error]: Max Bitrate
+    # only supported with CRF mode" → encoderul nici nu porneste (exit 127, 0 octeti).
+    # Suita calculeaza mereu maxrate = target x 1.5, deci AV1 VBR (1-pass SI 2-pass) nu a
+    # functionat niciodata pe SVT. `-maxrate`/`-bufsize` se trimit doar la libaom-av1,
+    # care le suporta. Pe SVT ramane VBR pur (`-b:v`), fara plafon — nu exista alternativa:
+    # max-bitrate-ul SVT (`mbr`) exista doar in modul CRF, care e alt mod de rate control.
     local crf_flag="" rate_flag="" is_vbr=0
     local _is_2pass=0
+    local _av1_vbv="" _av1_vbv_note=" / max $VBR_MAXRATE"
+    if [[ "$AV1_ENCODER" == "libsvtav1" ]]; then
+        _av1_vbv_note=" (fara plafon — SVT-AV1 nu suporta maxrate in VBR)"
+    else
+        _av1_vbv=" -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
+    fi
     if [[ "$ENCODE_MODE" == "3" && -n "$VBR_TARGET" ]]; then
         # v51: 2-pass VBR
-        rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
+        rate_flag="-b:v ${VBR_TARGET}${_av1_vbv}"
         is_vbr=1; _is_2pass=1
-        log "  2-PASS VBR: $VBR_TARGET / max $VBR_MAXRATE / buf $VBR_BUFSIZE"
+        log "  2-PASS VBR: ${VBR_TARGET}${_av1_vbv_note}"
     elif [[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]; then
-        rate_flag="-b:v $VBR_TARGET -maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE"
-        is_vbr=1; log "  VBR: $VBR_TARGET / max $VBR_MAXRATE"
+        rate_flag="-b:v ${VBR_TARGET}${_av1_vbv}"
+        is_vbr=1; log "  VBR: ${VBR_TARGET}${_av1_vbv_note}"
     else
         crf_flag="-crf $CRF"; log "  CRF: $CRF | ${WIDTH}x${HEIGHT}"
     fi
@@ -262,9 +274,13 @@ encoder_setup_file() {
     _av1_suggest=$(suggest_vbv_for_target av1 "$_av1_target_kbps" "$WIDTH" "${HEIGHT:-1080}" "${SRC_FPS_DEC:-30}")
     _av1_lvl=$(echo "$_av1_suggest" | awk '{print $1}')
     # libsvtav1 ffmpeg expune -level "4.0".."6.3"; libaom-av1 nu are level direct (gestionat intern)
+    # v94 (B10a): la fel ca la x265 — level-ul se trimite encoderului DOAR pe VBR/2-pass.
+    # Pe CRF ramane informational (svtav1 tolereaza un level subdimensionat, dar il scrie in
+    # stream → semnalizare gresita catre playere). v94 (B10b): calculul insusi a fost corectat
+    # — level-ul iese acum din samples + rata + latura maxima, nu din trepte de latime.
     local _av1_level_flag=""
-    [[ "$AV1_ENCODER" == "libsvtav1" ]] && _av1_level_flag="-level $_av1_lvl"
-    log "  AV1 level: $_av1_lvl"
+    [[ "$AV1_ENCODER" == "libsvtav1" && "$is_vbr" -eq 1 ]] && _av1_level_flag="-level $_av1_lvl"
+    log "  AV1 level: $_av1_lvl$([ "$is_vbr" -eq 1 ] || echo " (informational)")"
 
     local av1_params
     av1_params=$(build_av1_params "$AV1_ENCODER" "$ENCODER_PRESET" \
@@ -327,6 +343,9 @@ encoder_setup_file() {
         # hdr10p_rc=0: metadata extrasa → injectam via svtav1-params doar daca caps OK
         if [[ -n "${HDR10PLUS_JSON:-}" ]] && [ "$_hdr10p_inline_ok" -eq 1 ]; then
             hdr10plus_av1_param=":hdr10plus-json=${HDR10PLUS_JSON}"
+            # v94 (B14): vezi nota din av_encoder_x265.sh — eticheta triple-layer
+            # revendica HDR10+ doar cand stratul chiar a intrat in encode.
+            HDR10PLUS_INLINE_APPLIED=1
             log "  HDR10+: Metadata va fi injectata inline (hdr10plus-json)"
         elif [[ -n "${HDR10PLUS_JSON:-}" ]]; then
             log "  HDR10+: Metadata extrasa dar inline injection indisponibila — fallback HDR10 static"
