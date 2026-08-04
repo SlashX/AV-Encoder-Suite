@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v94** — 183 bugs fixed · 282+ features · ~49 500 LoC · 253 files
+**v95** — 186 bugs fixed · 282+ features · ~63 000 LoC · 258 files
 
 ---
 
@@ -418,7 +418,9 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v94** — 183 bugs fixed · 282+ features · ~49 500 LoC · 253 files
+Current: **v95** — 186 bugs fixed · 282+ features · ~63 000 LoC · 258 files
+
+*v95 highlights:* a **cleanup** release — no behaviour changes at all. Nine functions with no callers were removed (375 lines): five from the shared bash code, four from the Windows script, where a whole Remux block had been left behind when that flow moved into its own script back in v49. Two of them were the bash/Windows pair of the same capability, dead on both platforms — the capability itself is alive and tested, just living elsewhere now. Tests that exercised the dead code were re-pointed at the copy that actually runs where one existed, and removed where the function was gone for good. A **permanent guard** now flags any function without callers, on both platforms; it self-checks against planted cases, ignores names that appear only in comments (which is how one of the nine hid from the first sweep), and judges per *file* on Windows, since scripts there are standalone by design — the exact reason two copies of the same helper had been allowed to drift apart. Two unused functions were deliberately kept: they belong to the cross-platform compatibility layer that another rule requires everyone to go through.
 
 *v94 highlights:* a full **audit campaign** — no new features; every flow was driven through the **real menus**, on real files, on both platforms. Sixteen bugs fixed, six of which meant the flow produced **nothing at all**: x265 refused to start on ordinary resolutions (1080p60 / 1440p / 2.7K / any vertical footage) because the level was derived from image *width* instead of samples + sample rate + max dimension — now table-driven per spec, and informational-only on CRF · **any path containing a space** broke encoding on Windows (process launch joined arguments without quoting, so `my clip.mp4` or a `My Videos` folder split the ffmpeg command) · **AV1 VBR never worked** on SVT-AV1, 1-pass or 2-pass, because the suite always sent a bitrate ceiling that SVT rejects outside CRF mode · AV1 "2-pass" was silently **two 1-pass runs** on builds where the stats syntax is unimplemented (info-level message, exit 0, no stats file) — now probed by *result*, not by version string · Opus failed outright on `5.1(side)` sources (typical for AC3/DTS) · Concat MP4→MKV, the default combination, failed on the source timecode track. Plus honest reporting where it was wrong: the hybrid DV+HDR10+ completion label no longer claims an HDR10+ layer that isn't there, ProRes/APV keep the source colour signalling, single-frame preview actually lands mid-clip, and piped/scripted runs now get the announced menu defaults instead of empty values. Validation covered the metadata matrix end-to-end through the menus (HDR10+ and Dolby Vision in every direction incl. cross-codec, three-layer hybrid in MKV and MP4, Profile 7 → 8.1 on encode, HDR10+ on APV in all six combinations — where bash and PowerShell produced **byte-identical** bitstreams, metadata included).
 

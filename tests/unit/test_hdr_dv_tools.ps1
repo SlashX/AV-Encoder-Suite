@@ -1,4 +1,5 @@
-# Test v44 helpers C+D+E (PS1): Convert-RpuProfile + Get-RemuxPreflight
+# Test v44 helpers C+D (PS1): Convert-RpuProfile + Get-RemuxPreflight
+# (v95: partea Invoke-Remux a disparut odata cu functia — vezi mai jos.)
 # ffprobe e mockuit ca functie shell pentru Get-RemuxPreflight.
 . "$PSScriptRoot\..\framework.ps1"
 . "$PSScriptRoot\..\_helpers.ps1"
@@ -9,10 +10,18 @@ Import-AvEncodeFunctions -Names @(
     'Get-ToolForInject',
     'Get-DvRpu',
     'Convert-RpuProfile',
-    'Get-RawVideo',
-    'Get-RemuxPreflight',
-    'Invoke-Remux'
+    'Get-RawVideo'
 )
+# v95: `Get-RemuxPreflight` se importa EXPLICIT din av_mux.ps1. Copia din av_encode.ps1 era
+# moarta (zero apelanti) si a fost stearsa la curatenia O11/O12; cea vie, cu 2 apeluri, sta
+# in av_mux.ps1. Aserţiunile de mai jos sunt neschimbate — doar tinta lor e acum codul care
+# chiar ruleaza (acelasi tratament ca `Get-RemuxStreamCompat` in v94).
+# Inchiderea TRANZITIVA: `Get-RemuxPreflight` → `Get-FileSpatialLabel` → `Get-AudioSpatialKind`.
+# Aici mock-ul de ffprobe nu ajunge azi pe ramura spatiala, deci lipsa lor n-ar arunca — dar
+# ar fi o bomba cu ceas la prima schimbare de mock (clasa v63: dependenta tranzitiva neimportata
+# → throw la mijloc → contor pornit, aserţiuni nerulate, trecere falsa).
+Import-AvEncodeFunctions -Names @('Get-RemuxPreflight','Get-FileSpatialLabel','Get-AudioSpatialKind') `
+    -Path (Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) 'src\av_mux.ps1')
 
 # ─────────────────────────────────────────────────────────────────
 # Mock ffprobe — function override (PS1 prefera functii peste binary
@@ -126,49 +135,16 @@ try {
     Assert-Eq $false $r "convert: missing rpu_in -> false"
 
     # 3) Function existence
-    foreach ($n in 'Get-DvRpu','Convert-RpuProfile','Get-RawVideo','Get-RemuxPreflight','Invoke-Remux') {
+    foreach ($n in 'Get-DvRpu','Convert-RpuProfile','Get-RawVideo','Get-RemuxPreflight') {
         $g = Get-Command $n -ErrorAction SilentlyContinue
         if ($g) { _pass } else { _fail "$n missing" }
     }
 
-    # ─────────────────────────────────────────────────────────────
-    # 4) Invoke-Remux — args building (audit fix B1)
-    #    Mock ffmpeg ca sa capturam argumentele.
-    # ─────────────────────────────────────────────────────────────
-    $script:_capturedArgs = ""
-    function Global:ffmpeg {
-        [CmdletBinding()]
-        param([Parameter(ValueFromRemainingArguments=$true)]$RemainingArgs)
-        $script:_capturedArgs = ($RemainingArgs -join ' ')
-        # Simulam succes: scriem un fisier dummy non-empty (ultimul arg = output)
-        $last = $RemainingArgs[-1]
-        "ok" | Set-Content -LiteralPath $last
-        $global:LASTEXITCODE = 0
-    }
-    $outDummy = Join-Path ([System.IO.Path]::GetTempPath()) ('av_test_remux_'+[guid]::NewGuid().ToString('N')+'.tmp')
-    try {
-        # 4a) target=mkv → NU contine "mov_text"; foloseste -c:s copy
-        $script:_mock_tags = ""
-        Invoke-Remux -InputFile $tmpFile -OutputFile $outDummy -TargetContainer "mkv" | Out-Null
-        if ($script:_capturedArgs -match 'mov_text') { _fail "mkv must NOT use mov_text (got: $($script:_capturedArgs))" } else { _pass }
-        if ($script:_capturedArgs -match '-c:s copy') { _pass } else { _fail "mkv must use '-c:s copy' (got: $($script:_capturedArgs))" }
-
-        # 4b) target=mp4 + source HEVC → mov_text + tag:v hvc1
-        Remove-Item -LiteralPath $outDummy -Force -ErrorAction SilentlyContinue
-        Invoke-Remux -InputFile $tmpFile -OutputFile $outDummy -TargetContainer "mp4" | Out-Null
-        if ($script:_capturedArgs -match 'mov_text') { _pass } else { _fail "mp4 must use mov_text (got: $($script:_capturedArgs))" }
-        if ($script:_capturedArgs -match '-tag:v hvc1') { _pass } else { _fail "mp4 + hevc must use -tag:v hvc1 (got: $($script:_capturedArgs))" }
-        if ($script:_capturedArgs -match '\+faststart') { _pass } else { _fail "mp4 must use +faststart (got: $($script:_capturedArgs))" }
-
-        # 4c) target=mov + source HEVC → mov_text + hvc1
-        Remove-Item -LiteralPath $outDummy -Force -ErrorAction SilentlyContinue
-        Invoke-Remux -InputFile $tmpFile -OutputFile $outDummy -TargetContainer "mov" | Out-Null
-        if ($script:_capturedArgs -match 'mov_text') { _pass } else { _fail "mov must use mov_text (got: $($script:_capturedArgs))" }
-    }
-    finally {
-        Remove-Item -LiteralPath $outDummy -Force -ErrorAction SilentlyContinue
-        Remove-Item Function:ffmpeg -ErrorAction SilentlyContinue
-    }
+    # v95: sectiunea „4) Invoke-Remux — args building" a fost SCOASA odata cu functia,
+    # care era cod MORT in av_encode.ps1 (zero apelanti) si perechea PS1 a lui
+    # `remux_container_with_tag` din bash — moarta si ea. Comportamentul REAL (tag:v +
+    # faststart la re-mux) traieste in av_mux si e acoperit de test_v57_codec_tag +
+    # test_v50_mux. Oglinda bash a acestei sectiuni a fost scoasa la fel.
 }
 finally {
     Remove-Item -LiteralPath $tmpFile -Force -ErrorAction SilentlyContinue

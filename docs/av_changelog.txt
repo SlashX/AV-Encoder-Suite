@@ -3,10 +3,162 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v94 | 183 bug-uri fixate | 282+ features
-  253 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 193 teste [186 test_* + 7 infra]) | ~49500 linii cod+teste | ~8300 linii documentatie
+  TOTAL: v95 | 186 bug-uri fixate | 282+ features
+  258 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 198 teste [191 test_* + 7 infra]) | ~63000 linii cod+teste | ~8800 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v95 — Curatenie: 375 de linii de cod mort scoase, o garda care
+        nu-l lasa sa se refaca, si doua reparatii pe calea profilelor
+═══════════════════════════════════════════════════════════════
+
+  Doua bug-uri gasite la auditul de dinaintea lansarii. Sunt VECHI —
+  reproduse identic si pe versiunile anterioare — si au aceeasi
+  cauza: incarcarea unui profil sare peste blocul de configurare,
+  iar acolo raman lucruri de care encodarea depinde mai tarziu.
+  Amandoua faceau ca fluxul sa nu produca NIMIC.
+
+  FIX Pe Windows, ORICE encodare pornita dintr-un profil se oprea.
+        Blocul de configurare interactiva (~840 de linii) se sare
+        cand vine un profil, dar patru valori calculate acolo se
+        foloseau dupa el neconditionat: numele encoderului (fara el,
+        selectia de codec crapa direct), optiunea de "tune", numele
+        encoderului APV si presetul AV1. Niciuna nu se salveaza in
+        fisierul de profil, deci niciun profil — nici macar unul
+        generat de suita — nu le putea furniza. Se completeaza acum
+        pe calea de profil, dupa aceleasi reguli ca in meniu.
+        Nota: al doilea simptom era invizibil inainte de v94 —
+        argumentele se uneau fara citare, deci o valoare lipsa
+        disparea intr-un spatiu in plus; de cand sunt citate corect,
+        aceeasi lipsa devine un argument gol pe care ffmpeg il ia
+        drept nume de fisier.
+
+  FIX Un profil cu bitrate tinta dar fara plafon si buffer producea
+        0 octeti in modurile VBR. Formatul de profil accepta cele
+        doua campuri goale, meniul le calculeaza intotdeauna, dar
+        calea prin profil nu trecea pe acolo — asa ca encoderul
+        primea doua optiuni fara valoare si refuza sa porneasca.
+        Afecta x265 / x264 / AV1, adica varianta implicita;
+        encodarea pe placa video avea deja o valoare de rezerva.
+        Se completeaza acum cu aceeasi formula ca meniul (plafon
+        1,5x, buffer 2x), pe ambele platforme.
+        De retinut pentru viitor: prima varianta a reparatiei statea
+        in blocul de configurare — si nu avea NICIUN efect, fiindcă
+        exact calea care avea nevoie de ea il ocoleste. Acum e
+        asezata dupa el, singurul loc prin care trec ambele cai, iar
+        o verificare automata pazeste pozitia.
+
+  FIX Tot pe Windows: un profil care cere mod VBR dar nu spune si
+        bitrate-ul tinta ducea la aceeasi oprire. Formatul accepta
+        campul gol, iar bash trata de mult cazul — daca tinta
+        lipseste, revine la calitate constanta si merge mai departe.
+        PowerShell nu avea acea verificare, deci trimitea encoderului
+        un bitrate fara valoare. Comportament aliniat intre platforme.
+
+  UPDATE Raportul CSV din analiza media iesea diferit pe cele doua
+        platforme, pe noua coloane. Cauza era una singura: bash
+        formateaza ca text, cu numar fix de zecimale; PowerShell
+        calcula ca numar si lasa sistemul sa-l afiseze. De aici
+        dimensiunea "150" vs "150.3", durata "29" vs "30" (una taie
+        zecimalele, cealalta rotunjeste — iar durata intra mai
+        departe in toate estimarile de marime), "48.0" vs "48",
+        "43.20" vs "43.2".
+        Una dintre ele era mai mult decat cosmetica: estimarile
+        foloseau formatarea implicita a sistemului, deci pe un
+        calculator cu setari regionale europene scriau "~1,2 GB" in
+        loc de "~1.2 GB" — continutul fisierului depindea de masina,
+        nu doar de platforma (aceeasi problema reparata in v94 la
+        coloana FPS). PowerShell urmeaza acum formatul din bash pe
+        toate cele noua; raportul iese identic, camp cu camp,
+        verificat pe fisiere reale.
+
+  ── Curatenie: cod mort ──────────────────────────────────────
+
+  Restul versiunii nu schimba niciun comportament: tot ce s-a sters
+  era cod pe care nimic nu-l executa.
+
+  Auditul din v94 notase doua asemenea locuri. Verificarea de
+  acum, facuta pe TOT proiectul in loc de pe cele doua nume
+  cunoscute, a gasit aproape dublu.
+
+  UPDATE Noua functii fara niciun apelant, eliminate:
+        - din codul comun bash, cinci (88 de linii): pasul vechi
+          de stream-copy pentru Dolby Vision, re-mux-ul de
+          container cu tag, verificarea daca un backend hardware
+          permite 2-pass, un helper de output nul si o eticheta de
+          meniu. Cea mai veche statea acolo din v44.
+        - din scriptul Windows, patru (282 de linii): tot blocul
+          de Remux ramas in urma cand fluxul s-a mutat in scriptul
+          dedicat (v49) — preflight, matricea de compatibilitate,
+          enumerarea de stream-uri si re-mux-ul cu tag.
+
+  UPDATE Doua dintre ele erau perechea bash / Windows a aceleiasi
+        capacitati (re-mux cu tag + faststart), moarta pe AMBELE
+        platforme. Capacitatea insasi e vie si azi — a fost
+        preluata de scriptul de Mux (v49) si de helperul de tag
+        pentru container (v57), ambele acoperite de teste.
+
+  UPDATE Testele care exercitau cod mort au fost tratate diferit,
+        dupa caz: cele care verificau o functie cu contrapartida
+        VIE (preflight-ul de Remux) au fost re-tintite pe copia
+        care chiar ruleaza, cu aserţiunile neschimbate; cele care
+        verificau o functie disparuta complet au fost scoase, cu
+        o nota care spune unde e acoperit comportamentul real.
+        Una dintre ele cerea, in fapt, sa NU stergem cod mort:
+        „worker pastrat pentru back-compat" — fata de ce anume nu
+        reiesea de nicaieri, fiindca nu exista niciun apelant.
+
+  ADD Garda permanenta impotriva codului mort, pe ambele
+        platforme. Verifica fiecare functie definita in scripturi
+        si semnaleaza pe cele fara apelanti. Doua detalii invatate
+        pe viu: comentariile nu tin o functie in viata (un nume
+        aparut doar intr-un comentariu a mascat exact una dintre
+        cele noua la prima cautare), iar pe Windows judecata e per
+        FISIER — scripturile de acolo sunt independente prin
+        design, deci o copie moarta nu e salvata de faptul ca alt
+        fisier are una vie cu acelasi nume. Exact asta permisese
+        celor doua copii sa se departeze una de alta. Detectorul
+        se auto-verifica pe cazuri plantate, inclusiv pe cele doua
+        capcane de mai sus.
+
+  FIX Re-tintirea testelor pe codul viu a scos la iveala inca o
+        diferenta intre cele doua copii, a treia dupa cele stiute:
+        varianta vie imbogateste notele de preflight cu etichetele
+        de audio spatial (Atmos / DTS:X, din v87), iar cea moarta
+        nu avea deloc acel pas. Testul o valida, asadar, pe una
+        ramasa cu trei versiuni in urma. La import lipsea acea
+        dependenta, deci apelul arunca la mijlocul testului:
+        verificarile de dupa nu mai rulau, dar numaratoarea ramanea
+        pornita — adica o trecere falsa. Singurul motiv pentru care
+        s-a vazut e garda adaugata in v94 pentru exact acest tipar.
+        Reparat prin importul complet al dependentelor; testul urca
+        de la 60 la 67 de verificari efectiv rulate.
+
+  Doua functii nefolosite au fost PASTRATE deliberat: fac parte
+  din stratul de compatibilitate intre sisteme (Linux / macOS /
+  Termux), iar o alta regula a proiectului interzice ocolirea lui.
+  Sunt interfata pusa la dispozitie, nu resturi — daca le stergem,
+  primul care are nevoie de ele va ocoli regula.
+
+  UPDATE Numarul de linii afisat in antet era ramas in urma cu mai
+        multe versiuni (se raporta ~49 300 pentru un proiect care
+        are, de fapt, ~63 000). Recalculat: scripturi + motoare
+        Python + interfata web + unelte + teste, adica tot ce e cod
+        sau test, fara documentatie. Numarul de fisiere era corect —
+        el se obtine ca suma a categoriilor enumerate alaturi, si
+        recalculul l-a confirmat exact.
+
+  Teste noi: test_v95_dead_code.{sh,ps1} (bash 12 / PowerShell 11) ·
+  test_v95_profile_path.{sh,ps1} (bash 18 / PowerShell 17) ·
+  test_v95_csv_parity.ps1 (13).
+  Actualizate: test_hdr_dv_tools.{sh,ps1}, test_v49_mux.ps1,
+  test_v51_features.sh, test_v94_remux_compat.ps1.
+
+  Suite finale pe bitii finali (secvential): bash 96/0/2 din 98
+  [754s] + PowerShell 90/90 [623s]. Blast radius: 2 fisiere src
+  (numai stergeri) + 5 teste actualizate + 2 teste noi; zero chei
+  de profil, zero camp de stare, zero schimbare de comportament.
 
 ═══════════════════════════════════════════════════════════════
   v94 — Campanie de audit complet pe toate fluxurile:

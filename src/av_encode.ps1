@@ -1781,6 +1781,26 @@ function Get-FFprobeValue {
 
 function Test-BitrateFormat { param([string]$br); $br -match '^\d+[kKmM]$' }
 
+# v95: completeaza maxrate/bufsize cand profilul da doar bitrate-ul tinta.
+# Schema accepta VBR_MAXRATE/VBR_BUFSIZE GOALE, iar dialogul interactiv le calculeaza — dar
+# calea prin profil nu trecea pe acolo, si atunci comanda iesea cu `-maxrate  -bufsize `
+# (flag-uri fara valoare) → ffmpeg refuza optiunile encoderului → 0 octeti. Aceeasi formula
+# ca in dialog (1.5x / 2x), deci un profil incomplet se comporta ca alegerea implicita.
+# Paritate cu `_vbr_fill_defaults` din av_common.sh.
+function Resolve-VbrDefaults {
+    param([string]$Mode, [string]$Target, [string]$Maxrate, [string]$Bufsize)
+    if (($Mode -ne "2" -and $Mode -ne "3") -or -not $Target) {
+        return @{ Maxrate = $Maxrate; Bufsize = $Bufsize }
+    }
+    if ($Target -notmatch '^\d+[kKmMgG]?$') { return @{ Maxrate = $Maxrate; Bufsize = $Bufsize } }
+    $n = [int]($Target -replace '[kKmMgG]','')
+    $kbps = if ($Target -match '[mM]$') { $n * 1000 } elseif ($Target -match '[gG]$') { $n * 1000000 } else { $n }
+    if ($kbps -le 0) { return @{ Maxrate = $Maxrate; Bufsize = $Bufsize } }
+    if (-not $Maxrate) { $Maxrate = "$([int]($kbps * 1.5))k" }
+    if (-not $Bufsize) { $Bufsize = "$($kbps * 2)k" }
+    return @{ Maxrate = $Maxrate; Bufsize = $Bufsize }
+}
+
 function Convert-ToKbps {
     param([string]$br)
     $n = $br -replace '[kKmM]',''
@@ -4032,288 +4052,6 @@ function Test-DvSurvived {
     $present = ($ok -and (Test-Path $rpuChk) -and (Get-Item $rpuChk).Length -gt 0)
     Remove-Item $rpuChk -Force -ErrorAction SilentlyContinue
     return $present
-}
-
-# Get-RemuxPreflight — returneaza @{ level=0|1|2; notes=@(...) }
-# 0=ok, 1=warn (incompat tracks vor fi strip-uite/convertite), 2=fail (abort).
-function Get-RemuxPreflight {
-    param(
-        [string]$File,
-        [string]$TargetContainer
-    )
-    $notes = New-Object System.Collections.Generic.List[string]
-    $level = 0
-    $target = $TargetContainer.ToLowerInvariant()
-
-    # v57: default= in loc de csv=p=0 — csv emite trailing comma "av1,"
-    # → gate-urile regex anchored esueaza. default= returneaza valori curate.
-    # v61 audit: [0] (prima linie) — DJI v:0 dublu-listat → Out-String concatena "hevc\nhevc".
-    $videoCodec = "$(@(& ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null)[0])".Trim()
-    $audioCodecsRaw = (& ffprobe -v error -select_streams a -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
-    $subCodecsRaw   = (& ffprobe -v error -select_streams s -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
-    $codecTags      = (& ffprobe -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
-    $attachIdxRaw   = (& ffprobe -v error -select_streams t -show_entries stream=index -of default=noprint_wrappers=1:nokey=1 -- $File 2>$null) | Out-String
-
-    $audioCodecs = $audioCodecsRaw -split "`r?`n" | Where-Object { $_ }
-    $subCodecs   = $subCodecsRaw   -split "`r?`n" | Where-Object { $_ }
-    $attachCount = ($attachIdxRaw -split "`r?`n" | Where-Object { $_ }).Count
-    $djiPresent = $codecTags -match "(?i)\b(djmd|dbgi)\b"
-
-    function _Matches([string[]]$list, [string]$pat) {
-        foreach ($c in $list) { if ($c -match $pat) { return $true } }
-        return $false
-    }
-
-    switch ($target) {
-        "mp4" {
-            if (_Matches $audioCodecs '^(truehd|dts|pcm_s24le|pcm_s16be)$') {
-                $notes.Add("Audio lossless (TrueHD/DTS-HD/PCM) — incompatibil cu MP4, va fi strip-uit") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') {
-                $notes.Add("Subtitrari text necompatibile direct cu MP4 — vor fi convertite la mov_text") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') {
-                $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MP4 — vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if ($djiPresent) {
-                $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MP4 — vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if ($attachCount -gt 0) {
-                $notes.Add("$attachCount atasament(e) — doar MKV suporta atasamente, vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-        }
-        "mov" {
-            # v57: AV1 NU e suportat de MOV (ffmpeg: "av1 only supported in MP4 and AVIF").
-            # Level 2 = abort.
-            if ($videoCodec -eq "av1") {
-                $notes.Add("Video AV1 incompatibil cu .mov (ffmpeg limit) — alege .mp4 sau .mkv") | Out-Null
-                $level = 2
-            }
-            if (_Matches $audioCodecs '^eac3$') {
-                $notes.Add("E-AC3 audio incompatibil cu .mov — converteste audio sau alege .mp4") | Out-Null
-                $level = 2
-            }
-            if (_Matches $audioCodecs '^(truehd|dts|opus)$') {
-                $notes.Add("Audio (TrueHD/DTS/Opus) incompatibil cu MOV — va fi strip-uit") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if (_Matches $subCodecs '^(subrip|srt|ass|ssa)$') {
-                $notes.Add("Subtitrari text vor fi convertite la mov_text pentru MOV") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if (_Matches $subCodecs '^(dvd_subtitle|hdmv_pgs_subtitle)$') {
-                $notes.Add("Subtitrari bitmap (PGS/VobSub) incompatibile cu MOV — vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if ($djiPresent) {
-                $notes.Add("Track-uri DJI (djmd/dbgi) incompatibile cu MOV — vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if ($attachCount -gt 0) {
-                $notes.Add("$attachCount atasament(e) — doar MKV suporta atasamente, vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-        }
-        "webm" {
-            if ($videoCodec -and $videoCodec -notmatch '^(vp8|vp9|av1)$') {
-                $notes.Add("Video '$videoCodec' incompatibil cu WEBM (doar VP8/VP9/AV1 suportate) — abort") | Out-Null
-                $level = 2
-            }
-            if (_Matches $audioCodecs '^(aac|ac3|eac3|mp3|dts|truehd|alac|pcm_s16le|pcm_s24le)$') {
-                $notes.Add("Audio incompatibil cu WEBM (doar Opus/Vorbis suportate) — va fi strip-uit") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if (_Matches $subCodecs '^(subrip|srt|ass|ssa|dvd_subtitle|hdmv_pgs_subtitle|mov_text)$') {
-                $notes.Add("Subtitrari incompatibile cu WEBM (doar WebVTT) — vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-            if ($attachCount -gt 0) {
-                $notes.Add("$attachCount atasament(e) — WEBM nu suporta, vor fi strip-uite") | Out-Null
-                if ($level -lt 1) { $level = 1 }
-            }
-        }
-        "mkv" { }
-        default {
-            $notes.Add("Container '$target' nesuportat (foloseste mkv/mp4/mov/webm)") | Out-Null
-            $level = 2
-        }
-    }
-    return @{ level = $level; notes = @($notes) }
-}
-
-# v49: clasificare per-stream pentru target container.
-function Get-RemuxStreamCompat {
-    param([string]$Codec, [string]$CodecType, [string]$Target)
-    $codec = $Codec.ToLowerInvariant()
-    $ctype = $CodecType.ToLowerInvariant()
-    $t = $Target.ToLowerInvariant()
-    if ($t -eq "mkv") { return "copy" }
-    switch ($ctype) {
-        "video" {
-            switch ($t) {
-                "mp4" {
-                    if ($codec -in @("hevc","h264","av1","mpeg4","mpeg2video","vp9","prores")) { return "copy" }
-                    return "drop"
-                }
-                "mov" {
-                    if ($codec -in @("hevc","h264","prores","dnxhd","dnxhr","mpeg4","mjpeg")) { return "copy" }
-                    return "drop"
-                }
-                "webm" {
-                    if ($codec -in @("vp8","vp9","av1")) { return "copy" }
-                    return "drop"
-                }
-            }
-            return "drop"
-        }
-        "audio" {
-            switch ($t) {
-                "mp4" {
-                    if ($codec -in @("aac","ac3","eac3","mp3","opus","alac","flac")) { return "copy" }
-                    return "drop"
-                }
-                "mov" {
-                    if ($codec -in @("aac","ac3","mp3","alac","pcm_s16be","pcm_s24be","pcm_s16le","pcm_s24le")) { return "copy" }
-                    return "drop"
-                }
-                "webm" {
-                    if ($codec -in @("opus","vorbis")) { return "copy" }
-                    return "drop"
-                }
-            }
-            return "drop"
-        }
-        "subtitle" {
-            switch ($t) {
-                { $_ -in @("mp4","mov") } {
-                    if ($codec -in @("mov_text","tx3g")) { return "copy" }
-                    if ($codec -in @("subrip","srt","ass","ssa")) { return "convert:mov_text" }
-                    return "drop"
-                }
-                "webm" {
-                    if ($codec -eq "webvtt") { return "copy" }
-                    return "drop"
-                }
-            }
-            return "drop"
-        }
-        "attachment" { return "drop" }
-    }
-    return "drop"
-}
-
-# v49: enumerate streams + chapters din ffprobe (JSON-style via csv multiple queries).
-# Return: hashtable cu Video[]/Audio[]/Subtitle[]/Attachment[] + ChapterCount.
-# Fiecare element: @{ AbsIndex; Codec; Lang; Title; Extra }
-function Get-RemuxStreams {
-    param([string]$File)
-    $result = @{
-        Video = New-Object System.Collections.Generic.List[object]
-        Audio = New-Object System.Collections.Generic.List[object]
-        Subtitle = New-Object System.Collections.Generic.List[object]
-        Attachment = New-Object System.Collections.Generic.List[object]
-        ChapterCount = 0
-    }
-    # Video: index,codec_name,width,height,language,title
-    $raw = (& ffprobe -v error -select_streams v -show_entries stream=index,codec_name,width,height:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
-    foreach ($line in ($raw -split "`r?`n")) {
-        if (-not $line) { continue }
-        $parts = $line -split ',', 6
-        if ($parts.Count -lt 1) { continue }
-        $idx = $parts[0]
-        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-        $w = if ($parts.Count -gt 2) { $parts[2] } else { "" }
-        $h = if ($parts.Count -gt 3) { $parts[3] } else { "" }
-        $lang = if ($parts.Count -gt 4) { $parts[4] } else { "" }
-        $title = if ($parts.Count -gt 5) { $parts[5] } else { "" }
-        $result.Video.Add([PSCustomObject]@{
-            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = "${w}x${h}"
-        }) | Out-Null
-    }
-    # Audio
-    $raw = (& ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
-    foreach ($line in ($raw -split "`r?`n")) {
-        if (-not $line) { continue }
-        $parts = $line -split ',', 5
-        if ($parts.Count -lt 1) { continue }
-        $idx = $parts[0]
-        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-        $ch = if ($parts.Count -gt 2) { $parts[2] } else { "" }
-        $lang = if ($parts.Count -gt 3) { $parts[3] } else { "" }
-        $title = if ($parts.Count -gt 4) { $parts[4] } else { "" }
-        $result.Audio.Add([PSCustomObject]@{
-            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = "${ch}ch"
-        }) | Out-Null
-    }
-    # Subtitle
-    $raw = (& ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of csv=p=0 -- $File 2>$null) | Out-String
-    foreach ($line in ($raw -split "`r?`n")) {
-        if (-not $line) { continue }
-        $parts = $line -split ',', 4
-        if ($parts.Count -lt 1) { continue }
-        $idx = $parts[0]
-        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-        $lang = if ($parts.Count -gt 2) { $parts[2] } else { "" }
-        $title = if ($parts.Count -gt 3) { $parts[3] } else { "" }
-        $result.Subtitle.Add([PSCustomObject]@{
-            AbsIndex = $idx; Codec = $codec; Lang = $lang; Title = $title; Extra = ""
-        }) | Out-Null
-    }
-    # Attachments
-    $raw = (& ffprobe -v error -select_streams t -show_entries stream=index,codec_name:stream_tags=filename -of csv=p=0 -- $File 2>$null) | Out-String
-    foreach ($line in ($raw -split "`r?`n")) {
-        if (-not $line) { continue }
-        $parts = $line -split ',', 3
-        if ($parts.Count -lt 1) { continue }
-        $idx = $parts[0]
-        $codec = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-        $title = if ($parts.Count -gt 2) { $parts[2] } else { "" }
-        $result.Attachment.Add([PSCustomObject]@{
-            AbsIndex = $idx; Codec = $codec; Lang = ""; Title = $title; Extra = ""
-        }) | Out-Null
-    }
-    # Chapters
-    $rawCh = (& ffprobe -v error -show_chapters -of csv=p=0 -- $File 2>$null) | Out-String
-    $result.ChapterCount = ($rawCh -split "`r?`n" | Where-Object { $_ }).Count
-    return $result
-}
-
-# Invoke-Remux — re-mux container cu tag:v + faststart, no re-encode.
-function Invoke-Remux {
-    param(
-        [string]$InputFile,
-        [string]$OutputFile,
-        [string]$TargetContainer
-    )
-    $target = $TargetContainer.ToLowerInvariant()
-    $srcCodec = Get-SourceCodec $InputFile
-
-    $extra = @()
-    $subArgs = @("-c:s","copy")   # MKV permisiv — copy nativ pentru SRT/ASS/PGS
-    if ($target -in @("mp4","mov")) {
-        switch ($srcCodec) {
-            "hevc" { $extra = @("-tag:v","hvc1","-movflags","+faststart") }
-            "av1"  { $extra = @("-tag:v","av01","-movflags","+faststart") }
-            "h264" { $extra = @("-tag:v","avc1","-movflags","+faststart") }
-            default { $extra = @("-movflags","+faststart") }
-        }
-        $subArgs = @("-c:s","mov_text")
-    }
-
-    $args1 = @("-v","error","-i",$InputFile,"-map","0","-c","copy") + $subArgs + $extra + @($OutputFile)
-    & ffmpeg @args1 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutputFile) -or (Get-Item $OutputFile).Length -eq 0) {
-        # Retry fara subtitrari (subs incompat cu target)
-        Remove-Item $OutputFile -Force -ErrorAction SilentlyContinue
-        $args2 = @("-v","error","-i",$InputFile,"-map","0:v","-map","0:a?","-map","0:t?","-c","copy") + $extra + @($OutputFile)
-        & ffmpeg @args2 2>$null
-    }
-    return ($LASTEXITCODE -eq 0 -and (Test-Path $OutputFile) -and (Get-Item $OutputFile).Length -gt 0)
 }
 
 # ── HDR/DV Tools — sub-meniu UI ───────────────────────────────────────
@@ -7482,6 +7220,9 @@ if ($profiles.Count -gt 0 -and -not $avProfileAuto) {
         $vbrTarget = $VBR_TARGET
         $vbrMaxrate = $VBR_MAXRATE
         $vbrBufsize = $VBR_BUFSIZE
+        # v95: profil cu VBR dar fara maxrate/bufsize → flag-uri goale → 0 octeti
+        $_vbrFix = Resolve-VbrDefaults -Mode $encMode -Target $vbrTarget -Maxrate $vbrMaxrate -Bufsize $vbrBufsize
+        $vbrMaxrate = $_vbrFix.Maxrate; $vbrBufsize = $_vbrFix.Bufsize
         $dnxhrProfile = if ($DNXHR_PROFILE) { $DNXHR_PROFILE } else { "sq" }
         $proresProfile = if ($PRORES_PROFILE) { $PRORES_PROFILE } else { "hq" }
         $apvPixFmt = if ($APV_PIXFMT) { $APV_PIXFMT } else { "422_10" }
@@ -7594,6 +7335,9 @@ if ($avProfileAuto -and $loadFile) {
     $vbrTarget = $VBR_TARGET
     $vbrMaxrate = $VBR_MAXRATE
     $vbrBufsize = $VBR_BUFSIZE
+    # v95: profil cu VBR dar fara maxrate/bufsize → flag-uri goale → 0 octeti
+    $_vbrFix = Resolve-VbrDefaults -Mode $encMode -Target $vbrTarget -Maxrate $vbrMaxrate -Bufsize $vbrBufsize
+    $vbrMaxrate = $_vbrFix.Maxrate; $vbrBufsize = $_vbrFix.Bufsize
     $dnxhrProfile = if ($DNXHR_PROFILE) { $DNXHR_PROFILE } else { "sq" }
     $proresProfile = if ($PRORES_PROFILE) { $PRORES_PROFILE } else { "hq" }
     $apvPixFmt = if ($APV_PIXFMT) { $APV_PIXFMT } else { "422_10" }
@@ -8458,6 +8202,38 @@ if ($saveProf -ieq "d") {
 
 } # end if (-not $profLoaded)
 
+# v95: patru variabile se calculau DOAR in blocul de configurare de mai sus, dar se consuma
+# DUPA el, neconditionat. Pe calea de profil blocul se sare integral, deci ramaneau neatribuite
+# si ORICE encode pilotat de profil pe Windows nu producea nimic:
+#   $rtEncoder  → `$tgtCodecMap[$rtEncoder]` arunca „array index evaluated to null" = encode oprit;
+#   $tuneFlag   → `$null` intra in concatenarea de argumente ca ELEMENT gol → `""` in linia de
+#                 comanda → ffmpeg il ia drept fisier de iesire („Unable to choose an output
+#                 format for ''"). Inainte de v94 nu se vedea: argumentele se uneau fara citare,
+#                 deci elementul gol disparea intr-un spatiu in plus;
+#   $apvEncoder → numele encoderului APV, gol (conteaza doar pe APV);
+#   $pc2        → presetul AV1; aici efectul era benign, fiindca `ContainsKey` cade pe acelasi
+#                 default ca alegerea implicita din meniu — il setam totusi explicit, ca sa nu
+#                 depindem de o ramura de rezerva.
+# Niciuna nu se scrie in fisierul de profil, deci niciun profil — nici macar unul generat de
+# suita — nu le putea furniza. Blocul sta AICI fiindca asta e singurul punct prin care trec
+# ambele cai. Aceeasi clasa cu golul reparat de `_vbr_fill_defaults` in bash.
+if ($profLoaded) {
+    if (-not $apvEncoder -and $useAPV) {
+        $apvEncList = & ffmpeg -hide_banner -encoders 2>$null | Out-String
+        if     ($apvEncList -match '\bliboapv\b')    { $apvEncoder = "liboapv" }
+        elseif ($apvEncList -match '\blibopenapv\b') { $apvEncoder = "libopenapv" }
+        else   { $apvEncoder = "liboapv" }
+    }
+    if (-not $rtEncoder) {
+        $rtEncoder = if ($useX264) { "libx264" } elseif ($useAV1) { $av1Impl }
+                     elseif ($useDNxHR) { "dnxhd" } elseif ($useProRes) { "prores_ks" }
+                     elseif ($useAPV) { $apvEncoder } elseif ($useHWEnc) { $hwEncCodec }
+                     else { "libx265" }
+    }
+    if ($null -eq $tuneFlag) { $tuneFlag = if ($selectedTune) { @("-tune",$selectedTune) } else { @() } }
+    if (-not $pc2) { $pc2 = "5" }
+}
+
 "===========================================" | Out-File $LogFile -Encoding UTF8
 "Encode: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | $encoderName | $container" | Out-File $LogFile -Append -Encoding UTF8
 if ($useDNxHR) { "Profil DNxHR: $dnxhrProfile" | Out-File $LogFile -Append -Encoding UTF8 }
@@ -9034,8 +8810,15 @@ foreach ($f in $inputFiles) {
     }
 
     $rateParams = @(); $crfFlag = @()
-    $is2Pass = ($encMode -eq "3")
-    if ($encMode -eq "2" -or $encMode -eq "3") {
+    # v95: modul VBR cere si o TINTA. Schema accepta `VBR_TARGET` gol, iar un profil scris de
+    # mana poate avea ENCODE_MODE=2/3 fara ea — atunci comanda iesea cu `-b:v ""` si ffmpeg
+    # refuza optiunile encoderului (0 octeti). bash gardeaza de mult acest caz
+    # (`[[ "$ENCODE_MODE" == "2" && -n "$VBR_TARGET" ]]`) si cade grațios pe CRF; PS1 nu o
+    # facea — gol de paritate. `$is2Pass` intra si el sub garda, ca in bash, unde `_is_2pass=1`
+    # se seteaza INAUNTRUL ramurii: altfel am fi ramas pe calea de 2-pass cu parametri de CRF.
+    $vbrModeActive = (($encMode -eq "2") -or ($encMode -eq "3")) -and $vbrTarget
+    $is2Pass = ($encMode -eq "3") -and $vbrTarget
+    if ($vbrModeActive) {
         # v94 (B12): libsvtav1 REFUZA plafonul de bitrate in VBR — "Svt[error]: Max Bitrate
         # only supported with CRF mode" → encoderul nici nu porneste (0 octeti). Suita
         # calculeaza mereu maxrate = target x 1.5, deci AV1 VBR (1-pass SI 2-pass) nu a

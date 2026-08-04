@@ -3201,3 +3201,37 @@ CUPRINS
             a coborat pe 7. Astfel pozitiile 1-6 sunt identice pe cele
             doua platforme. Profilele salvate stocheaza NUMELE
             encoderului, nu numarul din meniu → nu sunt afectate.
+
+  PROBLEMA: (v95) Pe Windows, o encodare pornita dintr-un profil se
+            oprea imediat, fara sa produca nimic
+  SOLUTIE:  Reparat in v95. Cand se incarca un profil, tot blocul de
+            configurare interactiva se sare — iar patru valori
+            calculate acolo se foloseau mai tarziu oricum (numele
+            encoderului, optiunea de "tune" si inca doua). Niciuna nu
+            se salveaza in fisierul de profil, deci niciun profil nu
+            le putea furniza. Se completeaza acum pe calea de profil,
+            dupa aceleasi reguli ca in meniu. Bug vechi, prezent si in
+            versiunile anterioare.
+
+  PROBLEMA: (v95) Un profil cu bitrate tinta nu producea nimic in
+            modurile VBR
+  SOLUTIE:  Reparat in v95, pe ambele platforme. Formatul de profil
+            accepta campurile de plafon si buffer goale, iar meniul le
+            calculeaza intotdeauna — dar calea prin profil nu trecea
+            pe acolo, asa ca encoderul primea doua optiuni fara
+            valoare. Se completeaza acum cu aceeasi formula ca meniul
+            (plafon 1,5x tinta, buffer 2x). Daca profilul cere mod VBR
+            dar nu spune si bitrate-ul tinta, se revine la calitate
+            constanta si encodarea merge mai departe — cum facea deja
+            varianta bash.
+
+  PROBLEMA: (v95) Raportul CSV difera intre bash si PowerShell pe
+            aceleasi fisiere
+  SOLUTIE:  Reparat in v95, pe noua coloane (dimensiune, durata, rata
+            de esantionare, bitrate, luminanta minima si cele patru
+            estimari de marime). bash scria cu numar fix de zecimale,
+            PowerShell lasa sistemul sa formateze numarul — de unde
+            "150" vs "150.3" sau "48.0" vs "48". Una dintre coloane
+            depindea chiar de setarile regionale ale calculatorului
+            ("~1,2 GB" in loc de "~1.2 GB"). PowerShell urmeaza acum
+            formatul din bash; raportul iese identic, camp cu camp.

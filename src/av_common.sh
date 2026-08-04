@@ -687,39 +687,6 @@ get_dv_profile() {
     fi
 }
 
-# DV stream copy — return: 0=copy OK, 98=sarit, 99=re-encode
-handle_dolby_vision() {
-    local file="$1" filename="$2" output="$3" map_flags="$4"
-    local opt2_label="${5:-Converteste la HDR10 (best-effort)}"
-    echo ""
-    echo "  ╔══════════════════════════════════════════════╗"
-    echo "  ║       DOLBY VISION DETECTAT                  ║"
-    printf "  ║  Fisier: %-38s║\n" "$filename"
-    printf "  ║  Profil: %-38s║\n" "$(get_dv_profile "$file")"
-    echo "  ╠══════════════════════════════════════════════╣"
-    echo "  ║  1) Stream copy video + reencodeaza audio    ║"
-    printf "  ║  2) %-43s║\n" "$opt2_label"
-    echo "  ║  3) Sari acest fisier                        ║"
-    echo "  ╚══════════════════════════════════════════════╝"
-    read -p "  Alege 1, 2 sau 3: " dv_choice
-    case "$dv_choice" in
-        1)
-            log "  DV: stream copy"
-            local dv_audio sub_codec_dv pf fpid dv_container_flags
-            dv_audio=$(get_audio_params "$file"); sub_codec_dv=$(get_subtitle_codec "$file")
-            pf=$(mktemp); PROGRESS_FILE="$pf"; dv_container_flags=$(get_container_flags)
-            # shellcheck disable=SC2086
-            ffmpeg -threads "$THREADS" -i "$file" $map_flags \
-                -c:v copy $dv_audio $sub_codec_dv -c:t copy \
-                $dv_container_flags -progress "$pf" -nostats "$output" 2>>"$LOG_FILE" &
-            fpid=$!; _show_progress "$fpid" "$pf" "$file" "DV stream copy"; wait "$fpid"
-            local rc=$?; PROGRESS_FILE=""; return $rc ;;
-        2) log "  DV: re-encode ($opt2_label)"; return 99 ;;
-        3) log "  DV: sarit de utilizator"; return 98 ;;
-        *) log "  DV: sarit (optiune invalida)"; return 98 ;;
-    esac
-}
-
 # v45: handle_dv_with_stats() removed — x265 v45 has inline DV dialog with
 # 4 options (preserve + stream-copy stats inline); AV1 has its own dialog;
 # other encoders never used it.
@@ -3238,39 +3205,6 @@ remux_enumerate_streams() {
     return 0
 }
 
-# Re-mux un container, fix tag:v pe MP4/MOV, +faststart, no re-encode.
-# $1 = input, $2 = output, $3 = target_container (mp4/mov/mkv)
-# Return: 0=OK, 1=fail.
-remux_container_with_tag() {
-    local input="$1" output="$2" target="$3"
-    target="${target,,}"
-    local src_codec
-    src_codec=$(detect_source_codec "$input")
-
-    local extra_args=""
-    local sub_args="-c:s copy"   # MKV permisiv — copy nativ pentru SRT/ASS/PGS
-    if [[ "$target" == "mp4" || "$target" == "mov" ]]; then
-        case "$src_codec" in
-            hevc) extra_args="-tag:v hvc1 -movflags +faststart" ;;
-            av1)  extra_args="-tag:v av01 -movflags +faststart" ;;
-            h264) extra_args="-tag:v avc1 -movflags +faststart" ;;
-            *)    extra_args="-movflags +faststart" ;;
-        esac
-        sub_args="-c:s mov_text"  # MP4/MOV: convertim text-based la mov_text
-    fi
-
-    # shellcheck disable=SC2086
-    ffmpeg -v error -i "$input" -map 0 -c copy $sub_args $extra_args "$output" 2>/dev/null
-    local rc=$?
-    if [ $rc -ne 0 ] || [ ! -s "$output" ]; then
-        # Retry fara subtitrari (cazul cand source are subs incompat cu target)
-        rm -f "$output"
-        ffmpeg -v error -i "$input" -map 0:v -map 0:a? -map 0:t? -c copy $extra_args "$output" 2>/dev/null
-        rc=$?
-    fi
-    [ $rc -eq 0 ] && [ -s "$output" ] && return 0 || return 1
-}
-
 # ══════════════════════════════════════════════════════════════════════
 # STREAM COPY HELPER — cod partajat pentru stream copy cu stats
 # Return: 0=OK, non-zero=eroare
@@ -4381,19 +4315,6 @@ _check_svtav1_2pass_caps() {
     return 0
 }
 
-# Verifică dacă backend-ul HW activ permite 2-pass. Actualmente: NICIUNUL.
-# Returnează 0 dacă 2-pass e permis (SW path), 1 dacă HW activ → fallback necesar.
-hw_2pass_allowed() {
-    case "${HW_BACKEND:-sw}" in
-        sw|"") return 0 ;;
-        *)     return 1 ;;  # nvenc/qsv/vaapi/videotoolbox/amf/mediacodec
-    esac
-}
-
-# Returnează target-ul null output platform-aware (bash rulează doar pe
-# Termux/Linux/macOS → /dev/null mereu OK).
-get_null_output() { echo "/dev/null"; }
-
 # ══════════════════════════════════════════════════════════════════════
 # v51: VBV / LEVEL AUTOMATION
 # Tabele MaxBR/MaxCPB per codec×level (kbps, conform spec).
@@ -4403,6 +4324,35 @@ get_null_output() { echo "/dev/null"; }
 # get_vbv_caps echo "maxbr_kbps maxcpb_kbps"
 # suggest_vbv_for_target echo "level tier maxrate_kbps bufsize_kbps"
 # ══════════════════════════════════════════════════════════════════════
+
+# v95: completeaza maxrate/bufsize cand profilul da doar bitrate-ul tinta.
+#
+# Un profil poate seta ENCODE_MODE=2 sau 3 + VBR_PARAM FARA VBR_MAXRATE/VBR_BUFSIZE — schema
+# le accepta goale (`^([0-9]+[kMmKgG]?)?$`). Dialogul interactiv le calculeaza mereu, dar
+# calea prin profil (AV_PROFILE, folosita in CI/cron) nu trecea pe acolo, iar encoderele SW
+# le consuma BRUT: `-maxrate $VBR_MAXRATE -bufsize $VBR_BUFSIZE`. Cu ele goale, ffmpeg
+# primeste doua flag-uri fara valoare → "Error applying encoder options: Invalid argument"
+# → 0 octeti, pe x265/x264/av1, adica exact calea implicita. Backend-urile HW aveau deja
+# fallback (`${VBR_MAXRATE:-${VBR_TARGET}}`), de-aceea lovea doar SW-ul.
+# Formula e aceeasi cu a dialogului: maxrate = 1.5x tinta, bufsize = 2x tinta — un profil
+# incomplet se comporta acum identic cu alegerea implicita din meniu.
+_vbr_fill_defaults() {
+    [[ "${ENCODE_MODE:-1}" == "2" || "${ENCODE_MODE:-1}" == "3" ]] || return 0
+    [[ -n "${VBR_PARAM:-}" ]] || return 0
+    local _num="${VBR_PARAM//[kKmMgG]/}" _kbps=""
+    if [[ "$_num" =~ ^[0-9]+$ ]] && [ "$_num" -gt 0 ]; then
+        case "$VBR_PARAM" in
+            *[mM]) _kbps=$(( _num * 1000 )) ;;
+            *[gG]) _kbps=$(( _num * 1000000 )) ;;
+            *)     _kbps="$_num" ;;
+        esac
+    fi
+    if [[ -n "$_kbps" ]]; then
+        [[ -z "${VBR_MAXRATE:-}" ]] && VBR_MAXRATE="$(( _kbps * 3 / 2 ))k"
+        [[ -z "${VBR_BUFSIZE:-}" ]] && VBR_BUFSIZE="$(( _kbps * 2 ))k"
+    fi
+    return 0
+}
 
 # Args: codec(hevc|h264|av1) level(ex 4.1) tier(main|high) → "maxbr maxcpb"
 get_vbv_caps() {
@@ -4964,20 +4914,6 @@ detect_mediacodec_caps() {
     _mc_has_hw_av1_encoder && MC_CAP_AV1=1
 
     return 0
-}
-
-# Helper: returneaza label-ul scurt pentru meniul HW (ex: "MediaCodec HEVC [verificat]")
-mediacodec_menu_label() {
-    local codec="$1"  # h264|hevc|av1
-    local enc_name="${codec}_mediacodec"
-    [[ "$MC_ENCODERS" != *"$enc_name"* ]] && { echo ""; return; }
-    local marker
-    if [[ "$MC_SOC_VERIFIED" == "1" ]]; then
-        marker="[verificat]"
-    else
-        marker="[suport necunoscut]"
-    fi
-    echo "MediaCodec ${codec^^} $marker"
 }
 
 # Helper: prompt confirmare pe SoC necunoscut (return 0 = continua, 1 = abort)

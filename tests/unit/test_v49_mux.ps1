@@ -8,7 +8,17 @@
 
 # v94 (O12): matricea Get-RemuxStreamCompat s-a mutat in test_v94_remux_compat.ps1,
 # unde se importa din av_mux.ps1 (copia VIE) — aici testa copia moarta din av_encode.ps1.
-Import-AvEncodeFunctions -Names @('Get-RemuxPreflight')
+# v95: acelasi tratament pentru `Get-RemuxPreflight`. Copia moarta din av_encode.ps1 a fost
+# STEARSA (curatenia O11/O12), deci importul implicit n-ar mai gasi nimic; sursa e acum
+# EXPLICIT av_mux.ps1, unde functia chiar ruleaza (2 apeluri). Aserţiunile raman aceleasi.
+# Se importa INCHIDEREA TRANZITIVA, nu doar functia tintita: `Get-RemuxPreflight` cheama
+# `Get-FileSpatialLabel`, care cheama `Get-AudioSpatialKind` (imbogatirea v87 a notelor cu
+# etichete Atmos/DTS:X). Copia MOARTA din av_encode.ps1 nu avea acel apel — un drift in plus,
+# scos la iveala tocmai de re-tintire. Fara dependente, apelul arunca „is not recognized",
+# aserţiunile de dupa nu mai ruleaza, dar contorul ramane pornit → trecere falsa (clasa v63,
+# prinsa de garda de no-op PARTIAL din runner, v94).
+Import-AvEncodeFunctions -Names @('Get-RemuxPreflight','Get-FileSpatialLabel','Get-AudioSpatialKind') `
+    -Path (Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) 'src\av_mux.ps1')
 
 # ─────────────────────────────────────────────────────────────────
 # 2) Get-RemuxPreflight — reguli noi v49
@@ -244,7 +254,10 @@ if ($encContent -match 'optiunea 7|Mux tools') { _pass } else { _fail "redirect 
 if ($encContent -match '10-Iesire') { _pass } else { _fail "Main menu 10-Iesire" }
 if ($encContent -match 'av_mux\.ps1') { _pass } else { _fail "Main menu dispatch av_mux.ps1" }
 
-# Invoke-Remux (worker) pastrat pentru back-compat
-if ($encContent -match 'function Invoke-Remux\b') { _pass } else { _fail "Invoke-Remux worker pastrat" }
+# v95: aserţiunea „Invoke-Remux (worker) pastrat pentru back-compat" a fost SCOASA.
+# Pazea prezenta unei functii pe care nimic n-o chema — „back-compat" fata de ce anume nu
+# reiese de nicaieri: nu exista apelant, nici in src/, nici in teste. Era, in fapt, o
+# aserţiune care CEREA sa nu stergem cod mort. Capacitatea reala (re-mux cu tag:v +
+# faststart) traieste in av_mux si e acoperita de test_v57_codec_tag + test_v50_mux.
 
 Invoke-TestSummary   # v63: lipsea → testul iesea mereu exit 0 fara sa valideze

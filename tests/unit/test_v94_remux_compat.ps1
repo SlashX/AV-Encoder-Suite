@@ -80,28 +80,27 @@ Assert-Eq "drop" (Get-RemuxStreamCompat -Codec ttf -CodecType attachment -Target
 Assert-Eq "drop" (Get-RemuxStreamCompat -Codec fubar123 -CodecType video -Target mp4) "mp4: unknown -> drop"
 
 # ─────────────────────────────────────────────────────────────────
-# 2) Copiile MOARTE din av_encode.ps1 (O12) — stare documentata, nu bug
+# 2) O12 inchis in v95 — copiile moarte NU mai exista
 # ─────────────────────────────────────────────────────────────────
-# Cand se sterg cele 2 functii din av_encode.ps1, aserţiunile de mai jos pica.
-# Semnalul e INTENTIONAT: scoate si aceasta secţiune odata cu ele.
+# Sectiunea de aici documenta starea „exista o copie moarta si una vie" si spunea explicit
+# sa fie scoasa odata cu stergerea functiilor. S-a intamplat in v95 (curatenie O11+O12):
+# `Get-RemuxStreamCompat`, `Get-RemuxStreams`, `Get-RemuxPreflight` si `Invoke-Remux` au
+# disparut din av_encode.ps1. In locul ei ramane aserţiunea INVERSA — un singur loc de
+# definitie — iar garda generala impotriva codului mort e in test_v95_dead_code.{sh,ps1}.
 $encTxt = Get-Content $ENC -Raw
 $muxTxt = Get-Content $MUX -Raw
 
 foreach ($fn in 'Get-RemuxStreamCompat', 'Get-RemuxStreams') {
-    Assert-Eq $true ([regex]::IsMatch($encTxt, "(?m)^function\s+$fn")) `
-        "O12: $fn inca definit in av_encode.ps1 (de sters la curatenie)"
-    # „mort" = zero apeluri in acel fisier (scadem definitia din numaratoare)
-    $encUses = ([regex]::Matches($encTxt, "(?<![A-Za-z0-9_-])$fn(?![A-Za-z0-9_-])")).Count - 1
-    Assert-Eq 0 $encUses "O12: $fn e MORT in av_encode.ps1 (zero apeluri acolo)"
-    # ...si VIU in av_mux.ps1
+    Assert-Eq $false ([regex]::IsMatch($encTxt, "(?m)^function\s+$fn")) `
+        "O12: $fn NU mai e definit in av_encode.ps1 (copia moarta stearsa in v95)"
+    Assert-Eq $true ([regex]::IsMatch($muxTxt, "(?m)^function\s+$fn")) `
+        "O12: $fn e definit in av_mux.ps1 (copia vie, singura ramasa)"
     $muxUses = ([regex]::Matches($muxTxt, "(?<![A-Za-z0-9_-])$fn(?![A-Za-z0-9_-])")).Count - 1
     Assert-Nonzero $muxUses "O12: $fn e VIU in av_mux.ps1 (are apeluri)"
 }
 
-# Driftul concret: fixurile v59 si v88 sunt DOAR in copia vie
-Assert-Eq $true  ($muxTxt.Contains('$parts[5].TrimEnd(')) "O12: fixul v59 (TrimEnd pe title) e in copia vie"
-Assert-Eq $false ($encTxt.Contains('$parts[5].TrimEnd(')) "O12: fixul v59 LIPSESTE din copia moarta"
-Assert-Eq $true  ($muxTxt.Contains('$seenIdx.ContainsKey($idx)')) "O12: fixul v88 (dedupe IAMF) e in copia vie"
-Assert-Eq $false ($encTxt.Contains('$seenIdx.ContainsKey($idx)')) "O12: fixul v88 LIPSESTE din copia moarta"
+# Fixurile v59 si v88 traiesc in singura copie ramasa (inainte lipseau din cea moarta)
+Assert-Eq $true ($muxTxt.Contains('$parts[5].TrimEnd(')) "O12: fixul v59 (TrimEnd pe title) e prezent"
+Assert-Eq $true ($muxTxt.Contains('$seenIdx.ContainsKey($idx)')) "O12: fixul v88 (dedupe IAMF) e prezent"
 
 Invoke-TestSummary

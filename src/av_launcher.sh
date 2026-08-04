@@ -1284,6 +1284,13 @@ fi  # end SKIP_CONFIG block (profile load)
 # SFARSIT BLOC CONFIGURARE
 # ════════════════════════════════════════════════════════════════════
 
+# v95: un profil cu VBR dar fara maxrate/bufsize lasa flag-urile goale in comanda ffmpeg
+# (0 octeti pe x265/x264/av1). Apelul sta AICI, dupa `fi`-ul de mai sus, fiindca asta e
+# singurul punct prin care trec AMBELE cai: si meniul interactiv, si `goto_launch`/SKIP_CONFIG
+# (auto-confirm din AV_PROFILE) — care sare peste tot blocul de configurare. Pus inauntru,
+# calea prin profil, adica exact cea care avea nevoie de el, l-ar fi ocolit.
+_vbr_fill_defaults
+
 # ── Dry-run / Resume / Interactive ────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════╗"

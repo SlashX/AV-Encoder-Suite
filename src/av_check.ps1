@@ -48,8 +48,13 @@ function Get-FFprobeValue {
 function Get-SizeEst {
     param([long]$bps, [int]$dur)
     if ($dur -le 0) { return "N/A" }
-    $mb = [long]($bps * $dur / 8 / 1MB)
-    if ($mb -ge 1024) { "~{0:F1} GB" -f ($mb/1024) } else { "~$mb MB" }
+    # v95 (P3): TRUNCHIERE + InvariantCulture, ca in bash.
+    #   `[long](...)` ROTUNJEA, iar bash face `$(( bps*dur/8/1024/1024 ))` = aritmetica intreaga
+    #   → "~43 MB" vs "~41 MB" pentru acelasi fisier.
+    #   `-f` foloseste cultura MASINII: pe ro-RO / de-DE iesea "~1,2 GB" in loc de "~1.2 GB",
+    #   deci continutul CSV-ului depindea de setarile regionale ale calculatorului.
+    $mb = [long][math]::Floor($bps * $dur / 8 / 1MB)
+    if ($mb -ge 1024) { "~" + ($mb/1024.0).ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture) + " GB" } else { "~$mb MB" }
 }
 
 function Get-SourceInfo {
@@ -247,7 +252,9 @@ function Get-HdrRichInfo {
             # Format InvariantCulture (locale EU → dot decimals)
             $inv = [System.Globalization.CultureInfo]::InvariantCulture
             $lMaxStr = ([Math]::Round($lMax, 0)).ToString("0", $inv)
-            $lMinStr = ([Math]::Round($lMin, 4)).ToString("0.0###", $inv)
+            # v95 (P3): patru zecimale FIXE, ca `printf "%.4f"` din bash. `0.0###` taia zerourile
+            # finale, deci 0.0050 iesea "0.005" pe Windows si "0.0050" pe restul platformelor.
+            $lMinStr = ([Math]::Round($lMin, 4)).ToString("0.0000", $inv)
             $info.masterDisplay = "$primaries max ${lMaxStr}n min ${lMinStr}n"
         }
     }
@@ -480,7 +487,10 @@ foreach ($f in $inputFiles) {
     $audioChannelsRaw = Get-FFprobeValue $f.FullName "a:0" "channels"
     $audioChannels = if ($audioChannelsRaw -match '^\d+$') { $audioChannelsRaw } else { "N/A" }
     $audioSR = Get-FFprobeValue $f.FullName "a:0" "sample_rate"
-    $audioSRk = if ($audioSR -match '^\d+$') { [math]::Round([long]$audioSR / 1000, 1) } else { "N/A" }
+    # v95 (P3): sir cu O zecimala FIXA, ca `printf "%.1f"` din bash — `Round` intorcea un
+    # numar, deci 48000 Hz iesea "48" in loc de "48.0". InvariantCulture: altfel separatorul
+    # zecimal urmeaza setarile regionale ale masinii, iar CSV-ul difera de la calculator la calculator.
+    $audioSRk = if ($audioSR -match '^\d+$') { ([long]$audioSR / 1000.0).ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture) } else { "N/A" }
     $audioBD = Get-FFprobeValue $f.FullName "a:0" "bits_per_raw_sample"
     if (-not $audioBD -or $audioBD -eq "0") { $audioBD = Get-FFprobeValue $f.FullName "a:0" "bits_per_sample" }
     if (-not $audioBD -or $audioBD -eq "0") { $audioBD = "N/A" }
@@ -499,7 +509,9 @@ foreach ($f in $inputFiles) {
         # v88: Eclipsa/IAMF (stream group peste Opus/AAC/FLAC/PCM; ortogonal cu Atmos/DTS:X)
         if (Get-IamfLayout -File $f.FullName) { $ac = "$ac (Eclipsa)" }
     }
-    $fsMB = [math]::Round($f.Length / 1MB, 1)
+    # v95 (P3): impartire INTREAGA, ca `$((FILE_SIZE/1024/1024))` din bash (care trunchiaza).
+    # `Round(...,1)` dadea "150.3" acolo unde bash scrie "150".
+    $fsMB = [long][math]::Floor($f.Length / 1MB)
     $fpsRaw = Get-FFprobeValue $f.FullName "v:0" "avg_frame_rate"
     # v94 (P1): in CSV, FPS-ul se scrie ZECIMAL, ca in bash (`awk '{printf "%.2f",$1/$2}'`).
     # PS1 punea fractia bruta (`60000/1001`), deci un consumator de CSV primea alt TIP de
@@ -515,16 +527,18 @@ foreach ($f in $inputFiles) {
     $bitrateRaw = Get-FFprobeValue $f.FullName "v:0" "bit_rate"
     $durRaw = & ffprobe -v error -show_entries format=duration `
         -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
-    $durSec = if ($durRaw -match '^\d+') { [int]([double]$durRaw) } else { 0 }
+    # v95 (P3): TRUNCHIERE, ca `${DURATION%.*}` din bash. `[int]` din .NET ROTUNJESTE, deci
+    # 29.97s iesea 30 in loc de 29 — iar durata intra mai departe in toate estimarile de marime.
+    $durSec = if ($durRaw -match '^\d+') { [int][math]::Floor([double]$durRaw) } else { 0 }
     # v57: fallback in cascada — stream=bit_rate (lipseste de obicei pe MKV),
     # apoi format=bit_rate, apoi estimat din size/duration.
     if ($bitrateRaw -match '^\d+$') {
-        $bitrateMbps = [math]::Round([long]$bitrateRaw / 1000000, 2)
+        $bitrateMbps = ([long]$bitrateRaw / 1000000.0).ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
     } else {
         $fmtBr = & ffprobe -v error -show_entries format=bit_rate `
             -of default=noprint_wrappers=1:nokey=1 $f.FullName 2>$null
         if ($fmtBr -match '^\d+$') {
-            $bitrateMbps = [math]::Round([long]$fmtBr / 1000000, 2)
+            $bitrateMbps = ([long]$fmtBr / 1000000.0).ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
         } elseif ($durSec -gt 0 -and $f.Length -gt 0) {
             $estBr = [math]::Round(($f.Length * 8.0) / 1000000.0 / $durSec, 2)
             $inv = [System.Globalization.CultureInfo]::InvariantCulture

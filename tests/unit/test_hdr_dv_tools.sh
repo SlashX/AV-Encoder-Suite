@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Test v44 helpers C+D+E: convert_rpu_profile + _remux_preflight + remux_container_with_tag
+# Test v44 helpers C+D: convert_rpu_profile + _remux_preflight
+# (v95: partea remux_container_with_tag a disparut odata cu functia — vezi mai jos.)
 # Stareaza pure-logic. ffprobe e mockuit ca functie shell pentru _remux_preflight.
 source "$(dirname "${BASH_SOURCE[0]}")/../framework.sh"
 
@@ -131,63 +132,16 @@ assert_nonzero $? "convert: missing rpu_in -> non-zero"
 # (function exists check — actual binary calls require dovi_tool installed)
 declare -F convert_rpu_profile >/dev/null && _pass || _fail "convert_rpu_profile defined"
 declare -F extract_raw_video >/dev/null && _pass || _fail "extract_raw_video defined"
-declare -F remux_container_with_tag >/dev/null && _pass || _fail "remux_container_with_tag defined"
 declare -F extract_dv_rpu >/dev/null && _pass || _fail "extract_dv_rpu defined"
 declare -F _remux_preflight >/dev/null && _pass || _fail "_remux_preflight defined"
 
-# ─────────────────────────────────────────────────────────────────
-# 3) remux_container_with_tag — args building (audit fix B1)
-#    Mock ffmpeg ca sa capturam argumentele, fara executie reala.
-# ─────────────────────────────────────────────────────────────────
-_captured_args=""
-ffmpeg() {
-    _captured_args="$*"
-    # Simulam succes: cream un fisier dummy non-empty pentru output (ultimul arg)
-    local last_arg=""
-    for a in "$@"; do last_arg="$a"; done
-    echo "ok" > "$last_arg"
-    return 0
-}
-export -f ffmpeg
-
-# detect_source_codec foloseste ffprobe — _mock_tags e gol, codec_name fallback la "hevc"
-_mock_tags=""
-OUT_DUMMY=$(mktemp)
-
-# 3a) target=mkv → NU contine "mov_text" (B1 fix)
-remux_container_with_tag "$TMPFILE" "$OUT_DUMMY" "mkv" >/dev/null 2>&1
-case "$_captured_args" in
-    *mov_text*) _fail "mkv must NOT use mov_text in args (got: $_captured_args)" ;;
-    *)          _pass ;;
-esac
-case "$_captured_args" in
-    *"-c:s copy"*) _pass ;;
-    *)             _fail "mkv must use -c:s copy (got: $_captured_args)" ;;
-esac
-
-# 3b) target=mp4 + source HEVC → contine mov_text + tag:v hvc1
-remux_container_with_tag "$TMPFILE" "$OUT_DUMMY" "mp4" >/dev/null 2>&1
-case "$_captured_args" in
-    *mov_text*) _pass ;;
-    *)          _fail "mp4 must use mov_text (got: $_captured_args)" ;;
-esac
-case "$_captured_args" in
-    *"-tag:v hvc1"*) _pass ;;
-    *)               _fail "mp4 + hevc source must use -tag:v hvc1 (got: $_captured_args)" ;;
-esac
-case "$_captured_args" in
-    *"+faststart"*) _pass ;;
-    *)              _fail "mp4 must use +faststart (got: $_captured_args)" ;;
-esac
-
-# 3c) target=mov + source HEVC → la fel, mov_text + hvc1
-remux_container_with_tag "$TMPFILE" "$OUT_DUMMY" "mov" >/dev/null 2>&1
-case "$_captured_args" in
-    *mov_text*) _pass ;;
-    *)          _fail "mov must use mov_text (got: $_captured_args)" ;;
-esac
-
-rm -f "$OUT_DUMMY" "$TMPFILE"
+# v95: sectiunea „3) remux_container_with_tag — args building" a fost SCOASA odata cu
+# functia, care era cod MORT (zero apelanti in tot src/). Aserţiunile ei nu validau o
+# capacitate a suitei, ci o functie pe care nimic n-o executa. Comportamentul REAL e
+# acoperit de cod viu: tag-urile hvc1/av01/avc1 in test_v57_codec_tag.{sh,ps1},
+# conversia mov_text in test_v94_remux_compat.ps1 + testele av_mux, `+faststart` in
+# test_v50_mux.{sh,ps1} si test_v53_features.sh.
+rm -f "$TMPFILE"
 
 # ─────────────────────────────────────────────────────────────────
 # v57: refactor av_hdr_dv_tools — helper _hdv_combine_with_original

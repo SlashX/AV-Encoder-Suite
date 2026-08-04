@@ -107,13 +107,13 @@ assert_eq "" "$STATS_DIR" "cleanup clears STATS_DIR"
 assert_eq "" "$FFMPEG_CMD_PASS1" "cleanup clears FFMPEG_CMD_PASS1"
 assert_eq "" "$FFMPEG_CMD_PASS2" "cleanup clears FFMPEG_CMD_PASS2"
 
-# ── Gate-ul 2-pass × HW: politica VIE, nu cea din functia moarta (v94/O11) ──
-# `hw_2pass_allowed()` din av_common.sh NU e chemata de nimic (zero apeluri in src) si
-# codifica politica de dinainte de v53: "niciun backend HW nu suporta 2-pass". Testul de
-# aici afirma pana in v94 exact asta — inclusiv "NVENC → 2-pass NOT allowed" — ceea ce
-# CONTRAZICE codul viu: din v53 NVENC suporta 2-pass intern (`-multipass fullres`).
-# Un test care trece dar spune opusul comportamentului real dezinformeaza, deci afirmam
-# acum politica VIE, pe logica din av_launcher.sh (oglindita in av_encode.ps1).
+# ── Gate-ul 2-pass × HW: politica VIE (v94/O11, inchis in v95) ──
+# Pana in v94, aserţiunile de aici exercitau `hw_2pass_allowed()` — o functie pe care nimic
+# n-o chema, ramasa cu politica de dinainte de v53 ("niciun backend HW nu suporta 2-pass") —
+# si afirmau deci opusul codului viu, unde NVENC face 2-pass intern (`-multipass fullres`).
+# v94 le-a re-tintit pe politica VIE (av_launcher.sh, oglindita in av_encode.ps1); v95 a
+# STERS functia moarta. Un test care trece dar spune opusul comportamentului real e mai rau
+# decat lipsa lui de acoperire — de-aia afirmam regula acolo unde e chiar aplicata.
 LAUNCH_TXT="$(cat "$SCRIPT_DIR/av_launcher.sh")"
 assert_contains "$LAUNCH_TXT" '[[ "${HW_BACKEND:-sw}" != "sw" ]] && _is_hw_active=1' \
     "gate viu: orice backend != sw = HW activ"
@@ -140,8 +140,8 @@ done
 assert_contains "$(cat "$SCRIPT_DIR/av_encode.ps1")" \
     '$hwSupports2Pass = ($useHWEnc -and ($hwEncCodec -match "nvenc"))' \
     "paritate PS1: acelasi gate 2-pass × HW"
-# NB (O11): `hw_2pass_allowed` si `get_null_output` sunt cod MORT in av_common.sh — cand se
-# sterg, aceasta nota si eventualele referinte rămase trebuie scoase. Vezi v94_audit.md/O11.
+# (O11 inchis in v95: `hw_2pass_allowed` si `get_null_output` au fost sterse din av_common.sh
+# impreuna cu restul codului mort; garda permanenta e acum test_v95_dead_code.{sh,ps1}.)
 HW_BACKEND=sw
 
 # ══════════════════════════════════════════════════════════════════════
