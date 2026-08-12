@@ -108,10 +108,24 @@ try {
 
 # 4. Instalare (cu rename)
 $BuiltExe = Join-Path $InstallRoot "target\release\$SrcBinName"
+# v96: copierea nu era verificata, iar "INSTALARE REUSITA" se tiparea neconditionat; ramura
+# de eroare nu schimba nici codul de iesire. Perechea bash a primit acelasi tratament.
+$InstallOk = $false
 if (Test-Path -LiteralPath $BuiltExe) {
     Write-Host ""
     Write-Host "[4/4] Instalez binarul (rename $SrcBinName -> $DestBinName)..." -ForegroundColor Yellow
-    Copy-Item -LiteralPath $BuiltExe -Destination $TargetPath -Force
+    try {
+        Copy-Item -LiteralPath $BuiltExe -Destination $TargetPath -Force -ErrorAction Stop
+    } catch {
+        Write-Host ""
+        Write-Host "EROARE: nu am putut instala binarul in $TargetPath" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)"
+        Write-Host "  Compilarea a reusit — binarul e in $BuiltExe"
+        Write-Host "  Copiaza-l manual intr-un folder din PATH, sau seteaza AV_TOOL_AV1DOVI catre el."
+    }
+}
+if ((Test-Path -LiteralPath $BuiltExe) -and (Test-Path $TargetPath)) {
+    $InstallOk = $true
 
     Write-Host ""
     Write-Host "INSTALARE REUSITA!" -ForegroundColor Green
@@ -120,10 +134,11 @@ if (Test-Path -LiteralPath $BuiltExe) {
     Write-Host ""
     Write-Host "Acum poti folosi optiunile DV pentru AV1 in av_encode.ps1." -ForegroundColor Green
     Write-Host "Note: dovi_tool.exe upstream (HEVC) ramane neatins."
-} else {
+} elseif (-not (Test-Path -LiteralPath $BuiltExe)) {
     Write-Host ""
     Write-Host "EROARE: $SrcBinName nu a fost gasit dupa compilare." -ForegroundColor Red
     Write-Host "Cale asteptata: $BuiltExe"
 }
 
 Read-Host "`nApasa Enter pentru a iesi"
+if (-not $InstallOk) { exit 1 }

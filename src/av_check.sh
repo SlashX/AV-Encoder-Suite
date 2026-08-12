@@ -392,7 +392,7 @@ get_output_size_estimate() {
     local est_mb
     est_mb=$(( target_bps * duration_sec / 8 / 1024 / 1024 ))
     if [ "$est_mb" -ge 1024 ]; then
-        awk -v mb="$est_mb" 'BEGIN{printf "~%.1f GB", mb/1024}'
+        LC_ALL=C awk -v mb="$est_mb" 'BEGIN{printf "~%.1f GB", mb/1024}'
     else
         echo "~${est_mb} MB"
     fi
@@ -478,7 +478,7 @@ for file in "${FILES[@]}"; do
     # Sample rate (Hz → kHz)
     AUDIO_SAMPLERATE_KHZ="N/A"
     [[ "$AUDIO_SAMPLERATE" =~ ^[0-9]+$ ]] && \
-        AUDIO_SAMPLERATE_KHZ=$(awk "BEGIN{printf \"%.1f\", $AUDIO_SAMPLERATE/1000}")
+        AUDIO_SAMPLERATE_KHZ=$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $AUDIO_SAMPLERATE/1000}")
 
     # Bit depth — fallback daca bits_per_raw_sample e gol. v63: default= + head -1 + tr -d '\r'
     # (csv=p=0 single-field putea da "16," in CSV pe surse cu side_data → si comparatia == "0" frasila)
@@ -534,9 +534,9 @@ for file in "${FILES[@]}"; do
             at_layout=$(_kv "$stream_line" channel_layout)
             at_lang=$(_kv "$stream_line" tag:language)
             at_br_k="N/A"
-            [[ "$at_br" =~ ^[0-9]+$ ]] && at_br_k=$(awk "BEGIN{printf \"%.0f\", $at_br/1000}")
+            [[ "$at_br" =~ ^[0-9]+$ ]] && at_br_k=$(LC_ALL=C awk "BEGIN{printf \"%.0f\", $at_br/1000}")
             at_sr_k="N/A"
-            [[ "$at_sr" =~ ^[0-9]+$ ]] && at_sr_k=$(awk "BEGIN{printf \"%.1f\", $at_sr/1000}")
+            [[ "$at_sr" =~ ^[0-9]+$ ]] && at_sr_k=$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $at_sr/1000}")
             [[ -z "$at_layout" ]] && at_layout="${at_ch}ch"
             [[ -z "$at_lang" ]] && at_lang="und"
             # v87: marcheaza pistele cu obiecte spatiale (Atmos / DTS:X) in detaliul per-track
@@ -558,7 +558,7 @@ for file in "${FILES[@]}"; do
     [[ ! "$DURATION_INT" =~ ^[0-9]+$ ]] && DURATION_INT=0
 
     # ── FPS ───────────────────────────────────────────────────────────
-    FPS=$(echo "$FPS_RAW" | awk -F/ '{if($2>0) printf "%.2f",$1/$2; else print "N/A"}')
+    FPS=$(echo "$FPS_RAW" | LC_ALL=C awk -F/ '{if($2>0) printf "%.2f",$1/$2; else print "N/A"}')
 
     # ── Bitrate video ─────────────────────────────────────────────────
     # v57: fallback in cascada — stream=bit_rate (lipseste de obicei pe MKV),
@@ -566,21 +566,21 @@ for file in "${FILES[@]}"; do
     # size/duration (eticheta " (est)" pt a marca estimarea).
     BITRATE_MB="N/A"
     if [[ "$BITRATE" =~ ^[0-9]+$ ]]; then
-        BITRATE_MB=$(awk "BEGIN{printf \"%.2f\", $BITRATE/1000000}")
+        BITRATE_MB=$(LC_ALL=C awk "BEGIN{printf \"%.2f\", $BITRATE/1000000}")
     else
         FMT_BITRATE=$(ffprobe -v error -show_entries format=bit_rate \
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
         if [[ "$FMT_BITRATE" =~ ^[0-9]+$ ]]; then
-            BITRATE_MB=$(awk "BEGIN{printf \"%.2f\", $FMT_BITRATE/1000000}")
+            BITRATE_MB=$(LC_ALL=C awk "BEGIN{printf \"%.2f\", $FMT_BITRATE/1000000}")
         elif [ "$DURATION_INT" -gt 0 ] && [ "$FILE_SIZE" -gt 0 ]; then
-            BITRATE_MB=$(awk "BEGIN{printf \"%.2f (est)\", ($FILE_SIZE * 8) / 1000000 / $DURATION_INT}")
+            BITRATE_MB=$(LC_ALL=C awk "BEGIN{printf \"%.2f (est)\", ($FILE_SIZE * 8) / 1000000 / $DURATION_INT}")
         fi
     fi
 
     # ── Bitrate audio ─────────────────────────────────────────────────
     AUDIO_BITRATE_KB="N/A"
     [[ "$AUDIO_BITRATE" =~ ^[0-9]+$ ]] && \
-        AUDIO_BITRATE_KB=$(awk "BEGIN{printf \"%.0f\", $AUDIO_BITRATE/1000}")
+        AUDIO_BITRATE_KB=$(LC_ALL=C awk "BEGIN{printf \"%.0f\", $AUDIO_BITRATE/1000}")
 
     # ── ffprobe #4: side_data per-frame (HDR10+ + DV detection) ─────
     # v57 FIX: field-ul corect e `side_data_type` (nu `type`); cu `type` ffprobe
@@ -662,11 +662,16 @@ for file in "${FILES[@]}"; do
         [[ "$_mf" =~ ^[0-9]+$ ]] && MAX_FALL="$_mf"
 
         # Master display — fractii rational num/denom
-        _l_max=$(echo "$HDR_DETAILS" | awk -F'[=/]' '/^max_luminance=/{printf "%.0f",$2/$3; exit}')
-        _l_min=$(echo "$HDR_DETAILS" | awk -F'[=/]' '/^min_luminance=/{printf "%.4f",$2/$3; exit}')
-        _g_x=$(echo "$HDR_DETAILS"   | awk -F'[=/]' '/^green_x=/{printf "%.3f",$2/$3; exit}')
+        _l_max=$(echo "$HDR_DETAILS" | LC_ALL=C awk -F'[=/]' '/^max_luminance=/{printf "%.0f",$2/$3; exit}')
+        _l_min=$(echo "$HDR_DETAILS" | LC_ALL=C awk -F'[=/]' '/^min_luminance=/{printf "%.4f",$2/$3; exit}')
+        _g_x=$(echo "$HDR_DETAILS"   | LC_ALL=C awk -F'[=/]' '/^green_x=/{printf "%.3f",$2/$3; exit}')
         if [[ "$_l_max" =~ ^[0-9]+$ ]] && [[ "$_l_max" -gt 0 ]]; then
-            _primaries=$(echo "$_g_x" | awk '{v=$1+0; if(v<0.20) print "BT.2020"; else if(v<0.28) print "DCI-P3"; else if(v<0.32) print "BT.709"; else print "custom"}')
+            # LC_ALL=C obligatoriu: aici se CITESTE o zecimala dintr-un camp de intrare, iar
+            # mawk (awk-ul implicit pe Debian/Ubuntu) converteste sirul dupa locale — sub o
+            # locale cu virgula, "0.265"+0 devine 0, deci verdictul cadea mereu pe prima
+            # ramura (BT.2020 in loc de DCI-P3). Spre deosebire de valorile pasate cu `-v`
+            # sau interpolate ca literali, campurile de intrare chiar se strica.
+            _primaries=$(echo "$_g_x" | LC_ALL=C awk '{v=$1+0; if(v<0.20) print "BT.2020"; else if(v<0.28) print "DCI-P3"; else if(v<0.32) print "BT.709"; else print "custom"}')
             MASTER_DISPLAY="${_primaries} max ${_l_max}n min ${_l_min}n"
         fi
     fi
@@ -845,7 +850,7 @@ if [ -d "$OUTPUT_DIR" ]; then
 
                 # Raport compresie
                 if [ "$orig_size" -gt 0 ]; then
-                    ratio=$(awk "BEGIN{printf \"%.1f\", $new_size * 100.0 / $orig_size}")
+                    ratio=$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $new_size * 100.0 / $orig_size}")
                     saved_mb=$(( (orig_size - new_size) / 1024 / 1024 ))
                 else
                     ratio="N/A"; saved_mb=0
@@ -874,7 +879,7 @@ if [ -d "$OUTPUT_DIR" ]; then
             echo "  ─────────────────────────────────────"
             echo "  TOTAL: $((COMP_TOTAL_ORIG/1024/1024)) MB → $((COMP_TOTAL_NEW/1024/1024)) MB"
             if [ "$COMP_TOTAL_ORIG" -gt 0 ]; then
-                total_ratio=$(awk "BEGIN{printf \"%.1f\", $COMP_TOTAL_NEW * 100.0 / $COMP_TOTAL_ORIG}")
+                total_ratio=$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $COMP_TOTAL_NEW * 100.0 / $COMP_TOTAL_ORIG}")
                 total_saved=$(( (COMP_TOTAL_ORIG - COMP_TOTAL_NEW) / 1024 / 1024 ))
                 echo "  Compresie globala: ${total_ratio}% | Salvat total: ${total_saved} MB"
             fi

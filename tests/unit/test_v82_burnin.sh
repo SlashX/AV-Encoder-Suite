@@ -67,13 +67,24 @@ if command -v ffmpeg >/dev/null 2>&1; then
     printf '1\n00:00:00,000 --> 00:00:01,000\nHello shaping test\n' > "$tmpd/s.srt"
     ffmpeg -v error -y -f lavfi -i "color=c=navy:s=320x240:d=1" -pix_fmt yuv420p "$tmpd/v.mp4" >/dev/null 2>&1
     ffmpeg -v error -y -i "$tmpd/s.srt" "$tmpd/s.ass" >/dev/null 2>&1
-    # SRT + force_style + shaping=complex (forma reala a suitei; filtrul `subtitles`)
-    ( cd "$tmpd" && ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24':shaping=complex" -frames:v 1 -y o1.png ) >/dev/null 2>&1 && r1=0 || r1=1
-    assert_zero "$r1" "B funct: SRT force_style+shaping=complex -> rc=0"
-    # ASS prin filtrul NATIV `ass` + shaping (forma reala a suitei v82)
-    if [[ -f "$tmpd/s.ass" ]]; then
-        ( cd "$tmpd" && ffmpeg -v error -i v.mp4 -vf "ass=s.ass:shaping=complex" -frames:v 1 -y o2.png ) >/dev/null 2>&1 && r2=0 || r2=1
-        assert_zero "$r2" "B funct: ASS(filtru nativ ass)+shaping -> rc=0"
+    # v96: rularile cu shaping se fac DOAR daca build-ul chiar il are ($direct==0 = suportat).
+    # Testul masura capabilitatea mai sus, apoi o folosea neconditionat — pe un ffmpeg fara
+    # libharfbuzz (ex. pachetul din Ubuntu) ffmpeg raspunde "Option not found" si testul pica,
+    # desi codul de PRODUCTIE e corect: `ask_burnin_shaping` sare promptul cand poarta zice nu.
+    # Adica testul presupunea exact ce tocmai masurase.
+    if [ "$direct" -eq 0 ]; then
+        # SRT + force_style + shaping=complex (forma reala a suitei; filtrul `subtitles`)
+        ( cd "$tmpd" && ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24':shaping=complex" -frames:v 1 -y o1.png ) >/dev/null 2>&1 && r1=0 || r1=1
+        assert_zero "$r1" "B funct: SRT force_style+shaping=complex -> rc=0"
+        # ASS prin filtrul NATIV `ass` + shaping (forma reala a suitei v82)
+        if [[ -f "$tmpd/s.ass" ]]; then
+            ( cd "$tmpd" && ffmpeg -v error -i v.mp4 -vf "ass=s.ass:shaping=complex" -frames:v 1 -y o2.png ) >/dev/null 2>&1 && r2=0 || r2=1
+            assert_zero "$r2" "B funct: ASS(filtru nativ ass)+shaping -> rc=0"
+        fi
+    else
+        # Fara shaping, formele de baza trebuie sa mearga la fel — asta ramane verificabil.
+        ( cd "$tmpd" && ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24'" -frames:v 1 -y o1.png ) >/dev/null 2>&1 && r1=0 || r1=1
+        assert_zero "$r1" "B funct: SRT force_style (build fara shaping) -> rc=0"
     fi
     # lant tonemap valid pe frame PQ (setparams taguieste frame-ul, ca sursele HDR reale)
     chain="format=yuv420p10le,setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc,zscale=t=linear:npl=100,tonemap=tonemap=hable,zscale=t=bt709:m=bt709:p=bt709:r=tv,format=yuv420p"

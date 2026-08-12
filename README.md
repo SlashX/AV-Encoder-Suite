@@ -2,7 +2,7 @@
 
 Cross-platform video encoding suite for **Termux (Android), Linux, macOS and Windows** — bash + PowerShell.
 
-**v95** — 186 bugs fixed · 282+ features · ~63 000 LoC · 258 files
+**v96** — 195 bugs fixed · 282+ features · ~63 650 LoC · 261 files
 
 ---
 
@@ -418,7 +418,9 @@ If you find this project useful, consider a small donation — it helps keep dev
 
 See [docs/av_changelog.txt](docs/av_changelog.txt) for full version history.
 
-Current: **v95** — 186 bugs fixed · 282+ features · ~63 000 LoC · 258 files
+Current: **v96** — 195 bugs fixed · 282+ features · ~63 650 LoC · 261 files
+
+*v96 highlights:* the bash side had always been tested on Windows through a compatibility layer; running it on **native Linux for the first time** surfaced things that environment could not show — there, filename case matters and a Windows executable simply won't start. Two bugs had been hiding since v71: **MP4Box was never found on Linux/macOS** (it is installed under that exact name, with capitals, while the suite looked for the lowercase form), which silently removed Dolby Vision signaling in MP4/MOV, Eclipsa authoring, container-level Atmos marking and native DJI GPS preservation — every flow degrades gracefully, so nothing ever looked broken; and on a working tree shared with Windows (WSL, network share, dual-boot) the suite picked the **Windows executable sitting next to the scripts** instead of the native tool, because the file exists and looks executable. The Dolby Vision / HDR10+ installers also never installed anything on Linux or macOS — they printed advice that cannot work and exited as if successful, while the code that actually installs was already there, reserved for Android; they now build and install on all three systems, fall back to a bundled font when the system font library is missing, report placement failures instead of claiming success, and point at a source build when a distribution has dropped the GPAC package (Ubuntu 26.04). The same run also closed a long-standing gap on the other side of the same coin: decimal numbers were formatted according to the machine's regional settings, so on a Linux with a European locale the burn-in preview and Trim & Concat thumbnails failed outright (ffmpeg rejects `1,504` as a timestamp), the CSV report came out with commas in five columns, and frame-rate conversion was silently skipped. Windows had been protected against this class since earlier versions; the Linux/macOS side had been assumed safe and never tested. Suites: **Linux 101/101 with no skips**, Windows bash 99/0/2 of 101, Windows PowerShell 93/93.
 
 *v95 highlights:* a **cleanup** release — no behaviour changes at all. Nine functions with no callers were removed (375 lines): five from the shared bash code, four from the Windows script, where a whole Remux block had been left behind when that flow moved into its own script back in v49. Two of them were the bash/Windows pair of the same capability, dead on both platforms — the capability itself is alive and tested, just living elsewhere now. Tests that exercised the dead code were re-pointed at the copy that actually runs where one existed, and removed where the function was gone for good. A **permanent guard** now flags any function without callers, on both platforms; it self-checks against planted cases, ignores names that appear only in comments (which is how one of the nine hid from the first sweep), and judges per *file* on Windows, since scripts there are standalone by design — the exact reason two copies of the same helper had been allowed to drift apart. Two unused functions were deliberately kept: they belong to the cross-platform compatibility layer that another rule requires everyone to go through.
 

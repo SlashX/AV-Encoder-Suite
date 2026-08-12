@@ -23,7 +23,10 @@ assert_contains "$(cat "$AVC")" '-f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe"' \
     "v93: fallback co-locat src/cavernize (relativ la SCRIPT_DIR)"
 assert_contains "$(cat "$AVC")" '-f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"' \
     "v93: fallback co-locat src/tools/cavernize (locatia installer-ului)"
-assert_contains "$(cat "$AVC")" 'if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" &&' \
+# v96: conditia a primit in fata gardarea pe Windows (`_av_is_wintools`) — `CavernizeGUI.exe`
+# nu se poate executa pe Linux/macOS/Termux, dar pe un arbore partajat cu Windows fisierul
+# EXISTA si e marcat executabil, deci suita l-ar fi ales in locul uneltei native.
+assert_contains "$(cat "$AVC")" '"$_av_is_wintools" == "1" && "$AV_TOOL_CAVERNIZE" == "CavernizeGUI"' \
     "v93: fallback DOAR cand env nu a suprascris (forma if, set-e safe)"
 assert_eq "1" "$(grep -c '^_atmos_render_714()' "$AVC")" \
     "helperul _atmos_render_714 exista in av_common.sh"

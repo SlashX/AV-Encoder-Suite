@@ -109,7 +109,11 @@ fi
 # 3. Compilare (Build)
 echo ""
 echo "[3/4] Incep compilarea cu Cargo (poate dura cateva minute)..."
-if [ "$IS_TERMUX" = "1" ] && ! pkg-config --exists fontconfig 2>/dev/null; then
+# v96: conditia era `IS_TERMUX=1 && fara fontconfig` — deci pe orice Linux desktop sau
+# container de CI fara fontconfig se cadea pe build-ul normal si cargo murea cu un panic
+# despre `fontconfig.pc`, imposibil de dedus pentru utilizator. Ocolirea era corecta, doar
+# gardata prea ingust: singurul criteriu relevant e daca fontconfig chiar exista.
+if ! pkg-config --exists fontconfig 2>/dev/null; then
     cargo build --release --no-default-features --features internal-font
 else
     cargo build --release
@@ -120,8 +124,16 @@ if [ -f "target/release/$SRC_BIN" ]; then
     echo ""
     echo "[4/4] Instalez binarul in system path (rename: $SRC_BIN -> $DEST_BIN)..."
     mkdir -p "$(dirname "$BIN_DEST")"
-    cp "target/release/$SRC_BIN" "$BIN_DEST"
-    chmod +x "$BIN_DEST"
+    # v96: `cp`/`chmod` pot esua (destinatie fara drepturi de scriere — cazul obisnuit pe
+    # macOS, unde /usr/local/bin cere sudo). Inainte scriptul tiparea oricum "INSTALARE
+    # REUSITA" si iesea cu 0, deci apelantul nu avea cum sa afle ca nu s-a instalat nimic.
+    if ! cp "target/release/$SRC_BIN" "$BIN_DEST" 2>/dev/null || ! chmod +x "$BIN_DEST" 2>/dev/null; then
+        echo ""
+        echo "EROARE: nu am putut instala binarul in $BIN_DEST"
+        echo "  Compilarea a reusit — binarul e in $INSTALL_DIR/target/release/$SRC_BIN"
+        echo "  Copiaza-l manual intr-un folder din PATH, sau seteaza AV_TOOL_* catre el."
+        exit 1
+    fi
 
     echo ""
     echo "INSTALARE REUSITA!"
@@ -133,5 +145,12 @@ if [ -f "target/release/$SRC_BIN" ]; then
 else
     echo ""
     echo "EROARE: Compilarea a esuat. Verifica log-urile de mai sus."
+    # v96: cauza cea mai frecventa pe Linux/macOS e un Rust prea vechi din pachetul distro
+    # (upstream cere versiuni recente). Mesajul asta scuteste o cautare pe cont propriu.
+    if [ "${IS_TERMUX:-0}" != "1" ]; then
+        echo "  Daca eroarea de mai sus mentioneaza o versiune de rustc, toolchain-ul distro"
+        echo "  e prea vechi. Instaleaza unul recent si reia:"
+        echo "    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    fi
     exit 1
 fi

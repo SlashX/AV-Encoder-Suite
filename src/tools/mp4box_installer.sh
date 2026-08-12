@@ -70,6 +70,20 @@ if command -v "$BIN" >/dev/null 2>&1 || command -v MP4Box >/dev/null 2>&1; then
     echo "Suita va scrie acum dvcC pe hibridele HEVC DV care merg in MP4/MOV."
 else
     echo "EROARE: MP4Box tot nu e disponibil dupa instalare (rc=$rc)."
-    echo "Instaleaza manual pachetul 'gpac' (vezi https://gpac.io/downloads/)."
+    echo ""
+    # v96: pe unele distributii pachetul pur si simplu NU exista (constatat pe Ubuntu 26.04:
+    # `apt` raspunde "Package 'gpac' has no installation candidate"). Fara MP4Box se pierd
+    # dvcC pe MP4/MOV, authoring-ul IAMF, semnalizarea Atmos si graftul GPS DJI — toate
+    # degradeaza gratios, deci nimic nu pare stricat, dar capabilitatile lipsesc.
+    # Build-ul din sursa e calea sigura si dureaza cateva minute.
+    echo "Daca distributia nu are pachetul 'gpac' (ex. Ubuntu 26.04), compileaza-l din sursa:"
+    echo "  sudo apt install -y build-essential zlib1g-dev pkg-config git   # sau echivalent"
+    echo "  git clone --depth 1 https://github.com/gpac/gpac.git"
+    echo "  cd gpac && ./configure && make -j\$(nproc) && sudo make install"
+    echo ""
+    echo "IMPORTANT: NU folosi './configure --static-bin' — produce un MP4Box 'MINI build',"
+    echo "fara optiunile de import de care are nevoie suita (dvcC, IAMF, semnalizare Atmos)."
+    echo ""
+    echo "Alternativ, pachete oficiale: https://gpac.io/downloads/"
     exit 1
 fi

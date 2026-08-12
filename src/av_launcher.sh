@@ -59,9 +59,9 @@ else
     echo "  Folderul Input nu exista inca."
 fi
 # v41: df -Pk forteaza POSIX format + 1K blocks (cross-platform GNU/BSD/macOS).
-FREE_SPACE=$(av_df_kb "$OUTPUT_DIR" | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
+FREE_SPACE=$(av_df_kb "$OUTPUT_DIR" | LC_ALL=C awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
 if [ -z "$FREE_SPACE" ] && [[ "$AV_PLATFORM" == "termux" ]]; then
-    FREE_SPACE=$(av_df_kb "/storage/emulated/0" | awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
+    FREE_SPACE=$(av_df_kb "/storage/emulated/0" | LC_ALL=C awk 'NR==2{printf "%.1f GB",$4/1024/1024}')
 fi
 [ -z "$FREE_SPACE" ] && FREE_SPACE="N/A"
 echo "  Spatiu liber   : $FREE_SPACE"

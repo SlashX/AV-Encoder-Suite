@@ -3,10 +3,112 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v95 | 186 bug-uri fixate | 282+ features
-  258 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 198 teste [191 test_* + 7 infra]) | ~63000 linii cod+teste | ~8800 linii documentatie
+  TOTAL: v96 | 195 bug-uri fixate | 282+ features
+  261 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 201 teste [194 test_* + 7 infra]) | ~63650 linii cod+teste | ~8950 linii documentatie
 ═══════════════════════════════════════════════════════════════
 
+
+═══════════════════════════════════════════════════════════════
+  v96 — Prima rulare pe Linux real: 7 reparatii, doua dintre ele
+        ascunse de la v71
+═══════════════════════════════════════════════════════════════
+
+  Pana acum, partea bash a suitei a fost testata pe Windows, printr-un
+  strat de compatibilitate. Rulata pentru prima data pe Linux nativ, a
+  scos la iveala lucruri pe care mediul de pana acum nu le putea arata:
+  acolo numele de fisiere conteaza (litere mari vs mici), iar un
+  program de Windows pur si simplu nu porneste.
+
+  Rezultatul: suita trece acum 99 din 99 pe Linux, fara nicio sarire.
+  Pe Windows sunt 2 teste sarite din motive de mediu, deci acoperirea
+  reala e mai mare acolo unde ruleaza codul in productie.
+
+  FIX Pe Linux si macOS, unealta MP4Box nu era gasita NICIODATA.
+        Se numeste chiar asa, cu majuscule; suita o cauta scrisa cu
+        litere mici. Pe Windows nu conteaza, acolo da. Consecinta era
+        tacuta, fiindca fiecare flux se descurca si fara ea: pur si
+        simplu lipseau semnalizarea Dolby Vision in fisierele MP4/MOV,
+        crearea de audio Eclipsa, marcarea Atmos in container si
+        pastrarea GPS-ului nativ DJI la encodare. Prezent de la v71.
+
+  FIX Daca folderul de lucru e partajat cu Windows (WSL, retea,
+        dual-boot), suita alegea programul de Windows aflat langa
+        scripturi in locul celui nativ. Fisierul exista si pare
+        executabil, deci verificarea trecea — dar nu putea rula.
+        Cautarea langa scripturi se face acum doar pe Windows, unde
+        are sens. La fel pentru unealta de randare Atmos.
+
+  FIX Installerele pentru uneltele Dolby Vision si HDR10+ nu
+        instalau nimic pe Linux si macOS. Tipareau un sfat care nu
+        putea functiona (programele nu sunt publicate in registrul
+        acela) si ieseau ca si cum ar fi reusit. Codul care chiar
+        instaleaza exista deja in acelasi fisier — era rezervat doar
+        pentru Android. Acum ruleaza pe toate trei sistemele, fiecare
+        cu locul potrivit de instalare.
+
+  FIX Compilarea se oprea cand lipsea biblioteca de fonturi a
+        sistemului, desi solutia de rezerva era deja scrisa: se
+        foloseste un font inclus. Era conditionata sa mearga doar pe
+        Android. Pe un Linux obisnuit utilizatorul primea in schimb o
+        eroare de compilator, imposibil de descifrat. Acum se aplica
+        oriunde lipseste biblioteca, iar cand compilarea esueaza din
+        alt motiv frecvent — un Rust prea vechi din distributie —
+        mesajul spune exact ce sa faca.
+
+  FIX Un installer anunta "INSTALARE REUSITA" chiar si atunci cand
+        binarul nu putuse fi pus la destinatie. Acum verifica, iese cu
+        eroare si spune unde a ramas fisierul compilat.
+
+  FIX Un test masura daca versiunea de ffmpeg suporta o anumita
+        optiune de subtitrare, apoi o folosea neconditionat. Pe un
+        ffmpeg fara ea, testul pica desi programul se comporta corect
+        (sare peste optiune). Reparat pe ambele platforme — pe Windows
+        problema era invizibila, fiindca build-ul folosit acolo o are.
+
+  FIX Un test isi facea propria cautare a programului de Windows
+        aflat langa scripturi, cu aceeasi problema ca fluxul principal.
+
+  FIX Pe Linux si macOS, numerele cu zecimale se scriau dupa setarile
+        regionale ale calculatorului. Pe un sistem cu limba romana (sau
+        germana, franceza — orice limba care scrie 1,5 in loc de 1.5),
+        unealta de text folosita intern producea virgula acolo unde
+        ffmpeg asteapta punct. Efectul: previzualizarea de la burn-in si
+        miniaturile din Trim & Concat nu se mai generau deloc (ffmpeg
+        respingea momentul de timp), raportul CSV iesea cu virgule pe
+        cinci coloane, iar conversia de cadre pe secunda se sarea in
+        tacere. Nu s-a vazut pana acum fiindca depinde de care varianta
+        a acelei unelte e instalata — cea implicita pe Debian si Ubuntu
+        e afectata, celelalte nu. Partea de Windows era deja protejata
+        din versiunile trecute; acum si cea de Linux/macOS. Continutul
+        fisierelor nu mai depinde de setarile calculatorului.
+
+  FIX Installerele de unelte pentru Windows anuntau "INSTALARE
+        REUSITA" fara sa verifice ca fisierul a ajuns la destinatie, iar
+        cand ceva chiar esua ieseau tot cu cod de succes. Un script care
+        le apela nu avea cum sa afle ca nu s-a instalat nimic. Acum
+        verifica, spun unde a ramas binarul si ies cu eroare. Aceeasi
+        corectie ca pe partea de Linux, ca sa se comporte la fel.
+
+  UPDATE Cand pachetul GPAC nu exista in distributie (cazul Ubuntu
+        26.04, unde a fost scos), installer-ul arata acum pasii de
+        compilare din sursa — cateva minute — si avertizeaza sa NU se
+        foloseasca optiunea de build redus, care produce o varianta
+        fara exact ce ii trebuie suitei.
+
+  Trei verificari automate noi pazesc cautarea uneltelor (doar pe
+  Windows pentru programele de Windows, numele corect pe restul), plus
+  trei fisiere de verificari noi: doua pentru installere (una pe fiecare
+  platforma) si unul pentru formatarea zecimalelor. Trei verificari mai
+  vechi, care se agatasera de forma exacta a codului in loc de
+  comportamentul lui, au fost aduse la zi — ultima chiar in timpul
+  reparatiei de mai sus, care i-a schimbat linia pe care se ancorase.
+
+  Suite finale: Linux 101/101 (fara nicio sarire) · Windows bash 99/0/2
+  din 101 · Windows PowerShell 93/93. Blast radius: 13 fisiere src
+  (configurare + 4 installere bash + 4 installere Windows + analiza
+  media + burn-in + trim/concat + lansator + encodere) + 6 teste
+  corectate + 3 teste noi; zero chei de profil noi, zero camp de stare
+  nou, zero schimbare de comportament pe Windows.
 
 ═══════════════════════════════════════════════════════════════
   v95 — Curatenie: 375 de linii de cod mort scoase, o garda care

@@ -73,11 +73,20 @@ if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
     & ffmpeg -v error -y -f lavfi -i "color=c=navy:s=320x240:d=1" -pix_fmt yuv420p (Join-Path $td 'v.mp4') 2>$null | Out-Null
     & ffmpeg -v error -y -i (Join-Path $td 's.srt') (Join-Path $td 's.ass') 2>$null | Out-Null
     Push-Location $td
-    & ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24':shaping=complex" -frames:v 1 -y o1.png 2>$null | Out-Null
-    Assert-Eq 0 $LASTEXITCODE "B funct: SRT force_style+shaping=complex -> rc=0"
-    if (Test-Path 's.ass') {
-        & ffmpeg -v error -i v.mp4 -vf "ass=s.ass:shaping=complex" -frames:v 1 -y o2.png 2>$null | Out-Null
-        Assert-Eq 0 $LASTEXITCODE "B funct: ASS(filtru nativ ass)+shaping -> rc=0"
+    # v96 (paritate cu .sh): rularile cu shaping se fac DOAR daca build-ul chiar il are.
+    # Testul masura capabilitatea mai sus ($direct), apoi o folosea neconditionat — pe un
+    # ffmpeg fara libharfbuzz raspunsul e "Option not found" si testul pica, desi codul de
+    # PRODUCTIE e corect (`Get-BurninShaping` sare promptul cand poarta zice nu).
+    if ($direct) {
+        & ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24':shaping=complex" -frames:v 1 -y o1.png 2>$null | Out-Null
+        Assert-Eq 0 $LASTEXITCODE "B funct: SRT force_style+shaping=complex -> rc=0"
+        if (Test-Path 's.ass') {
+            & ffmpeg -v error -i v.mp4 -vf "ass=s.ass:shaping=complex" -frames:v 1 -y o2.png 2>$null | Out-Null
+            Assert-Eq 0 $LASTEXITCODE "B funct: ASS(filtru nativ ass)+shaping -> rc=0"
+        }
+    } else {
+        & ffmpeg -v error -i v.mp4 -vf "subtitles=s.srt:force_style='FontSize=24'" -frames:v 1 -y o1.png 2>$null | Out-Null
+        Assert-Eq 0 $LASTEXITCODE "B funct: SRT force_style (build fara shaping) -> rc=0"
     }
     $chain = "format=yuv420p10le,setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc,zscale=t=linear:npl=100,tonemap=tonemap=hable,zscale=t=bt709:m=bt709:p=bt709:r=tv,format=yuv420p"
     & ffmpeg -v error -y -f lavfi -i "color=c=gray:s=320x240:d=1" -vf "$chain" -frames:v 1 o3.png 2>$null | Out-Null

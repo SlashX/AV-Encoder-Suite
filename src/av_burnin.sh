@@ -82,13 +82,13 @@ preview_compute_window() {
         PREVIEW_T_MID=0
         return 1
     fi
-    PREVIEW_T_START=$(awk -v d="$dur" 'BEGIN{m=d/2-2.5; printf "%.3f", (m>0)?m:0}')
-    PREVIEW_DURATION=$(awk -v d="$dur" 'BEGIN{printf "%.3f", (d<5)?d:5}')
+    PREVIEW_T_START=$(LC_ALL=C awk -v d="$dur" 'BEGIN{m=d/2-2.5; printf "%.3f", (m>0)?m:0}')
+    PREVIEW_DURATION=$(LC_ALL=C awk -v d="$dur" 'BEGIN{printf "%.3f", (d<5)?d:5}')
     # v94 (B15): mijlocul REAL al clipului. `PREVIEW_T_START` e inceputul FERESTREI de 5s
     # (mid - 2.5), corect pentru clipul de preview fiindca il centreaza pe mijloc — dar
     # greşit pentru still, care e UN cadru: pe un clip de 8s ar cadea la 1.5s in loc de 4s,
     # iar pe clipuri <5s se prabuseste la cadrul 0 (unde telemetria e adesea inca inactiva).
-    PREVIEW_T_MID=$(awk -v d="$dur" 'BEGIN{printf "%.3f", d/2}')
+    PREVIEW_T_MID=$(LC_ALL=C awk -v d="$dur" 'BEGIN{printf "%.3f", d/2}')
     return 0
 }
 
@@ -756,7 +756,7 @@ hud_flow() {
         if [ "$PREVIEW_MODE" -eq 1 ]; then
             if preview_compute_window "$vid_dur"; then
                 render_dur="$PREVIEW_DURATION"
-                render_offset=$(awk -v s="$sync_offset" -v t="$PREVIEW_T_START" 'BEGIN{printf "%.3f", s+t}')
+                render_offset=$(LC_ALL=C awk -v s="$sync_offset" -v t="$PREVIEW_T_START" 'BEGIN{printf "%.3f", s+t}')
                 out_suffix="preview"
                 seek_args=(-ss "$PREVIEW_T_START" -t "$PREVIEW_DURATION")
                 echo "  Preview window: ${PREVIEW_T_START}s + ${PREVIEW_DURATION}s (din ${vid_dur}s)"

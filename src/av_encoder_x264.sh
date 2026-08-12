@@ -224,7 +224,7 @@ encoder_setup_file() {
                log "  Stream copy OK: $(( NEW_SIZE/1024/1024 )) MB | ${ENCODE_TIME}s"
                BATCH_NAMES+=("$filename"); BATCH_TIMES+=("$ENCODE_TIME")
                BATCH_ORIG+=("$ORIGINAL_SIZE"); BATCH_NEW+=("$NEW_SIZE")
-               [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
+               [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
                batch_mark_done "$filename"
            fi
            return 98 ;;

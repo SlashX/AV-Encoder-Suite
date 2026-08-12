@@ -30,11 +30,15 @@ assert_contains "$BSH" '--single "$_st_t"'            "bash: still foloseste eng
 assert_contains "$BSH" 'av_open_path "$_st_out"'      "bash: auto-open PNG"
 assert_contains "$BSH" 'PREVIEW_MODE=1'               "bash: ADITIV — calea clip 5s pastrata"
 # v94 (B15): still-ul cade la MIJLOCUL clipului, nu la inceputul ferestrei de 5s
-assert_contains "$BSH" 'PREVIEW_T_MID=$(awk -v d="$dur" '"'"'BEGIN{printf "%.3f", d/2}'"'"')' \
-    "B15: helper-ul expune mijlocul real"
-assert_contains "$BSH" '_st_t="$PREVIEW_T_MID"'       "B15: still consuma mijlocul, nu Start"
-assert_contains "$BSH" 'PREVIEW_T_START=$(awk -v d="$dur" '"'"'BEGIN{m=d/2-2.5;' \
-    "B15: fereastra clipului de 5s NEatinsa (mid-2.5)"
+# v96: aserţiunile de mai jos erau ancorate pe FORMA EXACTA a liniei si s-au rupt cand
+# calculul a primit prefixul `LC_ALL=C` (fixul de formatare zecimala — vezi
+# test_v96_locale_decimals.sh). Codul era corect; testul cerea un sir literal. Acum verifica
+# FORMULA si variabila careia i se atribuie, nu felul in care e invocat awk.
+assert_contains "$BSH" 'PREVIEW_T_MID=$('                     "B15: helper-ul expune mijlocul real"
+assert_contains "$BSH" 'BEGIN{printf "%.3f", d/2}'            "B15: mijlocul e chiar d/2"
+assert_contains "$BSH" '_st_t="$PREVIEW_T_MID"'               "B15: still consuma mijlocul, nu Start"
+assert_contains "$BSH" 'PREVIEW_T_START=$('                   "B15: fereastra clipului de 5s exista separat"
+assert_contains "$BSH" 'BEGIN{m=d/2-2.5;'                     "B15: fereastra clipului ramane mid-2.5"
 # functional: formulele pe cateva durate (mijloc vs inceput fereastra)
 for _pair in "8.008:4.004:1.504" "6:3.000:0.500" "4:2.000:0.000"; do
     _d="${_pair%%:*}"; _rest="${_pair#*:}"; _wantmid="${_rest%%:*}"; _wantstart="${_rest##*:}"

@@ -101,13 +101,27 @@ AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"                      # GPAC MP4Box (d
 # v93: GPAC co-locat — pachetul portabil poate sta in src/GPAC/ (gitignored, dev-box
 # Windows); daca env nu a suprascris numele si copia exista, o preferam (relativ la
 # SCRIPT_DIR — zero cai absolute). Fara folder → numele de pe PATH ramane (productie).
-if [[ "$AV_TOOL_MP4BOX" == "mp4box" && -f "$SCRIPT_DIR/GPAC/mp4box.exe" ]]; then AV_TOOL_MP4BOX="$SCRIPT_DIR/GPAC/mp4box.exe"; fi
+# v96: gardat pe Windows/MSYS. Un `.exe` NU se poate executa pe Linux/macOS/Termux, dar pe un
+# arbore de lucru partajat cu Windows (WSL prin /mnt/..., share de retea, dual-boot) fisierul
+# EXISTA si e marcat executabil — deci `command -v` reusea, suita alegea binarul Windows in
+# locul celui nativ si toate fluxurile MP4Box picau (dvcC pe MP4/MOV, IAMF, Atmos, GPS DJI).
+_av_is_wintools=0; case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _av_is_wintools=1 ;; esac
+if [[ "$_av_is_wintools" == "1" && "$AV_TOOL_MP4BOX" == "mp4box" && -f "$SCRIPT_DIR/GPAC/mp4box.exe" ]]; then AV_TOOL_MP4BOX="$SCRIPT_DIR/GPAC/mp4box.exe"; fi
+# v96: pe POSIX binarul se numeste `MP4Box` (asa il instaleaza GPAC pe Linux/macOS/Termux),
+# iar filesystemul e case-sensitive — implicitul `mp4box` NU era gasit acolo NICIODATA.
+# Consecinta era tacuta, fiindca toate fluxurile degradeaza gratios: dvcC pe MP4/MOV,
+# authoring IAMF, semnalizarea Atmos si graftul GPS DJI pareau doar "indisponibile".
+# Implicitul ramane minuscul (santinela `no_hardcoded_tools` deriva lista de aici si cauta
+# case-sensitive; cu majuscule ar semnala zecile de MESAJE care scriu numele produsului),
+# iar corectia se face aici — pe o linie cu AV_TOOL_, deci allowlistata. Windows accepta
+# ambele forme, deci verificarea e inofensiva acolo.
+if [[ "$AV_TOOL_MP4BOX" == "mp4box" ]] && ! command -v mp4box >/dev/null 2>&1 && command -v MP4Box >/dev/null 2>&1; then AV_TOOL_MP4BOX="MP4Box"; fi
 AV_TOOL_CAVERNIZE="${AV_TOOL_CAVERNIZE:-CavernizeGUI}"          # Cavern (render Atmos → canale 7.1.4 pt Eclipsa, v89; Windows/macOS)
 # v93: Cavern co-locat — pachetul portabil poate sta in src/cavernize/ (manual, ca GPAC)
 # sau src/tools/cavernize/ (unde dezarhiveaza installer-ul); ambele gitignored. Rezolvare
 # RELATIVA la SCRIPT_DIR (zero cai absolute), env-ul ramane override suprem.
-if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/cavernize/CavernizeGUI.exe"; fi
-if [[ "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"; fi
+if [[ "$_av_is_wintools" == "1" && "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/cavernize/CavernizeGUI.exe"; fi
+if [[ "$_av_is_wintools" == "1" && "$AV_TOOL_CAVERNIZE" == "CavernizeGUI" && -f "$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe" ]]; then AV_TOOL_CAVERNIZE="$SCRIPT_DIR/tools/cavernize/CavernizeGUI.exe"; fi
 AV_ENGINE_APV_HDR10PLUS="${AV_ENGINE_APV_HDR10PLUS:-$SCRIPT_DIR/apv_hdr10plus.py}"
 AV_ENGINE_DV_P7="${AV_ENGINE_DV_P7:-$SCRIPT_DIR/dv_p7_analyze.py}"  # clasificator EL (MEL/FEL) pt P7->8.1 (v76)
 
@@ -448,7 +462,7 @@ detect_source_info() {
     SRC_FPS=$(ffprobe -v error -select_streams v:0 \
         -show_entries stream=r_frame_rate \
         -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
-    SRC_FPS_DEC=$(awk "BEGIN{printf \"%.3f\", $SRC_FPS}" 2>/dev/null)
+    SRC_FPS_DEC=$(LC_ALL=C awk "BEGIN{printf \"%.3f\", $SRC_FPS}" 2>/dev/null)
 
     # ── LOG format detection ──────────────────────────────────────────
     LOG_PROFILE=""
@@ -590,8 +604,8 @@ detect_source_info() {
             -of default=noprint_wrappers=1:nokey=1 "$file" 2>/dev/null | head -1)
         if [[ -n "$avg_fps" ]] && [[ -n "$SRC_FPS" ]]; then
             local avg_dec src_dec
-            avg_dec=$(awk "BEGIN{printf \"%.3f\", $avg_fps}" 2>/dev/null)
-            src_dec=$(awk "BEGIN{printf \"%.3f\", $SRC_FPS}" 2>/dev/null)
+            avg_dec=$(LC_ALL=C awk "BEGIN{printf \"%.3f\", $avg_fps}" 2>/dev/null)
+            src_dec=$(LC_ALL=C awk "BEGIN{printf \"%.3f\", $SRC_FPS}" 2>/dev/null)
             # If avg_fps differs significantly from r_frame_rate, likely VFR
             local diff
             diff=$(awk "BEGIN{d=$src_dec-$avg_dec; if(d<0)d=-d; print (d > 0.5) ? 1 : 0}" 2>/dev/null)
@@ -785,8 +799,8 @@ build_video_filters() {
     local fps_active=0
     if [[ -n "$TARGET_FPS" ]] && [[ -n "$src_fps" ]]; then
         local src_num target_num
-        src_num=$(awk "BEGIN{printf \"%.3f\", $src_fps + 0}" 2>/dev/null)
-        target_num=$(awk "BEGIN{printf \"%.3f\", $TARGET_FPS + 0}" 2>/dev/null)
+        src_num=$(LC_ALL=C awk "BEGIN{printf \"%.3f\", $src_fps + 0}" 2>/dev/null)
+        target_num=$(LC_ALL=C awk "BEGIN{printf \"%.3f\", $TARGET_FPS + 0}" 2>/dev/null)
         awk "BEGIN{exit !($src_num > $target_num)}" 2>/dev/null && fps_active=1
     fi
     if [ "$fps_active" -eq 1 ]; then
@@ -824,7 +838,7 @@ _show_progress() {
         local pct=$(( dur_p > 0 ? ot * 100 / dur_p : 0 )); [ "$pct" -gt 100 ] && pct=100
         local rfps; rfps=$(grep "^fps=" "$prog_file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
         if [[ "$rfps" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($rfps > 0)}"; then :
-        else [ "$ot" -gt 0 ] && rfps="$(awk "BEGIN{printf \"%.1f\", $ot / $el}")x" || rfps="0.0x"; fi
+        else [ "$ot" -gt 0 ] && rfps="$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $ot / $el}")x" || rfps="0.0x"; fi
         local eta=0
         [ "$ot" -gt 0 ] && [ "$dur_p" -gt "$ot" ] && eta=$(( el * (dur_p - ot) / ot ))
         printf "\r  %s: %3d%% | FPS: %s | ETA: %02d:%02d:%02d   " \
@@ -852,7 +866,7 @@ _show_progress_labeled() {
         [ "$pct" -gt 100 ] && pct=100
         local rfps; rfps=$(grep "^fps=" "$prog_file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
         if [[ "$rfps" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($rfps > 0)}"; then :
-        else [ "$ot" -gt 0 ] && rfps="$(awk "BEGIN{printf \"%.1fx\", $ot / $el}")" || rfps="0.0x"; fi
+        else [ "$ot" -gt 0 ] && rfps="$(LC_ALL=C awk "BEGIN{printf \"%.1fx\", $ot / $el}")" || rfps="0.0x"; fi
         local eta=0
         [ "$ot" -gt 0 ] && [ "$total_s" -gt "$ot" ] && eta=$(( el * (total_s - ot) / ot ))
         printf "\r  %s: %3d%% | FPS: %s | ETA: %02d:%02d:%02d       " \
@@ -3247,7 +3261,7 @@ do_stream_copy() {
         log "  Stream copy OK: $(( NEW_SIZE/1024/1024 )) MB | ${ENCODE_TIME}s"
         BATCH_NAMES+=("$filename"); BATCH_TIMES+=("$ENCODE_TIME")
         BATCH_ORIG+=("$ORIGINAL_SIZE"); BATCH_NEW+=("$NEW_SIZE")
-        [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
+        [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
         batch_mark_done "$filename"
     fi
     return $sc_rc
@@ -7151,7 +7165,7 @@ run_encode_loop() {
         ENCODE_TIME=$(( $(date +%s) - START_TIME )); TOTAL_DONE=$((TOTAL_DONE+1))
         BATCH_NAMES+=("$filename"); BATCH_TIMES+=("$ENCODE_TIME")
         BATCH_ORIG+=("$ORIGINAL_SIZE"); BATCH_NEW+=("$NEW_SIZE")
-        [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
+        [ "$ORIGINAL_SIZE" -gt 0 ] && BATCH_RATIOS+=("$(LC_ALL=C awk "BEGIN{printf \"%.1f\", $NEW_SIZE * 100.0 / $ORIGINAL_SIZE}")") || BATCH_RATIOS+=("N/A")
         log "  Original: $(( ORIGINAL_SIZE/1024/1024 )) MB | Nou: $(( NEW_SIZE/1024/1024 )) MB | Salvat: $(( SAVED/1024/1024 )) MB"
         log "  Timp: $((ENCODE_TIME/60))m $((ENCODE_TIME%60))s"
         batch_mark_done "$filename"; log "────────────────────────────────────────"

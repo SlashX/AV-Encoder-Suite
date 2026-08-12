@@ -22,7 +22,10 @@ assert_contains "$COMMON" 'AV_TOOL_MP4BOX="${AV_TOOL_MP4BOX:-mp4box}"' "AV_TOOL_
 # v93: fallback co-locat — pachetul GPAC portabil poate sta in src/GPAC/ (gitignored);
 # rezolvarea e RELATIVA la SCRIPT_DIR (zero cai absolute), env-ul ramane override suprem
 assert_contains "$COMMON" '-f "$SCRIPT_DIR/GPAC/mp4box.exe"' "v93: fallback co-locat src/GPAC (relativ la SCRIPT_DIR)"
-assert_contains "$COMMON" 'if [[ "$AV_TOOL_MP4BOX" == "mp4box" &&' "v93: fallback DOAR cand env nu a suprascris (forma if, set-e safe)"
+# v96: conditia a primit in fata gardarea pe Windows (`_av_is_wintools`) — aserţiunea
+# urmareste in continuare partea care conteaza aici: fallback-ul se aplica DOAR cand env-ul
+# nu a suprascris numele.
+assert_contains "$COMMON" '"$AV_TOOL_MP4BOX" == "mp4box" &&' "v93: fallback DOAR cand env nu a suprascris (forma if, set-e safe)"
 
 # ── 2. helper _mux_dv_mp4: definit + foloseste variabila + gating MP4/MOV ──
 assert_eq "function" "$(type -t _mux_dv_mp4)" "_mux_dv_mp4 definit (sourced)"
@@ -117,3 +120,13 @@ if [ "$_is_msys" = "0" ] && command -v ffmpeg >/dev/null 2>&1 && command -v ffpr
 else
     echo "  (functional sarit: ffmpeg/ffprobe/dovi_tool/MP4Box lipsesc)" >&2
 fi
+
+# ── v96: rezolvare corecta pe POSIX + gardarea .exe pe Windows ───────
+# (a) `.exe` co-locat DOAR pe MSYS/Cygwin: pe un arbore partajat cu Windows (WSL /mnt/...,
+#     share de retea) fisierul exista si e executabil, deci suita alegea binarul Windows in
+#     locul celui nativ si toate fluxurile MP4Box picau.
+# (b) pe POSIX binarul se numeste `MP4Box`; filesystemul e case-sensitive, deci implicitul
+#     `mp4box` nu era gasit NICIODATA acolo — tacut, fiindca fluxurile degradeaza gratios.
+assert_contains "$COMMON" '_av_is_wintools=0; case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*)'     "v96: detectie Windows/MSYS pentru rezolvarile co-locate"
+assert_contains "$COMMON" '"$_av_is_wintools" == "1" && "$AV_TOOL_MP4BOX" == "mp4box" && -f "$SCRIPT_DIR/GPAC/mp4box.exe"'     "v96: .exe co-locat gardat pe Windows (pe POSIX nu se poate executa)"
+assert_contains "$COMMON" 'command -v MP4Box >/dev/null 2>&1; then AV_TOOL_MP4BOX="MP4Box"'     "v96: pe POSIX se gaseste MP4Box (numele real, filesystem case-sensitive)"

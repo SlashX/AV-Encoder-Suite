@@ -223,7 +223,12 @@ assert_eq "1" "$(grep -cF 'la burn-in audio-ul se copiaza prin ffmpeg' "$BURNPS"
 command -v ffmpeg >/dev/null 2>&1 || export PATH="$SRC:$PATH"
 _MP4BOX="${AV_TOOL_MP4BOX:-MP4Box}"
 # v93: fallback co-locat (ca productia) — pachetul GPAC portabil din src/GPAC/, fara PATH/env
-if ! command -v "$_MP4BOX" >/dev/null 2>&1 && [ -f "$SRC/GPAC/mp4box.exe" ]; then _MP4BOX="$SRC/GPAC/mp4box.exe"; fi
+# v96: DOAR pe Windows/MSYS, ca in productie. Pe un arbore partajat (WSL /mnt/..., share)
+# fisierul .exe exista si e marcat executabil pe Linux, deci testul ar fi folosit binarul
+# Windows in locul celui nativ. Se incearca si numele POSIX (`MP4Box`, case-sensitive).
+_t_is_win=0; case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _t_is_win=1 ;; esac
+if ! command -v "$_MP4BOX" >/dev/null 2>&1 && command -v MP4Box >/dev/null 2>&1; then _MP4BOX="MP4Box"; fi
+if [ "$_t_is_win" = "1" ] && ! command -v "$_MP4BOX" >/dev/null 2>&1 && [ -f "$SRC/GPAC/mp4box.exe" ]; then _MP4BOX="$SRC/GPAC/mp4box.exe"; fi
 if ! command -v ffmpeg >/dev/null 2>&1 || ! ffmpeg -hide_banner -muxers 2>/dev/null | grep -q ' iamf '; then
     echo "  (functional sarit — ffmpeg fara muxer iamf)"
 elif ! command -v "$_MP4BOX" >/dev/null 2>&1; then

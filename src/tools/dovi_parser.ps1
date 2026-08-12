@@ -73,9 +73,25 @@ Expand-Archive -Path $TempZipPath -DestinationPath $TempExtractPath -Force
 
 $ExtractedExe = Get-ChildItem -Path $TempExtractPath -Filter "dovi_tool.exe" -Recurse | Select-Object -First 1
 
+# v96: pana acum copierea nu era verificata, iar "INSTALARE REUSITA" se tiparea neconditionat;
+# ramura de eroare nu schimba nici codul de iesire. Un apelant nu avea cum sa afle ca nu s-a
+# instalat nimic (fisier blocat de un proces care ruleaza, folder fara drepturi de scriere).
+# Perechea bash a primit acelasi tratament — vezi `nu am putut instala binarul` acolo.
+$InstallOk = $false
 if ($ExtractedExe) {
     Write-Host "[4/4] Instalare executabil in folderul proiectului..." -ForegroundColor Yellow
-    Copy-Item -Path $ExtractedExe.FullName -Destination $TargetPath -Force
+    try {
+        Copy-Item -Path $ExtractedExe.FullName -Destination $TargetPath -Force -ErrorAction Stop
+    } catch {
+        Write-Host ""
+        Write-Host "EROARE: nu am putut instala binarul in $TargetPath" -ForegroundColor Red
+        Write-Host "  $($_.Exception.Message)"
+        Write-Host "  Binarul extras se afla in $($ExtractedExe.FullName)"
+        Write-Host "  Copiaza-l manual intr-un folder din PATH, sau seteaza AV_TOOL_DOVI catre el."
+    }
+}
+if ($ExtractedExe -and (Test-Path $TargetPath)) {
+    $InstallOk = $true
 
     Write-Host ""
     Write-Host "INSTALARE REUSITA!" -ForegroundColor Green
@@ -83,13 +99,14 @@ if ($ExtractedExe) {
     & $TargetPath --version
     Write-Host ""
     Write-Host "Acum poti folosi optiunea Triple-Layer (DV+HDR10+HDR10+)."
-} else {
+} elseif (-not $ExtractedExe) {
     Write-Host ""
     Write-Host "EROARE: Nu am gasit dovi_tool.exe in arhiva." -ForegroundColor Red
 }
 
-# Curatenie
+# Curatenie (se face SI pe esec — de-aceea codul de iesire se da abia dupa)
 if (Test-Path $TempZipPath) { Remove-Item $TempZipPath -Force }
 if (Test-Path $TempExtractPath) { Remove-Item $TempExtractPath -Recurse -Force }
 
 Read-Host "`nApasa Enter pentru a iesi"
+if (-not $InstallOk) { exit 1 }

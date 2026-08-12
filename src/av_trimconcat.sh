@@ -653,9 +653,9 @@ generate_preview_thumbnails() {
             continue
         fi
         local t1 t2 t3
-        t1=$(awk "BEGIN{printf \"%.2f\", $dur*0.05}")
-        t2=$(awk "BEGIN{printf \"%.2f\", $dur*0.5}")
-        t3=$(awk "BEGIN{printf \"%.2f\", $dur*0.95}")
+        t1=$(LC_ALL=C awk "BEGIN{printf \"%.2f\", $dur*0.05}")
+        t2=$(LC_ALL=C awk "BEGIN{printf \"%.2f\", $dur*0.5}")
+        t3=$(LC_ALL=C awk "BEGIN{printf \"%.2f\", $dur*0.95}")
         ffmpeg -y -hide_banner -loglevel error \
             -ss "$t1" -i "$f" -ss "$t2" -i "$f" -ss "$t3" -i "$f" \
             -filter_complex "[0:v]scale=320:-1[a];[1:v]scale=320:-1[b];[2:v]scale=320:-1[c];[a][b][c]hstack=3" \

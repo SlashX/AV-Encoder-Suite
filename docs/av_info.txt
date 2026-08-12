@@ -3235,3 +3235,30 @@ CUPRINS
             depindea chiar de setarile regionale ale calculatorului
             ("~1,2 GB" in loc de "~1.2 GB"). PowerShell urmeaza acum
             formatul din bash; raportul iese identic, camp cu camp.
+
+  PROBLEMA: (v96) Pe Linux/macOS lipsesc dvcC pe MP4/MOV, Eclipsa/IAMF,
+            semnalizarea Atmos si pastrarea GPS-ului DJI
+  SOLUTIE:  Doua cauze, ambele reparate in v96.
+            Prima: unealta MP4Box se numeste, pe aceste sisteme, exact
+            asa — cu majuscule — iar suita o cauta scrisa cu litere
+            mici. Cum numele de fisiere conteaza acolo, nu o gasea
+            niciodata. Nimic nu parea stricat, fiindca toate fluxurile
+            se descurca si fara ea.
+            A doua: daca folderul de lucru e partajat cu Windows (WSL,
+            retea, dual-boot), suita alegea executabilul de Windows
+            gasit langa scripturi, care nu poate rula pe Linux.
+            Daca pachetul 'gpac' nu exista in distributia ta (cazul
+            Ubuntu 26.04), installer-ul din tools/ iti arata acum cum
+            sa-l compilezi din sursa — dureaza cateva minute. Atentie
+            sa NU folosesti optiunea '--static-bin' la compilare:
+            produce o varianta redusa, fara ce ii trebuie suitei.
+
+  PROBLEMA: (v96) Installerele pentru uneltele Dolby Vision / HDR10+
+            nu instalau nimic pe Linux si macOS
+  SOLUTIE:  Reparat in v96. Tipareau un sfat ('cargo install ...') care
+            nu putea functiona — programele nu sunt publicate acolo —
+            si ieseau ca si cum ar fi reusit. Acum compileaza si
+            instaleaza efectiv, pe toate cele trei sisteme, iar cand
+            ceva chiar esueaza o spun raspicat. Daca lipseste biblioteca
+            de fonturi a sistemului, compilarea foloseste automat fontul
+            inclus, in loc sa se opreasca.
