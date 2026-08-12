@@ -25,9 +25,13 @@ Assert-Match $psText '← ATMOS' "pistele Atmos sunt marcate in dialoguri"
 Assert-Match $psText '← DTS:X' "pistele DTS:X sunt marcate in dialoguri"
 Assert-Match $psText 'AV_ATMOS_POLICY' "garda respecta env bypass AV_ATMOS_POLICY"
 Assert-Match $psText 'AV_DTSX_POLICY' "garda respecta env bypass AV_DTSX_POLICY (per tip)"
-Assert-Eq 2 ([regex]::Matches($chkPs, '\(Atmos\)"').Count) `
+# v97: numaratoarea se face pe COD, nu pe comentarii (regula v95) — o nota care explica
+# de ce eticheta se pune dupa liniuta ("codecul poate purta deja (Atmos)/(DTS:X)/(Eclipsa)")
+# contine ea insasi sirul cautat si ar umfla numarul.
+$chkPsCode  = (($chkPs  -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Assert-Eq 2 ([regex]::Matches($chkPsCode, '\(Atmos\)"').Count) `
     "av_check.ps1 eticheteaza Atmos (pista principala + per-track)"
-Assert-Eq 2 ([regex]::Matches($chkPs, '\(DTS:X\)"').Count) `
+Assert-Eq 2 ([regex]::Matches($chkPsCode, '\(DTS:X\)"').Count) `
     "av_check.ps1 eticheteaza DTS:X (pista principala + per-track)"
 # v87 FIX pre-existent v68: coliziunea `$eaSkip` (contor fisiere vs lista piste skip)
 Assert-Eq 0 ([regex]::Matches($psText, '\$eaSkip = @\(\)').Count) `
@@ -40,9 +44,10 @@ Assert-Eq 1 ([regex]::Matches($avcText, '(?m)^_audio_spatial_kind\(\)').Count) `
     "bash: _audio_spatial_kind exista (paritate)"
 Assert-Eq 4 ([regex]::Matches($avcText, '_ask_spatial_guard ').Count) `
     "bash: garda cablata pe toate 4 caile din handle_multi_audio_dialog"
-Assert-Eq 2 ([regex]::Matches($chkText, '\(Atmos\)').Count) `
+$chkTextCode = (($chkText -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Assert-Eq 2 ([regex]::Matches($chkTextCode, '\(Atmos\)').Count) `
     "bash: av_check.sh eticheteaza Atmos (paritate)"
-Assert-Eq 2 ([regex]::Matches($chkText, '\(DTS:X\)').Count) `
+Assert-Eq 2 ([regex]::Matches($chkTextCode, '\(DTS:X\)').Count) `
     "bash: av_check.sh eticheteaza DTS:X (paritate)"
 Assert-Eq 0 ([regex]::Matches($aeaText, 'Metadata Dolby Atmos \(obiecte spatiale\) se va pierde').Count) `
     "bash: afirmatia oarba pe orice TrueHD scoasa din av_encoder_audio"

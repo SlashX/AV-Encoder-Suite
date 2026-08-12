@@ -28,8 +28,26 @@ Assert-Eq 1 ([regex]::Matches($psText, '(?m)^function Invoke-IamfAuthor \{').Cou
     "Invoke-IamfAuthor exista in av_encode.ps1"
 Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?pan=stereo[\s\S]*?\n\}' `
     "substream-urile se izoleaza cu pan (layout GENERIC — channelsplit pastreaza etichete surround)"
-Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?stg=0,annotations[\s\S]*?\n\}' `
-    "mix_presentation foloseste stg=0,annotations (VIRGULA — cu colon stereo esueaza la header)"
+# v97: aserţiunea veche cerea EXACT forma GRESITA (`stg=0,annotations`, "VIRGULA — cu colon
+# stereo esueaza la header"). In specificatia mix presentation-ului, optiunile de baza se
+# despart cu COLON; virgula introduce un sub-obiect, deci forma cu virgula facea ffmpeg sa
+# piarda TOT blocul `submix=` si sa scrie un Mix Presentation gol — rc=0, avertisment inghitit
+# de `-v error`, fisier neconform cu spec IAMF 3.7 pe care ffmpeg 9.0+ il respinge la citire.
+# Cat despre "esueaza pe stereo": cauza reala era lipsa label-ului de pe element, nu colonul.
+$authorBody = [regex]::Match($psText, 'function Invoke-IamfAuthor \{[\s\S]*?\n\}').Value
+# NB: comentariile pe linie intreaga se scot INAINTE de numaratoare (regula v95) — notele
+# care explica forma gresita contin ele insele sirul cautat si ar falsifica numarul.
+$authorCode = ($authorBody -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Assert-Eq 4 ([regex]::Matches($authorCode, 'stg=0:annotations').Count) `
+    "toate 4 layouturile folosesc stg=0:annotations (COLON)"
+Assert-Eq 0 ([regex]::Matches($authorCode, 'stg=0,annotations=').Count) `
+    "niciun layout nu mai foloseste virgula (forma care scria mix presentation GOL)"
+Assert-Match $authorCode 'sound_system=stereo:integrated_loudness' `
+    "stereo isi pastreaza layout-ul cu integrated_loudness"
+Assert-Eq $true (@($authorCode -split "`n" | Where-Object { $_ -match 'sound_system=stereo:integrated_loudness' -and $_ -match 'annotations=en-us=Sub' }).Count -ge 1) `
+    "stereo are label si pe element (fara el: 'Inconsistent amount of labels in submix 0')"
+Assert-Match $authorCode 'nb_submixes' `
+    "canar post-authoring: se verifica nb_submixes din fisierul produs, nu doar rc=0"
 Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?st=0:st=1:st=2:st=3[\s\S]*?\n\}' `
     "referintele de substream folosesc COLON intre st="
 Assert-Match $psText 'function Invoke-IamfAuthor \{[\s\S]*?AV_TOOL_MP4BOX[\s\S]*?\n\}' `
@@ -230,6 +248,17 @@ if ($hasIamfMux -and (Get-Command $mp4box -ErrorAction SilentlyContinue)) {
         $b714 = (@(& ffprobe -hide_banner $out714 2>&1) | Out-String)
         Assert-Match $b714 'Layer 0: stereo' "authoring 7.1.4: layer de baza stereo prezent (scalabil)"
         Assert-Match $b714 'TFL.TFR.TBL.TBR' "authoring 7.1.4: canalele de inaltime prezente in layerul 12ch"
+
+        # v97 CONFORMITATE: spec IAMF 3.7 cere cel putin un submix in Mix Presentation. Intre
+        # v88 si v96 suita scria mix-uri GOALE (separator gresit in specificatia stream_group) —
+        # cu rc=0 si layout corect la probe, deci nimic nu se vedea; ffmpeg 9.0+ le respinge
+        # insa la citire. Se verifica REZULTATUL pe toate 3 layouturile produse mai sus.
+        foreach ($lf in @($out51, $outst, $out714)) {
+            $flat = @(& ffprobe -v error -show_stream_groups -of flat $lf 2>$null)
+            $m = $flat | Select-String -Pattern 'nb_submixes=(\d+)' | Select-Object -First 1
+            $n = if ($m) { [int]$m.Matches[0].Groups[1].Value } else { 0 }
+            Assert-Eq 1 $n "conformitate $(Split-Path $lf -Leaf): Mix Presentation are un submix (spec IAMF 3.7)"
+        }
 
         # layout invalid -> refuz curat
         Assert-Eq $false (Invoke-IamfAuthor -Source $srcst -Output (Join-Path $tmpd "bad.mp4") -Layout "9.1.6") `

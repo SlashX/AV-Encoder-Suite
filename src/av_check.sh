@@ -32,7 +32,9 @@ echo "────────────────────────�
 
 # FIX: shopt -u reseteaza si nullglob, nu doar nocaseglob
 shopt -s nullglob nocaseglob
-FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm})
+# v97: pe langa containerele video, se accepta si fisiere DOAR-audio (ce produce meniul 2,
+# inclusiv Eclipsa/IAMF) plus formatele audio native. Campurile video ies "N/A" onest.
+FILES=("$INPUT_DIR"/*.{mp4,mov,mkv,m2ts,mts,vob,mxf,apv,webm,m4a,mka,flac,opus,wav,aac,ac3,eac3,dts,thd,iamf})
 shopt -u nocaseglob nullglob
 TOTAL=${#FILES[@]}
 
@@ -417,10 +419,18 @@ for file in "${FILES[@]}"; do
         -of default=noprint_wrappers=1 "$file" 2>/dev/null)
     # FIX: validare VIDEO_INFO gol inainte de COUNT++ — fisierele fara stream video
     # nu incrementeaza contorul si nu strica afisarea progresului
+    # v97: fara stream video, fisierul nu se mai sare automat — daca are audio, se
+    # analizeaza ca fisier AUDIO (cazul meniului 2: audio-only, inclusiv Eclipsa/IAMF).
+    # Campurile video devin "N/A" onest; se sare doar ce n-are nici audio, nici video.
+    AUDIO_ONLY_FILE=0
     if [ -z "$VIDEO_INFO" ]; then
-        echo ""
-        echo "  ATENTIE: $filename — nu s-a gasit stream video valid — sarit."
-        continue
+        if ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 "$file" 2>/dev/null | grep -q '[0-9]'; then
+            AUDIO_ONLY_FILE=1
+        else
+            echo ""
+            echo "  ATENTIE: $filename — fara stream video sau audio valid — sarit."
+            continue
+        fi
     fi
 
     COUNT=$((COUNT + 1))
@@ -708,31 +718,50 @@ for file in "${FILES[@]}"; do
     CHAPTERS_INFO=$(get_chapters_info "$file")
     ATTACH_INFO=$(get_attachments_info "$file")
 
+    # v97: pe un fisier DOAR-audio, campurile video nu se inventeaza. Cele care ar iesi
+    # goale sau, mai rau, PLAUZIBILE dar false — rezolutia "x", bitrate-ul containerului
+    # atribuit video, "SDR" pe ceva care n-are imagine — devin "N/A". Restul campurilor
+    # video (DV, LOG, culoare, MaxCLL, estimari) cad deja singure pe "N/A".
+    RESOLUTION_STR="${WIDTH}x${HEIGHT}"
+    if [ "$AUDIO_ONLY_FILE" = "1" ]; then
+        RESOLUTION_STR="N/A"
+        PIX_FMT="N/A"
+        BITRATE_MB="N/A"
+        TYPE="N/A"
+        # NB: AUDIO_CODEC poate purta deja o eticheta intre paranteze — "(Eclipsa)",
+        # "(Atmos)", "(DTS:X)" — deci se pune dupa liniuta, nu intre alte paranteze.
+        SRC_FMT="Audio — ${AUDIO_CODEC:-necunoscut}"
+    fi
+
     # ── Output terminal ───────────────────────────────────────────────
     echo "  Format sursa : $SRC_FMT"
     echo "  Container    : $CONTAINER"
     echo "  Dimensiune   : $((FILE_SIZE/1024/1024)) MB"
     echo "  Durata       : ${DURATION_INT} sec"
-    echo "  Rezolutie    : ${WIDTH}x${HEIGHT}"
-    echo "  Pixel format : $PIX_FMT"
-    echo "  FPS          : $FPS"
-    echo "  Bitrate video: $BITRATE_MB Mb/s"
-    if [[ -n "$HDR10PLUS" ]] && [[ "$HDR10PLUS_SCENES" =~ ^[0-9]+$ ]] && [ "$HDR10PLUS_SCENES" -gt 0 ]; then
-        echo "  Tip HDR      : $TYPE (~$HDR10PLUS_SCENES scene markers)"
+    if [ "$AUDIO_ONLY_FILE" != "1" ]; then
+        echo "  Rezolutie    : $RESOLUTION_STR"
+        echo "  Pixel format : $PIX_FMT"
+        echo "  FPS          : $FPS"
+        echo "  Bitrate video: $BITRATE_MB Mb/s"
+        if [[ -n "$HDR10PLUS" ]] && [[ "$HDR10PLUS_SCENES" =~ ^[0-9]+$ ]] && [ "$HDR10PLUS_SCENES" -gt 0 ]; then
+            echo "  Tip HDR      : $TYPE (~$HDR10PLUS_SCENES scene markers)"
+        else
+            echo "  Tip HDR      : $TYPE"
+        fi
+        if [[ -n "$DOVI_TAG" || -n "$DV_FROM_FRAMES" ]]; then echo "  Profil DV    : $DV_PROFILE_STR"; fi
+        [[ "$LOG_PROFILE_STR" != "N/A" ]] && echo "  LOG Profile  : $LOG_PROFILE_STR"
+        # v57: HDR rich fields display
+        if [[ "$COLOR_PRIMARIES" != "N/A" || "$COLOR_SPACE_VAL" != "N/A" || "$COLOR_RANGE_VAL" != "N/A" ]]; then
+            echo "  Color        : primaries=${COLOR_PRIMARIES} matrix=${COLOR_SPACE_VAL} range=${COLOR_RANGE_VAL}"
+        fi
+        if [[ "$MAX_CLL" != "N/A" || "$MAX_FALL" != "N/A" ]]; then
+            echo "  MaxCLL/FALL  : ${MAX_CLL} / ${MAX_FALL} nits"
+        fi
+        if [[ "$MASTER_DISPLAY" != "N/A" ]]; then
+            echo "  Mastering    : $MASTER_DISPLAY"
+        fi
     else
-        echo "  Tip HDR      : $TYPE"
-    fi
-    if [[ -n "$DOVI_TAG" || -n "$DV_FROM_FRAMES" ]]; then echo "  Profil DV    : $DV_PROFILE_STR"; fi
-    [[ "$LOG_PROFILE_STR" != "N/A" ]] && echo "  LOG Profile  : $LOG_PROFILE_STR"
-    # v57: HDR rich fields display
-    if [[ "$COLOR_PRIMARIES" != "N/A" || "$COLOR_SPACE_VAL" != "N/A" || "$COLOR_RANGE_VAL" != "N/A" ]]; then
-        echo "  Color        : primaries=${COLOR_PRIMARIES} matrix=${COLOR_SPACE_VAL} range=${COLOR_RANGE_VAL}"
-    fi
-    if [[ "$MAX_CLL" != "N/A" || "$MAX_FALL" != "N/A" ]]; then
-        echo "  MaxCLL/FALL  : ${MAX_CLL} / ${MAX_FALL} nits"
-    fi
-    if [[ "$MASTER_DISPLAY" != "N/A" ]]; then
-        echo "  Mastering    : $MASTER_DISPLAY"
+        echo "  Continut     : doar audio (fara pista video)"
     fi
     echo "  ─────────────────────────────────────"
     if [ "$AUDIO_COUNT" -gt 1 ]; then
@@ -753,18 +782,23 @@ for file in "${FILES[@]}"; do
     fi
 
     echo "  ─────────────────────────────────────"
-    ENC_REC=$(get_encoder_recommendation "$SRC_FMT" "$TYPE" "$IS_DJI")
-    echo "  Recomandat   : $ENC_REC"
+    # v97: recomandarea de encoder video si estimarile de marime n-au sens fara imagine.
+    if [ "$AUDIO_ONLY_FILE" = "1" ]; then
+        ENC_REC="N/A"; EST_X265="N/A"; EST_X264="N/A"; EST_AV1="N/A"; EST_PRORES="N/A"
+    else
+        ENC_REC=$(get_encoder_recommendation "$SRC_FMT" "$TYPE" "$IS_DJI")
+        echo "  Recomandat   : $ENC_REC"
 
-    EST_X265=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "x265")
-    EST_X264=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "x264")
-    EST_AV1=$(get_output_size_estimate  "$TYPE" "$WIDTH" "$DURATION_INT" "av1")
-    EST_PRORES=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "prores")
-    echo "  Estimare output (aproximativ, preset medium)"
-    echo "    x265   : $EST_X265"
-    echo "    x264   : $EST_X264"
-    echo "    AV1    : $EST_AV1"
-    echo "    ProRes : $EST_PRORES (HQ ~220 Mbps)"
+        EST_X265=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "x265")
+        EST_X264=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "x264")
+        EST_AV1=$(get_output_size_estimate  "$TYPE" "$WIDTH" "$DURATION_INT" "av1")
+        EST_PRORES=$(get_output_size_estimate "$TYPE" "$WIDTH" "$DURATION_INT" "prores")
+        echo "  Estimare output (aproximativ, preset medium)"
+        echo "    x265   : $EST_X265"
+        echo "    x264   : $EST_X264"
+        echo "    AV1    : $EST_AV1"
+        echo "    ProRes : $EST_PRORES (HQ ~220 Mbps)"
+    fi
     echo "  Progres      : $((IDX * 100 / TOTAL))%"
 
     # ── CSV ───────────────────────────────────────────────────────────
@@ -774,7 +808,7 @@ for file in "${FILES[@]}"; do
     printf '"%s","%s","%s",%d,%d,"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s",%d,%d,"%s","%s","%s",%d,%d,%d,"%s","%s","%s","%s","%s"\n' \
         "$FILENAME_CSV" "$SRC_FMT" "$CONTAINER" \
         "$((FILE_SIZE/1024/1024))" "$DURATION_INT" \
-        "${WIDTH}x${HEIGHT}" "$PIX_FMT" \
+        "$RESOLUTION_STR" "$PIX_FMT" \
         "${FPS:-N/A}" "${BITRATE_MB:-N/A}" \
         "$TYPE" "$DV_PROFILE_STR" \
         "$COLOR_PRIMARIES" "$COLOR_SPACE_VAL" "$COLOR_RANGE_VAL" \
@@ -799,7 +833,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # ── Comparatie Input vs Output (inainte/dupa) ────────────────────────
 if [ -d "$OUTPUT_DIR" ]; then
     shopt -s nullglob nocaseglob
-    OUT_FILES=("$OUTPUT_DIR"/*.{mp4,mov,mkv,mxf,webm})
+    OUT_FILES=("$OUTPUT_DIR"/*.{mp4,mov,mkv,mxf,webm,m4a,mka,flac,opus,wav,aac,ac3,eac3})
     shopt -u nocaseglob nullglob
     if [ ${#OUT_FILES[@]} -gt 0 ]; then
         echo ""

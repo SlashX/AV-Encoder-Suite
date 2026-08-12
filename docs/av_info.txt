@@ -1,6 +1,6 @@
 ═══════════════════════════════════════════════════════════════
   FFmpeg Smart Adaptive Encoder + Telemetry Extractor
-  Documentatie Setup & Utilizare — v94
+  Documentatie Setup & Utilizare — v97
 ═══════════════════════════════════════════════════════════════
 
 
@@ -252,7 +252,7 @@ CUPRINS
   MENIU PRINCIPAL (10 optiuni, identic pe toate platformele):
     1) Encode video + audio
     2) Encode doar audio (video stream copy)
-    3) Verifica fisiere media (analiza + CSV)
+    3) Verifica fisiere media (analiza + CSV; si fisiere doar-audio, v97)
     4) Telemetrie video — DJI / GoPro / Sony / Garmin / QuickTime
     5) Import GPS extern — GPX / FIT / KML
     6) Trim & Concat — trim / concat / pipeline / batch trim
@@ -1292,7 +1292,7 @@ CUPRINS
 
 
   ─── 8.10. Eclipsa Audio (IAMF) — creare si pastrare (v88; 7.1.4 +
-             Atmos → Eclipsa in v89) ───
+             Atmos → Eclipsa in v89; conformitate reparata in v97) ───
 
   Eclipsa Audio e formatul de audio spatial DESCHIS al AOMedia (IAMF —
   Immersive Audio Model and Formats; royalty-free, spre deosebire de
@@ -1320,6 +1320,12 @@ CUPRINS
       re-scrierea grupului (fara downgrade tacut) — pastreaza
       subtitrarile, attachments, capitolele, semnalizarea Dolby
       Vision si GPS-ul nativ DJI, ca fluxul normal al meniului.
+    - (v97) dupa creare se verifica in fisierul produs ca descrierea
+      mixajului chiar exista; daca lipseste, fisierul NU e livrat si
+      motivul e afisat. Versiunile v88-v96 scriau aceasta descriere
+      goala — fisierele facute atunci raman citibile de playerele
+      actuale, dar sunt respinse de FFmpeg 9.0 sau mai nou; refa-le
+      cu aceeasi optiune 10 daca le folosesti cu programe noi.
 
   ATMOS → ECLIPSA 7.1.4 (v89): pe sursele Dolby Atmos (E-AC-3 JOC
   sau TrueHD), obiectele pot fi REDATE pozitional in canale 7.1.4
@@ -3235,6 +3241,35 @@ CUPRINS
             depindea chiar de setarile regionale ale calculatorului
             ("~1,2 GB" in loc de "~1.2 GB"). PowerShell urmeaza acum
             formatul din bash; raportul iese identic, camp cu camp.
+
+  PROBLEMA: (v97) Am facut un encode doar-audio si "Verifica fisiere
+            media" nu-mi arata fisierul
+  SOLUTIE:  Rezolvat in v97. Pana atunci, optiunea 3 sarea orice fisier
+            fara imagine ("nu s-a gasit stream video valid"), deci exact
+            ce produce optiunea 2 nu putea fi verificat.
+            Acum fisierele fara pista video se analizeaza ca fisiere
+            AUDIO: codec (cu etichetele Atmos / DTS:X / Eclipsa), bitrate,
+            frecventa, adancime, canale, asezare, limba, numar de piste,
+            subtitrari, capitole, atasamente. Sunt recunoscute si
+            formatele audio de sine statatoare (m4a, mka, flac, opus,
+            wav, aac, ac3, eac3, dts, thd, iamf).
+            Campurile de imagine arata "N/A" — nu valori inventate.
+            Se sare doar ce nu are NICI imagine, NICI sunet.
+
+  PROBLEMA: (v97) Un fisier Eclipsa/IAMF facut cu suita nu se deschide
+            cu ffmpeg 9.0 sau mai nou ("Mix presentation has no submixes")
+  SOLUTIE:  Reparat in v97. Fisierele create intre v88 si v96 nu contin
+            descrierea mixajului — partea care spune playerului cum sa
+            combine canalele. Motivul era un singur caracter din comanda
+            interna (virgula in loc de doua puncte), care facea ffmpeg sa
+            ignore tot blocul respectiv. Fisierul se crea fara eroare, iar
+            formatul (stereo / 5.1 / 7.1 / 7.1.4) se citea corect, deci
+            nimic nu parea in neregula; playerele si ffmpeg pana la 9.0
+            acceptau fisierul asa cum era.
+            Solutia: refa fisierul cu meniul 2, optiunea 10 — de la v97
+            descrierea mixajului e scrisa corect, iar suita verifica dupa
+            creare ca ea chiar exista si refuza sa livreze un fisier
+            caruia ii lipseste.
 
   PROBLEMA: (v96) Pe Linux/macOS lipsesc dvcC pe MP4/MOV, Eclipsa/IAMF,
             semnalizarea Atmos si pastrarea GPS-ului DJI

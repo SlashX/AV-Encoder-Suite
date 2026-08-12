@@ -52,9 +52,13 @@ assert_eq "0" "$(grep -c 'Metadata Dolby Atmos (obiecte spatiale JOC) se va pier
     "afirmatia oarba scoasa si din _warn_audio_metadata (av_common)"
 assert_match "$(sed -n '/^_warn_audio_metadata()/,/^}/p' "$AVC")" 'DTS-HD MA \(lossless\)' \
     "warn-ul DTS-HD MA ramane (lossless→lossy), separat de garda DTS:X"
-assert_eq "2" "$(grep -c '(Atmos)' "$CHK")" \
+# v97: numaratoarea se face pe COD, nu pe comentarii (regula v95) — o nota care explica
+# de ce eticheta se pune dupa liniuta ("codecul poate purta deja (Atmos)/(DTS:X)/(Eclipsa)")
+# contine ea insasi sirul cautat si ar umfla numarul.
+_chk_code="$(grep -v '^[[:space:]]*#' "$CHK")"
+assert_eq "2" "$(printf '%s\n' "$_chk_code" | grep -c '(Atmos)')" \
     "av_check.sh eticheteaza Atmos (pista principala + per-track)"
-assert_eq "2" "$(grep -c '(DTS:X)' "$CHK")" \
+assert_eq "2" "$(printf '%s\n' "$_chk_code" | grep -c '(DTS:X)')" \
     "av_check.sh eticheteaza DTS:X (pista principala + per-track)"
 
 # ── source-level PS1 (paritate) ───────────────────────────────────────
@@ -72,9 +76,10 @@ assert_match "$(cat "$PS")" "← DTS:X" \
     "PS1: pistele DTS:X marcate in dialoguri"
 assert_eq "1" "$(grep -c '^function Get-AudioSpatialKind' "$CHKPS")" \
     "av_check.ps1: copie standalone Get-AudioSpatialKind (nu importa av_encode)"
-assert_eq "2" "$(grep -c '(Atmos)"' "$CHKPS")" \
+_chkps_code="$(grep -v '^[[:space:]]*#' "$CHKPS")"
+assert_eq "2" "$(printf '%s\n' "$_chkps_code" | grep -c '(Atmos)"')" \
     "av_check.ps1 eticheteaza Atmos (pista principala + per-track)"
-assert_eq "2" "$(grep -c '(DTS:X)"' "$CHKPS")" \
+assert_eq "2" "$(printf '%s\n' "$_chkps_code" | grep -c '(DTS:X)"')" \
     "av_check.ps1 eticheteaza DTS:X (pista principala + per-track)"
 # v87 FIX pre-existent v68: coliziunea $eaSkip (contor fisiere vs lista piste)
 assert_eq "0" "$(grep -c 'eaSkip = @()' "$PS")" \

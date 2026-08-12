@@ -29,8 +29,24 @@ assert_eq "1" "$(grep -c '^_iamf_author()' "$AVC")" \
     "helperul _iamf_author exista in av_common.sh"
 assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" "pan=stereo" \
     "substream-urile se izoleaza cu pan (layout GENERIC — channelsplit pastreaza etichete surround → libopus refuza)"
-assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" "stg=0,annotations" \
-    "mix_presentation foloseste stg=0,annotations (VIRGULA — cu colon stereo esueaza la header)"
+# v97: aserţiunea veche cerea EXACT forma GRESITA (`stg=0,annotations`, "VIRGULA — cu colon
+# stereo esueaza la header"). In specificatia mix presentation-ului, optiunile de baza se
+# despart cu COLON; virgula introduce un sub-obiect, deci forma cu virgula facea ffmpeg sa
+# piarda TOT blocul `submix=` si sa scrie un Mix Presentation gol — rc=0, avertisment inghitit
+# de `-v error`, fisier neconform cu spec IAMF 3.7 pe care ffmpeg 9.0+ il respinge la citire.
+# Cat despre "esueaza pe stereo": cauza reala era lipsa label-ului de pe element, nu colonul.
+# NB: comentariile pe linie intreaga se scot INAINTE de numaratoare (regula v95) — notele
+# care explica forma gresita contin ele insele sirul cautat si ar falsifica numarul.
+_author_code="$(sed -n '/^_iamf_author()/,/^}/p' "$AVC" | grep -v '^[[:space:]]*#')"
+assert_eq "4" "$(printf '%s\n' "$_author_code" | grep -c 'stg=0:annotations')" \
+    "toate 4 layouturile folosesc stg=0:annotations (COLON)"
+assert_eq "0" "$(printf '%s\n' "$_author_code" | grep -c 'stg=0,annotations=')" \
+    "niciun layout nu mai foloseste virgula (forma care scria mix presentation GOL)"
+assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC" | grep 'sound_system=stereo:integrated_loudness')" \
+    'annotations=en-us=Sub' \
+    "stereo are label si pe element (fara el: 'Inconsistent amount of labels in submix 0')"
+assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'nb_submixes' \
+    "canar post-authoring: se verifica nb_submixes din fisierul produs, nu doar rc=0"
 assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'st=0:st=1:st=2:st=3' \
     "referintele de substream folosesc COLON intre st= (pipe da Invalid stream index)"
 assert_match "$(sed -n '/^_iamf_author()/,/^}/p' "$AVC")" 'AV_TOOL_MP4BOX' \
@@ -278,6 +294,16 @@ else
     _b714=$(ffprobe -hide_banner "$TD/out714.mp4" 2>&1)
     assert_match "$_b714" 'Layer 0: stereo' "authoring 7.1.4: layer de baza stereo prezent (scalabil)"
     assert_match "$_b714" 'TFL.TFR.TBL.TBR' "authoring 7.1.4: canalele de inaltime prezente in layerul 12ch"
+
+    # v97 CONFORMITATE: spec IAMF 3.7 cere cel putin un submix in Mix Presentation. Intre v88
+    # si v96 suita scria mix-uri GOALE (separator gresit in specificatia stream_group) — cu
+    # rc=0 si layout corect la probe, deci nimic nu se vedea; ffmpeg 9.0+ le respinge insa la
+    # citire. Se verifica REZULTATUL pe toate 3 layouturile produse mai sus.
+    _nsub_of() { ffprobe -v error -show_stream_groups -of flat "$1" 2>/dev/null | grep -o 'nb_submixes=[0-9]*' | head -1 | cut -d= -f2; }
+    for _lf in out51 outst out714; do
+        _n=$(_nsub_of "$TD/$_lf.mp4"); [ -z "$_n" ] && _n=0
+        assert_eq "1" "$_n" "conformitate $_lf: Mix Presentation are un submix (spec IAMF 3.7)"
+    done
 
     # layout invalid → refuz curat
     if _iamf_author "$TD/srcst.wav" "$TD/outbad.mp4" "9.1.6" >/dev/null 2>&1; then

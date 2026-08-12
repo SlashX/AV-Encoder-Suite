@@ -68,7 +68,10 @@ done < <(find "$SRC" -maxdepth 2 -name '*.sh' 2>/dev/null)
 [ "$_classA" -eq 0 ] && _pass
 
 # situl concret care s-a dovedit rupt (clasificarea primarelor din master display)
-assert_contains "$(sed -n '665,676p' "$SRC/av_check.sh")" "LC_ALL=C awk '{v=\$1+0"     "av_check: clasificarea primarelor citeste campul sub LC_ALL=C"
+# v97: era ancorat pe INTERVALUL DE LINII 665-676 si s-a rupt cand av_check a primit
+# suportul pentru fisiere audio (~40 de linii inserate mai sus). Codul era corect; testul
+# cerea o pozitie. Acum se cauta FORMA, oriunde ar sta ea in fisier.
+assert_contains "$(cat "$SRC/av_check.sh")" "LC_ALL=C awk '{v=\$1+0"     "av_check: clasificarea primarelor citeste campul sub LC_ALL=C"
 
 # ── 2. Siturile care ajung in linia de comanda ffmpeg sunt pazite ────
 # (verificare tintita, ca sa ramana explicit DE CE conteaza)
@@ -78,9 +81,25 @@ assert_contains "$(sed -n '650,660p' "$SRC/av_trimconcat.sh")" "LC_ALL=C awk" "a
 assert_contains "$(sed -n '460,470p' "$SRC/av_common.sh")"     "LC_ALL=C awk" "av_common: SRC_FPS_DEC (intra in lantul de filtre)"
 
 # ── 3. Coloanele de CSV care s-au dovedit corupte ────────────────────
-for ln in 481 561 569 666; do
-    assert_match "$(sed -n "${ln}p" "$SRC/av_check.sh")" "LC_ALL=C awk" "av_check:$ln — coloana CSV pazita"
-done
+# v97: erau ancorate pe NUMERELE DE LINIE 481/561/569/666 si s-au rupt la inserarea
+# suportului audio in av_check. Numarul de linie nu e o proprietate a codului — invariantul
+# REAL e ca fiecare awk care EMITE o zecimala (%f) sa ruleze sub LC_ALL=C. Se verifica acum
+# asta, pe tot fisierul: mai puternic decat cele 4 pozitii de dinainte.
+_csv_unguarded=0
+while IFS= read -r _l; do
+    _n="${_l%%:*}"; _txt="${_l#*:}"
+    case "$_txt" in *'#'*awk*) continue ;; esac          # comentarii: nu sunt cod
+    printf '%s' "$_txt" | grep -qE 'printf[^)]*%\.[0-9]*f' || continue
+    if ! printf '%s' "$_txt" | grep -qE 'LC_ALL=C[[:space:]]+awk'; then
+        _fail "av_check:$_n — awk emite zecimala fara LC_ALL=C: $(printf '%s' "$_txt" | cut -c1-60)"
+        _csv_unguarded=$((_csv_unguarded+1))
+    fi
+done < <(grep -n 'awk' "$SRC/av_check.sh" | grep -E 'printf.*%\.[0-9]*f')
+[ "$_csv_unguarded" -eq 0 ] && _pass
+# ...si ca sunt CATEVA astfel de situri (altfel filtrul de mai sus ar trece pe gol)
+_csv_sites=$(grep -cE 'LC_ALL=C[[:space:]]+awk.*printf.*%\.[0-9]*f' "$SRC/av_check.sh")
+_csv_enough=no; [ "$_csv_sites" -ge 4 ] && _csv_enough=yes
+assert_eq "yes" "$_csv_enough" "av_check: cel putin 4 coloane CSV cu zecimale sunt pazite (gasite: $_csv_sites)"
 
 # ── 4. FUNCTIONAL: forma pazita e stabila indiferent de locale ───────
 # Ruleaza doar unde exista mawk + o locale cu virgula (pe alte sisteme, nota onesta).
@@ -104,4 +123,5 @@ else
     echo "        (verificarile de sursa de mai sus raman autoritare)"
 fi
 
-_test_summary
+# NB: fara _test_summary explicit — framework-ul are trap implicit, iar apelul dublu
+# tiparea sumarul de doua ori (cosmetic; aceeasi scapare reparata la v85).

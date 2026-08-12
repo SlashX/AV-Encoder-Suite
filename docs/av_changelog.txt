@@ -3,9 +3,88 @@
 ═══════════════════════════════════════════════════════════════
 
 ═══════════════════════════════════════════════════════════════
-  TOTAL: v96 | 195 bug-uri fixate | 282+ features
-  261 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 201 teste [194 test_* + 7 infra]) | ~63650 linii cod+teste | ~8950 linii documentatie
+  TOTAL: v97 | 198 bug-uri fixate | 283+ features
+  263 fisiere (23 src [22 scripturi + 1 UI web] + 6 Python engines + 22 tools + 6 profile + 3 burnin presets + 203 teste [196 test_* + 7 infra]) | ~63950 linii cod+teste | ~8950 linii documentatie
 ═══════════════════════════════════════════════════════════════
+
+
+═══════════════════════════════════════════════════════════════
+  v97 — Fisierele Eclipsa/IAMF erau neconforme, din v88
+        + verificarea fisierelor merge acum si pe audio
+═══════════════════════════════════════════════════════════════
+
+  Functia de creare Eclipsa/IAMF (meniul 2, optiunea 10) scria fisiere
+  carora le lipsea o parte obligatorie: descrierea mixajului. Fisierul
+  parea in regula — se crea fara eroare, iar suita ii citea corect
+  formatul (stereo / 5.1 / 7.1 / 7.1.4) — dar partea care spune unui
+  player CUM sa combine canalele ramanea goala.
+
+  Cauza era un singur caracter din comanda trimisa catre ffmpeg: acolo
+  unde trebuia doua puncte, era o virgula. Din cauza asta ffmpeg ignora
+  tot blocul care descrie mixajul. Chiar avertiza despre asta, dar
+  mesajul era ascuns de setarea care lasa vizibile doar erorile grave.
+
+  Pana acum nu s-a vazut, fiindca playerele si versiunile de ffmpeg de
+  pana la 9.0 acceptau fisierul asa cum era. Incepand cu ffmpeg 9.0,
+  fisierul e respins la citire, fiind neconform cu standardul IAMF.
+
+  FIX Descrierea mixajului ajunge acum in fisier, la toate cele patru
+        asezari de canale (stereo, 5.1, 7.1, 7.1.4), pe ambele sisteme
+        (Linux/macOS/Termux si Windows). Fisierele produse de acum sunt
+        conforme si se deschid si cu ffmpeg 9.0 sau mai nou.
+
+        La varianta stereo a fost nevoie de o a doua corectie: eticheta
+        de mixaj lipsea de pe element, iar fara ea ffmpeg refuza sa
+        scrie fisierul. Aceasta lipsa a fost, de fapt, si motivul pentru
+        care la v88 s-a ales din start forma gresita.
+
+  ADD Verificare dupa creare: suita se uita acum in fisierul produs si
+        confirma ca descrierea mixajului chiar exista. Daca lipseste,
+        fisierul NU mai este livrat, iar motivul este afisat clar. Pana
+        acum se verifica doar daca programul s-a incheiat fara eroare —
+        ceea ce, in cazul asta, nu spunea nimic.
+
+  NOTA Fisierele Eclipsa create cu versiunile v88-v96 raman citibile de
+        playerele actuale, dar e bine sa fie refacute daca urmeaza sa
+        fie folosite cu programe mai noi. Refacerea inseamna simpla
+        rulare din nou a optiunii 10.
+
+  ADD Verificarea fisierelor (optiunea 3) merge acum si pe AUDIO.
+        Pana acum sarea orice fisier fara imagine, cu mesajul "nu s-a
+        gasit stream video valid" — adica exact ce produce optiunea 2
+        (encode doar audio, inclusiv Eclipsa) nu putea fi verificat cu
+        propria suita.
+
+        Se completeaza tot ce are sens: codec (cu etichetele Atmos /
+        DTS:X / Eclipsa), bitrate, frecventa, adancime, numar de canale,
+        asezarea lor, limba, numarul de piste, subtitrari, capitole si
+        atasamente.
+
+        Sunt recunoscute si formatele audio de sine statatoare: m4a,
+        mka, flac, opus, wav, aac, ac3, eac3, dts, thd si iamf.
+
+        Se sare doar ce nu are NICI imagine, NICI sunet, cu motivul spus
+        pe sleau.
+
+        Campurile de imagine arata "N/A", nu valori inventate: inainte
+        ar fi iesit o rezolutie goala, bitrate-ul intregului fisier
+        trecut drept bitrate video si eticheta "SDR" pe ceva care nu are
+        imagine — plauzibil, dar fals. Raportul CSV isi pastreaza cele
+        38 de coloane, deci orice prelucrezi cu el functioneaza ca
+        inainte.
+
+  FIX Numarul de fisiere anuntat la final, pe Windows, includea si
+        fisierele sarite: "20 fisiere procesate" cand raportul avea 19
+        randuri. Acum numara doar ce a fost analizat efectiv, la fel ca
+        pe Linux. (Exista dinainte, dar nu se vedea: pana acum lista de
+        intrare continea doar fisiere video, care rar erau sarite.)
+
+  FIX Adancimea de bit a sunetului iesea "N/A" pe fisierele PCM/WAV pe
+        Windows, desi pe Linux se citea corect (16 bit). Cele doua
+        cautau valoarea in acelasi loc, dar numai varianta de Linux
+        trata cazul in care ffmpeg raspunde literal "N/A" si cauta mai
+        departe. La fel si dinainte — dar fisierele audio nu ajungeau
+        pana aici ca sa se vada.
 
 
 ═══════════════════════════════════════════════════════════════

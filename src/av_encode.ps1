@@ -4490,6 +4490,12 @@ function Get-IamfLayout {
 # copy daca sursa are; detectat prin banner-ul full, NU -select_streams v care rateaza pe
 # IAMF). Temp CO-LOCAT cu output (regula no-$env:TEMP + MP4Box.exe fara /tmp). Args ca
 # ARRAY + splat (flag-urile `:` = date, nu re-parsare PS). $true ok / $false esec (soft).
+# SEPARATOR (v97, corectie): in specificatia mix presentation-ului, optiunile de baza se despart
+# cu COLON — `stg=0:annotations=...` — iar VIRGULA introduce un sub-obiect (`,submix=...`).
+# Scris gresit (`stg=0,annotations=`), ffmpeg pierde TOT blocul `submix=` si scrie un Mix
+# Presentation gol: rc=0, avertisment suprimat de `-v error`, fisier neconform cu spec IAMF 3.7.
+# ffmpeg 9.0+ (si master de la 1b946a3abd) il respinge la citire. Canarul de dupa encode
+# verifica nb_submixes>=1, ca aceeasi clasa sa nu mai poata trece tacut.
 function Invoke-IamfAuthor {
     # v89: -AudioSource optional — audio-ul se ia de AICI (ex. WAV-ul 7.1.4 randat de
     # Cavern), iar video/subtitrari/capitole raman din $Source; gol → $Source (back-compat v88).
@@ -4502,18 +4508,22 @@ function Invoke-IamfAuthor {
         "stereo" {
             $fcArgs = @("-map","0:a:0")
             $sg1 = "type=iamf_audio_element:id=1:st=0,layer=ch_layout=stereo"
-            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=0:parameter_rate=48000|element=stg=0:parameter_id=1:parameter_rate=48000:default_mix_gain=0x0|layout=sound_system=stereo:integrated_loudness=0x0"
+            # v97: `stg=0:annotations` cu COLON (vezi nota de la capul functiei) + label pe
+            # element — mix-ul declara un label, deci si elementul trebuie sa aiba unul, altfel
+            # ffmpeg refuza cu "Inconsistent amount of labels in submix 0". Lipsa lui era motivul
+            # pentru care v88 a crezut ca separatorul colon "esueaza pe stereo".
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0:annotations=en-us=Mix,submix=parameter_id=0:parameter_rate=48000|element=stg=0:parameter_id=1:parameter_rate=48000:annotations=en-us=Sub:default_mix_gain=0x0|layout=sound_system=stereo:integrated_loudness=0x0"
         }
         "5.1" {
             $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[bk]","-map","[ce]","-map","[lf]")
             $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=5.1(side)"
-            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=5.1(side)"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0:annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=5.1(side)"
             $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3")
         }
         "7.1" {
             $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[si]","-map","[bk]","-map","[ce]","-map","[lf]")
             $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1"
-            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0:annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1"
             $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3","-streamid","4:4")
         }
         "7.1.4" {
@@ -4522,7 +4532,7 @@ function Invoke-IamfAuthor {
             # layere scalabile stereo + 7.1.4. Validat empiric (oracol frecvente + MP4Box).
             $fcArgs = @("-filter_complex","[0:a]pan=stereo|c0=c0|c1=c1[fr];[0:a]pan=stereo|c0=c6|c1=c7[si];[0:a]pan=stereo|c0=c4|c1=c5[bk];[0:a]pan=stereo|c0=c8|c1=c9[tf];[0:a]pan=stereo|c0=c10|c1=c11[tb];[0:a]pan=mono|c0=c2[ce];[0:a]pan=mono|c0=c3[lf]","-map","[fr]","-map","[si]","-map","[bk]","-map","[tf]","-map","[tb]","-map","[ce]","-map","[lf]")
             $sg1 = "type=iamf_audio_element:id=1:st=0:st=1:st=2:st=3:st=4:st=5:st=6,demixing=parameter_id=998,recon_gain=parameter_id=101,layer=ch_layout=stereo,layer=ch_layout=7.1.4"
-            $sg2 = "type=iamf_mix_presentation:id=2:stg=0,annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1.4"
+            $sg2 = "type=iamf_mix_presentation:id=2:stg=0:annotations=en-us=Mix,submix=parameter_id=100:parameter_rate=48000|element=stg=0:parameter_id=100:annotations=en-us=Sub|layout=sound_system=stereo|layout=sound_system=7.1.4"
             $sidArgs = @("-streamid","0:0","-streamid","1:1","-streamid","2:2","-streamid","3:3","-streamid","4:4","-streamid","5:5","-streamid","6:6")
         }
         default { Write-Host "  ✗ Layout IAMF nesuportat: $Layout (stereo|5.1|7.1|7.1.4)" -ForegroundColor Red; return $false }
@@ -4532,6 +4542,21 @@ function Invoke-IamfAuthor {
     & ffmpeg @ffArgs 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw) -or (Get-Item $raw).Length -eq 0) {
         Write-Host "  ✗ ffmpeg authoring IAMF esuat (layout $Layout)" -ForegroundColor Red
+        if (Test-Path $raw) { Remove-Item $raw -Force -EA SilentlyContinue }
+        return $false
+    }
+    # v97: verifica REZULTATUL, nu codul de iesire. O greseala de separator in specificatia
+    # mix presentation-ului face ffmpeg sa ignore tot blocul `submix=` si sa scrie un Mix
+    # Presentation GOL — cu rc=0 si cu avertismentul ("No submix in mix presentation
+    # specification") inghitit de `-v error`. Fisierul pare bun, dar e neconform (spec IAMF
+    # 3.7 cere cel putin un submix) si ffmpeg 9.0+/master il RESPINGE la citire. Exact asta
+    # s-a intamplat intre v88 si v96, pe ambele platforme.
+    $nsubLine = @(& ffprobe -v error -show_stream_groups -of flat $raw 2>$null) |
+                Select-String -Pattern 'nb_submixes=(\d+)' | Select-Object -First 1
+    $nsub = if ($nsubLine) { [int]$nsubLine.Matches[0].Groups[1].Value } else { 0 }
+    if ($nsub -lt 1) {
+        Write-Host "  ✗ IAMF neconform: Mix Presentation fara submix (layout $Layout)" -ForegroundColor Red
+        Write-Host "    Fisierul ar fi respins de ffmpeg 9.0+; nu il livrez."
         if (Test-Path $raw) { Remove-Item $raw -Force -EA SilentlyContinue }
         return $false
     }

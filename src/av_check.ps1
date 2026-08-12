@@ -453,7 +453,9 @@ Write-Host "╔═════════════════════�
 Write-Host "║     AV CHECK — ANALIZA FISIERE MEDIA     ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 
-$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.webm" -File
+# v97: pe langa containerele video, se accepta si fisiere DOAR-audio (ce produce meniul 2,
+# inclusiv Eclipsa/IAMF) plus formatele audio native. Campurile video ies "N/A" onest.
+$inputFiles = Get-ChildItem -Path (Join-Path $InputDir '*') -Include "*.mp4","*.mov","*.mkv","*.m2ts","*.mts","*.vob","*.mxf","*.apv","*.webm","*.m4a","*.mka","*.flac","*.opus","*.wav","*.aac","*.ac3","*.eac3","*.dts","*.thd","*.iamf" -File
 $fileCount  = $inputFiles.Count
 $totalSz    = ($inputFiles | Measure-Object -Property Length -Sum).Sum
 Write-Host "INPUT: $InputDir | Fisiere: $fileCount | $(Format-Bytes $totalSz)" -ForegroundColor Yellow
@@ -465,17 +467,33 @@ $csvPath = Join-Path $OutputDir "av_check_report.csv"
 "Fisier,Format_sursa,Container,Dimensiune(MB),Durata(sec),Rezolutie,PixelFormat,FPS,Bitrate_video(Mbps),Tip_HDR,Profil_DV,ColorPrimaries,ColorSpace,ColorRange,MaxCLL,MaxFALL,MasterDisplay,HDR10Plus_Scenes,Log_Profile,Codec_audio,Bitrate_audio(kbps),SampleRate(kHz),BitDepth,Layout_canale,Limba_audio,Canale_audio,AudioTrackuri,Subtitrari,Capitole,Attachments,DJI_djmd,DJI_dbgi,DJI_Timecode,Recomandat_encoder,Est_x265,Est_x264,Est_AV1,Est_ProRes" |
     Out-File $csvPath -Encoding UTF8
 
-$count = 0
+$count = 0      # cate au fost ANALIZATE efectiv (raportul final) — bash: $COUNT
+$idx   = 0      # pozitia in lista, pentru afisajul de progres — bash: $IDX
 foreach ($f in $inputFiles) {
-    $count++
+    $idx++
     Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
-    Write-Host "Analizam ($count/$fileCount): $($f.Name)" -ForegroundColor Yellow
+    Write-Host "Analizam ($idx/$fileCount): $($f.Name)" -ForegroundColor Yellow
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
 
     $si = Get-SourceInfo $f.FullName
+    # v97: fara stream video, fisierul nu se mai sare automat — daca are audio, se
+    # analizeaza ca fisier AUDIO (cazul meniului 2: audio-only, inclusiv Eclipsa/IAMF).
+    # Campurile video devin "N/A" onest; se sare doar ce n-are nici audio, nici video.
+    $audioOnlyFile = $false
     if (-not $si.fmt -or $si.fmt -eq " 8bit") {
-        Write-Host "  ATENTIE: Nu s-a gasit stream video valid — sarit." -ForegroundColor Red; continue
+        $probeA = (& ffprobe -v error -select_streams a:0 -show_entries stream=index -of csv=p=0 $f.FullName 2>$null) -join ''
+        if ($probeA -match '\d') {
+            $audioOnlyFile = $true
+        } else {
+            Write-Host "  ATENTIE: fara stream video sau audio valid — sarit." -ForegroundColor Red; continue
+        }
     }
+    # v97 (paritate cu bash): contorul de fisiere ANALIZATE se incrementeaza DUPA poarta,
+    # nu la intrarea in bucla. Altfel raportul final numara si fisierele sarite — "20 fisiere
+    # procesate" cand CSV-ul are 19 randuri. Divergenta era pre-existenta, dar invizibila cat
+    # timp lista de intrare continea doar containere video; extinderea la audio a scos-o la
+    # iveala. bash incrementeaza `COUNT` dupa `continue`.
+    $count++
     # v57: container extras din extensie (lowercase, fara dot)
     $container = $f.Extension.TrimStart('.').ToLowerInvariant()
 
@@ -492,8 +510,12 @@ foreach ($f in $inputFiles) {
     # zecimal urmeaza setarile regionale ale masinii, iar CSV-ul difera de la calculator la calculator.
     $audioSRk = if ($audioSR -match '^\d+$') { ([long]$audioSR / 1000.0).ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture) } else { "N/A" }
     $audioBD = Get-FFprobeValue $f.FullName "a:0" "bits_per_raw_sample"
-    if (-not $audioBD -or $audioBD -eq "0") { $audioBD = Get-FFprobeValue $f.FullName "a:0" "bits_per_sample" }
-    if (-not $audioBD -or $audioBD -eq "0") { $audioBD = "N/A" }
+    # v97 (paritate cu bash): ffprobe intoarce literalul "N/A" pentru campul absent, nu gol —
+    # cazul PCM/WAV, unde adancimea reala sta in `bits_per_sample`. Fara conditia pe "N/A"
+    # fallback-ul nu se declansa si coloana iesea "N/A" desi valoarea exista (bash o gasea).
+    # Divergenta era pre-existenta, dar invizibila cat timp fisierele audio nu ajungeau aici.
+    if (-not $audioBD -or $audioBD -eq "0" -or $audioBD -eq "N/A") { $audioBD = Get-FFprobeValue $f.FullName "a:0" "bits_per_sample" }
+    if (-not $audioBD -or $audioBD -eq "0" -or $audioBD -eq "N/A") { $audioBD = "N/A" }
     $audioLayout = Get-FFprobeValue $f.FullName "a:0" "channel_layout"
     if (-not $audioLayout) {
         $audioLayout = switch ($audioChannels) { "1"{"mono"} "2"{"stereo"} "6"{"5.1"} "8"{"7.1"} default{"${audioChannels}ch"} }
@@ -708,31 +730,50 @@ foreach ($f in $inputFiles) {
     $estAV1  = Get-SizeEst $bpsAV1  $durSec
     $estProRes = Get-SizeEst $bpsProRes $durSec
 
+    # v97: pe un fisier DOAR-audio, campurile video nu se inventeaza. Cele care ar iesi
+    # goale sau, mai rau, PLAUZIBILE dar false — rezolutia "x", bitrate-ul containerului
+    # atribuit video, "SDR" pe ceva care n-are imagine — devin "N/A". Restul campurilor
+    # video (DV, LOG, culoare, MaxCLL, estimari) cad deja singure pe "N/A".
+    $fmtStr = $si.fmt
+    $resStr = "${w}x${h}"
+    $pixStr = $si.pixFmt
+    if ($audioOnlyFile) {
+        $resStr = "N/A"; $pixStr = "N/A"; $bitrateMbps = "N/A"; $tipHdr = "N/A"
+        $encRec = "N/A"; $estX265 = "N/A"; $estX264 = "N/A"; $estAV1 = "N/A"; $estProRes = "N/A"
+        # NB: $ac poate purta deja o eticheta intre paranteze — "(Eclipsa)", "(Atmos)",
+        # "(DTS:X)" — deci se pune dupa liniuta, nu intre alte paranteze.
+        $fmtStr = "Audio — $(if ($ac) { $ac } else { 'necunoscut' })"
+    }
+
     # Terminal output
-    Write-Host "  Format sursa : $($si.fmt)"       -ForegroundColor White
+    Write-Host "  Format sursa : $fmtStr"           -ForegroundColor White
     Write-Host "  Container    : $container"        -ForegroundColor White
     Write-Host "  Dimensiune   : $fsMB MB"          -ForegroundColor White
     Write-Host "  Durata       : $durSec sec"       -ForegroundColor White
-    Write-Host "  Rezolutie    : ${w}x${h}"         -ForegroundColor White
-    Write-Host "  FPS          : $fpsRaw"           -ForegroundColor White
-    Write-Host "  Bitrate video: $bitrateMbps Mb/s" -ForegroundColor White
-    # v57: Tip HDR adnotat cu numar markeri HDR10+ daca disponibil
-    $tipHdrDisplay = $tipHdr
-    if ($si.isHDRPlus -and $hdr.hdr10PlusScenes -match '^\d+$' -and [int]$hdr.hdr10PlusScenes -gt 0) {
-        $tipHdrDisplay = "$tipHdr (~$($hdr.hdr10PlusScenes) scene markers)"
-    }
-    Write-Host "  Tip HDR      : $tipHdrDisplay" -ForegroundColor $(if ($tipHdr -ne "SDR") { "Magenta" } else { "White" })
-    if ($doVi -or $si.isDVFrames) { Write-Host "  Profil DV    : $dvProf" -ForegroundColor Magenta }
-    if ($logProf -ne "N/A") { Write-Host "  LOG Profile  : $logProf" -ForegroundColor Yellow }
-    # v57: HDR rich fields display
-    if ($hdr.colorPrimaries -ne "N/A" -or $hdr.colorSpace -ne "N/A" -or $hdr.colorRange -ne "N/A") {
-        Write-Host "  Color        : primaries=$($hdr.colorPrimaries) matrix=$($hdr.colorSpace) range=$($hdr.colorRange)" -ForegroundColor White
-    }
-    if ($hdr.maxCll -ne "N/A" -or $hdr.maxFall -ne "N/A") {
-        Write-Host "  MaxCLL/FALL  : $($hdr.maxCll) / $($hdr.maxFall) nits" -ForegroundColor White
-    }
-    if ($hdr.masterDisplay -ne "N/A") {
-        Write-Host "  Mastering    : $($hdr.masterDisplay)" -ForegroundColor White
+    if (-not $audioOnlyFile) {
+        Write-Host "  Rezolutie    : $resStr"           -ForegroundColor White
+        Write-Host "  FPS          : $fpsRaw"           -ForegroundColor White
+        Write-Host "  Bitrate video: $bitrateMbps Mb/s" -ForegroundColor White
+        # v57: Tip HDR adnotat cu numar markeri HDR10+ daca disponibil
+        $tipHdrDisplay = $tipHdr
+        if ($si.isHDRPlus -and $hdr.hdr10PlusScenes -match '^\d+$' -and [int]$hdr.hdr10PlusScenes -gt 0) {
+            $tipHdrDisplay = "$tipHdr (~$($hdr.hdr10PlusScenes) scene markers)"
+        }
+        Write-Host "  Tip HDR      : $tipHdrDisplay" -ForegroundColor $(if ($tipHdr -ne "SDR") { "Magenta" } else { "White" })
+        if ($doVi -or $si.isDVFrames) { Write-Host "  Profil DV    : $dvProf" -ForegroundColor Magenta }
+        if ($logProf -ne "N/A") { Write-Host "  LOG Profile  : $logProf" -ForegroundColor Yellow }
+        # v57: HDR rich fields display
+        if ($hdr.colorPrimaries -ne "N/A" -or $hdr.colorSpace -ne "N/A" -or $hdr.colorRange -ne "N/A") {
+            Write-Host "  Color        : primaries=$($hdr.colorPrimaries) matrix=$($hdr.colorSpace) range=$($hdr.colorRange)" -ForegroundColor White
+        }
+        if ($hdr.maxCll -ne "N/A" -or $hdr.maxFall -ne "N/A") {
+            Write-Host "  MaxCLL/FALL  : $($hdr.maxCll) / $($hdr.maxFall) nits" -ForegroundColor White
+        }
+        if ($hdr.masterDisplay -ne "N/A") {
+            Write-Host "  Mastering    : $($hdr.masterDisplay)" -ForegroundColor White
+        }
+    } else {
+        Write-Host "  Continut     : doar audio (fara pista video)" -ForegroundColor White
     }
     Write-Host "  ─────────────────────────────────────" -ForegroundColor DarkGray
     # v57: audio main + per-track detail (paritate cu bash)
@@ -776,7 +817,7 @@ foreach ($f in $inputFiles) {
     # bash: %s pe toate text fields, %d pe numerice
     # Numerice (fara quote): fsMB, durSec, csv_aCh, audioTracks, csv_djmd, csv_dbgi, csv_djtc
     # Text fields (cu quote): toate celelalte 30
-    "`"$($f.Name)`",`"$($si.fmt)`",`"$container`",$fsMB,$durSec,`"${w}x${h}`",`"$($si.pixFmt)`",`"$fpsCsv`",`"$bitrateMbps`",`"$tipHdr`",`"$dvProf`",`"$($hdr.colorPrimaries)`",`"$($hdr.colorSpace)`",`"$($hdr.colorRange)`",`"$($hdr.maxCll)`",`"$($hdr.maxFall)`",`"$($hdr.masterDisplay)`",`"$($hdr.hdr10PlusScenes)`",`"$logProf`",`"$csv_ac`",`"$csv_abk`",`"$csv_aSRk`",`"$csv_aBD`",`"$csv_aLay`",`"$csv_aLang`",$csv_aCh,$audioTracks,`"$subStr`",`"$chapStr`",`"$attStr`",$csv_djmd,$csv_dbgi,$csv_djtc,`"$encRec`",`"$estX265`",`"$estX264`",`"$estAV1`",`"$estProRes`"" |
+    "`"$($f.Name)`",`"$fmtStr`",`"$container`",$fsMB,$durSec,`"$resStr`",`"$pixStr`",`"$fpsCsv`",`"$bitrateMbps`",`"$tipHdr`",`"$dvProf`",`"$($hdr.colorPrimaries)`",`"$($hdr.colorSpace)`",`"$($hdr.colorRange)`",`"$($hdr.maxCll)`",`"$($hdr.maxFall)`",`"$($hdr.masterDisplay)`",`"$($hdr.hdr10PlusScenes)`",`"$logProf`",`"$csv_ac`",`"$csv_abk`",`"$csv_aSRk`",`"$csv_aBD`",`"$csv_aLay`",`"$csv_aLang`",$csv_aCh,$audioTracks,`"$subStr`",`"$chapStr`",`"$attStr`",$csv_djmd,$csv_dbgi,$csv_djtc,`"$encRec`",`"$estX265`",`"$estX264`",`"$estAV1`",`"$estProRes`"" |
         Out-File $csvPath -Append -Encoding UTF8
 }
 
@@ -786,7 +827,7 @@ Write-Host "CSV: $csvPath" -ForegroundColor White
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
 # ── Comparatie Input vs Output ────────────────────────────────────────
-$outFiles = Get-ChildItem -Path (Join-Path $OutputDir '*') -Include "*.mp4","*.mov","*.mkv","*.mxf","*.webm" -File -ErrorAction SilentlyContinue
+$outFiles = Get-ChildItem -Path (Join-Path $OutputDir '*') -Include "*.mp4","*.mov","*.mkv","*.mxf","*.webm","*.m4a","*.mka","*.flac","*.opus","*.wav","*.aac","*.ac3","*.eac3" -File -ErrorAction SilentlyContinue
 if ($outFiles -and $outFiles.Count -gt 0) {
     Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
     Write-Host "COMPARATIE INPUT vs OUTPUT" -ForegroundColor Cyan
